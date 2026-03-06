@@ -1,0 +1,28 @@
+dataset:
+  id: "Sedation-RestingState"
+  source: "apollo_cambridge"
+  modality: "eeg"
+  format: "eeglab_set_fdt"
+
+paths:
+  received_dir: "E:/Science_Datasets/apollo/sedation-restingstate"
+  processed_dir: "E:/Science_Datasets/apollo/processed"
+
+preprocess:
+  # Apollo files are epoched EEGLAB (.set/.fdt). mndm preprocess can flatten
+  # epochs to a continuous surrogate stream when this flag is enabled.
+  eeglab:
+    allow_epoched_set: true
+
+metadata_extraction:
+  filename_parse:
+    regex: "^(?P<subject>\\d+)-.*\\.(?P<run>\\d{3})\\.[^.]+$"
+    subject_pad: 3
+
+notes:
+  - "Dataset is not BIDS-structured; filenames are non-BIDS."
+  - "Feature extraction is supported after EEGLAB-epoch flattening."
+  - "Summarize grouping may need explicit filename-to-subject/task mapping if used later."
+
+run_examples:
+  - "python -m mndm.cli features --dataset Sedation-RestingState --config mndm/config/config_ingest.yaml --data-dir E:/Science_Datasets/apollo/sedation-restingstate --out-dir E:/Science_Datasets/apollo/processed"

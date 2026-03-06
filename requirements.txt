@@ -1,0 +1,16 @@
+numpy==2.1.1
+scipy==1.14.1
+pandas==2.2.2
+mne==1.6.1
+h5py==3.11.0
+pyyaml==6.0.2
+tqdm==4.66.5
+joblib==1.4.2
+psutil==5.9.8
+filelock==3.16.1
+datalad==1.2.3
+datalad-installer
+networkx==3.3
+nibabel==5.2.1
+openneuro-py
+nilearn

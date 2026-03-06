@@ -1,0 +1,108 @@
+# Dataset-specific Stratified MNPS (v2) policy library.
+# Loaded when mnps_9d.policy_dir is configured.
+
+schema_version: 1
+
+mnps_9d:
+  datasets:
+    ds003490:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds005114:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds005620:
+      subcoords:
+          e_s: {eeg_hjorth_complexity: 1.0}
+          e_m: {embodied_arousal_proxy: 1.0}
+    Sedation-RestingState:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds003947:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds005555:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}    
+    ANPHY:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}            
+    ds003478:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}        
+    ds004100:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}    
+    ds004504:
+      block_jacobians:
+        enabled: true
+        groups:
+          m: [m_a, m_e, m_o]
+          d: [d_n, d_l, d_s]
+          e: [e_e, e_s, e_m]
+        include_self: true
+        include_sym_rot: true
+        pairs: "all"
+      save_cross_partials:
+        enabled: true
+        preset: "ndt_core_v1"
+        extra_pairs:
+          - [e_s, m_o]
+        rationale: "Example: dataset-specific hypothesis-driven additions beyond NDT core"
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds004511:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds004796:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds003944:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds005505:
+      subcoords:
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+    ds000228:
+      enabled: true
+      subcoords: &mnps_9d_fmri_min_subcoords
+        m_a: {fmri_FC_mean: 1.0}
+        m_e: {fmri_gradient_ratio: 1.0}
+        m_o: {fmri_modularity: 1.0}
+        d_n: {fmri_variance_global: 1.0}
+        d_l: {fmri_dFC_variance: 1.0}
+        d_s: {fmri_kuramoto_global: 1.0}
+        e_e: {fmri_signal_power: 1.0}
+        e_s: {fmri_slow4_slow5_ratio: 1.0}
+        e_m: {fmri_ar1_coefficient: 1.0}
+    ds003059:
+      enabled: true
+      subcoords: *mnps_9d_fmri_min_subcoords
+    ds002748:
+      enabled: true
+      subcoords: *mnps_9d_fmri_min_subcoords
+    ds003171:
+      enabled: true
+      subcoords: *mnps_9d_fmri_min_subcoords
+    ds006623:
+      enabled: true
+      subcoords: *mnps_9d_fmri_min_subcoords
+    ds003212:
+      enabled: true
+      subcoords: *mnps_9d_fmri_min_subcoords
+    ds005917:
+      enabled: true
+      subcoords: *mnps_9d_fmri_min_subcoords

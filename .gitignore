@@ -205,3 +205,15 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+LongitudinalSleep/output/*
+RichSleep/output/*
+sleep_ingest/LongitudinalSleep/output/analysis_output/*.png
+sleep_ingest/LongitudinalSleep/output/analysis_output/*.json
+wake_ingest/output/*.h5
+wake_ingest/output_new_naming/*.h5
+.vscode
+openneuro/config/shellscript_download/*
+.github/
+agent_instruct/
+mndm/config/shellscript_download/*
+openneuro_ingest/config/shellscript_download/*

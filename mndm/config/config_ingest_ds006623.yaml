@@ -1,0 +1,102 @@
+version: 2.0
+modality: fmri
+
+# ds006623 dataset overlay config.
+# Imports common fMRI defaults, then applies only dataset-specific overrides.
+imports:
+  - "./config_ingest_common_fmri.yaml"
+
+datasets:
+  - ds006623
+
+preprocess:
+  fmri:
+    datasets:
+      ds006623:
+        bandpass: [0.008, 0.09]
+        resample_atlas_to_bold: true
+        confounds:
+          # Point this to your actual derivatives root for ds006623.
+          # Example alternatives:
+          # - E:/Science_Datasets/openneuro/derivatives
+          # - E:/Science_Datasets/openneuro/derivatives/fmriprep
+          derivatives_dir: "E:/Science_Datasets/openneuro/derivatives/fmriprep"
+
+features:
+  metrics:
+    compute_variance: true
+    compute_power: true
+    compute_fc: true
+    compute_kuramoto: true
+    compute_modularity: true
+    compute_dfc_variance: true
+    compute_ar1: true
+    compute_slow_band_ratio: true
+    compute_gradient_proxy: true
+    compute_dvars: true
+    dvars_threshold: 3.0
+  fmri:
+    datasets:
+      ds006623:
+        window_sec: 12.0
+        step_sec: 6.0
+
+mnps_9d:
+  datasets:
+    ds006623:
+      enabled: true
+      subcoords:
+        m_a: {fmri_FC_mean: 1.0}
+        m_e: {fmri_gradient_ratio: 1.0}
+        m_o: {fmri_modularity: 1.0}
+        d_n: {fmri_variance_global: 1.0}
+        d_l: {fmri_dFC_variance: 1.0}
+        d_s: {fmri_kuramoto_global: 1.0}
+        e_e: {fmri_signal_power: 1.0}
+        e_s: {fmri_slow4_slow5_ratio: 1.0}
+        e_m: {fmri_ar1_coefficient: 1.0}
+
+mnps_extensions:
+  rfm:
+    datasets:
+      ds006623:
+        fmri_window_sec: 30.0
+        fmri_step_sec: 15.0
+
+ndt_ingest:
+  ingest_version: "1.2"
+  modalities:
+    fmri:
+      dynamic_connectivity:
+        datasets:
+          ds006623:
+            window_length_sec: 20.0
+            step_sec: 4.0
+
+regional_mnps:
+  enabled: true
+  require_framewise_displacement: false
+  min_regions_required: 195
+  jacobian:
+    enabled: true
+    knn: {k: 10, metric: "euclidean"}
+    ridge_alpha: 1.0
+    distance_weighted: true
+    super_window: 2
+  stratified:
+    enabled: false
+
+metadata_extraction:
+  datasets:
+    ds006623:
+      group:
+        default: "Healthy"
+      condition:
+        normalize:
+          awake: "awake"
+          light: "light"
+          deep: "deep"
+          recovery: "recovery"
+      task:
+        from_filename: true
+        compound_conditions: ["recovery", "awake", "light", "deep"]

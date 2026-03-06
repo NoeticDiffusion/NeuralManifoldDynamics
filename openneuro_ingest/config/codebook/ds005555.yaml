@@ -1,0 +1,51 @@
+schema_version: 1
+
+dataset_id: ds005555
+dataset_labeling_contract: "attrs[group], attrs[task], attrs[acq], /labels/stage"
+
+description: >
+  Bitbrain Open Access Sleep (BOAS) dataset (OpenNeuro ds005555).
+  Each recording has two simultaneous acquisitions:
+  - acq-psg: clinical PSG system (Micromed)
+  - acq-headband: wearable headband (Bitbrain)
+  Sleep stages are provided per-epoch in the BIDS events TSV files and are
+  exported into H5 under /labels/stage when available.
+
+codes:
+  group:
+    unknown: 0
+    Healthy: 1
+
+  task:
+    unknown: 0
+    sleep: 1
+
+  acq:
+    unknown: 0
+    acq-psg: 1
+    acq-headband: 2
+
+  # Sleep staging codes documented by the dataset authors.
+  stage_v1:
+    Wake: 0
+    N1: 1
+    N2: 2
+    N3: 3
+    REM: 4
+    PSG_disconnection: 8
+    Artifact_or_missing: -2
+
+ordering:
+  task: [sleep]
+  acq: [acq-psg, acq-headband]
+  stage_v1: [Wake, N1, N2, N3, REM]
+
+conventions:
+  strings:
+    task: "lowercase"
+    acq: "BIDS-style (acq-psg, acq-headband)"
+  missing_policy:
+    unknown_code: 0
+    unknown_string: null
+
+

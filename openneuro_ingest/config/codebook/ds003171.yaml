@@ -1,0 +1,129 @@
+schema_version: 1
+
+dataset_id: ds003171
+dataset_labeling_contract: "attrs[group], attrs[condition], attrs[task]"
+
+description: >
+  Propofol anesthesia fMRI dataset (OpenNeuro ds003171).
+  In ingest, condition is derived from the compound BIDS task name
+  (e.g., task-audioawake -> task=audio, condition=awake).
+
+# -------------------------------------------------------------------------
+# Canonical categorical codebooks
+# -------------------------------------------------------------------------
+codes:
+  # Group labels used by analysis exports/plots.
+  # (This dataset is healthy volunteers only, but we keep a codebook anyway.)
+  group:
+    unknown: 0
+    Healthy: 1
+
+  # Sedation condition (run-level).
+  # Canonical order: awake -> light -> deep -> recovery.
+  condition:
+    unknown: 0
+    awake: 1
+    light: 2
+    deep: 3
+    recovery: 4
+
+  # Task (run-level). ds003171 commonly has rest + audio imagery.
+  task:
+    unknown: 0
+    rest: 1
+    audio: 2
+
+  # Optional: shared within-run "state" codebook (used for event/timepoint-based
+  # segmentation like LOR/ROR). Included for cross-dataset analysis compatibility.
+  within_run_state_v1:
+    unknown: 0
+    pre_lor: 1
+    unresponsive: 2
+    post_ror: 3
+
+# -------------------------------------------------------------------------
+# Recommended ordering for plots / paired tests
+# -------------------------------------------------------------------------
+ordering:
+  condition: [awake, light, deep, recovery]
+  task: [rest, audio]
+
+# -------------------------------------------------------------------------
+# Notes / conventions
+# -------------------------------------------------------------------------
+conventions:
+  strings:
+    group: "TitleCase (e.g., Healthy)"
+    condition: "lowercase (awake/light/deep/recovery)"
+    task: "lowercase (rest/audio)"
+    within_run_state_v1: "lowercase (pre_lor/unresponsive/post_ror)"
+  missing_policy:
+    unknown_code: 0
+    unknown_string: null
+
+schema_version: 1
+
+dataset_id: ds003171
+dataset_labeling_contract: "attrs[group], attrs[condition], attrs[task]"
+
+description: >
+  Propofol anesthesia fMRI dataset (OpenNeuro ds003171).
+  In ingest, condition is derived from the compound BIDS task name
+  (e.g., task-audioawake -> task=audio, condition=awake).
+
+# -------------------------------------------------------------------------
+# Canonical categorical codebooks
+# -------------------------------------------------------------------------
+codes:
+  # Group labels used by analysis exports/plots.
+  # (This dataset is healthy volunteers only, but we keep a codebook anyway.)
+  group:
+    unknown: 0
+    Healthy: 1
+
+  # Sedation condition (run-level).
+  # Canonical order: awake -> light -> deep -> recovery.
+  condition:
+    unknown: 0
+    awake: 1
+    light: 2
+    deep: 3
+    recovery: 4
+
+  # Task (run-level). ds003171 commonly has rest + audio imagery.
+  task:
+    unknown: 0
+    rest: 1
+    audio: 2
+
+  # Optional: a shared within-run "state" codebook used when you segment a
+  # continuous run into epochs based on events/timepoints (e.g., LOR/ROR).
+  # Not normally used for ds003171 (which is already run-separated by condition),
+  # but included here to keep a consistent analysis interface across datasets.
+  within_run_state_v1:
+    unknown: 0
+    pre_lor: 1
+    unresponsive: 2
+    post_ror: 3
+
+# -------------------------------------------------------------------------
+# Recommended ordering for plots / paired tests
+# -------------------------------------------------------------------------
+ordering:
+  condition: [awake, light, deep, recovery]
+  task: [rest, audio]
+
+# -------------------------------------------------------------------------
+# Notes / conventions
+# -------------------------------------------------------------------------
+conventions:
+  strings:
+    group: "TitleCase (e.g., Healthy)"
+    condition: "lowercase (awake/light/deep/recovery)"
+    task: "lowercase (rest/audio)"
+    within_run_state_v1: "lowercase (pre_lor/unresponsive/post_ror)"
+  missing_policy:
+    unknown_code: 0
+    unknown_string: null
+
+

@@ -1,0 +1,140 @@
+version: 1.2
+modality: eeg
+
+# ANPHY dataset overlay config.
+# This file imports common EEG defaults, then overrides only dataset-specific keys.
+# Use with:
+#   mndm cli.py features  --dataset ANPHY --config mndm/config/config_ingest_anphy.yaml --out-dir E:/Science_Datasets/ANPHY/processed
+#   mndm cli.py summarize --dataset ANPHY --config mndm/config/config_ingest_anphy.yaml --out-dir E:/Science_Datasets/ANPHY/processed
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - ANPHY
+
+source:
+  name: "ANPHY"
+  platform: "Local BIDS"
+  format: "BIDS"
+  dataset_id: "ANPHY"
+  dataset_name: "ANPHY sleep dataset"
+  url: null
+
+paths:
+  processed_dir: "E:/Science_Datasets/ANPHY/processed"
+  dataset_received_dirs:
+    ANPHY: "E:/Science_Datasets/ANPHY"
+
+preprocess:
+  eeg_csd:
+    enabled: true
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+
+epoching:
+  datasets:
+    ANPHY:
+      # Higher epoch density for richer MNJ/robustness analyses.
+      # Keep windows long enough for stable spectral/HRV estimates.
+      length_s: 20.0
+      step_s: 10.0
+      sampling:
+        enabled: true
+        method: "stage_stratified_blocks"
+        stage_columns: ["stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+        target_minutes:
+          Wake: 30
+          N1: 15
+          N2: 30
+          N3: 30
+          REM: 30
+        block_minutes: 5
+        seed: 42
+
+mnps_9d:
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+robustness:
+  coverage:
+    datasets:
+      ANPHY:
+        min_seconds: 30
+        min_epochs: 10
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2"]
+    datasets:
+      ANPHY:
+        # HD-EEG regional groups (10-10 style). These are used for ensemble
+        # robustness summaries only; core EEG features still use the full montage.
+        groups:
+          frontal_left: ["Fp1", "AF7", "AF3", "F7", "F5", "F3", "F1"]
+          frontal_right: ["Fp2", "AF8", "AF4", "F8", "F6", "F4", "F2"]
+          frontal_midline: ["Fpz", "AFz", "Fz"]
+
+          frontocentral_left: ["FC5", "FC3", "FC1", "C5", "C3", "C1"]
+          frontocentral_right: ["FC6", "FC4", "FC2", "C6", "C4", "C2"]
+          central_midline: ["FCz", "Cz", "CPz"]
+
+          temporal_left: ["FT9", "FT7", "T7", "TP7", "TP9"]
+          temporal_right: ["FT10", "FT8", "T8", "TP8", "TP10"]
+
+          parietal_left: ["CP5", "CP3", "CP1", "P7", "P5", "P3", "P1"]
+          parietal_right: ["CP6", "CP4", "CP2", "P8", "P6", "P4", "P2"]
+          parietal_midline: ["Pz"]
+
+          occipital_left: ["PO7", "PO3", "O1"]
+          occipital_right: ["PO8", "PO4", "O2"]
+          occipital_midline: ["POz", "Oz"]
+
+ndt_ingest:
+  ingest_version: "1.2"
+  modalities:
+    eeg:
+      enabled: true
+      datasets:
+        ANPHY:
+          synchrony: {enabled: false}
+          complexity: {enabled: false}
+          dynamic_fc: {enabled: false}
+          graph_metrics: {enabled: false}
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: true
+
+metadata_extraction:
+  datasets:
+    ANPHY:
+      filename_parse:
+        regex: "(?P<subject>EPCTL\\d+)"
+        subject_pad: 0
+      group:
+        default: "Healthy"
+      condition:
+        default: "sleep"
+      task:
+        default: "sleep"
+
+sleep_annotations:
+  datasets:
+    ANPHY:
+      enabled: true
+      search_parent_levels: 1
+      file_globs: ["*.txt", "*.ann"]
+      stage_map: {W: 0, N1: 1, N2: 2, N3: 3, REM: 4, R: 4, L: -1}

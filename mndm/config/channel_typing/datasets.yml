@@ -1,0 +1,24 @@
+# Dataset-specific channel typing policy library.
+# Loaded when preprocess.channel_typing.policy_dir is configured.
+
+schema_version: 1
+
+preprocess:
+  channel_typing:
+    datasets:
+      ds004511:
+        # Deception dataset (TruScan 128): ensure numeric channels are typed as EEG.
+        rules:
+          - {regex: "^[0-9]+$", type: "eeg"}
+      ds005555:
+        # BOAS sleep EDFs use prefixed channel names like "PSG_F3" and "HB_1".
+        rules:
+          - {regex: "^PSG_(F3|F4|C3|C4|O1|O2)$", type: "eeg"}
+          - {regex: "^HB_(1|2)$", type: "eeg"}
+          - {prefix: "PSG_", type: "misc"}
+          - {prefix: "HB_", type: "misc"}
+      ds005505:
+        # HBN-EEG releases often use dense EEG caps with numbered channels.
+        rules:
+          - {regex: "^E[0-9]+$", type: "eeg"}
+          - {regex: "^EEG[0-9]+$", type: "eeg"}

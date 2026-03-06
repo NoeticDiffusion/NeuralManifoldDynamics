@@ -1,0 +1,59 @@
+version: 1.2
+modality: eeg
+
+# ds003490 dataset overlay config.
+# Imports common EEG defaults, then applies only dataset-specific overrides.
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds003490
+
+preprocess:
+  eeg_csd:
+    enabled: true
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+  artifacts:
+    method: "none"
+    ica_n_components: 20
+    ica_method: "fastica"
+    datasets:
+      ds003490:
+        method: "eog_reg"
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
+      temporal: ["T7", "T8", "TP7", "TP8"]
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: true
+
+mnps_9d:
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+metadata_extraction:
+  datasets:
+    ds003490:
+      group:
+        candidates: ["Group"]
+      condition:
+        session_candidates:
+          ses-01: ["sess1_Med"]
+          ses-02: ["sess2_Med"]

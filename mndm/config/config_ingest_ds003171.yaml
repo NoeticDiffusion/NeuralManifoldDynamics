@@ -1,0 +1,80 @@
+version: 1.2
+modality: fmri
+
+# ds003171 dataset overlay config.
+# Imports common fMRI defaults, then applies only dataset-specific overrides.
+imports:
+  - "./config_ingest_common_fmri.yaml"
+
+datasets:
+  - ds003171
+
+
+preprocess:
+  fmri:
+    datasets:
+      ds003171:
+        bandpass: [0.008, 0.09]
+        resample_atlas_to_bold: true
+
+features:
+  metrics:
+    compute_variance: true
+    compute_power: true
+    compute_fc: true
+    compute_kuramoto: true
+    compute_modularity: true
+    compute_dfc_variance: true
+    compute_ar1: true
+    compute_slow_band_ratio: true
+    compute_gradient_proxy: true
+    compute_dvars: true
+    dvars_threshold: 3.0
+  fmri:
+    datasets:
+      ds003171:
+        window_sec: 20.0
+        step_sec: 10.0
+
+mnps_9d:
+  datasets:
+    ds003171:
+      enabled: true
+      subcoords:
+        m_a: {fmri_FC_mean: 1.0}
+        m_e: {fmri_gradient_ratio: 1.0}
+        m_o: {fmri_modularity: 1.0}
+        d_n: {fmri_variance_global: 1.0}
+        d_l: {fmri_dFC_variance: 1.0}
+        d_s: {fmri_kuramoto_global: 1.0}
+        e_e: {fmri_signal_power: 1.0}
+        e_s: {fmri_slow4_slow5_ratio: 1.0}
+        e_m: {fmri_ar1_coefficient: 1.0}
+
+regional_mnps:
+  enabled: true
+  require_framewise_displacement: false
+  min_regions_required: 195
+  jacobian:
+    enabled: true
+    knn: {k: 10, metric: "euclidean"}
+    ridge_alpha: 1.0
+    distance_weighted: true
+    super_window: 2
+  stratified:
+    enabled: false
+
+metadata_extraction:
+  datasets:
+    ds003171:
+      group:
+        default: "Healthy"
+      condition:
+        normalize:
+          awake: "awake"
+          light: "light"
+          deep: "deep"
+          recovery: "recovery"
+      task:
+        from_filename: true
+        compound_conditions: ["recovery", "awake", "light", "deep"]

@@ -1,0 +1,282 @@
+version: 1.2
+modality: eeg
+
+# Common EEG defaults. Copy into per-dataset configs.
+# Import from dataset overlays via:
+#   imports:
+#     - "./config_ingest_common_eeg.yaml"
+
+datasets: []
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: null
+  dataset_name: null
+  dataset_version: null
+  doi: null
+  url: null
+  acknowledgement: null
+
+paths:
+  received_dir: "E:/Science_Datasets/openneuro/received"
+  # Optional fallback roots if the primary received_dir is unavailable
+  # or missing specific datasets. resolve_paths() will pick the best
+  # candidate based on which root contains the configured dataset IDs.
+  received_dir_fallbacks:
+    - "G:/Science_Datasets_longtime_storage"
+  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  dataset_received_dirs: {}
+
+preprocess:
+  sfreq: 250
+  # Candidate output rates for dynamic integer-ratio downsampling.
+  # Example: 1000->250 (x4), 512->256 (x2).
+  sfreq_candidates: [250, 256]
+  notch_hz: 50
+  eeg_bandpass: [1, 45]
+  reref: "average"
+  resample:
+    # Use >1 to parallelize MNE resample across channels.
+    n_jobs: 1   # int or "auto"
+  gpu: false
+  eeglab:
+    # If a .set file is epoched and must be concatenated to a surrogate Raw stream,
+    # default to skip time-domain filters/resampling to avoid boundary ringing.
+    allow_epoched_set: false
+    resample_concatenated_epochs: false
+    filter_concatenated_epochs: false
+    datasets: {}
+  channel_typing:
+    enabled: true
+    # Generic BIDS/OpenNeuro fallback rules for common auxiliary channels.
+    # Truly dataset-specific channel families should stay in the external policy library.
+    default_rules:
+      - {regex: "(?i)^(VEOG|HEOG|EOG|EYE)", type: "eog"}
+      - {regex: "(?i)^(ECG|EKG)", type: "ecg"}
+      - {regex: "(?i)^(EMG|CHEMG|CHIN|LEG|RLEG|LLEG|MENTALIS)", type: "emg"}
+    # External dataset policy library (optional):
+    # - mndm/config/channel_typing/<dataset_id>_channel_typing.yml
+    # - mndm/config/channel_typing/datasets.yml
+    policy_dir: "mndm/config/channel_typing"
+    datasets: {}
+
+epoching:
+  length_s: 8.0
+  step_s: 4.0
+  datasets: {}
+
+features:
+  eeg_psd: {method: "multitaper", bandwidth: null}
+  eeg_bands: {delta: [1,4], theta: [4,8], alpha: [8,12], beta: [13,30], gamma: [30,45]}
+  ratios: {alpha_theta: ["alpha","theta"], beta_alpha: ["beta","alpha"]}
+  permutation_entropy:
+    order: 5
+    delay: 1
+    normalize: true
+
+mnps_projection:
+  normalize: "robust_z"
+  clip_threshold: 6.0
+  # Fixed linear projection P: V2(9D) -> V1(3D), block-selective and reproducible.
+  # Columns are L2-normalized at runtime and logged with hash in provenance.
+
+# Fixed linear projection P: V2(9D) -> V1(3D), block-selective and reproducible.
+  # Columns are L2-normalized at runtime and logged with hash in provenance.
+  # These weights constitute the NDT theoretical prior, subject to falsification via P_learned.
+  v1_mapping:
+    # M-axis (Macrostates): Arousal/Slow-wave dominance.
+    # Empirical justification: Slow-wave (delta/theta) amplitude accounts for the majority 
+    # of variance in global state transitions (e.g., wake to sleep, anesthesia).
+    # Refs: 
+    # - Purdon et al. (2013) PNAS: Electroencephalogram signatures of loss and recovery of consciousness.
+    # - Stevner et al. (2019) Nat Commun: Discovery of subjective sleep macrostates.
+    m: 
+      m_a: 0.62  # Primary driver (Arousal / Slow-wave dominance)
+      m_e: 0.55  # Secondary (Engagement / Alpha-desynchronization)
+      m_o: 0.45  # Tertiary tuning (Organization / Beta-Alpha ratio)
+
+    # D-axis (Dynamics): High-frequency integration and local dispersion.
+    # Empirical justification: Gamma synchronization and local beta-band dispersion 
+    # are equally critical for local cortical computation and functional binding.
+    # Refs:
+    # - Fries (2015) Neuron: Rhythms for Cognition: Communication through Coherence.
+    # - Buzsáki & Wang (2012) Ann Rev Neurosci: Mechanisms of Gamma Oscillations.
+    d: 
+      d_n: 0.50  # Co-primary (Network binding / Gamma power)
+      d_l: 0.82  # Co-primary (Local dispersion / Hjorth Mobility)
+      d_s: 0.28  # Secondary (Spectral shift)
+
+    # E-axis (Energy/Entropy): Information-theoretic complexity dominance.
+    # Empirical justification: Non-linear complexity (entropy) is a more robust, 
+    # scale-free predictor of conscious level than raw spectral broadband energy.
+    # Refs:
+    # - Casali et al. (2013) Sci Transl Med: A theoretically based index of consciousness...
+    # - Schartner et al. (2015) PLoS One: Complexity of Multi-Dimensional Spontaneous EEG...
+    e: 
+      e_e: 0.85  # Primary driver (Non-linear Complexity / Sample or Permutation Entropy)
+      e_s: 0.62  # Secondary (Spectral Flatness / Hjorth Complexity)
+      e_m: 0.03  # Tertiary (Embodiment / Broadband magnitude / Artifact proxy)
+
+  feature_standardization:
+    default: ["log10", "robust_z", "clip"]
+    eeg_sample_entropy: ["robust_z", "clip"]
+    eeg_permutation_entropy: ["robust_z", "clip"]
+    eeg_spectral_entropy: ["robust_z", "clip"]
+    eeg_hjorth_complexity: ["robust_z", "clip"]
+    eeg_hjorth_mobility: ["robust_z", "clip"]
+  # Epoch-level minimum axis coverage required after direct projection renorm.
+  # Coverage per axis = present |w| / configured |w| in [0,1].
+  min_axis_coverage: 0.3
+  weights:
+    m: {eeg_theta: 0.35, eeg_delta: 0.25, eeg_alpha: 0.20, eeg_beta: 0.20}
+    d: {eeg_sample_entropy: 0.40, eeg_beta_alpha: 0.30, eeg_gamma: 0.30}
+    e: {eeg_alpha: 0.40, eeg_beta: 0.30, eeg_alpha_theta: 0.30}
+
+mnps:
+  fs_out: 4.0
+  window_sec: 8.0
+  overlap: 0.5
+  derivative: {method: "sav_gol", window: 7, polyorder: 3}
+  derivative_robust:
+    enabled: true
+    max_jump: 5.0
+    min_seg: 9
+  knn: {k: 20, metric: "euclidean"}
+  ridge: {alpha: 1.0, cv_folds: 5, distance_weighted: true}
+  whiten: true
+  super_window: 3
+  stage_codebook: {W: 0, Wake: 0, N1: 1, N2: 2, N3: 3, REM: 4, R: 4, L: -1}
+
+mnps_9d:
+  enabled: true
+  # Active contract used by current pipeline readers.
+  definition_version: "2.0"
+  # Versioned templates for progressive rollout.
+  versions:
+    "1.2":
+      subcoords:
+        m_a: {eeg_theta: 1.0, eog_blink_rate: -0.2}
+        m_e: {eeg_beta: 0.5, eeg_alpha: -0.5}
+        m_o: {eeg_sample_entropy: 0.7, eeg_beta_alpha: 0.3}
+        d_n: {eeg_beta_alpha: 1.0}
+        d_l: {eeg_alpha_theta: 1.0}
+        d_s: {eeg_gamma: 1.0}
+        e_e: {eeg_sample_entropy: 1.0}
+        e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+        e_m: {ecg_rmssd: 1.0}
+    "2.0":
+      subcoords:
+        # M: macrostates
+        m_a: {eeg_delta: -0.5, eeg_theta: -0.5}
+        m_e: {eeg_alpha: -1.0}
+        m_o: {eeg_beta_alpha: 1.0}
+        # D: dynamics/dispersion
+        d_n: {eeg_gamma: 1.0}
+        d_l: {eeg_hjorth_mobility: 1.0}
+        d_s: {eeg_alpha_theta: 1.0}
+        # E: entropy/energy/embodiment
+        e_e: {eeg_permutation_entropy: 1.0}
+        e_s: {eeg_hjorth_complexity: 1.0}
+        e_m: {embodied_arousal_proxy: 1.0}
+      metric_policies:
+        e_e:
+          preferred: permutation_entropy
+          fallbacks: [spectral_entropy]
+        e_m:
+          preferred: ecg_rmssd
+          fallbacks: [eog_blink_rate]
+  subcoords:
+    m_a: {eeg_theta: 1.0, eog_blink_rate: -0.2}
+    m_e: {eeg_beta: 0.5, eeg_alpha: -0.5}
+    m_o: {eeg_sample_entropy: 0.7, eeg_beta_alpha: 0.3}
+    d_n: {eeg_beta_alpha: 1.0}
+    d_l: {eeg_alpha_theta: 1.0}
+    d_s: {eeg_gamma: 1.0}
+    e_e: {eeg_sample_entropy: 1.0}
+    e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+    e_m: {ecg_rmssd: 1.0}
+  # Global metric policy block (used when version-specific policy is absent).
+  metric_policies:
+    e_e:
+      preferred: permutation_entropy
+      fallbacks: [spectral_entropy]
+    e_m:
+      preferred: ecg_rmssd
+      fallbacks: [eog_blink_rate]
+  # External dataset policy library (optional):
+  # - mndm/config/mnps_9d/<dataset_id>_mnps_9d.yml
+  # - mndm/config/mnps_9d/datasets.yml
+  policy_dir: "mndm/config/mnps_9d"
+  datasets: {}
+
+mnps_3d:
+  # Keep 9D (coords_9d) as primary representation and derive m/d/e deterministically.
+  mode: "from_v2"  # from_v2 | direct_features
+  from_v2:
+    aggregation: "fixed_weighted_projection"
+    # Legacy fallback knob for group-pooling only. In the active path,
+    # mnps_projection.v1_mapping defines a fixed weighted V2->V1 projection;
+    # this is not a trivial equal-weight mean.
+    pooling: "mean"  # legacy fallback only
+    map:
+      m: ["m_a", "m_e", "m_o"]
+      d: ["d_n", "d_l", "d_s"]
+      e: ["e_e", "e_s", "e_m"]
+
+robustness:
+  bootstrap_n: 0
+  seed: 42
+  coverage:
+    min_seconds: 60
+    min_epochs: 20
+    min_trials: 30
+    datasets: {}
+  transients: {z_thresh: 3.0, pad_epochs: 1}
+
+# Transitional feature table storage policy:
+# - write_both=true writes both CSV (human-readable) and Parquet (faster/lower IO).
+# - read_prefer controls which format is loaded first.
+# - default_format=auto promotes Parquet for large datasets by threshold.
+feature_storage:
+  write_both: true
+  read_prefer: "parquet"
+  default_format: "auto"   # csv | parquet | auto
+  auto_large_dataset:
+    min_files: 3000
+    min_total_mb: 512
+
+metadata_extraction:
+  # External dataset policy library (optional):
+  # - mndm/config/condition_task_setup/<dataset_id>_conditions_task_setup.yml
+  # - mndm/config/condition_task_setup/datasets.yml
+  policy_dir: "mndm/config/condition_task_setup"
+  default:
+    group: {candidates: ["Group", "Diagnosis", "group", "diagnosis"]}
+    condition: {candidates: ["condition", "Condition"]}
+    task: {from_filename: true}
+  datasets: {}
+
+sleep_annotations:
+  enabled: false
+  search_parent_levels: 1
+  file_globs: ["*.txt", "*.ann"]
+  stage_map: {W: 0, N1: 1, N2: 2, N3: 3, REM: 4, R: 4, L: -1}
+  datasets: {}
+
+# Per-network cross-block Jacobians (EEG only).
+# Requires regional_mnps.enabled: true with stratified.enabled: true for the
+# target dataset.  fMRI is unconditionally excluded (rank deficiency).
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false        # Set true in dataset config to activate
+    pairs: "all"          # "all" or list of [source, target], e.g. [["E","M"],["M","M"]]
+    include_self: true    # Include intra-block pairs (M→M, D→D, E→E)
+    include_sym_rot: true # Compute symmetric/antisymmetric coupling (c_sym, c_rot)
+    knn: {k: 10}
+    ridge_alpha: 1.0
+    super_window: 3

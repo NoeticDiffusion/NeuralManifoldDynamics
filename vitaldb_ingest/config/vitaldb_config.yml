@@ -1,0 +1,38 @@
+paths:
+  received_dir: "E:/Science_Datasets/vitaldb/received"
+  metadata_dir: "E:/Science_Datasets/vitaldb/metadata"
+
+auth:
+  id_env_var: "VITALDB_ID"
+  pw_env_var: "VITALDB_PW"
+
+selection:
+  # Require each selected case to include at least one EEG track and
+  # at least one propofol-related track.
+  # In find_cases() fallback mode (vitaldb versions without load_trks),
+  # these are interpreted as exact track names.
+  eeg_track_keywords:
+    - "BIS/EEG1_WAV"
+    - "BIS/EEG2_WAV"
+  propofol_track_keywords:
+    - "Orchestra/PPF20_RATE"
+    - "Orchestra/PPF20_VOL"
+    - "Orchestra/PPF20_CP"
+  min_eeg_tracks_per_case: 2
+  include_case_ids: []
+  exclude_case_ids: []
+  max_cases: 100
+  random_seed: 42
+
+download:
+  # Sampling interval used when requesting track time series from VitalDB.
+  interval_seconds: 0.0078125  # 1/128 s
+  request_sleep_seconds: 0.2
+  retries: 3
+
+export:
+  file_format: "csv.gz"   # Supported: csv.gz | none
+  raw_vital:
+    enabled: false
+  include_case_metadata_csv: true
+  include_manifest_jsonl: true

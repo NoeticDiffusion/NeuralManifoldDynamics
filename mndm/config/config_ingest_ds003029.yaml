@@ -1,0 +1,43 @@
+version: 1.2
+modality: eeg
+
+# ds003029 dataset overlay config.
+# Imports common EEG defaults, then applies only dataset-specific overrides.
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds003029
+
+preprocess:
+  eeg_csd:
+    enabled: true
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
+      temporal: ["T7", "T8", "TP7", "TP8"]
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: true
+
+mnps_9d:
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+

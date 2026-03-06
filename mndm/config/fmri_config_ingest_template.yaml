@@ -1,0 +1,103 @@
+version: 1.2
+modality: fmri
+
+# ---------------------------------------------------------------------------
+# Copy-template for fMRI ingest configs.
+# Keep this file as a scaffold; create dataset-specific configs from it.
+# ---------------------------------------------------------------------------
+#
+# Optional composition (recommended):
+# imports:
+#   - "./config_ingest_common_fmri.yaml"
+
+datasets:
+  - YOUR_DATASET_ID
+
+paths:
+  received_dir: "E:/Science_Datasets/openneuro/received"
+  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  dataset_received_dirs: {}
+
+preprocess:
+  # EEG keys are kept for loader compatibility but unused for fMRI-only runs.
+  sfreq: 250
+  notch_hz: 50
+  eeg_bandpass: [1, 45]
+  reref: "average"
+  gpu: false
+  fmri:
+    atlas_path: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
+    atlas_labels: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order.tsv"
+    bandpass: [0.01, 0.1]
+    datasets:
+      YOUR_DATASET_ID:
+        bandpass: [0.01, 0.1]
+        resample_atlas_to_bold: true
+
+epoching:
+  # Default EEG epoching keys kept for config compatibility.
+  length_s: 8.0
+  step_s: 4.0
+  datasets: {}
+
+features:
+  eeg_psd:
+    method: "multitaper"
+    bandwidth: null
+  eeg_bands: {delta: [1,4], theta: [4,8], alpha: [8,12], beta: [13,30], gamma: [30,45]}
+  ratios: {alpha_theta: ["alpha","theta"], beta_alpha: ["beta","alpha"]}
+  fmri:
+    window_sec: 30.0
+    step_sec: 15.0
+    datasets: {}
+
+mnps_projection:
+  normalize: "robust_z"
+  weights:
+    m: {fmri_entropy_global: -0.40, fmri_lf_power: 0.60}
+    d: {fmri_modularity: 1.0}
+    e: {fmri_entropy_global: 1.0}
+
+mnps:
+  fs_out: 4.0
+  window_sec: 8.0
+  overlap: 0.5
+  derivative: {method: "sav_gol", window: 7, polyorder: 3}
+  knn: {k: 20, metric: "euclidean"}
+  ridge: {alpha: 1.0, cv_folds: 5, distance_weighted: true}
+  whiten: true
+  super_window: 3
+  stage_codebook: {}
+
+mnps_9d:
+  enabled: true
+  datasets:
+    YOUR_DATASET_ID:
+      enabled: true
+      subcoords:
+        m_a: {fmri_entropy_global: -0.7, fmri_lf_power: 0.3}
+        m_e: {fmri_entropy_global: -0.3, fmri_lf_power: 0.7}
+        m_o: {fmri_lf_power: -1.0, fmri_lf_power_delta: 1.0}
+        d_n: {fmri_modularity: 1.0}
+        d_l: {fmri_modularity: 0.5, fmri_entropy_global: 0.5}
+        d_s: {fmri_modularity: 0.5, fmri_lf_power: 0.5}
+        e_e: {fmri_entropy_global: 1.0}
+        e_s: {fmri_entropy_global: 0.5, fmri_modularity: -0.5}
+        e_m: {fmri_lf_power: 0.5, fmri_modularity: -0.5}
+
+robustness:
+  bootstrap_n: 0
+  seed: 42
+  coverage:
+    min_seconds: 60
+    min_epochs: 20
+    min_trials: 30
+    datasets: {}
+  transients: {z_thresh: 3.0, pad_epochs: 1}
+
+metadata_extraction:
+  default:
+    group: {candidates: ["Group", "Diagnosis", "group", "diagnosis"]}
+    condition: {candidates: ["condition", "Condition"], session_map: {}}
+    task: {from_filename: true}
+  datasets: {}

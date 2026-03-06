@@ -1,0 +1,20 @@
+# Dataset-specific policy for ds005620 summarize stage.
+# This file is loaded by mndm summarize (summary runner) as an optional
+# external override source.
+#
+# Goal:
+# - Keep default coverage thresholds for all recordings.
+# - Allow short sed2 segments to pass with an explicit, tagged policy.
+#
+robustness:
+  coverage:
+    # Defaults remain aligned with the global policy.
+    min_seconds: 60
+    min_epochs: 20
+    optional_rules:
+      - tag: "ds005620_sed2_short_segment_v1"
+        match:
+          condition: "sed2"
+          task: "sed2"
+        min_seconds: 40
+        min_epochs: 10

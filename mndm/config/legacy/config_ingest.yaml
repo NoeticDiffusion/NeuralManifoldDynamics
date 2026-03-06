@@ -1,0 +1,1085 @@
+# Datasets to ingest. Strings are always included. Set pca_results: true to
+# include datasets only when --include-pca-results is provided (for optional PCA
+# outputs and other analysis-heavy add-ons).
+datasets:
+  - ds003490
+  - ds005114
+  - ds000228
+  # Epilepsy iEEG multicenter dataset (BIDS iEEG / BrainVision)
+  - ds003029
+  # HUP iEEG epilepsy dataset
+  - ds004100
+  # fMRI: NIMH Ketamine Mechanism of Action (multi-session, rest)
+  - ds005917
+  # EEG: First Episode Psychosis vs. Control Resting (Task 2).
+  # Note: dataset reportedly acquired on Elekta Neuromag (often stored as .fif under /meg).
+  # Our current EEG indexer focuses on EDF/BrainVision/EEGLAB/BDF; if ds003947 is .fif-only
+  # you may need to extend `bids_index.py` + preprocessing to ingest it.
+  - ds003947
+  # EEG/MEG (Elekta Neuromag): Resting EEG (10-10 60ch cap) for Healthy vs FEP.
+  # Often stored as FIF under /meg (like ds003947); EEG-only ingestion may require MEG/FIF support.
+  - ds003944
+  # EEG (TruScan 128): resting-state + task (deception + cognitive control)
+  - ds004511
+  # LSD experience multimodal neuroimaging (fMRI BOLD + phenotypes)
+  - ds003059
+  # Resting EEG with high/low BDI (Allen lab)
+  - ds003478
+  # Resting-state fMRI depression vs controls (TR=2.5s)
+  - ds002748
+  - id: ds003171
+    # pca_results: true
+  - id: ds006623
+    # pca_results: true
+  - id: ds003212
+    # pca_results: true
+  - ds005620
+  - ds004504
+  # PEARL-Neuro (EEG + fMRI; rest eyes-open/eyes-closed + MSIT + Sternberg)
+  - ds004796
+  # Bitbrain Open Access Sleep (BOAS): PSG + wearable headband, with sleep stages in events.tsv
+  - ds005555
+  # ANPHY sleep dataset (local non-BIDS source with per-subject stage annotation text files)
+  - ANPHY
+  # Healthy Brain Network EEG (HBN-EEG): large multi-task pediatric EEG corpus (many releases)
+  - ds005505
+paths:
+  # Primary location for downloaded BIDS datasets (moved to long-term storage).
+  received_dir: "G:/Science_Datasets_longtime_storage"
+  # Optional fallback(s) if the primary path is missing or incomplete.
+  # This lets summarize/features keep working even if you migrate disks.
+  received_dir_fallbacks:
+    - "E:/Science_Datasets/openneuro/received"
+  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  # Optional per-dataset overrides when a source does not live under
+  # <received_dir>/<dataset_id>. Used by mndm.bids_index.resolve_dataset_root().
+  dataset_received_dirs:
+    ANPHY: "E:/Science_Datasets/ANPHY"
+download:
+  include_patterns:
+    - "**/eeg/**"
+    - "**/sub-*/eeg/**"
+    - "**/ieeg/**"
+    - "**/sub-*/ieeg/**"
+    - "**/*.set"
+    - "**/*.fdt"
+    - "**/*.bdf"
+    # BrainVision (EEG/iEEG)
+    - "**/*.vhdr"
+    - "**/*.vmrk"
+    - "**/*.eeg"
+    - "**/func/*_bold.nii*"
+    - "**/func/*_bold.json"
+    - "**/func/*_events.tsv"
+    # Participant / phenotype metadata (best-effort; missing patterns are auto-removed per dataset)
+    - "**/participants.tsv"
+    - "**/participants.json"
+  retries: 3
+  datasets:
+    ds005114:
+      include_patterns:
+        - "**/eeg/**"
+    ds000228:
+      include_patterns:
+        - "**/func/*_bold.nii*"
+        - "**/func/*_bold.json"
+        - "**/func/*_events.tsv"
+    ds005917:
+      # NIMH Ketamine Mechanism of Action Study (fMRI rest, multi-session).
+      # Keep download tight: anat T1w + resting BOLD + physio (when present) + phenotype.
+      include_patterns:
+        - "**/anat/*_T1w.nii*"
+        - "**/anat/*_T1w.json"
+        - "**/func/*_bold.nii*"
+        - "**/func/*_bold.json"
+        - "**/func/*_events.tsv"
+        - "**/func/*_physio.tsv*"
+        - "**/func/*_physio.json"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+        - "**/*_sessions.tsv"
+        - "**/*_sessions.json"
+    # Common fMRI minimal download set (anat + func + basic sidecars)
+    ds003171:
+      include_patterns: &dl_fmri_anat_func_min
+        - "**/anat/*_T1w.nii*"
+        - "**/anat/*_T1w.json"
+        - "**/func/*_bold.nii*"
+        - "**/func/*_bold.json"
+        - "**/func/*_events.tsv"
+    ds006623:
+      include_patterns: *dl_fmri_anat_func_min
+    ds003212:
+      include_patterns: *dl_fmri_anat_func_min
+    ds005620:
+      include_patterns:
+        - "**/eeg/**"
+        - "**/*.vhdr"
+        - "**/*.vmrk"
+        - "**/*.eeg"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+    ds004511:
+      # Deception dataset (TruScan 128 EEG + physio). EEG is typically BrainVision.
+      include_patterns:
+        - "**/eeg/**"
+        - "**/*.vhdr"
+        - "**/*.vmrk"
+        - "**/*.eeg"
+        - "**/*.edf"
+        - "**/*_eeg.json"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+        # Physiological sidecars (best-effort; may be absent for some recordings)
+        - "**/*_physio.tsv*"
+        - "**/*_physio.json"
+        - "**/participants.tsv"
+        - "**/participants.json"
+    ds003029:
+      # Epilepsy iEEG multicenter dataset:
+      # - intracranial recordings live under /ieeg/
+      # - BrainVision triplets (.vhdr/.eeg/.vmrk) + BIDS sidecars
+      include_patterns:
+        - "**/ieeg/**"
+        - "**/*.vhdr"
+        - "**/*.vmrk"
+        - "**/*.eeg"
+        - "**/*_ieeg.json"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/sourcedata/**"
+    ds003947:
+      # Neuromag-style datasets commonly store EEG inside MEG FIF files under /meg.
+      include_patterns:
+        - "**/meg/**"
+        - "**/*.fif"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+    ds003944:
+      # Resting EEG (Healthy vs FEP) acquired on Elekta Neuromag Vectorview.
+      # Data is commonly stored as FIF under /meg (EEG channels embedded in FIF).
+      include_patterns:
+        - "**/meg/**"
+        - "**/*.fif"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+    ds005555:
+      # BOAS sleep dataset: EDF recordings live under /eeg with per-recording events + channels.
+      # Keep download tight: EEG folder + participants.
+      include_patterns:
+        - "**/eeg/**"
+        - "**/participants.tsv"
+        - "**/participants.json"
+    ds005505:
+      # HBN-EEG: keep download EEG-only + metadata/phenotype (huge dataset; avoid pulling unrelated content).
+      # We include common BIDS-EEG formats (EDF/BDF/BrainVision/EEGLAB) because releases may vary.
+      include_patterns:
+        - "**/eeg/**"
+        - "**/*.edf"
+        - "**/*.bdf"
+        - "**/*.vhdr"
+        - "**/*.vmrk"
+        - "**/*.eeg"
+        - "**/*.set"
+        - "**/*.fdt"
+        - "**/*_eeg.json"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+        - "**/*_events.json"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+    ds003059:
+      # LSD fMRI: include BOLD, sidecars, and participant metadata.
+      include_patterns:
+        - "**/func/*_bold.nii*"
+        - "**/func/*_bold.json"
+        - "**/func/*_events.tsv"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+    ds004796:
+      # PEARL-Neuro (EEG + fMRI): BrainVision EEG + fMRI tasks/rest.
+      # Keep download tight: EEG folder/sidecars + fMRI bold + basic participant metadata.
+      include_patterns:
+        - "**/eeg/**"
+        - "**/*.vhdr"
+        - "**/*.vmrk"
+        - "**/*.eeg"
+        - "**/*.edf"
+        - "**/*_eeg.json"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+        - "**/anat/*_T1w.nii*"
+        - "**/anat/*_T1w.json"
+        - "**/func/*_bold.nii*"
+        - "**/func/*_bold.json"
+        - "**/func/*_events.tsv"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+    ds004100:
+      # HUP iEEG dataset (BIDS iEEG). Keep download tight: ieeg folder + core BIDS sidecars
+      # plus electrode localization sidecars.
+      include_patterns:
+        - "**/ieeg/**"
+        - "**/*.edf"
+        - "**/*.vhdr"
+        - "**/*.vmrk"
+        - "**/*.eeg"
+        - "**/*_ieeg.json"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+        - "**/*_electrodes.tsv"
+        - "**/*_coordsystem.json"
+        - "**/participants.tsv"
+        - "**/participants.json"
+    ds003478:
+      # Resting EEG: include EEG directory plus participant metadata.
+      include_patterns:
+        - "**/eeg/**"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+    ds002748:
+      # Resting-state fMRI: include BOLD plus participant metadata.
+      include_patterns:
+        - "**/func/*_bold.nii*"
+        - "**/func/*_bold.json"
+        - "**/func/*_events.tsv"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+ndt_ingest:
+  ingest_version: "1.2"
+  modalities:
+    eeg:
+      enabled: true
+      datasets:
+        ds005555:
+          # BOAS sleep: all-night recordings are extremely long; disable heavy
+          # advanced EEG modules by default. (Core per-epoch PSD/entropy still run.)
+          synchrony: {enabled: false}
+          complexity: {enabled: false}
+          dynamic_fc: {enabled: false}
+          graph_metrics: {enabled: false}
+        ANPHY:
+          # ANPHY all-night HD-EEG: keep default run compute-light.
+          synchrony: {enabled: false}
+          complexity: {enabled: false}
+          dynamic_fc: {enabled: false}
+          graph_metrics: {enabled: false}
+        ds005505:
+          # HBN-EEG: extremely large cohort. Start compute-light by default to keep
+          # feature extraction feasible; you can re-enable per-module later.
+          synchrony: {enabled: false}
+          complexity: {enabled: false}
+          dynamic_fc: {enabled: false}
+          graph_metrics: {enabled: false}
+      synchrony:
+        enabled: true
+        windows: {length_sec: 2.0, step_sec: 0.25}
+        bands:
+          - {name: delta, f_low: 1.0, f_high: 4.0}
+          - {name: theta, f_low: 4.0, f_high: 8.0}
+          - {name: alpha, f_low: 8.0, f_high: 12.0}
+          - {name: beta,  f_low: 13.0, f_high: 30.0}
+          - {name: gamma, f_low: 30.0, f_high: 45.0}
+        roi_pairs:
+          - {name: FP, channels: ["F3", "P3"]}
+          - {name: FB, channels: ["Fz", "POz"]}
+          - {name: LR_occipital, channels: ["O1", "O2"]}
+        metrics:
+          coherence: true
+          plv: true
+          ppc: true
+          pli: true
+          wpli: false
+          dpli: false
+        outputs:
+          summary_stats: ["mean", "std"]
+      complexity:
+        enabled: true
+        windows: {length_sec: 5.0, step_sec: 1.0}
+        metrics:
+          sample_entropy: true
+          permutation_entropy: true
+          lz_complexity: true
+          multiscale_entropy: true
+          higuchi_fd: true
+        summary_stats: ["mean", "std"]
+        mse_scales: 5
+      dynamic_fc:
+        enabled: true
+        window_length_sec: 4.0
+        step_sec: 0.5
+        summary: {variance: true, entropy: true, std: false}
+        retain_matrices: false
+      graph_metrics:
+        enabled: true
+        thresholding: {method: "proportional", density: 0.15}
+        metrics:
+          global_efficiency: true
+          modularity: true
+          participation_coeff: true
+          avg_path_length: true
+          hubness_degree: false
+    fmri:
+      enabled: true
+      static_connectivity:
+        enabled: true
+        FC_pearson: true
+        ReHo: true
+        ALFF: true
+        fALFF: true
+        reho_k: 5
+        alff_band: [0.01, 0.08]
+      dynamic_connectivity:
+        enabled: true
+        window_length_sec: 30.0
+        step_sec: 5.0
+        summary: {variance: true, entropy: true, std: false}
+        retain_matrices: true
+      datasets:
+        # Per-dataset overrides (use anchors when multiple datasets share a policy).
+        ds006623: &ndt_fmri_dfc_high_tr
+          # Higher temporal resolution (TR=0.8s): tighten dFC window/step
+          # while retaining matrices for graph metrics.
+          window_length_sec: 20.0
+          step_sec: 4.0
+      graph_metrics:
+        enabled: true
+        thresholding: {method: "proportional", density: 0.15}
+        metrics:
+          global_efficiency: true
+          modularity: true
+          participation_coeff: true
+          avg_path_length: true
+          hubness_degree: false
+      phase_synchrony:
+        enabled: true
+        bandpass_hz: {f_low: 0.01, f_high: 0.1}
+        regional_sets:
+          - {name: DMN, rois_from_network: "DMN"}
+          - {name: FPN, rois_from_network: "FPN"}
+          - {name: VIS, rois_from_network: "VIS"}
+          - {name: SAL, rois_from_network: "SAL"}
+      spectral_fractal:
+        enabled: true
+        spectral_entropy: true
+        power_law_exponent: true
+        dfa_alpha: true
+        ple_band: [0.01, 0.1]
+  mnps_mapping:
+    version: "1.2"
+    normalize: "robust_z"
+    m_axis:
+      combine_method: "weighted_sum"
+      weights:
+        eeg_graph_global_efficiency: 0.2
+        eeg_sync_alpha_FP_plv_mean: 0.15
+        eeg_sync_alpha_FB_coh_mean: 0.15
+        fmri_global_FC_mean: 0.25
+        fmri_kuramoto_global_mean: 0.15
+        fmri_variance_global: 0.1
+    d_axis:
+      combine_method: "weighted_sum"
+      weights:
+        eeg_dfc_variance: 0.25
+        eeg_sync_alpha_FP_plv_std: 0.15
+        eeg_sync_alpha_FB_coh_std: 0.1
+        fmri_dFC_variance: 0.25
+        fmri_kuramoto_global_std: 0.15
+        fmri_graph_modularity: 0.1
+    e_axis:
+      combine_method: "weighted_sum"
+      weights:
+        eeg_complexity_sample_entropy_mean: 0.2
+        eeg_complexity_higuchi_fd_mean: 0.15
+        eeg_complexity_multiscale_entropy_mean: 0.15
+        fmri_spectral_entropy_global: 0.2
+        fmri_signal_power: 0.15
+        fmri_variance_global: 0.15
+preprocess:
+  sfreq: 250
+  notch_hz: 50
+  eeg_bandpass: [1, 45]
+  reref: "average"
+  gpu: false
+  eeglab:
+    # Off by default. Enable per-dataset when .set files are epoched and should
+    # be flattened to a continuous surrogate for feature extraction.
+    allow_epoched_set: false
+    datasets:
+      Sedation-RestingState:
+        allow_epoched_set: true
+  # Dataset-specific channel typing rules (used to help MNE infer channel types
+  # for non-standard channel name conventions; affects pick_types(eeg/eog/emg)).
+  #
+  # Rules are applied in order; the first matching rule for a given channel wins.
+  channel_typing:
+    enabled: true
+    # Optional policy library for dataset-specific channel typing.
+    # Supported files:
+    # - mndm/config/channel_typing/<dataset_id>_channel_typing.yml
+    # - mndm/config/channel_typing/datasets.yml
+    policy_dir: "mndm/config/channel_typing"
+    datasets: {}
+  fmri:
+    # Global defaults for fMRI preprocessing. These can be overridden per dataset
+    # under preprocess.fmri.datasets.<dataset_id> if needed.
+    #
+    # IMPORTANT: You must point atlas_path to an existing parcellation NIfTI
+    # in the same space as ds000228 (e.g. MNI152 2mm Schaefer or Glasser).
+    # Example (adapt this to your local setup):
+    #   atlas_path: "E:/Science_Datasets/atlases/Schaefer2018_200Parcels_7Networks_MNI152_2mm.nii.gz"
+    atlas_path: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
+    # Optional TSV with ROI labels; leave null if not available.
+    # Example:
+    #   atlas_labels: "E:/Science_Datasets/atlases/Schaefer2018_200Parcels_7Networks_labels.tsv"
+    atlas_labels: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order.tsv"
+    # Recommended bandpass for task/rest fMRI (Hz)
+    bandpass: [0.01, 0.1]
+    datasets:
+      ds000228:
+        # Dataset-specific overrides for Pixar “Partly Cloudy” (TR≈2s).
+        # Keep atlas_path/labels the same unless you maintain a separate atlas
+        # just for this dataset.
+        bandpass: &fmri_bandpass_default [0.01, 0.1]
+        # Allow resampling the MNI atlas to the native BOLD grid for ds000228.
+        # This assumes that the atlas and BOLD are in the same anatomical
+        # space but different voxel resolutions.
+        resample_atlas_to_bold: true
+      ds005917:
+        # Ketamine MOA (ds005917): BOLD runs are often stored on a 64×64×45 grid
+        # (different from the 91×109×91 MNI atlas voxel grid). Resample the atlas
+        # to each BOLD grid before parcellation.
+        resample_atlas_to_bold: true
+      ds004796:
+        # PEARL-Neuro: treat as standard rs/task fMRI; allow atlas resampling to match BOLD grid.
+        bandpass: *fmri_bandpass_default
+        resample_atlas_to_bold: true
+      ds003171:
+        # Propofol anesthesia (Western) dataset. Use slightly narrower bandpass
+        # per published preprocessing (0.008–0.09 Hz) and always resample atlas.
+        bandpass: &fmri_bandpass_anesthesia [0.008, 0.09]
+        resample_atlas_to_bold: true
+      ds006623:
+        # Michigan propofol anesthesia dataset; reuse anesthesia defaults.
+        bandpass: *fmri_bandpass_anesthesia
+        resample_atlas_to_bold: true
+      ds003212:
+        # Consciousness fluctuation dataset (optional anesthesia baseline).
+        bandpass: *fmri_bandpass_anesthesia
+        resample_atlas_to_bold: true
+      ds003059:
+        # LSD dataset: published preprocessing commonly uses 0.01–0.08 Hz.
+        bandpass: &fmri_bandpass_rs_common [0.01, 0.08]
+        resample_atlas_to_bold: true
+      ds002748:
+        # Depression rs-fMRI dataset: keep bandpass consistent with common rs-fMRI practice.
+        bandpass: *fmri_bandpass_rs_common
+        resample_atlas_to_bold: true
+  artifacts:
+    method: "none"         # "none" | "eog_reg" | "ica"
+    ica_n_components: 20
+    ica_method: "fastica"
+    # Optional per-dataset overrides
+    datasets:
+      ds003490:
+        method: "eog_reg"
+      ds005114:
+        method: "eog_reg"
+      ds005620:
+        method: "eog_reg"
+  crop:
+    start_sec: 10
+    stop_sec: 360
+    datasets:
+      ds005555:
+        # Sleep recordings can be many hours; do not truncate by default crop.
+        start_sec: 0
+        stop_sec: null
+  event_crop:
+    enabled: false
+    onset_column: "onset"
+    duration_column: "duration"
+    match_column: "trial_type"
+    include_regex: null
+    exclude_regex: null
+    start_offset: 0.0
+    stop_offset: 0.0
+    min_duration: 60.0
+    suffix_candidates: ["_events.tsv"]
+    datasets:
+      # Dataset-level overrides (future-proofing): define anchors here to reuse
+      # cropping policies across similar paradigms.
+      ds005114: &event_crop_dpx_policy
+        enabled: true
+        exclude_regex: "(?i)(Practice|boundary|STATUS)"
+        match_column: "trial_type"
+        start_offset: -5.0
+        stop_offset: 10.0
+        min_duration: 120.0
+epoching:
+  length_s: 8.0
+  step_s: 4.0
+  # Optional per-dataset overrides (used by EEG feature extractor when present)
+  datasets:
+    ds005555:
+      # Sleep staging uses 30 s epochs (AASM). Align feature windows to scoring epochs.
+      length_s: 30.0
+      step_s: 30.0
+      # Stage-stratified sampling for long all-night recordings:
+      # select a small, balanced subset of contiguous blocks per stage before
+      # computing EEG epochs/PSD. This preserves Wake/NREM/REM coverage while
+      # reducing compute dramatically.
+      sampling:
+        enabled: true
+        method: "stage_stratified_blocks"
+        # Prefer human staging if present; otherwise fall back to AI staging.
+        stage_columns: ["stage_hum", "stage_ai", "stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+        # Target minutes per stage (per recording file). Tune as needed.
+        target_minutes:
+          Wake: 20
+          N2: 20
+          N3: 20
+          REM: 20
+        # Extract contiguous blocks (better for dynamical summaries than scattered epochs).
+        block_minutes: 5
+        # Deterministic selection for reproducibility.
+        seed: 42
+    ANPHY:
+      # ANPHY sleep staging is scored in 30 s epochs.
+      length_s: 30.0
+      step_s: 30.0
+      # Optional compute reduction for all-night recordings.
+      sampling:
+        enabled: true
+        method: "stage_stratified_blocks"
+        # ANPHY text annotations are used when no BIDS events TSV is available.
+        stage_columns: ["stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+        target_minutes:
+          Wake: 20
+          N2: 20
+          N3: 20
+          REM: 20
+        block_minutes: 5
+        seed: 42
+# Optional stage annotation sidecars for non-BIDS sleep datasets.
+sleep_annotations:
+  enabled: false
+  # Search current raw-file directory and parent directory by default.
+  search_parent_levels: 1
+  file_globs: ["*.txt", "*.ann"]
+  stage_map:
+    W: 0
+    Wake: 0
+    N1: 1
+    N2: 2
+    N3: 3
+    REM: 4
+    R: 4
+    L: -1
+  datasets:
+    ANPHY:
+      enabled: true
+      search_parent_levels: 1
+      file_globs: ["*.txt", "*.ann"]
+      stage_map:
+        W: 0
+        N1: 1
+        N2: 2
+        N3: 3
+        REM: 4
+        R: 4
+        L: -1
+features:
+  eeg_psd:
+    method: "multitaper"   # "multitaper" | "welch"
+    bandwidth: null
+  eeg_bands: {delta: [1,4], theta: [4,8], alpha: [8,12], beta: [13,30], gamma: [30,45]}
+  ratios: {alpha_theta: ["alpha","theta"], beta_alpha: ["beta","alpha"]}
+  fmri:
+    # Default windowing for fMRI feature extraction (can be overridden per dataset)
+    window_sec: 30.0
+    step_sec: 15.0
+    datasets:
+      ds000228:
+        # Long-run fMRI feature windows for ds000228 (Pixar movie):
+        # 12 s windows with 6 s step. MNPS grid itself remains at
+        # 8 s window / 50% overlap (see mnps.window_sec/overlap).
+        window_sec: &fmri_feature_window_12_6 12.0
+        step_sec: &fmri_feature_step_12_6 6.0
+      ds006623:
+        # Exploit 0.8 s TR: shorter feature windows for better temporal
+        # resolution while retaining overlap.
+        window_sec: *fmri_feature_window_12_6
+        step_sec: *fmri_feature_step_12_6
+      ds003171:
+        # Sedation levels are quasi-stationary over multi-minute blocks; use
+        # 20 s windows (10 s step) to balance temporal resolution and SNR.
+        window_sec: &fmri_feature_window_20_10 20.0
+        step_sec: &fmri_feature_step_20_10 10.0
+      ds003212:
+        window_sec: *fmri_feature_window_20_10
+        step_sec: *fmri_feature_step_20_10
+mnps_projection:
+  normalize: "robust_z"    # "robust_z" | "z" | null
+  weights:
+    m:
+      eeg_theta: 0.35
+      eeg_delta: 0.25
+      eeg_alpha: 0.20
+      eeg_beta: 0.20
+      # fMRI: combine global entropy (negative sign) and LF-power as a mobility proxy
+      fmri_entropy_global: -0.40
+      fmri_lf_power: 0.60
+    d:
+      eeg_sample_entropy: 0.40
+      eeg_beta_alpha: 0.30
+      eeg_gamma: 0.30
+      # fMRI: functional connectivity modularity as metastability deviation proxy
+      fmri_modularity: 1.0
+    e:
+      eeg_alpha: 0.40
+      eeg_beta: 0.30
+      eeg_alpha_theta: 0.30
+      # fMRI: entropy-like energy proxy
+      fmri_entropy_global: 1.0
+mnps_v2:
+  enabled: true
+  jacobian:
+    enabled: true
+  # Optional: derive higher-level summaries from the 9D Stratified Jacobian (jacobian_v2)
+  # without constraining the grouping to the default m/d/e prefix split.
+  #
+  # - block_jacobians: define arbitrary groups over the 9 subcoordinates and compute
+  #   ordered block summaries between groups (Frobenius; and if square blocks: trace/aniso).
+  # - save_cross_partials: save selected Jacobian elements J_{out,in}(t) as time series.
+  #
+  # Notes:
+  # - Group definitions reference canonical subcoordinate names:
+  #     [m_a, m_e, m_o, d_n, d_l, d_s, e_e, e_s, e_m]
+  # - Cross-coupling norms (c_sym_mean/c_rot_mean) are only defined when the two groups
+  #   have the same dimensionality (so J_out_in and J_in_out^T can be combined).
+  block_jacobians:
+    enabled: false
+    # Optional: use a named preset to avoid ad-hoc grouping across datasets.
+    # Presets (v1):
+    # - mde_families_v1: groups {m,d,e}, pairs="all" (incl self), include_sym_rot=true
+    # - mde_diag_v1: only self blocks (m->m, d->d, e->e)
+    # - mde_offdiag_v1: cross-family only (no self blocks)
+    # preset: "mde_families_v1"
+    include_self: true
+    include_sym_rot: true
+    pairs: "all"   # "all" or list of [out_group, in_group]
+    groups:
+      m: [m_a, m_e, m_o]
+      d: [d_n, d_l, d_s]
+      e: [e_e, e_s, e_m]
+    csv_output: "stratified_block_jacobians_subjects.csv"
+  save_cross_partials:
+    enabled: false
+    # Policy recommendation (Churchland-proofing):
+    # - Use a fixed, theory-driven *core* preset (dataset-agnostic)
+    # - Add explicit dataset-specific extras (hypothesis-driven) with a rationale
+    #
+    # Presets (v1):
+    # - ndt_core_v1: minimal NDT core cross-mechanism pairs (dataset-agnostic)
+    # - ndt_core_plus_diag_v1: ndt_core_v1 + all 9 self-couplings (diag)
+    # - ndt_core_plus_intra3x3_v1: ndt_core_v1 + full intra-family 3×3 blocks (27 pairs)
+    #
+    # Back-compat: if 'pairs' is provided explicitly as a non-empty list, it takes precedence.
+    # preset: "ndt_core_plus_diag_v1"
+    extra_pairs: []
+    rationale: null
+    # Each pair is [out_coord, in_coord] corresponding to J_{out,in}.
+    pairs:
+      - [m_a, d_l]
+      - [m_o, e_s]
+  subcoords: &mnps_v2_default_subcoords
+    m_a: {eeg_theta: 1.0, eog_blink_rate: -0.2}
+    m_e: {eeg_beta: 0.5, eeg_alpha: -0.5}
+    m_o: {eeg_sample_entropy: 0.7, eeg_beta_alpha: 0.3}
+    d_n: {eeg_beta_alpha: 1.0}
+    d_l: {eeg_alpha_theta: 1.0}
+    d_s: {eeg_gamma: 1.0}
+    e_e: {eeg_sample_entropy: 1.0}
+    e_s: {eda_phasic_energy: 1.0}
+    e_m: {ecg_rmssd: 1.0}
+  # Optional policy library for dataset-specific Stratified MNPS settings.
+  # Supported files:
+  # - mndm/config/mnps_v2/<dataset_id>_mnps_v2.yml
+  # - mndm/config/mnps_v2/datasets.yml
+  policy_dir: "mndm/config/mnps_v2"
+  datasets: {}
+mnps_extensions:
+  e_kappa:
+    enabled: true
+    # Feature columns for constructing E(t); whichever exist per dataset are used.
+    features: ["eeg_delta", "eeg_theta", "eeg_alpha", "eeg_beta", "eeg_gamma"]
+    weights: null  # if null, weights are uniform over available features
+    fmri:
+      enabled: true
+      regional: true
+      min_regions: 3
+  rfm:
+    enabled: true
+    source: "auto"   # "auto" | "eeg" | "fmri"
+    band: null         # e.g. [8, 12] for alpha when using raw EEG
+    window_sec: 32.0   # RFM window in seconds on the MNPS time axis
+    step_sec: 16.0     # RFM step in seconds
+    n_modes: 3
+    fmri_window_sec: 60.0
+    fmri_step_sec: 30.0
+    datasets:
+      ds006623: &mnps_rfm_fmri_high_tr
+        # Higher temporal resolution fMRI: tighter RFM windows for PLV
+        fmri_window_sec: 30.0
+        fmri_step_sec: 15.0
+  o_koh:
+    enabled: true
+    # Thresholds for FC graph filtration; if null, percentiles 10–90 of |C_ij| are used.
+    thresholds: null
+    band: "alpha"      # EEG band feature to use for FC (e.g. eeg_alpha__g_<group>)
+    fmri:
+      enabled: true
+      thresholds: null
+  tig:
+    enabled: true
+    max_lag_sec: 60.0
+    n_lags: 20
+    variant: "autocorr"  # currently only autocorr-based TIG is implemented
+    fmri:
+      global: true
+      regional: true
+      max_lag_sec: 120.0
+mnps:
+  fs_out: 4.0
+  window_sec: 8.0
+  overlap: 0.5
+  derivative: {method: "sav_gol", window: 7, polyorder: 3}
+  knn: {k: 20, metric: "euclidean"}
+  ridge: {alpha: 1.0, cv_folds: 5, distance_weighted: true}
+  whiten: true
+  super_window: 3
+  embodied: {enabled: false, channels: []}
+  surrogates: {enabled: true, n_phase: 20, n_shuffle: 20, seed: 123}
+  reliability: {enabled: false, min_sessions: 2}
+  # Stage codebook used for /labels/stage when present.
+  # Some datasets (e.g., BOAS sleep ds005555) use additional numeric codes:
+  #   8 = PSG disconnection, -2 = artifacts/missing (AI).
+  stage_codebook: {W: 0, Wake: 0, N1: 1, N2: 2, N3: 3, REM: 4, R: 4, L: -1, Disconnection: 8, Artifact: -2}
+
+# -----------------------------------------------------------------------------
+# Regional MNPS/MNJ configuration (NDT v1.2)
+# Computes per-network MNPS trajectories and Jacobians for fMRI data.
+# Each (subject, condition, task, network) segment produces separate metrics.
+# -----------------------------------------------------------------------------
+regional_mnps:
+  enabled: true
+  # Segment data by condition and task for separate MNPS/MNJ computation
+  segment_by_condition: true
+  segment_by_task: true
+  # Minimum segment length in TRs (segments shorter than this are dropped)
+  min_segment_length_tr: 40
+  datasets:
+    ds006623:
+      # Higher TR dataset: require longer segments for more stable Jacobians
+      min_segment_length_tr: 80
+
+  # Networks to compute regional MNPS for (must match atlas label patterns)
+  networks: [DMN, FPN, SAL, SMN, VIS, DAN, VAN, LIM]
+
+  # MNPS projection parameters for regional time series
+  mnps:
+    manifold_dim: 3
+    # Use same derivative/knn/ridge settings as global MNPS by default
+    use_global_params: true
+    # Override specific params if needed:
+    # derivative: {method: "sav_gol", window: 5, polyorder: 2}
+    # knn: {k: 10, metric: "euclidean"}
+
+  # Jacobian estimation for regional MNPS
+  jacobian:
+    enabled: true
+    super_window: 3
+    ridge_alpha: 1.0
+    distance_weighted: true
+
+  # Summary metrics to compute per segment
+  summary_metrics:
+    mnps:
+      - mean
+      - std
+      - range
+    jacobian:
+      - trace_mean
+      - trace_std
+      - frobenius_mean
+      - rotation_norm_mean
+      - anisotropy_mean
+
+  # Output CSV path (relative to processed dataset directory)
+  csv_output: "regional_mnps_subjects.csv"
+  # Optional: stratified MNPS metrics derived from linear combinations of (m,d,e).
+  # These are appended as columns prefixed with "strat_" (e.g., strat_m_mean).
+  stratified:
+    enabled: true
+    subcoords: *mnps_v2_default_subcoords
+
+robustness:
+  summary: "median"
+  trim_pct: 0.2
+  # Confidence interval strategy for robust summaries.
+  #
+  # - ci_method:
+  #     - "orderstat": fast SciPy-free CI for the median via order-statistics
+  #     - "normal":    fast CI for mean (when summary="mean" and trim_pct=0)
+  #     - "bootstrap": slower, but more general
+  #     - "auto":      choose a fast method when available
+  #
+  # For large datasets, "orderstat" avoids expensive median bootstrapping.
+  ci_method: "orderstat"
+  ci_level: 0.95
+  # Keep bootstrap available for experiments, but default to 0 to avoid
+  # O(bootstrap_n * n_epochs) costs during summarize.
+  bootstrap_n: 0
+  seed: 42
+  # Coverage thresholds for MNPS summarization. For ds000228 (Pixar movie)
+  # each subject has ~20 MNPS epochs (~80s at dt=4s), so we lower
+  # min_seconds to avoid skipping all subjects while still keeping a
+  # reasonable floor for EEG datasets.
+  coverage:
+    min_seconds: 60
+    min_epochs: 20
+    min_trials: 30
+    # Dataset-specific overrides. These allow relaxing coverage
+    # thresholds for particular EEG datasets without changing the
+    # global defaults.
+    datasets:
+      ds004504:
+        min_seconds: 30
+        min_epochs: 10
+      ANPHY:
+        min_seconds: 30
+        min_epochs: 10
+  transients: {z_thresh: 3.0, pad_epochs: 1}
+  ensembles:
+    enabled: true
+    # Minimum number of channels from a group that must be present in the data
+    # for the group to be considered valid for that recording.
+    min_channels: 3
+    # Default overlapping 10–20 style channel groups. These act as a generic
+    # fallback if no dataset-specific overrides are provided.
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2"]
+    # Optional per-dataset overrides; if present, they are merged with/override
+    # the default groups above.
+    datasets:
+      ds003490:
+        groups:
+          frontal: ["Fp1", "Fp2", "F3", "F4", "Fz"]
+          central: ["FC1", "FC2", "C3", "Cz", "C4"]
+          parietal_occipital: ["P3", "P4", "Pz", "O1", "O2"]
+      ds005114:
+        groups:
+          frontal: ["Fp1", "Fp2", "F3", "F4", "Fz"]
+          central: ["FC1", "FC2", "C3", "Cz", "C4"]
+          parietal_occipital: ["P3", "P4", "Pz", "O1", "O2"]
+  multiverse:
+    psd:
+      enabled: true
+      primary_method: "multitaper"   # for documentation; actual primary comes from features.eeg_psd.method
+      secondary_method: "welch"
+
+# Event → MNPS mapping (opt-in; fMRI-friendly)
+event_mapping:
+  enabled: false
+  tolerance_sec: null   # if null, falls back to ~dt/2 on MNPS axis
+  datasets:
+    # ds006623:
+    #   enabled: true
+    #   tolerance_sec: 2.0
+
+# -----------------------------------------------------------------------------
+# Metadata extraction rules (generic + per-dataset overrides)
+# -----------------------------------------------------------------------------
+metadata_extraction:
+  # Optional directory containing per-dataset condition/task policy YAMLs.
+  # If present, files like:
+  #   mndm/config/condition_task_setup/ds005505_conditions_task_setup.yml
+  # can override/extend the inline rules below (useful to standardize mappings).
+  policy_dir: "mndm/config/condition_task_setup"
+  default:
+    group:
+      candidates: ["Group", "Diagnosis", "group", "diagnosis", "Cohort", "cohort"]
+      normalize:
+        pd: "Parkinson"
+        parkinson: "Parkinson"
+        ctl: "Control"
+        control: "Control"
+        hc: "Healthy"
+        healthy: "Healthy"
+        ad: "AD"
+        alzheimer: "AD"
+    condition:
+      # Try session-specific keys first, then generic candidates
+      session_candidates:
+        ses-01: ["sess1_Med", "sess1_Status"]
+        ses-02: ["sess2_Med", "sess2_Status"]
+      candidates: ["condition", "Condition", "Medication", "Med", "Status"]
+      normalize:
+        on: "ON"
+        off: "OFF"
+    task:
+      candidates: ["task", "Task"]
+  # Dataset overrides moved to policy library for auditability.
+  # Supported files:
+  # - mndm/config/condition_task_setup/<dataset_id>_conditions_task_setup.yml
+  # - mndm/config/condition_task_setup/datasets.yml
+  datasets: {}
+
+# -----------------------------------------------------------------------------
+# Extended study configuration (for multi-study/task EEG workflows)
+# Per feedback in config_add.md: prefer using studies + default_study.
+# Existing top-level keys are kept for backward compatibility with current code.
+# -----------------------------------------------------------------------------
+
+default_study: ad_healthy
+
+# Recommended global defaults used if keys are missing inside a study
+bootstrap: { n_resamples: 10000, ci_level: 0.95, random_seed: 42 }
+corner_thresholds: { method: "percentile", low_p: 40.0, high_p: 60.0, z_lo: -0.5, z_hi: 0.5 }
+density: { grid_size: 32, sigma: 0.1, bounds: [[0.0,1.0],[0.0,1.0],[0.0,1.0]] }
+quality: { min_epochs: 50, min_duration_s: 60.0, min_trials: 1 }
+fdr: { method: "bh", q: 0.05 }
+families:
+  axes: ["R","D","M"]
+  dynamics: ["speed_median","curvature_median","transient_frac","breathing_index"]
+  geometry: ["anisotropy","jaccard_60"]
+
+studies:
+  ad_healthy:
+    label_normalization:
+      ad: "AD"
+      healthy: "Healthy"
+      eyes-closed: "eyes_closed"
+      eyes-open: "eyes_open"
+    cohorts:
+      AD: ["eyes_closed","eyes_open"]
+      Healthy: ["eyes_closed","eyes_open"]
+
+  parkinson_oddball_ds003490:
+    label_normalization:
+      pd: "Parkinson"
+      control: "Control"
+      standard: "oddball_standard"
+      target: "oddball_target"
+      novel: "oddball_novel"
+    cohorts:
+      Parkinson: ["oddball_standard","oddball_target","oddball_novel"]
+      Control:   ["oddball_standard","oddball_target","oddball_novel"]
+    epoching:
+      tmin: -0.2
+      tmax: 0.8
+      baseline: [-0.2, 0.0]
+    condition_min_trials:
+      oddball_standard: 60
+      oddball_target: 40
+      oddball_novel: 20
+    event_mapping:
+      oddball_standard: { trial_type: ["standard","STD"] }
+      oddball_target:   { trial_type: ["target","TGT"] }
+      oddball_novel:    { trial_type: ["novel","NOV"] }
+
+  mtbi_dpx_ds005114:
+    label_normalization:
+      mtbi: "mTBI"
+      control: "Control"
+      ax: "dpx_AX"
+      ay: "dpx_AY"
+      bx: "dpx_BX"
+      by: "dpx_BY"
+    cohorts:
+      mTBI:   ["dpx_AX","dpx_AY","dpx_BX","dpx_BY"]
+      Control: ["dpx_AX","dpx_AY","dpx_BX","dpx_BY"]
+    epoching:
+      tmin: -0.2
+      tmax: 0.8
+      baseline: [-0.2, 0.0]
+    condition_min_trials:
+      dpx_AX: 80
+      dpx_AY: 20
+      dpx_BX: 20
+      dpx_BY: 80
+    event_mapping:
+      dpx_AX: { cue: ["A"], probe: ["X"] }
+      dpx_AY: { cue: ["A"], probe: ["Y"] }
+      dpx_BX: { cue: ["B"], probe: ["X"] }
+      dpx_BY: { cue: ["B"], probe: ["Y"] }
+
+  adhd_rewarded_wm_ds002424:
+    label_normalization:
+      adhd: "ADHD"
+      control: "Control"
+      encoding: "wm_encoding"
+      maintenance: "wm_maintenance"
+      feedback: "wm_feedback"
+    cohorts:
+      ADHD:   ["wm_encoding","wm_maintenance","wm_feedback"]
+      Control: ["wm_encoding","wm_maintenance","wm_feedback"]
+    epoching:
+      tmin: -0.2
+      tmax: 1.0
+      baseline: [-0.2, 0.0]
+    condition_min_trials:
+      wm_encoding: 60
+      wm_maintenance: 60
+      wm_feedback: 60
+    event_mapping:
+      wm_encoding:    { phase: ["encode"] }
+      wm_maintenance: { phase: ["maintain","delay"] }
+      wm_feedback:    { phase: ["feedback","reward","no_reward"] }
+
+  hbn_multitask_ds005512:
+    label_normalization:
+      control: "Control"
+      clinical: "Clinical"
+      gonogo: "gonogo"
+      oddball: "oddball"
+      emotion: "emotion"
+      rest: "rest"
+    cohorts:
+      Control: ["gonogo","oddball","emotion","rest"]
+      Clinical: ["gonogo","oddball","emotion","rest"]
+    epoching:
+      tmin: -0.2
+      tmax: 0.8
+      baseline: [-0.2, 0.0]
+    condition_min_trials:
+      gonogo: 100
+      oddball: 40
+      emotion: 40
+      rest: 1
+    event_mapping:
+      gonogo: { trial_type: ["go","nogo"] }
+      oddball: { trial_type: ["standard","target","novel"] }
+      emotion: { trial_type: ["face","emotion"] }
+      rest:   { task: ["rest"] }

@@ -1,0 +1,42 @@
+schema: mndm.metadata_extraction_policy.v1
+description: >
+  Template for per-dataset task/condition/group extraction policies.
+  These files are loaded by mndm (if metadata_extraction.policy_dir is set)
+  and deep-merged into metadata_extraction.datasets.<dataset_id>.
+  The keys below intentionally mirror mndm's metadata_extraction format.
+
+# dataset_id: dsXXXXXX
+
+# Option A (recommended): put fields at the top-level (mndm will read them directly).
+# Option B: nest under metadata_extraction: { ... } (also supported).
+
+group:
+  # candidates: ["Diagnosis", "group", "type"]
+  # default: "Healthy"
+  # normalize:
+  #   control: "Control"
+  #   adhd: "ADHD"
+
+condition:
+  # Session-aware extraction:
+  # session_map:
+  #   ses-01: "baseline"
+  #
+  # Filename-based extraction:
+  # from_acq: true        # parse acq-<...> from filename
+  # from_filename: true   # (fallback) use task-<...> as condition input
+  # default: null
+  # normalize:
+  #   eyesopen: "eyes_open"
+  #   eyesclosed: "eyes_closed"
+  #   restingstate: "rest"
+  #   despicableme: "movie"
+
+task:
+  # from_filename: true
+  # default: "rest"
+  # compound_conditions: ["eyesopen", "eyesclosed"]  # splits task strings like "resteyesopen"
+  # normalize:
+  #   restingstate: "rest"
+  #   despicableme: "despicable_me"
+  #   surroundsupp: "surround_suppression"

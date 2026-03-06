@@ -1,0 +1,74 @@
+schema: mndm.metadata_extraction_policy.v1
+dataset_id: ds005505
+description: >
+  HBN-EEG Release 1. Standardize BIDS task labels into stable snake_case task names,
+  and derive a coarse condition label from the task when no acq-* is present.
+
+group:
+  # NOTE: Release 1 does not ship an explicit ADHD diagnosis/control label in
+  # participants.tsv. The rules below create a *proxy* grouping from the
+  # dimensional "attention" factor (see participants.json). Treat as heuristic.
+  #
+  # Recommended usage:
+  # - ADHD_proxy / Control_proxy: use for exploratory contrasts (extremes only)
+  # - HBN_unlabeled: exclude from binary analyses if you want clean bins
+  numeric_rules:
+    - column: attention
+      op: ">="
+      value: 1.0
+      label: "ADHD_proxy"
+    - column: attention
+      op: "<="
+      value: -1.0
+      label: "Control_proxy"
+  default: "HBN_unlabeled"
+
+condition:
+  # Prefer acq- when present (e.g. acq-eyesopen/eyesclosed); otherwise derive
+  # a coarse condition from the BIDS task label.
+  from_acq: true
+  from_filename: true
+  default: null
+  normalize:
+    eyesopen: "eyes_open"
+    eyesclosed: "eyes_closed"
+    eo: "eyes_open"
+    ec: "eyes_closed"
+    open: "eyes_open"
+    closed: "eyes_closed"
+
+    # Task-derived coarse conditions (when acq-* is absent)
+    restingstate: "rest"
+    surroundsupp: "surround_suppression"
+    surroundsuppression: "surround_suppression"
+    contrastchangedetection: "contrast_change"
+    contrastchangedetection: "contrast_change"
+    contrastchange: "contrast_change"
+    seqlearning6target: "sequence_learning"
+    seqlearning8target: "sequence_learning"
+    symbolsearch: "symbol_search"
+
+    # Movies → single coarse condition
+    despicableme: "movie"
+    diaryofawimpykid: "movie"
+    funwithfractals: "movie"
+    thepresent: "movie"
+
+task:
+  from_filename: true
+  normalize:
+    restingstate: "rest"
+    surroundsupp: "surround_suppression"
+    surroundsuppression: "surround_suppression"
+    contrastchangedetection: "contrast_change"
+    contrastchangedetection: "contrast_change"
+    contrastchange: "contrast_change"
+    seqlearning6target: "seq_learning_6target"
+    seqlearning8target: "seq_learning_8target"
+    symbolsearch: "symbol_search"
+
+    # Movies: keep movie identity in task, but normalized
+    despicableme: "despicable_me"
+    diaryofawimpykid: "diary_of_a_wimpy_kid"
+    funwithfractals: "fun_with_fractals"
+    thepresent: "the_present"

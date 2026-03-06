@@ -1,0 +1,233 @@
+# Dataset-specific metadata extraction policy library.
+# Loaded when metadata_extraction.policy_dir is configured.
+
+schema_version: 1
+
+metadata_extraction:
+  datasets:
+    ds003490:
+      group:
+        candidates: ["Group"]
+      condition:
+        session_candidates:
+          ses-01: ["sess1_Med"]
+          ses-02: ["sess2_Med"]
+    ds005114:
+      group:
+        candidates: ["Group", "Diagnosis"]
+    ds005620:
+      group:
+        default: "Healthy"
+      condition:
+        from_filename: true
+        normalize:
+          awake: "awake"
+          sed: "sed"
+          sed2: "sed2"
+      task:
+        from_filename: true
+    Sedation-RestingState:
+      filename_parse:
+        regex: "^(?P<subject>\\d+)-.*\\.(?P<run>\\d{3})\\.[^.]+$"
+        subject_pad: 3
+      group:
+        default: "Healthy"
+      task:
+        candidates: []
+      condition:
+        candidates: []
+    ds004504:
+      group:
+        candidates: ["Group"]
+        normalize:
+          A: "AD"
+          F: "FTD"
+          C: "Healthy"
+      condition:
+        default: "rest"
+      task:
+        from_filename: true
+    ds004796:
+      group:
+        default: "Healthy"
+      condition:
+        from_acq: true
+        default: "eyes_closed"
+        normalize:
+          eyesopen: "eyes_open"
+          eyesclosed: "eyes_closed"
+          eo: "eyes_open"
+          ec: "eyes_closed"
+          open: "eyes_open"
+          closed: "eyes_closed"
+          "eyes-open": "eyes_open"
+          "eyes-closed": "eyes_closed"
+      task:
+        from_filename: true
+        default: "rest"
+        normalize:
+          rest: "rest"
+          msit: "msit"
+          sternberg: "sternberg"
+        compound_conditions: ["eyesclosed", "eyesopen", "ec", "eo"]
+    ds003947:
+      group:
+        candidates: ["Group", "Diagnosis", "group", "diagnosis"]
+        normalize:
+          fep: "FEP"
+          firstepisodepsychosis: "FEP"
+          psychosis: "FEP"
+          patient: "FEP"
+          control: "Control"
+          hc: "Control"
+          healthy: "Control"
+      condition:
+        default: "rest"
+      task:
+        from_filename: true
+    ds003944:
+      group:
+        candidates: ["type", "Type", "Group", "Diagnosis", "group", "diagnosis"]
+        normalize:
+          control: "Control"
+          healthy: "Control"
+          hc: "Control"
+          psychosis: "FEP"
+          fep: "FEP"
+          firstepisodepsychosis: "FEP"
+      condition:
+        default: "rest"
+      task:
+        from_filename: true
+        default: "rest"
+    ds003059:
+      group:
+        default: "Healthy"
+      condition:
+        session_map:
+          ses-LSD: "LSD"
+          ses-PLCB: "PLCB"
+        from_filename: false
+        normalize:
+          lsd: "LSD"
+          placebo: "Placebo"
+          plcb: "PLCB"
+      task:
+        from_filename: true
+    ds004100:
+      group:
+        default: "Epilepsy"
+      task:
+        from_filename: true
+    ds003478:
+      group:
+        candidates: ["Group", "BDI", "BDI_group", "bdi_group", "Diagnosis", "diagnosis"]
+      condition:
+        default: "rest"
+      task:
+        from_filename: true
+    ds004511:
+      group:
+        default: "Healthy"
+      task:
+        from_filename: true
+    ds005917:
+      group:
+        candidates: ["group", "Group", "Diagnosis", "diagnosis", "dx", "Dx"]
+        normalize:
+          mdd: "MDD"
+          bp: "BP"
+          hc: "Healthy"
+          healthy: "Healthy"
+          control: "Healthy"
+      condition:
+        session_map:
+          ses-b0: "baseline"
+          ses-d2: "ketamine_d2"
+          ses-d10: "ketamine_d10"
+          ses-p2: "placebo_p2"
+          ses-p10: "placebo_p10"
+      task:
+        from_filename: true
+    ds002748:
+      group:
+        candidates: ["Group", "Diagnosis", "diagnosis", "group"]
+        normalize:
+          mdd: "MDD"
+          depression: "MDD"
+          patient: "MDD"
+          control: "Control"
+          hc: "Control"
+          healthy: "Control"
+      condition:
+        default: "rest"
+      task:
+        from_filename: true
+    ds003171:
+      group:
+        default: "Healthy"
+      condition:
+        normalize: &anesthesia_condition_norm
+          awake: "awake"
+          light: "light"
+          deep: "deep"
+          recovery: "recovery"
+      task:
+        from_filename: true
+        compound_conditions: &anesthesia_compound_conditions ["recovery", "awake", "light", "deep"]
+    ds006623:
+      group:
+        default: "Healthy"
+      condition:
+        normalize: *anesthesia_condition_norm
+      task:
+        from_filename: true
+        compound_conditions: *anesthesia_compound_conditions
+    ds005555:
+      group:
+        default: "Healthy"
+      task:
+        from_filename: true
+        normalize:
+          Sleep: "sleep"
+    ds005505:
+      group:
+        default: "HBN"
+      condition:
+        from_acq: true
+        default: "unspecified"
+        normalize:
+          eyesopen: "eyes_open"
+          eyesclosed: "eyes_closed"
+          eo: "eyes_open"
+          ec: "eyes_closed"
+          open: "eyes_open"
+          closed: "eyes_closed"
+          "eyes-open": "eyes_open"
+          "eyes-closed": "eyes_closed"
+      task:
+        from_filename: true
+        normalize:
+          rest: "rest"
+          resting: "rest"
+          restingstate: "rest"
+          surroundsuppression: "surround_suppression"
+          surroundsupp: "surround_suppression"
+          movies: "movie"
+          movie: "movie"
+          contrastchangedetection: "contrast_change"
+          contrastchange: "contrast_change"
+          sequencelearning: "sequence_learning"
+          sequence: "sequence_learning"
+          symbolsearch: "symbol_search"
+          symbols: "symbol_search"
+    ANPHY:
+      filename_parse:
+        regex: "(?P<subject>EPCTL\\d+)"
+        subject_pad: 0
+      group:
+        default: "Healthy"
+      condition:
+        default: "sleep"
+      task:
+        default: "sleep"

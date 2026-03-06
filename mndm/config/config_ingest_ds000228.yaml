@@ -1,0 +1,113 @@
+version: 1.2
+modality: fmri
+
+# ds000228 dataset overlay config.
+# Imports common fMRI defaults, then applies only dataset-specific overrides.
+imports:
+  - "./config_ingest_common_fmri.yaml"
+
+datasets:
+  - ds000228
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds000228"
+  dataset_name: "MRI data of 3-12 year old children and adults during viewing of a short animated film"
+  dataset_version: "1.1.1"
+  doi: "10.18112/openneuro.ds000228.v1.1.1"
+  url: "https://openneuro.org/datasets/ds000228"
+
+paths:
+  dataset_received_dirs:
+    ds000228: "L:/TEMP_ScienceDatasets/openneuro/ds000228/derivatives/preprocessed_data"
+
+indexing:
+  fmri:
+    datasets:
+      ds000228:
+        bold_patterns:
+          - "*_swrf_bold.nii.gz"
+        require_func_dir: false
+
+
+preprocess:
+  fmri:
+    datasets:
+      ds000228:
+        bandpass: [0.01, 0.1]
+        resample_atlas_to_bold: true
+        confounds:
+          derivatives_dir: "L:/TEMP_ScienceDatasets/openneuro/ds000228/derivatives/preprocessed_data"
+
+features:
+  metrics:
+    compute_variance: true
+    compute_power: true
+    compute_fc: true
+    compute_kuramoto: true
+    compute_modularity: true
+    compute_dfc_variance: true
+    compute_ar1: true
+    compute_slow_band_ratio: true
+    compute_gradient_proxy: true
+    compute_dvars: true
+    dvars_threshold: 3.0
+  fmri:
+    datasets:
+      ds000228:
+        window_sec: 12.0
+        step_sec: 6.0
+
+mnps_projection:
+  v1_mapping:
+    m:
+      fmri_FC_mean: 0.70
+      fmri_kuramoto_global: 0.30
+    d:
+      fmri_variance_global: 1.0
+    e:
+      fmri_signal_power: 1.0
+
+mnps_9d:
+  datasets:
+    ds000228:
+      # v2 is the internal projection engine that feeds mnps_3d.mode=from_v2.
+      # It MUST stay enabled so the pipeline can collapse 9 raw sub-dims to 3D (m,d,e).
+      # "Strict 3D" means regional_mnps.stratified.enabled=false (no 9D diagnostics),
+      # not disabling v2 computation. The output trajectory is still m/d/e only.
+      enabled: true
+      subcoords:
+        m_a: {fmri_FC_mean: 1.0}
+        m_e: {fmri_gradient_ratio: 1.0}
+        m_o: {fmri_modularity: 1.0}
+        d_n: {fmri_variance_global: 1.0}
+        d_l: {fmri_dFC_variance: 1.0}
+        d_s: {fmri_kuramoto_global: 1.0}
+        e_e: {fmri_signal_power: 1.0}
+        e_s: {fmri_slow4_slow5_ratio: 1.0}
+        e_m: {fmri_ar1_coefficient: 1.0}
+
+regional_mnps:
+  enabled: true
+  require_framewise_displacement: false
+  min_regions_required: 195
+  jacobian:
+    enabled: true
+    knn: {k: 10, metric: "euclidean"}
+    ridge_alpha: 1.0
+    distance_weighted: true
+    super_window: 2
+  stratified:
+    enabled: false
+    subcoords:
+      m_a: {fmri_FC_mean: 1.0}
+      m_e: {fmri_gradient_ratio: 1.0}
+      m_o: {fmri_modularity: 1.0}
+      d_n: {fmri_variance_global: 1.0}
+      d_l: {fmri_dFC_variance: 1.0}
+      d_s: {fmri_kuramoto_global: 1.0}
+      e_e: {fmri_signal_power: 1.0}
+      e_s: {fmri_slow4_slow5_ratio: 1.0}
+      e_m: {fmri_ar1_coefficient: 1.0}

@@ -1,0 +1,7 @@
+source:
+  name: openneuro          # data source name (e.g., openneuro, local_bids, custom)
+  dataset_id: ds003490     # dataset identifier
+  dataset_name: example    # human-friendly label (optional)
+  format: bids             # data format (e.g., bids)
+  bids_version: "1.8.0"    # optional, if you want to track BIDS version
+  notes: ""                # optional free-text notes

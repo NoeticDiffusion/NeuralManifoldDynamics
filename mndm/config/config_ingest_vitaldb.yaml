@@ -1,0 +1,105 @@
+version: 1.2
+modality: eeg
+
+# VitalDB dataset overlay config.
+# Imports common EEG defaults, then applies only VitalDB-specific overrides.
+# Use with:
+#   python -m mndm.cli features  --dataset vitaldb --config mndm/config/config_ingest_vitaldb.yaml --out-dir E:/Science_Datasets/vitaldb/processed
+#   python -m mndm.cli summarize --dataset vitaldb --config mndm/config/config_ingest_vitaldb.yaml --out-dir E:/Science_Datasets/vitaldb/processed
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - vitaldb
+
+source:
+  name: "VitalDB"
+  platform: "VitalDB"
+  format: "CSV"
+  dataset_id: "vitaldb"
+  dataset_name: "VitalDB waveform exports"
+  url: "https://vitaldb.net/"
+
+paths:
+  processed_dir: "E:/Science_Datasets/vitaldb/processed"
+  dataset_received_dirs:
+    # VitalDB downloader writes case files under:
+    #   E:/Science_Datasets/vitaldb/received/cases/case-000123.csv.gz
+    vitaldb: "E:/Science_Datasets/vitaldb/received/cases"
+
+preprocess:
+  # BIS waveform exports are already band-limited and have non-10-20 channels.
+  # Keep preprocessing minimal and avoid assumptions about rich scalp montage.
+  eeg_csd:
+    enabled: true
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+  artifacts:
+    method: "none"
+    ica_n_components: 20
+    ica_method: "fastica"
+  channel_typing:
+    enabled: true
+    datasets:
+      vitaldb:
+        rules:
+          - {regex: "^(BIS/)?EEG\\d+(_WAV)?$", type: "eeg"}
+
+mnps_9d:
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
+      temporal: ["T7", "T8", "TP7", "TP8"]
+  coverage:
+    datasets:
+      vitaldb:
+        min_seconds: 40
+        min_epochs: 10
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: true
+
+ndt_ingest:
+  ingest_version: "1.2"
+  modalities:
+    eeg:
+      enabled: true
+      datasets:
+        vitaldb:
+          # BIS channels are sparse and do not support default ROI pair logic.
+          synchrony: {enabled: false}
+          complexity: {enabled: false}
+          dynamic_fc: {enabled: false}
+          graph_metrics: {enabled: false}
+
+metadata_extraction:
+  datasets:
+    vitaldb:
+      # Parse case-id from VitalDB downloader output filenames.
+      # Example: case-000123.csv.gz
+      filename_parse:
+        regex: "^case-(?P<subject>\\d{6})\\.csv(?:\\.gz)?$"
+        subject_pad: 6
+      group:
+        default: "OR"
+      condition:
+        default: "propofol"
+      task:
+        default: "anesthesia"

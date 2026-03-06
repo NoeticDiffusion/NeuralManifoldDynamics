@@ -1,0 +1,57 @@
+schema_version: 1
+
+dataset_id: ds006623
+dataset_labeling_contract: "attrs[group], attrs[condition], attrs[task], attrs[run] (recommended)"
+
+description: >
+  Michigan Human Anesthesia fMRI Dataset-1 (OpenNeuro ds006623).
+  This dataset includes multiple BOLD runs per subject (two rest + multiple task/imagery runs).
+  For reproducible analyses, we recommend one H5 per (subject, run) and storing run identity.
+
+codes:
+  group:
+    unknown: 0
+    Healthy: 1
+
+  # If run-level sedation state is encoded in filenames (or inferred), use this.
+  # Otherwise keep condition=unknown at the file level and use within_run_state_v1
+  # (LOR/ROR-based segmentation) for analysis.
+  condition:
+    unknown: 0
+    awake: 1
+    light: 2
+    deep: 3
+    recovery: 4
+
+  # Task labels are taken from BIDS `task-<...>` and may vary between dataset versions.
+  # Update this mapping once you confirm the exact `task-` strings in the downloaded BIDS.
+  task:
+    unknown: 0
+    rest: 1
+    tennis: 2
+    navigation: 3
+    squeeze: 4
+
+  # Within-run state labels derived from LOR/ROR TR indices (recommended for ds006623).
+  within_run_state_v1:
+    unknown: 0
+    pre_lor: 1
+    unresponsive: 2
+    post_ror: 3
+
+ordering:
+  condition: [awake, light, deep, recovery]
+  task: [rest, tennis, navigation, squeeze]
+
+conventions:
+  strings:
+    group: "TitleCase (Healthy)"
+    condition: "lowercase (awake/light/deep/recovery)"
+    task: "lowercase (rest/tennis/navigation/squeeze)"
+    run: "BIDS-style (run-01, run-1, etc.)"
+    within_run_state_v1: "lowercase (pre_lor/unresponsive/post_ror)"
+  missing_policy:
+    unknown_code: 0
+    unknown_string: null
+
+

@@ -1,0 +1,67 @@
+# Config to automatically check the structure of the exported files
+# both feature files and summarized files.
+
+# -----------------------------------------------------------------------------
+# Structure-check specification (v1)
+# -----------------------------------------------------------------------------
+# Goal:
+# - Validate that each summarized recording directory contains required files
+#   (summary.json, qc_*.json, *.h5), and that the H5 file contains required
+#   groups/datasets/attrs.
+# - For fMRI outputs, optionally enforce that regional BOLD is embedded under:
+#     /regions/bold, /regions/names, and regions.attrs["sfreq"]
+#   (this is the "raw contract" that downstream regional MNPS expects).
+#
+# Modality detection (heuristic):
+# - A recording is treated as "fmri" when summary.json contains any key that
+#   looks fMRI-specific (e.g. "fmri_modularity_provisional_frac"), OR when the
+#   H5 contains /regions.
+# - Otherwise, it's treated as "eeg".
+#
+# Usage (CLI):
+#   python -m noetic_ingest.cli check-structure --config openneuro/config/config_ingest.yaml `
+#       --check-config openneuro/config/check_structure.yaml --dataset ds003059 --latest
+#
+# Output:
+# - Writes a JSON report to the target mnps_* run directory.
+
+version: "1"
+
+io:
+  # Report filename (written inside the target mnps_* run directory)
+  report_name: "structure_check_report.json"
+
+scan:
+  # Which mnps_* run to check
+  # - "latest": pick the newest mnps_* under processed/<dataset>/
+  # - "all": check all mnps_* runs under processed/<dataset>/
+  run_selector: "latest"
+
+common:
+  required_files:
+    - "summary.json"
+    - "qc_summary.json"
+    - "qc_reliability.json"
+  # If true, require that exactly one .h5 exists in each recording directory.
+  require_single_h5: true
+
+eeg:
+  enabled: true
+  h5_required_paths:
+    - "/time"
+    - "/x"
+    - "/x_dot"
+    - "/jacobian"
+
+fmri:
+  enabled: true
+  # Enforce regional BOLD embedding in H5
+  require_regions: true
+  regions:
+    required_paths:
+      - "/regions"
+      - "/regions/bold"
+      - "/regions/names"
+    required_attrs:
+      "/regions":
+        - "sfreq"

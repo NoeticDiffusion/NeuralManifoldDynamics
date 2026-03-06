@@ -1,0 +1,112 @@
+version: 1.2
+modality: eeg
+
+# ---------------------------------------------------------------------------
+# Copy-template for EEG ingest configs.
+# Keep this file as a scaffold; create dataset-specific configs from it.
+# ---------------------------------------------------------------------------
+#
+# Optional composition (recommended):
+# imports:
+#   - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - YOUR_DATASET_ID
+
+paths:
+  received_dir: "E:/Science_Datasets/openneuro/received"
+  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  # Optional per-dataset override when raw data does not live in
+  # <received_dir>/<dataset_id>.
+  dataset_received_dirs: {}
+
+preprocess:
+  sfreq: 250
+  notch_hz: 50
+  eeg_bandpass: [1, 45]
+  reref: "average"
+  gpu: false
+  channel_typing:
+    enabled: true
+    datasets:
+      YOUR_DATASET_ID:
+        rules:
+          - {regex: "^(ECG|EKG)", type: "ecg"}
+          - {regex: "^(HEOG|VEOG|EOG)", type: "eog"}
+          - {regex: "^(EMG|ChEMG|LEG|RLEG|LLEG)", type: "emg"}
+
+epoching:
+  length_s: 8.0
+  step_s: 4.0
+  datasets: {}
+
+features:
+  eeg_psd:
+    method: "multitaper"
+    bandwidth: null
+  eeg_bands: {delta: [1,4], theta: [4,8], alpha: [8,12], beta: [13,30], gamma: [30,45]}
+  ratios: {alpha_theta: ["alpha","theta"], beta_alpha: ["beta","alpha"]}
+
+mnps_projection:
+  normalize: "robust_z"
+  weights:
+    m: {eeg_theta: 0.35, eeg_delta: 0.25, eeg_alpha: 0.20, eeg_beta: 0.20}
+    d: {eeg_sample_entropy: 0.40, eeg_beta_alpha: 0.30, eeg_gamma: 0.30}
+    e: {eeg_alpha: 0.40, eeg_beta: 0.30, eeg_alpha_theta: 0.30}
+
+mnps:
+  fs_out: 4.0
+  window_sec: 8.0
+  overlap: 0.5
+  derivative: {method: "sav_gol", window: 7, polyorder: 3}
+  knn: {k: 20, metric: "euclidean"}
+  ridge: {alpha: 1.0, cv_folds: 5, distance_weighted: true}
+  whiten: true
+  super_window: 3
+  stage_codebook: {W: 0, Wake: 0, N1: 1, N2: 2, N3: 3, REM: 4, R: 4, L: -1}
+
+mnps_9d:
+  enabled: true
+  subcoords:
+    m_a: {eeg_theta: 1.0, eog_blink_rate: -0.2}
+    m_e: {eeg_beta: 0.5, eeg_alpha: -0.5}
+    m_o: {eeg_sample_entropy: 0.7, eeg_beta_alpha: 0.3}
+    d_n: {eeg_beta_alpha: 1.0}
+    d_l: {eeg_alpha_theta: 1.0}
+    d_s: {eeg_gamma: 1.0}
+    e_e: {eeg_sample_entropy: 1.0}
+    e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+    e_m: {ecg_rmssd: 1.0}
+  datasets: {}
+
+robustness:
+  bootstrap_n: 0
+  seed: 42
+  coverage:
+    min_seconds: 60
+    min_epochs: 20
+    min_trials: 30
+    datasets: {}
+  transients: {z_thresh: 3.0, pad_epochs: 1}
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2"]
+    datasets: {}
+
+metadata_extraction:
+  default:
+    group: {candidates: ["Group", "Diagnosis", "group", "diagnosis"]}
+    condition: {candidates: ["condition", "Condition"]}
+    task: {from_filename: true}
+  datasets: {}
+
+sleep_annotations:
+  enabled: false
+  search_parent_levels: 1
+  file_globs: ["*.txt", "*.ann"]
+  stage_map: {W: 0, N1: 1, N2: 2, N3: 3, REM: 4, R: 4, L: -1}
+  datasets: {}

@@ -1,0 +1,175 @@
+version: 2.0
+modality: fmri
+
+datasets: []
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: null
+  dataset_name: null
+  dataset_version: null
+  doi: null
+  url: null
+  acknowledgement: null
+
+paths:
+  received_dir: "E:/Science_Datasets/openneuro/received"
+  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  dataset_received_dirs: {}
+
+preprocess:
+  # TR (Repetition Time) is strictly read from BIDS metadata. 
+  # fallback_tr specifies the default if BIDS is missing.
+  fallback_tr: 2.0 
+  fmri_bandpass: [0.01, 0.1]  # Standard resting-state BOLD frequencies
+  reref: null # Not applicable to fMRI
+  gpu: false
+  channel_typing:
+    enabled: true
+    policy_dir: "mndm/config/channel_typing"
+    datasets: {}
+  fmri:
+    atlas_path: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
+    atlas_labels: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order.tsv"
+    # Optional confounds search roots for FD merge in summary:
+    # - confounds_root: explicit root that contains confounds TSV files
+    # - derivatives_dir: derivatives root (often .../derivatives or .../derivatives/fmriprep)
+    confounds:
+      confounds_root: null
+      derivatives_dir: null
+    datasets: {}
+
+epoching:
+  # fMRI windows must be long enough to capture connectivity (min 30-60s)
+  length_s: 45.0 
+  step_s: 15.0
+  datasets: {}
+
+features:
+  # Extracted strictly via fmri_epoch_metrics.py
+  metrics:
+    compute_variance: true
+    compute_power: true
+    compute_fc: true
+    compute_kuramoto: true
+    compute_modularity: true
+    compute_dfc_variance: true
+    compute_ar1: true
+    compute_slow_band_ratio: true
+    compute_gradient_proxy: true
+    min_timepoints_fc: 10
+
+mnps_projection:
+  normalize: "robust_z"
+  clip_threshold: 6.0
+  
+  # Fixed linear projection P: V2 -> V1(3D).
+  # These weights constitute the NDT theoretical prior for fMRI.
+  v1_mapping:
+    # M-axis (Macrostates/Integration): Network binding.
+    # Empirical justification: In fMRI, global state transitions (wake->anesthesia) 
+    # are heavily characterized by a breakdown in broad Functional Connectivity.
+    # Refs:
+    # - Barttfeld et al. (2015) PNAS: Signature of consciousness in the dynamics of resting-state brain activity.
+    m: 
+      fmri_FC_mean: 0.70          # Primary driver (Spatial Integration)
+      fmri_kuramoto_global: 0.30  # Secondary (Phase coordination)
+
+    # D-axis (Dynamics/Dispersion): Temporal mobility.
+    # Empirical justification: Signal variance within the bandpass window reflects 
+    # the amplitude of local BOLD fluctuations, a proxy for dynamic capacity.
+    d: 
+      fmri_variance_global: 1.0   # Primary (Local dynamic amplitude)
+
+    # E-axis (Energy/Complexity): 
+    # Empirical justification: Short-window fMRI cannot support Shannon/Sample entropy. 
+    # Signal power within the 0.01-0.1Hz band proxies the available "energy" for state transitions.
+    e: 
+      fmri_signal_power: 1.0      # Primary (Low-frequency energy)
+
+  feature_standardization:
+    default: ["robust_z", "clip"]
+
+mnps:
+  # fs_out MUST closely match 1 / step_s. 
+  # step_s = 15.0 means native update rate is ~0.066 Hz.
+  # We upsample slightly to 0.5 Hz purely for continuous plotting, 
+  # but NOT to EEG-like 4.0 Hz to avoid zero-velocity derivatives.
+  fs_out: 0.5 
+  window_sec: 45.0
+  overlap: 0.66  # (45 - 15) / 45
+  derivative: {method: "sav_gol", window: 5, polyorder: 2} # Reduced window for slow fMRI
+  knn: {k: 10, metric: "euclidean"} # Lower k for shorter fMRI sessions
+  ridge: {alpha: 1.0, cv_folds: 3, distance_weighted: true}
+  whiten: true
+  super_window: 2
+
+mnps_9d:
+  enabled: true
+  definition_version: "2.0"
+  versions:
+    "2.0":
+      subcoords:
+        # M: Macrostates (Spatial Integration)
+        m_a: {fmri_FC_mean: 1.0}
+        m_e: {fmri_gradient_ratio: 1.0}
+        m_o: {fmri_modularity: 1.0}
+        # D: Dynamics (Temporal Dispersion)
+        d_n: {fmri_variance_global: 1.0}
+        d_l: {fmri_dFC_variance: 1.0}
+        d_s: {fmri_kuramoto_global: 1.0}
+        # E: Energy/Complexity
+        e_e: {fmri_signal_power: 1.0}
+        e_s: {fmri_slow4_slow5_ratio: 1.0}
+        e_m: {fmri_ar1_coefficient: 1.0}
+
+mnps_3d:
+  mode: "from_v2"
+  from_v2:
+    aggregation: "fixed_weighted_projection"
+    # Legacy fallback knob for group-pooling only. In the active path,
+    # mnps_projection.v1_mapping defines a fixed weighted V2->V1 projection;
+    # this is not a trivial equal-weight mean.
+    pooling: "mean"
+    map:
+      m: ["m_a", "m_e", "m_o"]
+      d: ["d_n", "d_l", "d_s"]
+      e: ["e_e", "e_s", "e_m"]
+
+regional_mnps:
+  enabled: false
+  # Minimum atlas ROI coverage required before regional network analysis is attempted.
+  min_regions_required: 195
+  require_framewise_displacement: false
+  stratified:
+    # 9D stratified MNPS on regional level is disabled by default.
+    # Empirical result: with typical fMRI window counts (~20-30 windows per session)
+    # the 9-feature matrix is near-singular (kappa=inf) and PC1-3 explains >90% of
+    # variance, indicating the data cannot support an independent 9D decomposition.
+    # Enable only when you have sufficient temporal samples and a clear scientific
+    # justification. Override per dataset in the dataset-specific config.
+    enabled: false
+    subcoords: {}
+
+robustness:
+  bootstrap_n: 0
+  seed: 42
+  coverage:
+    min_seconds: 120 # Require at least 2 minutes of fMRI
+    min_epochs: 5
+    datasets: {}
+
+feature_storage:
+  write_both: true
+  read_prefer: "parquet"
+  default_format: "auto"
+
+metadata_extraction:
+  policy_dir: "mndm/config/condition_task_setup"
+  default:
+    group: {candidates: ["Group", "Diagnosis", "group", "diagnosis"]}
+    condition: {candidates: ["condition", "Condition"], session_map: {}}
+    task: {from_filename: true}
+  datasets: {}
