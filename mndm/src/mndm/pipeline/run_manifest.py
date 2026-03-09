@@ -118,11 +118,17 @@ def _field_guide() -> Dict[str, Any]:
             "jacobian/J_hat": "Windowed Jacobian tensor [W,3,3] on primary MNPS.",
             "jacobian/J_dot": "Temporal derivative of Jacobian [W,3,3].",
             "jacobian/centers": "Center indices of Jacobian windows [W].",
-            "jacobian_v2/J_hat": "Windowed Jacobian on stratified coordinates (dimension depends on config).",
-            "jacobian_v2/J_dot": "Temporal derivative of jacobian_v2.",
-            "jacobian_v2/cross_partials/*": "Named cross-partial timeseries extracted from jacobian_v2.",
+            "jacobian_9D/J_hat": "Windowed Jacobian on stratified coordinates (dimension depends on config).",
+            "jacobian_9D/J_dot": "Temporal derivative of jacobian_9D.",
+            "jacobian_9D/cross_partials/*": "Named cross-partial timeseries extracted from jacobian_9D.",
             "coords_9d/values": "Stratified MNPS trajectory matrix [T,K] (often K=9).",
             "coords_9d/names": "Column names for coords_9d/values.",
+            "features_raw/values": "Per-epoch raw feature matrix [T,K] in original scale.",
+            "features_raw/names": "Column names for features_raw/values.",
+            "features_raw/metadata/*": "Machine-readable per-feature metadata aligned to features_raw/names.",
+            "features_robust_z/values": "Per-epoch strict robust-z feature matrix [T,K] (no log10/clip baked in).",
+            "features_robust_z/names": "Column names for features_robust_z/values.",
+            "features_robust_z/metadata/*": "Machine-readable per-feature metadata aligned to features_robust_z/names.",
             "regional_mnps/<network>/mnps": "Per-network MNPS trajectory [T,3].",
             "regional_mnps/<network>/mnps_dot": "Derivative of regional MNPS trajectory [T,3].",
             "regional_mnps/<network>/jacobian": "Per-network Jacobian tensor [W,3,3].",
@@ -137,6 +143,11 @@ def _field_guide() -> Dict[str, Any]:
             "jacobian": "MNJ estimate from primary 3D MNPS.",
             "coords_9d": "Stratified MNPS coordinate group (often 9D).",
             "mnps_9d": "Configuration/runtime term for stratified MNPS coordinate system.",
+            "capabilities.regional_outputs": "True when H5 files embed derived `/regional_mnps/*` network-level outputs.",
+            "capabilities.raw_region_signals": "True when H5 files embed raw `/regions/*` signals (typically fMRI ROI x time).",
+            "capabilities.regional_outputs_path": "Canonical regional output path for all modalities.",
+            "capabilities.raw_features": "True when H5 files embed `/features_raw/*` feature exports.",
+            "capabilities.robust_z_features": "True when H5 files embed `/features_robust_z/*` feature exports.",
         },
         "source": {
             "source": "Dataset provenance metadata declared in the active YAML config.",
@@ -181,7 +192,7 @@ def _summarize_subject_jsons(summary_jsons: Sequence[Path]) -> Dict[str, Any]:
         "tier2_jacobian": 0,
         "meta_indices": 0,
         "meta_indices_v2": 0,
-        "jacobian_v2": 0,
+        "jacobian_9D": 0,
         "coords_9d": 0,
     }
 
@@ -244,9 +255,12 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
     jac_dims: Dict[int, int] = {}
     v2_dims: Dict[int, int] = {}
     jac_v2_dims: Dict[int, int] = {}
-    has_regions_count = 0
+    has_raw_region_signals_count = 0
+    has_regional_outputs_count = 0
     has_stage_count = 0
     has_v2_like_count = 0
+    has_raw_features_count = 0
+    has_robust_z_features_count = 0
     bad_files: list[str] = []
 
     for p in h5_paths[: max_files if max_files > 0 else len(h5_paths)]:
@@ -277,10 +291,26 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
                     except Exception:
                         pass
 
-                # Optional Stratified Jacobian computed on v2 coordinates
-                if "jacobian_v2" in f and "J_hat" in f["jacobian_v2"]:
+                if "features_raw" in f:
                     try:
-                        d = int(f["jacobian_v2"]["J_hat"].shape[1])
+                        g = f["features_raw"]
+                        if "values" in g and "names" in g:
+                            has_raw_features_count += 1
+                    except Exception:
+                        pass
+
+                if "features_robust_z" in f:
+                    try:
+                        g = f["features_robust_z"]
+                        if "values" in g and "names" in g:
+                            has_robust_z_features_count += 1
+                    except Exception:
+                        pass
+
+                # Optional Stratified Jacobian computed on v2 coordinates
+                if "jacobian_9D" in f and "J_hat" in f["jacobian_9D"]:
+                    try:
+                        d = int(f["jacobian_9D"]["J_hat"].shape[1])
                         jac_v2_dims[d] = jac_v2_dims.get(d, 0) + 1
                         has_v2_like_count += 1
                     except Exception:
@@ -290,12 +320,20 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
                 if "labels" in f and "stage" in f["labels"]:
                     has_stage_count += 1
 
-                # Regions export (fMRI ROI time series)
+                # Raw region signals export (typically fMRI ROI time series)
                 if "regions" in f:
                     try:
                         g = f["regions"]
                         if "bold" in g or "names" in g:
-                            has_regions_count += 1
+                            has_raw_region_signals_count += 1
+                    except Exception:
+                        pass
+
+                # Derived regional MNPS/MNJ outputs (EEG or fMRI)
+                if "regional_mnps" in f:
+                    try:
+                        if len(f["regional_mnps"].keys()) > 0:
+                            has_regional_outputs_count += 1
                     except Exception:
                         pass
 
@@ -314,17 +352,26 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
         "mnps_3d_dims_counts": {str(k): int(v) for k, v in sorted(mnps_3d_dims.items())},
         "jacobian_dims_counts": {str(k): int(v) for k, v in sorted(jac_dims.items())},
         "coords_9d_dims_counts": {str(k): int(v) for k, v in sorted(v2_dims.items())},
-        "jacobian_v2_dims_counts": {str(k): int(v) for k, v in sorted(jac_v2_dims.items())},
+        "jacobian_9D_dims_counts": {str(k): int(v) for k, v in sorted(jac_v2_dims.items())},
         "mnps3d": bool(mnps_3d),
         "mnps9d": bool(mnps_9d),
         "mnj": bool(jac_3d or jac_9d),
         "mnj_3d": bool(jac_3d),
         "mnj_9d": bool(jac_9d),
-        "regions": bool(has_regions_count > 0),
+        "regional_outputs": bool(has_regional_outputs_count > 0),
+        "regional_outputs_path": "/regional_mnps",
+        "raw_region_signals": bool(has_raw_region_signals_count > 0),
+        "raw_features": bool(has_raw_features_count > 0),
+        "raw_features_path": "/features_raw",
+        "robust_z_features": bool(has_robust_z_features_count > 0),
+        "robust_z_features_path": "/features_robust_z",
         "labels_stage": bool(has_stage_count > 0),
         "v2_like_artifacts": bool(has_v2_like_count > 0),
         "counts": {
-            "h5_with_regions": int(has_regions_count),
+            "h5_with_regional_outputs": int(has_regional_outputs_count),
+            "h5_with_raw_region_signals": int(has_raw_region_signals_count),
+            "h5_with_raw_features": int(has_raw_features_count),
+            "h5_with_robust_z_features": int(has_robust_z_features_count),
             "h5_with_stage": int(has_stage_count),
             "h5_with_v2_like": int(has_v2_like_count),
         },
@@ -388,7 +435,7 @@ def write_run_manifest(
         git_rev = None
 
     manifest: Dict[str, Any] = {
-        "schema": "mndm.run_manifest.v1",
+        "schema": "mndm.run_manifest.v2",
         "created_at": _utc_now_iso(),
         "dataset_id": ds_id,
         "run_dir": str(mnps_dir),

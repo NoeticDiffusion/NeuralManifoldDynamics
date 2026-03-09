@@ -64,14 +64,14 @@ class MNPSPayload:
     jacobian_centers:
         Optional 1-D array of shape ``[W]`` with integer indices of the
         centers of the Jacobian windows.
-    jacobian_v2:
+    jacobian_9D:
         Optional 3-D array of shape ``[W2, K, K]`` with windowed Jacobians
         estimated directly in the Stratified MNPS subcoordinate space
         (e.g. ``K=9`` for the canonical 9D chart).
-    jacobian_v2_dot:
+    jacobian_9D_dot:
         Optional 3-D array of shape ``[W2, K, K]`` with timeline-aligned
         change rates of the Stratified Jacobians.
-    jacobian_v2_centers:
+    jacobian_9D_centers:
         Optional 1-D array of shape ``[W2]`` with window centres for the
         Stratified Jacobians.
     attrs:
@@ -89,13 +89,20 @@ class MNPSPayload:
     jacobian: Optional[np.ndarray] = None
     jacobian_dot: Optional[np.ndarray] = None
     jacobian_centers: Optional[np.ndarray] = None
-    jacobian_v2: Optional[np.ndarray] = None
-    jacobian_v2_dot: Optional[np.ndarray] = None
-    jacobian_v2_centers: Optional[np.ndarray] = None
-    # Optional time series extracted from jacobian_v2: mapping "out__in" -> [W2] series
-    jacobian_v2_cross_partials: MutableMapping[str, np.ndarray] = field(default_factory=dict)
+    jacobian_9D: Optional[np.ndarray] = None
+    jacobian_9D_dot: Optional[np.ndarray] = None
+    jacobian_9D_centers: Optional[np.ndarray] = None
+    # Optional time series extracted from jacobian_9D: mapping "out__in" -> [W2] series
+    jacobian_9D_cross_partials: MutableMapping[str, np.ndarray] = field(default_factory=dict)
     # Optional per-feature baseline metadata (captured before normalization)
     feature_baselines: MutableMapping[str, Dict[str, float | str]] = field(default_factory=dict)
+    # Optional first-class feature export surfaces aligned to the MNPS time axis.
+    features_raw_values: Optional[np.ndarray] = None
+    features_raw_names: Optional[list[str]] = None
+    features_robust_z_values: Optional[np.ndarray] = None
+    features_robust_z_names: Optional[list[str]] = None
+    # Machine-readable feature metadata shared by the exported feature surfaces.
+    feature_metadata: MutableMapping[str, Any] = field(default_factory=dict)
     attrs: MutableMapping[str, Any] = field(default_factory=dict)
     # Optional per-window time bounds (seconds)
     window_start: Optional[np.ndarray] = None
@@ -105,9 +112,9 @@ class MNPSPayload:
     # Optional stratified MNPS coordinates (typically 9D)
     coords_9d: Optional[np.ndarray] = None
     coords_9d_names: Optional[list[str]] = None
-    # Optional regional signals (e.g. fMRI ROI×time). These are intended
-    # primarily for downstream Regional MNPS / block‑Jacobian analysis and
-    # are not used by the core MNPS/Jacobian estimator in this repo.
+    # Optional raw regional signals (e.g. fMRI ROI×time). These are supporting
+    # inputs for some regional analyses, but are not the canonical regional
+    # output contract exposed to downstream readers.
     regions_bold: Optional[np.ndarray] = None
     regions_names: Optional[list[str]] = None
     regions_sfreq: Optional[float] = None
@@ -115,8 +122,9 @@ class MNPSPayload:
     # The structure is a free-form nested mapping that writers interpret
     # when creating HDF5 groups under ``/extensions``.
     extensions: MutableMapping[str, Any] = field(default_factory=dict)
-    # Optional regional MNPS/MNJ results. Each entry maps network label to
-    # a dict containing 'mnps' [T,3], 'jacobian' [W,3,3], and 'metrics'.
+    # Canonical modality-agnostic regional output. Each entry maps network
+    # label to a dict containing 'mnps' [T,3], 'jacobian' [W,3,3], and
+    # optional supporting fields such as 'stratified' and 'metrics'.
     regional_mnps: MutableMapping[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
@@ -136,11 +144,16 @@ class MNPSPayload:
             "jacobian": self.jacobian,
             "jacobian_dot": self.jacobian_dot,
             "jacobian_centers": self.jacobian_centers,
-            "jacobian_v2": self.jacobian_v2,
-            "jacobian_v2_dot": self.jacobian_v2_dot,
-            "jacobian_v2_centers": self.jacobian_v2_centers,
-            "jacobian_v2_cross_partials": dict(self.jacobian_v2_cross_partials),
+            "jacobian_9D": self.jacobian_9D,
+            "jacobian_9D_dot": self.jacobian_9D_dot,
+            "jacobian_9D_centers": self.jacobian_9D_centers,
+            "jacobian_9D_cross_partials": dict(self.jacobian_9D_cross_partials),
             "feature_baselines": dict(self.feature_baselines),
+            "features_raw_values": self.features_raw_values,
+            "features_raw_names": list(self.features_raw_names) if self.features_raw_names is not None else None,
+            "features_robust_z_values": self.features_robust_z_values,
+            "features_robust_z_names": list(self.features_robust_z_names) if self.features_robust_z_names is not None else None,
+            "feature_metadata": dict(self.feature_metadata),
             "attrs": dict(self.attrs),
             "coords_9d": self.coords_9d,
             "coords_9d_names": list(self.coords_9d_names) if self.coords_9d_names is not None else None,
@@ -183,6 +196,50 @@ def _validate_optional_array(name: str, arr: Optional[np.ndarray], ndim: int) ->
     return array
 
 
+def _normalize_feature_surface(
+    values: Optional[np.ndarray],
+    names: Optional[Sequence[str]],
+    *,
+    t_len: int,
+    label: str,
+) -> tuple[Optional[np.ndarray], Optional[list[str]]]:
+    if values is None:
+        if names is not None:
+            raise ValueError(f"{label}_names requires {label}_values to be present")
+        return None, None
+    matrix = np.asarray(values, dtype=np.float32)
+    if matrix.ndim != 2 or matrix.shape[0] != t_len:
+        raise ValueError(f"{label}_values must be 2-D and align with time axis")
+    if names is None:
+        raise ValueError(f"{label}_names must be provided when {label}_values is present")
+    name_list = [str(n) for n in names]
+    if len(name_list) != matrix.shape[1]:
+        raise ValueError(f"{label}_names length must match {label}_values columns")
+    return matrix, name_list
+
+
+def _normalize_feature_metadata(
+    feature_metadata: MutableMapping[str, Any],
+    *,
+    n_features: int,
+) -> MutableMapping[str, np.ndarray]:
+    normalized: Dict[str, np.ndarray] = {}
+    for key, value in feature_metadata.items():
+        arr = np.asarray(value)
+        if arr.ndim != 1 or arr.shape[0] != n_features:
+            raise ValueError(f"feature_metadata['{key}'] must be 1-D with length {n_features}")
+        if arr.dtype.kind in {"U", "O"}:
+            arr = arr.astype(str, copy=False)
+        elif np.issubdtype(arr.dtype, np.bool_):
+            arr = arr.astype(np.int8, copy=False)
+        elif np.issubdtype(arr.dtype, np.integer):
+            arr = arr.astype(np.int32, copy=False)
+        elif np.issubdtype(arr.dtype, np.floating):
+            arr = arr.astype(np.float32, copy=False)
+        normalized[str(key)] = arr
+    return normalized
+
+
 def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
     """Coerce arrays to canonical dtypes and validate shapes.
 
@@ -219,6 +276,30 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             raise ValueError("nn_indices must align with time axis")
         payload.nn_indices = nn
 
+    payload.features_raw_values, payload.features_raw_names = _normalize_feature_surface(
+        payload.features_raw_values,
+        payload.features_raw_names,
+        t_len=t.shape[0],
+        label="features_raw",
+    )
+    payload.features_robust_z_values, payload.features_robust_z_names = _normalize_feature_surface(
+        payload.features_robust_z_values,
+        payload.features_robust_z_names,
+        t_len=t.shape[0],
+        label="features_robust_z",
+    )
+    if payload.features_raw_names is not None and payload.features_robust_z_names is not None:
+        if list(payload.features_raw_names) != list(payload.features_robust_z_names):
+            raise ValueError("features_raw_names and features_robust_z_names must match")
+    feature_names = payload.features_raw_names or payload.features_robust_z_names
+    if payload.feature_metadata:
+        if feature_names is None:
+            raise ValueError("feature_metadata requires an exported feature surface")
+        payload.feature_metadata = _normalize_feature_metadata(
+            payload.feature_metadata,
+            n_features=len(feature_names),
+        )
+
     payload.jacobian = _validate_optional_array("jacobian", payload.jacobian, 3)
     payload.jacobian_dot = _validate_optional_array("jacobian_dot", payload.jacobian_dot, 3)
     if payload.jacobian is not None and payload.jacobian_dot is not None:
@@ -228,35 +309,35 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             )
 
     # Optional Stratified (v2) Jacobians
-    payload.jacobian_v2 = _validate_optional_array("jacobian_v2", payload.jacobian_v2, 3)
-    payload.jacobian_v2_dot = _validate_optional_array("jacobian_v2_dot", payload.jacobian_v2_dot, 3)
-    if payload.jacobian_v2 is not None and payload.jacobian_v2_dot is not None:
-        if payload.jacobian_v2_dot.shape != payload.jacobian_v2.shape:
+    payload.jacobian_9D = _validate_optional_array("jacobian_9D", payload.jacobian_9D, 3)
+    payload.jacobian_9D_dot = _validate_optional_array("jacobian_9D_dot", payload.jacobian_9D_dot, 3)
+    if payload.jacobian_9D is not None and payload.jacobian_9D_dot is not None:
+        if payload.jacobian_9D_dot.shape != payload.jacobian_9D.shape:
             raise ValueError(
-                "jacobian_v2_dot must match jacobian_v2 shape, "
-                f"got {payload.jacobian_v2_dot.shape} vs {payload.jacobian_v2.shape}"
+                "jacobian_9D_dot must match jacobian_9D shape, "
+                f"got {payload.jacobian_9D_dot.shape} vs {payload.jacobian_9D.shape}"
             )
 
-    # Optional jacobian_v2 cross-partials
-    if getattr(payload, "jacobian_v2_cross_partials", None):
-        if payload.jacobian_v2 is None or payload.jacobian_v2.size == 0:
-            raise ValueError("jacobian_v2_cross_partials requires jacobian_v2 to be present")
-        w2 = int(payload.jacobian_v2.shape[0])
+    # Optional jacobian_9D cross-partials
+    if getattr(payload, "jacobian_9D_cross_partials", None):
+        if payload.jacobian_9D is None or payload.jacobian_9D.size == 0:
+            raise ValueError("jacobian_9D_cross_partials requires jacobian_9D to be present")
+        w2 = int(payload.jacobian_9D.shape[0])
         normalized_cp: Dict[str, np.ndarray] = {}
-        for key, value in payload.jacobian_v2_cross_partials.items():
+        for key, value in payload.jacobian_9D_cross_partials.items():
             arr = np.asarray(value, dtype=np.float32)
             if arr.ndim != 1 or arr.shape[0] != w2:
-                raise ValueError(f"jacobian_v2_cross_partials['{key}'] must be 1-D with length {w2}")
+                raise ValueError(f"jacobian_9D_cross_partials['{key}'] must be 1-D with length {w2}")
             normalized_cp[str(key)] = arr
-        payload.jacobian_v2_cross_partials = normalized_cp
+        payload.jacobian_9D_cross_partials = normalized_cp
 
     if payload.jacobian_centers is not None:
         centers = np.asarray(payload.jacobian_centers, dtype=np.int32)
         payload.jacobian_centers = centers
 
-    if payload.jacobian_v2_centers is not None:
-        centers_v2 = np.asarray(payload.jacobian_v2_centers, dtype=np.int32)
-        payload.jacobian_v2_centers = centers_v2
+    if payload.jacobian_9D_centers is not None:
+        centers_v2 = np.asarray(payload.jacobian_9D_centers, dtype=np.int32)
+        payload.jacobian_9D_centers = centers_v2
 
     normalized_events: Dict[str, np.ndarray] = {}
     for key, value in payload.events.items():
@@ -318,7 +399,7 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             payload.attrs["coords_9d_all_non_finite_names"] = coords_9d_diag.get("all_non_finite_names")
             payload.attrs["coords_9d_all_non_finite_count"] = int(coords_9d_diag.get("all_non_finite_count", 0))
 
-    # Normalize optional regional signals (e.g. fMRI ROI×time). These are
+    # Normalize optional raw regional signals (e.g. fMRI ROI×time). These are
     # intentionally decoupled from the MNPS time axis: the BOLD sampling
     # frequency and windowing can differ from the MNPS window grid.
     if payload.regions_bold is not None:

@@ -1,56 +1,100 @@
-# NoeticDiffusionDataIngest
+# NeuralManifoldDynamics
 
-This repository hosts the data ingest and processing stack used for Noetic
-Diffusion research. It is organized into three Python packages that separate
-concerns and make the pipeline easier to maintain:
+Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation for EEG and fMRI workflows.
 
-- `openneuro_ingest` — download and staging of OpenNeuro datasets
-- `mndm` — Meta Noetic Diffusion Model processing: features, MNPS, summaries
-- `core` — shared utilities, schemas, IO, and configuration helpers
+This root README is intentionally high-level. Package-specific usage, schema details, and command references live in each subproject.
 
-## What this repo does
+## What This Repo Contains
 
-- Ingests BIDS datasets (primarily from OpenNeuro) and builds file indices.
-- Extracts features and computes MNPS (including regional and stratified MNPS).
-- Writes per-run HDF5 outputs plus JSON/CSV summaries for analysis.
+The repository is organized around a shared pipeline:
 
-## Quick start
+1. Acquire or locate source datasets.
+2. Index and preprocess raw recordings.
+3. Compute per-epoch or per-window features.
+4. Project features into MNPS spaces.
+5. Write subject-level and run-level outputs for analysis and QC.
 
-Install dependencies in your environment, then run the pipeline from the repo
-root. Adjust paths to match your machine.
+## Main Packages
 
-```bash
-# Download data (OpenNeuro only)
-python -m openneuro.cli download --dataset ds003059 --data-dir G:\Science_Datasets
+- `mndm`: Core MNPS pipeline. Handles `features`, `summarize`, `all`, `pack`, and structure validation. See `mndm/README.md`.
+- `openneuro_ingest`: OpenNeuro-facing download and ingest utilities. Use this when pulling public datasets before MNDM processing.
+- `apollo_ingest`: Ingest helpers for Apollo-style sources used in this repo.
+- `vitaldb_ingest`: Ingest helpers for VitalDB-style sources used in this repo.
+- `core`: Shared config loading, path resolution, I/O helpers, and common utilities used across packages.
 
-# Summarize with MNDM
-python -m mndm.cli summarize --dataset ds003059 --data-dir G:\Science_Datasets --config mndm\config\config_ingest.yaml
+## Typical Workflow
+
+For most projects, the workflow is:
+
+```text
+download or locate data -> ingest/index -> mndm features -> mndm summarize
 ```
 
-## Configuration
+If the dataset is already present on disk, you usually work directly with `mndm`.
 
-Pipeline configuration lives under `mndm/config/`. The main config file is:
+## Quick Start
 
-- `mndm/config/config_ingest.yaml`
+From the repository root:
 
-You can also define a simple data source descriptor in:
+```powershell
+python -m venv .venv
+.venv\Scripts\activate
+pip install -U pip
+pip install -r requirements.txt
+```
 
-- `mndm/config/source.yaml`
+If you run directly from this source tree, set `PYTHONPATH` so the package modules resolve correctly:
 
-## RichSleep extraction pipeline
+```powershell
+$env:PYTHONPATH="H:/SourceRepo2/NeuralManifoldDynamics/mndm/src;H:/SourceRepo2/NeuralManifoldDynamics/core/src;H:/SourceRepo2/NeuralManifoldDynamics/openneuro_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/apollo_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/vitaldb_ingest/src"
+```
 
-This repository also contains the `richsleep` extraction pipeline, which
-ingests EDF + annotation files from the RichSleep dataset and converts them
-into compressed HDF5 assets ready for Noetic Diffusion Theory analysis.
+Example MNDM run:
 
-## Docs
+```powershell
+python -m mndm.cli all --dataset ds003490 --config mndm/config/config_ingest_ds003490.yaml --n-jobs 12
+```
 
-- Operator notes: `docs/LLM_instruction.md`
-- MNDM details and commands: `mndm/README.md`
-- CLI cheat sheet: `mndm/Command_cheat_sheet.md`
+## Where To Read Next
 
-## Notes
+- MNDM usage and output contracts: `mndm/README.md`
+- MNDM command reference: `mndm/Command_cheat_sheet.md`
+- MNDM output schema details: `mndm/Output_variables_guide.md`
+- OpenNeuro ingest details: `openneuro_ingest/`
 
-- This repo supports optional dependencies (`h5py`, `mne`, `scipy`); some steps
-  will be skipped if these are not installed.
-- BIDS is the standard dataset format used by OpenNeuro and this pipeline.
+## Repository Layout
+
+```text
+NeuralManifoldDynamics/
+├── core/
+├── mndm/
+├── openneuro_ingest/
+├── apollo_ingest/
+├── vitaldb_ingest/
+├── requirements.txt
+└── README.md
+```
+
+## Outputs At A Glance
+
+Most processed outputs are written under a dataset-specific processed directory. In current MNDM runs, summarized outputs typically appear in run folders named like:
+
+```text
+<processed>/<dataset>/neuralmanifolddynamics_<dataset>_<timestamp>/
+```
+
+Those runs usually contain:
+
+- `run_manifest.json`
+- `features_snapshot.json`
+- per-subject or per-run subdirectories with `summary.json`, QC JSON, and HDF5 outputs
+
+## Development Notes
+
+- `requirements.txt` is shared from the repo root.
+- `pyarrow` is recommended so feature tables can use parquet cleanly.
+- Worker count and memory budget are controlled from the CLI, especially for `mndm.cli features` and `mndm.cli all`.
+
+## License
+
+GNU GENERAL PUBLIC LICENSE v3

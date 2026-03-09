@@ -1,8 +1,9 @@
 """Run-output structure checking for Noetic ingest.
 
 This module validates that a summarization run has the expected
-file layout and (optionally) that fMRI recordings embed `/regions/*` inside
-their per-recording H5.
+file layout and can optionally validate both canonical regional outputs
+(`/regional_mnps/*`) and fMRI-specific raw regional signals (`/regions/*`)
+inside each per-recording H5.
 
 Designed to be invoked either:
 - via `noetic_ingest.cli check-structure` (recommended), or
@@ -15,7 +16,7 @@ import argparse
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
 
@@ -31,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 def _utc_now_iso() -> str:
     # Keep consistent with other outputs (UTC + Z suffix).
-    return datetime.utcnow().isoformat() + "Z"
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _as_dict(m: Any) -> dict:
@@ -49,12 +50,6 @@ def _looks_fmri_summary(summary: Mapping[str, Any]) -> bool:
     # Heuristic: summary keys that are emitted only by fMRI paths.
     for key in ("fmri_modularity_provisional_frac",):
         if key in summary:
-            return True
-    # Also accept explicit extension marker if present
-    ext = summary.get("extensions", {})
-    if isinstance(ext, Mapping):
-        # some runs expose regional flags there
-        if "regional_data_available" in ext:
             return True
     return False
 
@@ -124,6 +119,10 @@ def check_run_dir(
     scan_common = _as_dict(spec_d.get("common", {}))
     required_files = list(scan_common.get("required_files", []) or [])
     require_single_h5 = bool(scan_common.get("require_single_h5", True))
+    require_regional_outputs = bool(scan_common.get("require_regional_outputs", False))
+    regional_outputs_spec = _as_dict(scan_common.get("regional_outputs", {}))
+    regional_outputs_required_paths = list(regional_outputs_spec.get("required_paths", []) or [])
+    regional_outputs_required_attrs = _as_dict(regional_outputs_spec.get("required_attrs", {}))
 
     eeg_spec = _as_dict(spec_d.get("eeg", {}))
     fmri_spec = _as_dict(spec_d.get("fmri", {}))
@@ -168,6 +167,11 @@ def check_run_dir(
                     if "regions" in h5 and modality != "fmri":
                         modality = "fmri"
 
+                    if require_regional_outputs:
+                        issues.extend(_check_h5_paths(h5, regional_outputs_required_paths))
+                        for grp, attrs in regional_outputs_required_attrs.items():
+                            issues.extend(_check_h5_group_attrs(h5, str(grp), list(attrs or [])))
+
                     if modality == "eeg":
                         if not eeg_enabled:
                             issues.append("eeg_disabled_in_spec")
@@ -183,11 +187,6 @@ def check_run_dir(
                                 for grp, attrs in fmri_regions_required_attrs.items():
                                     issues.extend(_check_h5_group_attrs(h5, str(grp), list(attrs or [])))
 
-                                # Optional: cross-check against summary.json extension marker
-                                ext = summary.get("extensions", {})
-                                if isinstance(ext, Mapping) and "regional_data_available" in ext:
-                                    if not bool(ext.get("regional_data_available")):
-                                        issues.append("summary_reports_no_regional_data_available")
             except Exception as exc:
                 issues.append(f"h5_read_error:{type(exc).__name__}")
 

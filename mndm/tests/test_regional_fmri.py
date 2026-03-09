@@ -117,9 +117,9 @@ def test_subject_runner_ingests_fmri_regions(monkeypatch, tmp_path):
     captured = {}
 
     monkeypatch.setattr(
-        summary_mod.h5_writer,
-        "write_h5",
-        lambda _path, _ds_label, payload, manifest: captured.setdefault("payload", payload),
+        summary_mod,
+        "write_summary_manifest_and_h5",
+        lambda **kwargs: captured.setdefault("payload", kwargs["payload"]),
     )
     monkeypatch.setattr(summary_mod.json_writer, "build_manifest", lambda *_args, **_kwargs: {})
     monkeypatch.setattr(summary_mod.json_writer, "write_json_summary", lambda *_, **__: None)

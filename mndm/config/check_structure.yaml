@@ -8,9 +8,11 @@
 # - Validate that each summarized recording directory contains required files
 #   (summary.json, qc_*.json, *.h5), and that the H5 file contains required
 #   groups/datasets/attrs.
-# - For fMRI outputs, optionally enforce that regional BOLD is embedded under:
-#     /regions/bold, /regions/names, and regions.attrs["sfreq"]
-#   (this is the "raw contract" that downstream regional MNPS expects).
+# - Optionally enforce canonical regional outputs under:
+#     /regional_mnps
+#   regardless of modality.
+# - For fMRI outputs, optionally enforce that raw regional BOLD is embedded under:
+#     /regions/bold, /regions/names, and regions.attrs["sfreq"].
 #
 # Modality detection (heuristic):
 # - A recording is treated as "fmri" when summary.json contains any key that
@@ -44,6 +46,11 @@ common:
     - "qc_reliability.json"
   # If true, require that exactly one .h5 exists in each recording directory.
   require_single_h5: true
+  # Canonical modality-agnostic regional output contract.
+  require_regional_outputs: false
+  regional_outputs:
+    required_paths:
+      - "/regional_mnps"
 
 eeg:
   enabled: true
@@ -52,10 +59,27 @@ eeg:
     - "/mnps_3d"
     - "/mnps_3d_dot"
     - "/jacobian"
+    - "/features_raw"
+    - "/features_raw/values"
+    - "/features_raw/names"
+    - "/features_robust_z"
+    - "/features_robust_z/values"
+    - "/features_robust_z/names"
 
 fmri:
   enabled: true
-  # Enforce regional BOLD embedding in H5
+  h5_required_paths:
+    - "/time"
+    - "/mnps_3d"
+    - "/mnps_3d_dot"
+    - "/jacobian"
+    - "/features_raw"
+    - "/features_raw/values"
+    - "/features_raw/names"
+    - "/features_robust_z"
+    - "/features_robust_z/values"
+    - "/features_robust_z/names"
+  # Enforce raw fMRI regional signal embedding in H5.
   require_regions: true
   regions:
     required_paths:

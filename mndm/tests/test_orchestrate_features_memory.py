@@ -16,10 +16,10 @@ def test_cap_workers_by_memory_reduces_parallelism_for_large_edf():
     workers, est_gb = orchestrate._cap_workers_by_memory(  # type: ignore[attr-defined]
         requested_workers=6,
         file_tasks=tasks,
-        mem_budget_gb=4.0,
+        mem_budget_gb=2.0,
     )
-    assert est_gb >= 1.0
-    assert workers == 2
+    assert 0.4 <= est_gb <= 0.7
+    assert workers == 3
 
 
 def test_cap_workers_by_memory_keeps_requested_when_budget_allows():
@@ -29,9 +29,9 @@ def test_cap_workers_by_memory_keeps_requested_when_budget_allows():
     workers, est_gb = orchestrate._cap_workers_by_memory(  # type: ignore[attr-defined]
         requested_workers=6,
         file_tasks=tasks,
-        mem_budget_gb=16.0,
+        mem_budget_gb=4.0,
     )
-    assert est_gb >= 1.0
+    assert 0.4 <= est_gb <= 0.7
     assert workers == 6
 
 
@@ -40,6 +40,6 @@ def test_estimate_peak_ram_per_file_returns_model_label():
         Path("sub-01_task-rest_eeg.edf"),
         150 * 1024 * 1024,
     )
-    assert est_gb >= 1.0
-    assert isinstance(model, str) and len(model) > 0
+    assert 0.4 <= est_gb <= 0.7
+    assert model == "size_fallback_edf_v2"
 

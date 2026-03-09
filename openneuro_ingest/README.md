@@ -229,15 +229,16 @@ noetic_output/<dataset_id>/
 | Path | Shape | Description |
 |------|-------|-------------|
 | `/time` | (T,) | Time index (seconds) |
-| `/x` | (T, 3) | MNPS coordinates [m, d, e] |
-| `/x_dot` | (T, 3) | MNPS time derivatives |
-| `/coords_v2` | (T, 9) | Stratified subcoordinates |
+| `/mnps` | (T, 3) | MNPS coordinates [m, d, e] |
+| `/mnps_dot` | (T, 3) | MNPS time derivatives |
+| `/coords_9d` | (T, 9) | Stratified subcoordinates |
 | `/jacobian` | (W, 3, 3) | Local Jacobian matrices |
 | `/jacobian_dot` | (W-1, 3, 3) | Jacobian time derivatives |
 | `/jacobian_centers` | (W,) | Window center indices |
 | `/nn/indices` | (T, k) | kNN neighbor indices |
 | `/labels/stage` | (T,) | Sleep stage labels |
-| `/regions/bold` | (R, T') | Regional fMRI time series |
+| `/regional_mnps/<network>/mnps` | (Tr, 3) | Canonical regional MNPS output for any modality |
+| `/regions/bold` | (R, T') | Optional raw regional fMRI time series |
 | `/extensions/e_kappa/*` | varies | Energetic curvature |
 | `/extensions/rfm/*` | varies | Resonant frequency modes |
 | `/extensions/o_koh/*` | varies | Organizational coherence |

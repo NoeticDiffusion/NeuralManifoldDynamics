@@ -1,4 +1,4 @@
-version: 1.2
+version: 2.0
 modality: eeg
 
 # Common EEG defaults. Copy into per-dataset configs.
@@ -120,7 +120,14 @@ mnps_projection:
       e_m: 0.03  # Tertiary (Embodiment / Broadband magnitude / Artifact proxy)
 
   feature_standardization:
-    default: ["log10", "robust_z", "clip"]
+    default: ["robust_z", "clip"]
+    eeg_delta: ["log10", "robust_z", "clip"]
+    eeg_theta: ["log10", "robust_z", "clip"]
+    eeg_alpha: ["log10", "robust_z", "clip"]
+    eeg_beta: ["log10", "robust_z", "clip"]
+    eeg_gamma: ["log10", "robust_z", "clip"]
+    eeg_alpha_theta: ["robust_z", "clip"]
+    eeg_beta_alpha: ["robust_z", "clip"]
     eeg_sample_entropy: ["robust_z", "clip"]
     eeg_permutation_entropy: ["robust_z", "clip"]
     eeg_spectral_entropy: ["robust_z", "clip"]

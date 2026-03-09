@@ -158,15 +158,21 @@ def _estimate_peak_ram_per_file(file_path: Path, file_size_bytes: int) -> tuple[
             n_records = float(hdr.get("n_records", 0.0) or 0.0)
             max_spr = float(hdr.get("max_samples_per_record", 0.0) or 0.0)
             if n_signals > 0 and n_records > 0 and max_spr > 0:
-                # Approx. dense float64 matrix created during EDF segment read path.
+                # Approximate peak worker RAM for EDF preprocessing.
+                #
+                # The old model assumed a very pessimistic float64-dense path with
+                # multiple transient copies and a hard >=1.2 GB floor. Empirical
+                # runs have shown typical EEG workers are closer to ~0.5 GB, so we
+                # keep a safety margin but calibrate the estimate toward observed
+                # worker peaks instead of a worst-case synthetic allocation stack.
                 dense_matrix_gb = (n_signals * n_records * max_spr * 8.0) / (1024.0 ** 3)
-                # Transient allocations + Python/metadata overhead + safety factor.
-                est = ((dense_matrix_gb * 2.2) + 0.5) * 1.15
+                # One main dense allocation plus moderate transient overhead.
+                est = dense_matrix_gb * 1.15 + 0.12
                 # Guardrail against underestimation from malformed headers.
-                est = max(est, size_gb * 1.3, 1.2)
-                return float(est), "edf_header_v1"
+                est = max(est, size_gb * 1.05, 0.45)
+                return float(est), "edf_header_v2"
         # Fallback when header parsing fails.
-        return float(max(1.2, size_gb * 3.8)), "size_fallback_edf_v1"
+        return float(max(0.45, size_gb * 1.8)), "size_fallback_edf_v2"
     if suffixes.endswith(".vhdr") or suffixes.endswith(".eeg") or suffixes.endswith(".set"):
         return float(max(0.9, size_gb * 3.5)), "size_fallback_eeg_v1"
     if suffixes.endswith(".nii") or suffixes.endswith(".nii.gz"):
@@ -679,6 +685,7 @@ def cmd_summarize(
     data_dir: Path | None = None,
     subject: str | None = None,
     h5_mode: str = "subject",
+    n_jobs: int = 1,
     mnps_overrides: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Project features to MNPS tensors and write HDF5/JSON outputs."""
@@ -688,7 +695,7 @@ def cmd_summarize(
     except Exception as exc:
         logger.error(f"Summarization failed: {exc}")
         return 1
-    return _summarize_with_context(ctx, dataset_ids, subject, h5_mode)
+    return _summarize_with_context(ctx, dataset_ids, subject, h5_mode, n_jobs=n_jobs)
 
 
 def cmd_check_structure(
@@ -734,11 +741,12 @@ def _summarize_with_context(
     dataset_ids: list[str],
     subject: str | None = None,
     h5_mode: str = "subject",
+    n_jobs: int = 1,
 ) -> int:
     """Internal helper that assumes `SummarizeContext` has been resolved."""
     try:
         for ds_id in dataset_ids:
-            DatasetSummaryRunner(ctx, ds_id, subject, h5_mode).run()
+            DatasetSummaryRunner(ctx, ds_id, subject, h5_mode, n_jobs=n_jobs).run()
 
         return 0
     except Exception as e:

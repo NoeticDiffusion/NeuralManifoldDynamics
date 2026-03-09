@@ -71,3 +71,26 @@ def test_normalize_coords_9d_can_allow_all_non_finite_columns():
     assert diag["all_non_finite_names"] == ["e_e"]
     assert diag["all_non_finite_count"] == 1
 
+
+def test_normalize_payload_validates_feature_surfaces_and_metadata():
+    from mndm.schema import normalize_payload
+
+    payload = _base_payload()
+    payload.features_raw_values = np.arange(8, dtype=np.float32).reshape(4, 2)
+    payload.features_raw_names = ["eeg_alpha", "eeg_alpha__g_frontal"]
+    payload.features_robust_z_values = np.zeros((4, 2), dtype=np.float32)
+    payload.features_robust_z_names = ["eeg_alpha", "eeg_alpha__g_frontal"]
+    payload.feature_metadata = {
+        "feature_name": np.array(["eeg_alpha", "eeg_alpha"], dtype=object),
+        "group_label": np.array(["", "frontal"], dtype=object),
+        "used_by_mnps_3d": np.array([1, 0], dtype=np.int8),
+    }
+
+    out = normalize_payload(payload)
+    assert out.features_raw_values is not None
+    assert out.features_raw_values.shape == (4, 2)
+    assert out.features_robust_z_values is not None
+    assert out.features_robust_z_values.shape == (4, 2)
+    assert out.features_raw_names == ["eeg_alpha", "eeg_alpha__g_frontal"]
+    assert set(out.feature_metadata.keys()) == {"feature_name", "group_label", "used_by_mnps_3d"}
+

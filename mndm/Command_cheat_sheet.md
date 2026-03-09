@@ -1,8 +1,8 @@
 # MNDM + OpenNeuro Ingest CLI Reference
 
 Quick command reference for the split pipeline:
-- `openneuro` handles download + indexing + features
-- `mndm` handles MNPS summarization + Jacobians + exports
+- `openneuro` handles dataset download
+- `mndm` handles features, summarization, Jacobians, exports, packing, and checks
 
 ---
 
@@ -16,7 +16,12 @@ python -m venv .venv
 # Install dependencies
 pip install -U pip
 pip install -r requirements.txt
-pip install openneuro-py
+```
+
+If you run from this monorepo checkout without installing the packages editably, set `PYTHONPATH` first:
+
+```powershell
+$env:PYTHONPATH="H:/SourceRepo2/NeuralManifoldDynamics/mndm/src;H:/SourceRepo2/NeuralManifoldDynamics/core/src;H:/SourceRepo2/NeuralManifoldDynamics/openneuro_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/apollo_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/vitaldb_ingest/src"
 ```
 
 ---
@@ -58,6 +63,9 @@ python -m mndm.cli features --dataset ds003490
 # Summarize (MNPS + Jacobians)
 python -m mndm.cli summarize --dataset ds003490
 
+# Run features -> summarize in one command
+python -m mndm.cli all --dataset ds003490
+
 # Re-run summarize only
 python -m mndm.cli resummarize --dataset ds003490
 
@@ -77,6 +85,8 @@ python -m mndm.cli check-structure --dataset ds003490
 --data-dir PATH                   Raw data directory override
 --subject ID                      Process single subject, e.g., 001
 --h5-mode {dataset,subject}       HDF5 output granularity (default: subject)
+--n-jobs N                        Parallel workers (default: min(cores, 6))
+--mem-budget-gb N                 Memory budget in GB for worker scaling
 ```
 
 ### MNPS Overrides
@@ -97,10 +107,11 @@ python -m mndm.cli check-structure --dataset ds003490
 # 1) Download (ingest)
 python -m openneuro.cli download --dataset ds003490
 
-# 2) Features (mndm)
-python -m mndm.cli features --dataset ds003490
+# 2) Recommended one-step MNDM run
+python -m mndm.cli all --dataset ds003490
 
-# 3) Summarize (mndm)
+# 3) Or run the stages separately
+python -m mndm.cli features --dataset ds003490
 python -m mndm.cli summarize --dataset ds003490
 
 # 4) (Optional) Pack H5
@@ -115,14 +126,16 @@ python -m mndm.cli pack --dataset ds003490
 <processed_dir>/
 └── <dataset_id>/
     ├── file_index.csv                    # BIDS file index
-    ├── features.csv                      # Per-epoch features
+    ├── features.csv / features.parquet   # Per-epoch features
     ├── failed_files.txt                  # Failed file log (if any)
-    └── mnps_<dataset_id>_<timestamp>/
-        └── <sub_id>[_<ses_id>]/          
+    └── neuralmanifolddynamics_<dataset_id>_<timestamp>/
+        ├── features_snapshot.json        # Snapshot of feature columns and stats
+        ├── run_manifest.json             # Run-level manifest and capability summary
+        └── <subject_run_dir>/
             ├── summary.json              # MNPS manifest + meta-indices
             ├── qc_reliability.json       # Split-half reliability
             ├── qc_summary.json           # Coverage + QC flags
-            └── <sub_id>[_<ses_id>].h5    # MNPS tensors
+            └── <subject_run_dir>.h5      # MNPS tensors
 ```
 
 ---
@@ -135,6 +148,7 @@ python -m mndm.cli pack --dataset ds003490
 | Slow downloads | Re-run; partial files resume automatically |
 | JSON serialization error | Update to latest code version |
 | Out of memory | Reduce `--n-jobs` |
+| Parquet warnings | Ensure `pyarrow` is installed in `.venv` |
 | Missing features | Check `failed_files.txt` for errors |
 
 ---
@@ -167,6 +181,7 @@ python openneuro_ingest\src\presigned_fallback.py --script H:\path\to\openneuro_
 ```powershell
 # Remove temporary feature files
 Remove-Item <processed_dir>\<dataset>\features_*.csv
+Remove-Item <processed_dir>\<dataset>\features_*.parquet
 
 # Clear failed files log (to retry all)
 Remove-Item <processed_dir>\<dataset>\failed_files.txt

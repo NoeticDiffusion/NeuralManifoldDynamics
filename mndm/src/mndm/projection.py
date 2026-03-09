@@ -14,7 +14,9 @@ tensor pipeline:
 
 from __future__ import annotations
 
+import json
 import logging
+import re
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
@@ -35,6 +37,26 @@ logger = logging.getLogger(__name__)
 
 AXES = ("m", "d", "e")
 ROBUST_MAD_TO_SIGMA = 1.4826
+FEATURE_EXPORT_EXACT_EXCLUDED = {
+    "file",
+    "epoch_id",
+    "t_start",
+    "t_end",
+    "framewise_displacement",
+    "stage",
+    "stage_code",
+    "sleep_stage",
+    "labels_stage",
+    "eeg_entropy_construct",
+    "eeg_entropy_metric",
+    "eeg_entropy_backend",
+    "eeg_entropy_reason",
+    "eeg_entropy_degraded_mode",
+}
+FEATURE_EXPORT_PREFIX_EXCLUDED = (
+    "qc_ok_",
+)
+REGIONAL_FEATURE_RE = re.compile(r"^(?P<base>.+)__g_(?P<group>[A-Za-z0-9_]+)$")
 
 
 def _normalize_matrix_unit_interval(
@@ -82,6 +104,207 @@ def _normalize_matrix_unit_interval(
     return out
 
 
+def _resolve_feature_pipeline(
+    col: str,
+    pipeline_map: Optional[Mapping[str, Sequence[str]]] = None,
+) -> list[str]:
+    pipeline = None
+    if pipeline_map and col in pipeline_map:
+        pipeline = pipeline_map[col]
+    elif pipeline_map and "default" in pipeline_map:
+        pipeline = pipeline_map["default"]
+    if pipeline is None:
+        pipeline = ["robust_z", "clip"]
+    return [str(step).strip().lower() for step in pipeline if str(step).strip()]
+
+
+def _format_pipeline_steps(pipeline: Sequence[str], clip_thresh: float) -> list[str]:
+    applied_steps: list[str] = []
+    for step in pipeline:
+        step_str = str(step).strip().lower()
+        if step_str == "log10":
+            applied_steps.append("log10")
+        elif step_str in ("robust_z", "robust"):
+            applied_steps.append("robust_z")
+        elif step_str == "z":
+            applied_steps.append("z")
+        elif step_str == "clip":
+            applied_steps.append(f"clip_{clip_thresh}")
+    return applied_steps
+
+
+def _robust_center_and_scale(values: np.ndarray, eps: float = 1e-9) -> tuple[float, float]:
+    finite_vals = np.asarray(values, dtype=np.float32)
+    if finite_vals.size == 0:
+        return float("nan"), float("nan")
+    center = float(np.nanmedian(finite_vals))
+    scale = float(np.nanmedian(np.abs(finite_vals - center))) * ROBUST_MAD_TO_SIGMA
+    if not np.isfinite(scale) or scale <= eps:
+        scale = eps
+    return center, scale
+
+
+def _strict_robust_z_column(col_data: np.ndarray, eps: float = 1e-9) -> tuple[np.ndarray, float, float]:
+    transformed = np.full(col_data.shape, np.nan, dtype=np.float32)
+    mask = np.isfinite(col_data)
+    if not mask.any():
+        return transformed, float("nan"), float("nan")
+    finite_vals = np.asarray(col_data[mask], dtype=np.float32)
+    center, scale = _robust_center_and_scale(finite_vals, eps=eps)
+    transformed[mask] = (finite_vals - center) / scale
+    return transformed, center, scale
+
+
+def is_export_feature_column(name: str, series: pd.Series) -> bool:
+    col = str(name).strip()
+    if not col or col in FEATURE_EXPORT_EXACT_EXCLUDED:
+        return False
+    if any(col.startswith(prefix) for prefix in FEATURE_EXPORT_PREFIX_EXCLUDED):
+        return False
+    return bool(pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series))
+
+
+def select_export_feature_columns(features_df: pd.DataFrame) -> list[str]:
+    """Return stable per-epoch feature columns suitable for H5 export."""
+    cols: list[str] = []
+    for col in features_df.columns:
+        if is_export_feature_column(str(col), features_df[col]):
+            cols.append(str(col))
+    return cols
+
+
+def build_feature_export_bundle(
+    features_df: pd.DataFrame,
+    *,
+    direct_features: Optional[Sequence[str]] = None,
+    v2_features: Optional[Sequence[str]] = None,
+    normalize_mode: Optional[str] = None,
+    feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
+    clip_threshold: float = 6.0,
+    entropy_meta: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Build raw/strict-robust-z feature surfaces and machine-readable metadata."""
+    feature_cols = select_export_feature_columns(features_df)
+    n_rows = int(len(features_df))
+    if not feature_cols:
+        return {
+            "raw_values": np.zeros((n_rows, 0), dtype=np.float32),
+            "raw_names": [],
+            "robust_z_values": np.zeros((n_rows, 0), dtype=np.float32),
+            "robust_z_names": [],
+            "metadata": {},
+        }
+
+    direct_set = {str(v) for v in (direct_features or [])}
+    v2_set = {str(v) for v in (v2_features or [])}
+    raw_values = np.full((n_rows, len(feature_cols)), np.nan, dtype=np.float32)
+    robust_z_values = np.full((n_rows, len(feature_cols)), np.nan, dtype=np.float32)
+
+    metadata: Dict[str, list[Any]] = {
+        "feature_name": [],
+        "source_column": [],
+        "group_label": [],
+        "is_regional": [],
+        "used_by_mnps_3d": [],
+        "used_by_coords_9d": [],
+        "used_by_regional_projection": [],
+        "used_anywhere": [],
+        "projection_normalize_mode": [],
+        "projection_transform_applied": [],
+        "projection_transform_steps": [],
+        "raw_abs_median": [],
+        "raw_abs_mad": [],
+        "robust_z_center": [],
+        "robust_z_scale": [],
+        "backend": [],
+        "degraded_mode": [],
+        "fallback_reason": [],
+    }
+    entropy_meta = dict(entropy_meta or {})
+    entropy_backend = str(entropy_meta.get("backend", "")) if entropy_meta.get("backend") is not None else ""
+    entropy_degraded = bool(entropy_meta.get("degraded_mode", False))
+    entropy_reason = str(entropy_meta.get("reason", "")) if entropy_meta.get("reason") is not None else ""
+
+    for idx, col in enumerate(feature_cols):
+        col_values = pd.to_numeric(features_df[col], errors="coerce").to_numpy(dtype=np.float32, copy=True)
+        raw_values[:, idx] = col_values
+        strict_robust_z, center, scale = _strict_robust_z_column(col_values)
+        robust_z_values[:, idx] = strict_robust_z
+
+        match = REGIONAL_FEATURE_RE.match(col)
+        if match:
+            base_name = str(match.group("base")).strip()
+            group_label = str(match.group("group")).strip()
+            is_regional = True
+        else:
+            base_name = col
+            group_label = ""
+            is_regional = False
+
+        projection_steps = _format_pipeline_steps(
+            _resolve_feature_pipeline(base_name, feature_standardization),
+            clip_threshold,
+        )
+        projection_transform_applied = " -> ".join(projection_steps) if normalize_mode else "none"
+        used_by_mnps_3d = int(col in direct_set or base_name in direct_set)
+        used_by_coords_9d = int(col in v2_set or base_name in v2_set)
+        used_by_regional_projection = int(is_regional and (base_name in direct_set or base_name in v2_set))
+        is_entropy_feature = "entropy" in base_name.lower()
+
+        finite_vals = col_values[np.isfinite(col_values)]
+        raw_median, raw_mad = _robust_center_and_scale(finite_vals)
+
+        metadata["feature_name"].append(base_name)
+        metadata["source_column"].append(col)
+        metadata["group_label"].append(group_label)
+        metadata["is_regional"].append(int(is_regional))
+        metadata["used_by_mnps_3d"].append(used_by_mnps_3d)
+        metadata["used_by_coords_9d"].append(used_by_coords_9d)
+        metadata["used_by_regional_projection"].append(used_by_regional_projection)
+        metadata["used_anywhere"].append(int(bool(used_by_mnps_3d or used_by_coords_9d or used_by_regional_projection)))
+        metadata["projection_normalize_mode"].append(str(normalize_mode) if normalize_mode else "none")
+        metadata["projection_transform_applied"].append(projection_transform_applied)
+        metadata["projection_transform_steps"].append(json.dumps(projection_steps, ensure_ascii=False))
+        metadata["raw_abs_median"].append(raw_median)
+        metadata["raw_abs_mad"].append(raw_mad)
+        metadata["robust_z_center"].append(center)
+        metadata["robust_z_scale"].append(scale)
+        metadata["backend"].append(entropy_backend if is_entropy_feature else "")
+        metadata["degraded_mode"].append(int(entropy_degraded if is_entropy_feature else False))
+        metadata["fallback_reason"].append(entropy_reason if is_entropy_feature else "")
+
+    normalized_metadata: Dict[str, np.ndarray] = {}
+    for key, values in metadata.items():
+        if key in {
+            "feature_name",
+            "source_column",
+            "group_label",
+            "projection_normalize_mode",
+            "projection_transform_applied",
+            "projection_transform_steps",
+            "backend",
+            "fallback_reason",
+        }:
+            normalized_metadata[key] = np.asarray([str(v) for v in values], dtype=object)
+        elif key in {
+            "raw_abs_median",
+            "raw_abs_mad",
+            "robust_z_center",
+            "robust_z_scale",
+        }:
+            normalized_metadata[key] = np.asarray(values, dtype=np.float32)
+        else:
+            normalized_metadata[key] = np.asarray(values, dtype=np.int8)
+
+    return {
+        "raw_values": raw_values,
+        "raw_names": list(feature_cols),
+        "robust_z_values": robust_z_values,
+        "robust_z_names": list(feature_cols),
+        "metadata": normalized_metadata,
+    }
+
+
 def _normalize_used_columns(
     df: pd.DataFrame, 
     used_cols: Sequence[str], 
@@ -91,10 +314,13 @@ def _normalize_used_columns(
 ) -> tuple[pd.DataFrame, dict]:
     """Normalize selected columns in a DataFrame copy.
     
-    Applies deterministic standardization (Log10 -> Robust Z -> Clip) to raw features prior to 
-    MNPS projection. Ensures numerical stability and commensurate scaling across disparate metrics 
-    (power, ratios, complexity) to prevent singular matrices during downstream local Jacobian estimation, 
-    while retaining absolute scaling parameters as metadata for macro-state baseline comparisons.
+    Applies deterministic per-feature standardization prior to MNPS projection.
+    The intended policy is:
+    - power / bandpower features: log10 -> robust_z -> clip
+    - entropy / Hjorth / similar bounded or signed metrics: robust_z -> clip
+    - ratios: only transformed through explicit per-feature overrides
+    while retaining absolute scaling parameters as metadata for audit and
+    macro-state baseline comparisons.
     """
     if not normalize or not used_cols:
         return df, {}
@@ -125,18 +351,7 @@ def _normalize_used_columns(
             "abs_mad": raw_mad,
         }
         
-        # Determine pipeline
-        pipeline = None
-        if pipeline_map and col in pipeline_map:
-            pipeline = pipeline_map[col]
-        elif pipeline_map and "default" in pipeline_map:
-            pipeline = pipeline_map["default"]
-            
-        if pipeline is None:
-            # Fallback if no specific rule applies. Entropy should NEVER be log10-transformed blind.
-            # Ratios and power are usually >0 but log10 is now explicitly configured. 
-            # We default to just robust_z and clip unless explicitly requested otherwise.
-            pipeline = ["robust_z", "clip"]
+        pipeline = _resolve_feature_pipeline(col, pipeline_map)
                 
         transformed = col_data.copy()
         applied_steps = []
@@ -291,7 +506,6 @@ def project_features_with_coverage(
     if not used_cols:
         return x, coverage, baselines
 
-    baselines = {}
     if normalize:
         features_df_norm, _ = _normalize_used_columns(
             features_df, 
@@ -376,7 +590,13 @@ def project_features_v2(
 
     baselines = {}
     if normalize:
-        features_df, baselines = _normalize_used_columns(features_df, used_cols, normalize)
+        features_df, baselines = _normalize_used_columns(
+            features_df,
+            used_cols,
+            normalize,
+            pipeline_map=feature_standardization,
+            clip_thresh=clip_threshold,
+        )
 
     X = features_df.loc[:, used_cols].to_numpy(dtype=np.float32, copy=True)
     X[~np.isfinite(X)] = np.nan

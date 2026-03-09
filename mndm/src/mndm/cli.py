@@ -153,10 +153,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
     elif args.command == "summarize":
         from . import orchestrate
-        return orchestrate.cmd_summarize(config, dataset_ids, args.out_dir, args.data_dir, subject=args.subject, h5_mode=args.h5_mode, mnps_overrides=_mnps_overrides_from_args(args))
+        return orchestrate.cmd_summarize(
+            config,
+            dataset_ids,
+            args.out_dir,
+            args.data_dir,
+            subject=args.subject,
+            h5_mode=args.h5_mode,
+            n_jobs=n_jobs,
+            mnps_overrides=_mnps_overrides_from_args(args),
+        )
     elif args.command == "resummarize":
         from . import orchestrate
-        return orchestrate.cmd_summarize(config, dataset_ids, args.out_dir, args.data_dir, subject=args.subject, h5_mode=args.h5_mode, mnps_overrides=_mnps_overrides_from_args(args))
+        return orchestrate.cmd_summarize(
+            config,
+            dataset_ids,
+            args.out_dir,
+            args.data_dir,
+            subject=args.subject,
+            h5_mode=args.h5_mode,
+            n_jobs=n_jobs,
+            mnps_overrides=_mnps_overrides_from_args(args),
+        )
     elif args.command == "pack":
         _, processed_base = resolve_paths(config, args.out_dir, args.data_dir)
         ok = True
@@ -204,7 +222,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         return orchestrate.cmd_summarize(
             config, dataset_ids, args.out_dir, args.data_dir,
-            subject=args.subject, h5_mode=args.h5_mode, mnps_overrides=_mnps_overrides_from_args(args)
+            subject=args.subject, h5_mode=args.h5_mode, n_jobs=n_jobs, mnps_overrides=_mnps_overrides_from_args(args)
         )
     else:
         parser.error("Unknown command")

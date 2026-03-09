@@ -5,16 +5,19 @@ Dataset- and subject-level MNPS summarization runners.
 
 from __future__ import annotations
 
+import multiprocessing
 import hashlib
 import json
 import logging
 import platform
 import subprocess
 import sys
-from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
 import re
+from threading import Lock
 from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
@@ -443,14 +446,16 @@ def _load_mnps_9d_policy(policy_dir: str, dataset_id: str) -> Dict[str, Any]:
 class DatasetSummaryRunner:
     """Encapsulate dataset-level summarization logic."""
 
-    def __init__(self, ctx: SummarizeContext, ds_id: str, subject_filter: Optional[str], h5_mode: str):
+    def __init__(self, ctx: SummarizeContext, ds_id: str, subject_filter: Optional[str], h5_mode: str, n_jobs: int = 1):
         self.ctx = ctx
         self.ds_id = ds_id
         self.subject_filter = self._normalize_subject(subject_filter) if subject_filter else None
         self.h5_mode = h5_mode
+        self.n_jobs = max(1, int(n_jobs or 1))
         self.config = ctx.config
         self.received_dir = ctx.received_dir
         self.processed_dir = ctx.processed_dir
+        self._dataset_csv_lock = Lock()
         # Global coverage defaults, with optional dataset-specific overrides
         self.min_seconds = self.ctx.coverage.min_seconds
         self.min_epochs = self.ctx.coverage.min_epochs
@@ -655,24 +660,24 @@ class DatasetSummaryRunner:
 
         mnps_dir = self._create_output_dir(ds_path)
         self._write_features_snapshot(mnps_dir, features_df)
-
-        for (sub_id, ses_id, raw_task, run_id, acq_id), sub_frame in grouping_items:
-            # Convert pandas NaN to Python None (pandas groupby converts None → NaN)
-            if pd.isna(ses_id):
-                ses_id = None
-            if pd.isna(raw_task):
-                raw_task = None
-            if pd.isna(run_id):
-                run_id = None
-            if pd.isna(acq_id):
-                acq_id = None
-            runner = SubjectSummaryRunner(
-                dataset_runner=self,
-                ds_path=ds_path,
-                mnps_dir=mnps_dir,
-                index_df=self.index_df,
+        max_workers = min(max(1, self.n_jobs), len(grouping_items), multiprocessing.cpu_count())
+        if max_workers > 1:
+            logger.info(
+                "Using %d summarize workers for %s (%d grouped recordings)",
+                max_workers,
+                self.ds_id,
+                len(grouping_items),
             )
-            runner.run(sub_id=sub_id, ses_id=ses_id, raw_task=raw_task, run_id=run_id, acq_id=acq_id, sub_frame=sub_frame)
+            with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                futures = [
+                    ex.submit(self._process_grouping_item, ds_path, mnps_dir, grouping_key, sub_frame)
+                    for grouping_key, sub_frame in grouping_items
+                ]
+                for fut in futures:
+                    fut.result()
+        else:
+            for grouping_key, sub_frame in grouping_items:
+                self._process_grouping_item(ds_path, mnps_dir, grouping_key, sub_frame)
 
         # Write a run-level manifest for quick inspection (humans + LLMs).
         try:
@@ -693,6 +698,81 @@ class DatasetSummaryRunner:
             )
         except Exception:
             logger.exception("Failed to write run_manifest.json for %s (%s)", self.ds_id, mnps_dir)
+
+    def _normalize_grouping_key(
+        self,
+        grouping_key: tuple[Any, Any, Any, Any, Any],
+    ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+        sub_id, ses_id, raw_task, run_id, acq_id = grouping_key
+        if pd.isna(ses_id):
+            ses_id = None
+        if pd.isna(raw_task):
+            raw_task = None
+        if pd.isna(run_id):
+            run_id = None
+        if pd.isna(acq_id):
+            acq_id = None
+        sub_id = sub_id if str(sub_id).startswith("sub-") else f"sub-{str(sub_id).zfill(3)}"
+        return str(sub_id), ses_id, raw_task, run_id, acq_id
+
+    def _process_grouping_item(
+        self,
+        ds_path: Path,
+        mnps_dir: Path,
+        grouping_key: tuple[Any, Any, Any, Any, Any],
+        sub_frame: pd.DataFrame,
+    ) -> None:
+        sub_id, ses_id, raw_task, run_id, acq_id = self._normalize_grouping_key(grouping_key)
+        runner = SubjectSummaryRunner(
+            dataset_runner=self,
+            ds_path=ds_path,
+            mnps_dir=mnps_dir,
+            index_df=self.index_df,
+        )
+        runner.run(
+            sub_id=sub_id,
+            ses_id=ses_id,
+            raw_task=raw_task,
+            run_id=run_id,
+            acq_id=acq_id,
+            sub_frame=sub_frame,
+        )
+
+    def write_regional_csv_outputs_threadsafe(
+        self,
+        *,
+        regional_mnps_results: Any,
+        regional_mnps_cfg: Mapping[str, Any],
+        mnps_dir: Path,
+        config: Mapping[str, Any],
+        dataset_label: str,
+    ) -> None:
+        with self._dataset_csv_lock:
+            write_regional_csv_outputs(
+                regional_mnps_results=regional_mnps_results,
+                regional_mnps_cfg=regional_mnps_cfg,
+                mnps_dir=mnps_dir,
+                config=config,
+                dataset_label=dataset_label,
+            )
+
+    def write_stratified_blocks_csv_output_threadsafe(
+        self,
+        *,
+        stratified_blocks_result: Any,
+        config: Mapping[str, Any],
+        dataset_id: str,
+        mnps_dir: Path,
+        dataset_label: str,
+    ) -> None:
+        with self._dataset_csv_lock:
+            write_stratified_blocks_csv_output(
+                stratified_blocks_result=stratified_blocks_result,
+                config=config,
+                dataset_id=dataset_id,
+                mnps_dir=mnps_dir,
+                dataset_label=dataset_label,
+            )
 
     def _build_features_snapshot(self, features_df: pd.DataFrame) -> Dict[str, Any]:
         """Build a compact per-run features snapshot for provenance/Test-C."""
@@ -1542,7 +1622,7 @@ class SubjectSummaryRunner:
                     condition=condition,
                     task=task,
                     coords_9d_names=coords_9d_names,
-                    jacobian_v2=jac_res_v2.j_hat,
+                    jacobian_9D=jac_res_v2.j_hat,
                     config=config,
                 )
             except Exception:
@@ -1616,7 +1696,7 @@ class SubjectSummaryRunner:
             # Persist regional MNPS and block-Jacobian summaries at the
             # dataset level so they can be consumed by analysis code
             # without re-estimating Jacobians.
-            write_regional_csv_outputs(
+            self.dataset.write_regional_csv_outputs_threadsafe(
                 regional_mnps_results=regional_mnps_results,
                 regional_mnps_cfg=regional_mnps_cfg if isinstance(regional_mnps_cfg, Mapping) else {},
                 mnps_dir=self.mnps_dir,
@@ -1642,7 +1722,7 @@ class SubjectSummaryRunner:
             )
 
         # Optional: write Stratified (v2) block-Jacobian CSV into the MNPS run directory
-        write_stratified_blocks_csv_output(
+        self.dataset.write_stratified_blocks_csv_output_threadsafe(
             stratified_blocks_result=stratified_blocks_result,
             config=config,
             dataset_id=self.dataset.ds_id,
@@ -1746,6 +1826,31 @@ class SubjectSummaryRunner:
             )
 
         env_meta = _get_env_provenance()
+        feature_export_bundle = projection.build_feature_export_bundle(
+            sub_frame,
+            direct_features=direct_weighted_features,
+            v2_features=v2_weighted_features,
+            normalize_mode=normalize_mode,
+            feature_standardization=feature_standardization if isinstance(feature_standardization, Mapping) else None,
+            clip_threshold=clip_threshold,
+            entropy_meta=entropy_meta,
+        )
+        features_raw_values = np.asarray(feature_export_bundle.get("raw_values"), dtype=np.float32)
+        features_raw_names = list(feature_export_bundle.get("raw_names", []) or [])
+        features_robust_z_values = np.asarray(feature_export_bundle.get("robust_z_values"), dtype=np.float32)
+        features_robust_z_names = list(feature_export_bundle.get("robust_z_names", []) or [])
+        feature_metadata = dict(feature_export_bundle.get("metadata", {}) or {})
+        feature_names_hash = (
+            hashlib.sha256(
+                json.dumps(features_raw_names, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            ).hexdigest()
+            if features_raw_names
+            else None
+        )
+        features_raw_hash_saved = _stable_hash_array(features_raw_values) if features_raw_values.size else None
+        features_robust_z_hash_saved = (
+            _stable_hash_array(features_robust_z_values) if features_robust_z_values.size else None
+        )
 
         # Build payload
         payload = schema.MNPSPayload(
@@ -1761,10 +1866,15 @@ class SubjectSummaryRunner:
             jacobian=jac_res.j_hat,
             jacobian_dot=jac_res.j_dot,
             jacobian_centers=jac_res.centers,
-            jacobian_v2=jac_res_v2.j_hat if jac_res_v2 is not None else None,
-            jacobian_v2_dot=jac_res_v2.j_dot if jac_res_v2 is not None else None,
-            jacobian_v2_centers=jac_res_v2.centers if jac_res_v2 is not None else None,
+            jacobian_9D=jac_res_v2.j_hat if jac_res_v2 is not None else None,
+            jacobian_9D_dot=jac_res_v2.j_dot if jac_res_v2 is not None else None,
+            jacobian_9D_centers=jac_res_v2.centers if jac_res_v2 is not None else None,
             feature_baselines=merged_baselines,
+            features_raw_values=features_raw_values,
+            features_raw_names=features_raw_names,
+            features_robust_z_values=features_robust_z_values,
+            features_robust_z_names=features_robust_z_names,
+            feature_metadata=feature_metadata,
             attrs={
                 # Stable identity fields (used downstream for grouping/contrasts).
                 "dataset": self.dataset.ds_id,
@@ -1847,13 +1957,20 @@ class SubjectSummaryRunner:
                 "coords_9d_hash_knn_input": coords_9d_hash_knn_input,
                 "coords_9d_hash_jacobian_input": coords_9d_hash_jac_input,
                 "coords_9d_names": coords_9d_names if coords_9d_names else None,
+                "feature_export_scope": "all_numeric_feature_columns_excluding_metadata",
+                "feature_export_names_hash": feature_names_hash,
+                "features_raw_hash_saved": features_raw_hash_saved,
+                "features_robust_z_hash_saved": features_robust_z_hash_saved,
+                "features_raw_column_count": int(len(features_raw_names)),
+                "features_robust_z_column_count": int(len(features_robust_z_names)),
+                "feature_metadata_fields": sorted(feature_metadata.keys()) if feature_metadata else [],
             },
         )
         if v2_enabled and coords_9d_names and coords_9d is not None and coords_9d.size:
             payload.coords_9d = coords_9d.astype(np.float32)
             payload.coords_9d_names = coords_9d_names
         if stratified_blocks_result is not None and stratified_blocks_result.cross_partials_series:
-            payload.jacobian_v2_cross_partials = stratified_blocks_result.cross_partials_series
+            payload.jacobian_9D_cross_partials = stratified_blocks_result.cross_partials_series
         if regions_bold is not None:
             payload.regions_bold = regions_bold
             if regions_names is not None:
@@ -1911,7 +2028,7 @@ class SubjectSummaryRunner:
                 "seconds_assumed": coverage_seconds_assumed,
                 "seconds_method": coverage_method,
             },
-            "created_at": datetime.utcnow().isoformat() + "Z",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         if stratified_blocks_result is not None:
             if stratified_blocks_result.blocks_manifest:
@@ -1931,12 +2048,12 @@ class SubjectSummaryRunner:
                             "c_rot_mean": r.get("c_rot_mean"),
                         }
                     )
-                manifest_extra["jacobian_v2_blocks"] = {
+                manifest_extra["jacobian_9D_blocks"] = {
                     "config": stratified_blocks_result.blocks_manifest,
                     "rows": rows_light,
                 }
             if stratified_blocks_result.cross_partials_manifest:
-                manifest_extra["jacobian_v2_cross_partials"] = stratified_blocks_result.cross_partials_manifest
+                manifest_extra["jacobian_9D_cross_partials"] = stratified_blocks_result.cross_partials_manifest
         if ensemble_summary is not None:
             manifest_extra["ensemble_robustness"] = ensemble_summary
         if robust_summary:
@@ -1982,6 +2099,14 @@ class SubjectSummaryRunner:
         manifest_extra["provenance"] = {
             "mnps_9d_definition_version": v2_definition_version,
             "mnps_9d_constructs": mnps_9d_constructs,
+        }
+        manifest_extra["feature_exports"] = {
+            "raw_h5_path": "/features_raw",
+            "robust_z_h5_path": "/features_robust_z",
+            "scope": "all_numeric_feature_columns_excluding_metadata",
+            "column_count": int(len(features_raw_names)),
+            "names_hash": feature_names_hash,
+            "metadata_fields": sorted(feature_metadata.keys()) if feature_metadata else [],
         }
 
         # Add a clear note indicating that these tier-2 metrics are tentative and belong in the analysis repo

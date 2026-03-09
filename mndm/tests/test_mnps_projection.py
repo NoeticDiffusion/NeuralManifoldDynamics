@@ -245,6 +245,118 @@ def test_project_features_v2_missing_weighted_feature_renormalizes():
     assert np.allclose(values[0, 0], values[1, 0], atol=1e-6)
 
 
+def test_feature_standardization_policy_is_consistent_between_3d_and_9d():
+    from mndm.projection import project_features, project_features_v2
+
+    features_df = pd.DataFrame(
+        {
+            "epoch_id": [0, 1, 2],
+            "eeg_alpha": [10.0, 100.0, 1000.0],
+            "eeg_beta_alpha": [0.5, 1.0, 2.0],
+            "eeg_hjorth_mobility": [1.2, 1.5, 1.8],
+        }
+    )
+    feature_standardization = {
+        "default": ["robust_z", "clip"],
+        "eeg_alpha": ["log10", "robust_z", "clip"],
+        "eeg_beta_alpha": ["robust_z", "clip"],
+        "eeg_hjorth_mobility": ["robust_z", "clip"],
+    }
+
+    weights_3d = {
+        "m": {"eeg_alpha": 1.0},
+        "d": {"eeg_beta_alpha": 1.0},
+        "e": {"eeg_hjorth_mobility": 1.0},
+    }
+    subcoords_9d = {
+        "m_a": {"eeg_alpha": 1.0},
+        "d_s": {"eeg_beta_alpha": 1.0},
+        "d_l": {"eeg_hjorth_mobility": 1.0},
+    }
+
+    _, baselines_3d = project_features(
+        features_df,
+        weights_3d,
+        normalize="robust_z",
+        feature_standardization=feature_standardization,
+        clip_threshold=6.0,
+    )
+    _, _, baselines_9d = project_features_v2(
+        features_df,
+        subcoords_9d,
+        normalize="robust_z",
+        feature_standardization=feature_standardization,
+        clip_threshold=6.0,
+    )
+
+    assert baselines_3d["eeg_alpha"]["transformation_applied"] == "log10 -> robust_z -> clip_6.0"
+    assert baselines_9d["eeg_alpha"]["transformation_applied"] == "log10 -> robust_z -> clip_6.0"
+    assert baselines_3d["eeg_beta_alpha"]["transformation_applied"] == "robust_z -> clip_6.0"
+    assert baselines_9d["eeg_beta_alpha"]["transformation_applied"] == "robust_z -> clip_6.0"
+    assert baselines_3d["eeg_hjorth_mobility"]["transformation_applied"] == "robust_z -> clip_6.0"
+    assert baselines_9d["eeg_hjorth_mobility"]["transformation_applied"] == "robust_z -> clip_6.0"
+
+
+def test_project_features_with_coverage_preserves_direct_feature_baselines():
+    from mndm.projection import project_features_with_coverage
+
+    features_df = pd.DataFrame(
+        {
+            "epoch_id": [0, 1, 2],
+            "eeg_alpha": [10.0, 100.0, 1000.0],
+        }
+    )
+    weights = {
+        "m": {"eeg_alpha": 1.0},
+        "d": {},
+        "e": {},
+    }
+
+    _, _, baselines = project_features_with_coverage(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization={"eeg_alpha": ["log10", "robust_z", "clip"]},
+        clip_threshold=6.0,
+    )
+
+    assert baselines["eeg_alpha"]["transformation_applied"] == "log10 -> robust_z -> clip_6.0"
+
+
+def test_build_feature_export_bundle_exports_all_numeric_features_with_usage_metadata():
+    from mndm.projection import build_feature_export_bundle
+
+    features_df = pd.DataFrame(
+        {
+            "file": ["sub-001_task-rest_eeg.set", "sub-001_task-rest_eeg.set"],
+            "epoch_id": [0, 1],
+            "eeg_alpha": [10.0, 20.0],
+            "eeg_alpha__g_frontal": [11.0, 21.0],
+            "eeg_sample_entropy": [0.5, 0.7],
+            "qc_ok_eeg": [1, 1],
+        }
+    )
+
+    bundle = build_feature_export_bundle(
+        features_df,
+        direct_features=["eeg_alpha"],
+        v2_features=["eeg_sample_entropy"],
+        normalize_mode="robust_z",
+        feature_standardization={"eeg_alpha": ["log10", "robust_z", "clip"]},
+        clip_threshold=6.0,
+        entropy_meta={"backend": "numpy", "degraded_mode": True, "reason": "fallback"},
+    )
+
+    assert bundle["raw_names"] == ["eeg_alpha", "eeg_alpha__g_frontal", "eeg_sample_entropy"]
+    assert bundle["raw_values"].shape == (2, 3)
+    assert bundle["robust_z_values"].shape == (2, 3)
+    assert bundle["metadata"]["used_by_mnps_3d"].tolist() == [1, 1, 0]
+    assert bundle["metadata"]["used_by_coords_9d"].tolist() == [0, 0, 1]
+    assert bundle["metadata"]["used_by_regional_projection"].tolist() == [0, 1, 0]
+    assert bundle["metadata"]["group_label"].tolist() == ["", "frontal", ""]
+    assert bundle["metadata"]["backend"].tolist() == ["", "", "numpy"]
+
+
 def test_derive_mde_from_v2_group_mean():
     from mndm.projection import derive_mde_from_v2
 

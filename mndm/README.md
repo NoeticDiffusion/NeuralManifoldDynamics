@@ -1,8 +1,8 @@
 # MNDM (Meta-Noetic Diffusion Model)
 
-MNPS computation pipeline that consumes ingest outputs (e.g., `features.csv`) and produces MNPS summaries, Jacobians, and derived outputs.
+MNPS computation pipeline that computes per-epoch features and produces MNPS summaries, Jacobians, and derived outputs.
 
-Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package starts at feature projection/summarization.
+Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package covers feature extraction, summarization, packing, and structure checks.
 
 ## Overview
 
@@ -39,14 +39,15 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - Python 3.11+
 - Dependencies: `numpy`, `scipy`, `pandas`, `mne`, `h5py`, `pyyaml`, `tqdm`, `joblib`
 - Optional: `openneuro-py` (for dataset downloads)
+- Optional but recommended for feature storage: `pyarrow`
 
 ---
 
 ## Installation
 
 ```powershell
-# Clone and enter directory
-cd NoeticDiffusionDataIngest/mndm
+# Clone and enter the repository root
+cd NoeticDiffusionDataIngest
 
 # Create virtual environment
 python -m venv .venv
@@ -55,10 +56,12 @@ python -m venv .venv
 # Install dependencies
 pip install -U pip
 pip install -r requirements.txt
-pip install openneuro-py
+```
 
-# (Optional) For private datasets
-openneuro-py login
+If you run from this source checkout without installing packages editably, set `PYTHONPATH` before invoking `mndm`:
+
+```powershell
+$env:PYTHONPATH="H:/SourceRepo2/NeuralManifoldDynamics/mndm/src;H:/SourceRepo2/NeuralManifoldDynamics/core/src;H:/SourceRepo2/NeuralManifoldDynamics/openneuro_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/apollo_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/vitaldb_ingest/src"
 ```
 
 ---
@@ -69,6 +72,12 @@ openneuro-py login
 
 ```powershell
 python -m mndm.cli summarize --dataset ds003490
+```
+
+### Run Full MNDM Pipeline
+
+```powershell
+python -m mndm.cli all --dataset ds003490 --n-jobs 12
 ```
 
 ### Step-by-Step
@@ -84,6 +93,9 @@ python -m mndm.cli features --dataset ds003490
 
 # Project to MNPS and estimate Jacobians
 python -m mndm.cli summarize --dataset ds003490
+
+# Or run both in one step
+python -m mndm.cli all --dataset ds003490
 
 # (Optional) Pack a completed MNPS run (many small H5) into one container H5
 # Output: <processed>/<dataset>/<latest mnps_*>/packed.h5
@@ -122,7 +134,7 @@ mndm/
 
 ## Configuration
 
-Edit `config/config_ingest.yaml` to customize the pipeline.
+Edit `config/config_ingest.yaml` or a dataset overlay such as `config/config_ingest_ds004511.yaml` to customize the pipeline.
 
 ### Key Sections
 
@@ -160,8 +172,9 @@ mnps_projection:
     e: { eeg_sample_entropy: 1.0 }
 
 # Stratified MNPS (optional)
-mnps_v2:
+mnps_9d:
   enabled: true
+  definition_version: "2.0"
   subcoords:
     m_a: { eeg_alpha: 1.0 }
     m_e: { eeg_theta: 1.0 }
@@ -197,10 +210,12 @@ features:
 ### Directory Structure
 
 ```
-noetic_output/<dataset_id>/
+<processed_dir>/<dataset_id>/
 ├── file_index.csv                # Indexed BIDS files
-├── features.csv                  # Per-epoch feature matrix
-└── mnps_<dataset>_<timestamp>/
+├── features.csv / features.parquet
+└── neuralmanifolddynamics_<dataset>_<timestamp>/
+    ├── features_snapshot.json    # Feature snapshot for the summarized run
+    ├── run_manifest.json         # Run-level capabilities and field guide
     └── sub-XXX_<suffix>/
         ├── summary.json          # MNPS manifest
         ├── qc_reliability.json   # Split-half metrics
@@ -217,18 +232,28 @@ noetic_output/<dataset_id>/
 
 ### HDF5 Schema
 
+Canonical regional outputs are written under `/regional_mnps` for both EEG and fMRI.
+The `/regions/*` group is optional supporting input data, mainly for raw fMRI regional signals.
+
 | Path | Shape | Description |
 |------|-------|-------------|
 | `/time` | (T,) | Time index (seconds) |
-| `/x` | (T, 3) | MNPS coordinates [m, d, e] |
-| `/x_dot` | (T, 3) | MNPS time derivatives |
-| `/coords_v2` | (T, 9) | Stratified subcoordinates |
-| `/jacobian` | (W, 3, 3) | Local Jacobian matrices |
-| `/jacobian_dot` | (W-1, 3, 3) | Jacobian time derivatives |
-| `/jacobian_centers` | (W,) | Window center indices |
+| `/mnps_3d` | (T, 3) | MNPS coordinates [m, d, e] |
+| `/mnps_3d_dot` | (T, 3) | MNPS time derivatives |
+| `/features_raw/values` | (T, K) | Raw feature matrix in original scale |
+| `/features_raw/names` | (K,) | Feature names aligned to raw values |
+| `/features_raw/metadata/*` | (K,) per field | Machine-readable feature provenance and usage flags |
+| `/features_robust_z/values` | (T, K) | Strict robust-z feature matrix |
+| `/features_robust_z/names` | (K,) | Feature names aligned to strict robust-z values |
+| `/features_robust_z/metadata/*` | (K,) per field | Same feature metadata layout as `/features_raw/metadata/*` |
+| `/coords_9d/values` | (T, 9) | Stratified subcoordinates |
+| `/jacobian/J_hat` | (W, 3, 3) | Local Jacobian matrices |
+| `/jacobian/J_dot` | (W, 3, 3) | Jacobian time derivatives |
+| `/jacobian/centers` | (W,) | Window center indices |
 | `/nn/indices` | (T, k) | kNN neighbor indices |
 | `/labels/stage` | (T,) | Sleep stage labels |
-| `/regions/bold` | (R, T') | Regional fMRI time series |
+| `/regional_mnps/<network>/mnps` | (Tr, 3) | Canonical regional MNPS output for any modality |
+| `/regions/bold` | (R, T') | Optional raw regional fMRI time series |
 | `/extensions/e_kappa/*` | varies | Energetic curvature |
 | `/extensions/rfm/*` | varies | Resonant frequency modes |
 | `/extensions/o_koh/*` | varies | Organizational coherence |
@@ -264,7 +289,7 @@ pip install pytest
 python -m pytest tests/ -v
 ```
 
-Current coverage: 37 tests across feature extraction, MNPS projection, Jacobian estimation, and I/O.
+The test suite covers feature extraction, MNPS projection, Jacobian estimation, schema validation, manifests, and I/O contracts.
 
 ---
 

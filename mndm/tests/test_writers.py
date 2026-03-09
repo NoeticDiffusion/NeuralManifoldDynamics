@@ -82,6 +82,15 @@ def test_write_h5(require_real_h5py):
         jacobian=np.random.rand(3, 3, 3).astype(np.float32),
         jacobian_dot=np.random.rand(3, 3, 3).astype(np.float32),
         jacobian_centers=np.array([1, 2, 3], dtype=np.int32),
+        features_raw_values=np.random.rand(5, 2).astype(np.float32),
+        features_raw_names=["eeg_alpha", "eeg_alpha__g_frontal"],
+        features_robust_z_values=np.random.rand(5, 2).astype(np.float32),
+        features_robust_z_names=["eeg_alpha", "eeg_alpha__g_frontal"],
+        feature_metadata={
+            "feature_name": np.array(["eeg_alpha", "eeg_alpha"], dtype=object),
+            "group_label": np.array(["", "frontal"], dtype=object),
+            "used_by_mnps_3d": np.array([1, 0], dtype=np.int8),
+        },
         attrs={"fs_out": 4.0, "window_sec": 8.0, "overlap": 0.5, "stage_codebook": {"W": 0}},
         extensions={
             "e_kappa": {
@@ -103,8 +112,14 @@ def test_write_h5(require_real_h5py):
         with h5py.File(out_path, "r") as f:
             assert "dataset_id" in f.attrs
             assert "time" in f
-            assert "x" in f
+            assert "mnps_3d" in f
             assert "jacobian" in f
+            assert "features_raw" in f
+            assert "features_robust_z" in f
+            assert "values" in f["features_raw"]
+            assert "names" in f["features_raw"]
+            assert "metadata" in f["features_raw"]
+            assert "feature_name" in f["features_raw"]["metadata"]
             assert "labels" in f
             # Extensions group should be present when extensions are provided
             assert "extensions" in f

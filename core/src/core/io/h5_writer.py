@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -119,6 +120,36 @@ def _write_extensions_group(h5: h5py.File, extensions: Mapping[str, Any]) -> Non
         _write_mapping(root, str(name), payload)
 
 
+def _write_feature_surface_group(
+    h5: h5py.File,
+    *,
+    group_name: str,
+    values: Optional[np.ndarray],
+    names: Optional[list[str]],
+    feature_metadata: Optional[Mapping[str, Any]],
+    export_transform: str,
+) -> None:
+    if values is None or np.size(values) == 0:
+        return
+    group = h5.require_group(group_name)
+    _create_dataset(group, "values", np.asarray(values, dtype=np.float32))
+    if names:
+        str_dtype = h5py.string_dtype(encoding="utf-8")
+        names_utf8 = np.asarray([str(v) for v in names], dtype=object)
+        group.create_dataset("names", data=names_utf8, dtype=str_dtype)
+    if isinstance(feature_metadata, Mapping) and feature_metadata:
+        metadata_group = group.require_group("metadata")
+        for key, value in feature_metadata.items():
+            _create_dataset(metadata_group, str(key), value)
+    group.attrs["alignment"] = "per_timepoint"
+    group.attrs["export_transform"] = export_transform
+    group.attrs["feature_contract_version"] = "v1"
+    if names:
+        order_payload = json.dumps([str(v) for v in names], ensure_ascii=False, separators=(",", ":"))
+        group.attrs["feature_order_hash"] = hashlib.sha256(order_payload.encode("utf-8")).hexdigest()
+        group.attrs["n_features"] = int(len(names))
+
+
 def write_h5(
     out_path: Path,
     dataset_id: str,
@@ -234,6 +265,23 @@ def write_h5(
         _create_dataset(h5, "mnps_3d", payload.x)
         _create_dataset(h5, "mnps_3d_dot", payload.x_dot)
 
+        _write_feature_surface_group(
+            h5,
+            group_name="features_raw",
+            values=getattr(payload, "features_raw_values", None),
+            names=getattr(payload, "features_raw_names", None),
+            feature_metadata=getattr(payload, "feature_metadata", None),
+            export_transform="none",
+        )
+        _write_feature_surface_group(
+            h5,
+            group_name="features_robust_z",
+            values=getattr(payload, "features_robust_z_values", None),
+            names=getattr(payload, "features_robust_z_names", None),
+            feature_metadata=getattr(payload, "feature_metadata", None),
+            export_transform="strict_robust_z",
+        )
+
         if payload.z is not None and payload.z.size:
             _create_dataset(h5, "z", payload.z)
 
@@ -295,15 +343,15 @@ def write_h5(
                     diag_grp.attrs[safe_key] = _prepare_attr_value(diag_value)
 
         # Optional Stratified MNPS Jacobians (v2)
-        if getattr(payload, "jacobian_v2", None) is not None and payload.jacobian_v2.size:
-            jac_v2_grp = h5.require_group("jacobian_v2")
-            _create_dataset(jac_v2_grp, "J_hat", payload.jacobian_v2)
-            if getattr(payload, "jacobian_v2_dot", None) is not None and payload.jacobian_v2_dot.size:
-                _create_dataset(jac_v2_grp, "J_dot", payload.jacobian_v2_dot)
-            if getattr(payload, "jacobian_v2_centers", None) is not None and payload.jacobian_v2_centers.size:
-                _create_dataset(jac_v2_grp, "centers", payload.jacobian_v2_centers)
+        if getattr(payload, "jacobian_9D", None) is not None and payload.jacobian_9D.size:
+            jac_v2_grp = h5.require_group("jacobian_9D")
+            _create_dataset(jac_v2_grp, "J_hat", payload.jacobian_9D)
+            if getattr(payload, "jacobian_9D_dot", None) is not None and payload.jacobian_9D_dot.size:
+                _create_dataset(jac_v2_grp, "J_dot", payload.jacobian_9D_dot)
+            if getattr(payload, "jacobian_9D_centers", None) is not None and payload.jacobian_9D_centers.size:
+                _create_dataset(jac_v2_grp, "centers", payload.jacobian_9D_centers)
             # Optional cross-partials extracted from the v2 Jacobian, stored as [W2] series
-            cross = getattr(payload, "jacobian_v2_cross_partials", None)
+            cross = getattr(payload, "jacobian_9D_cross_partials", None)
             if isinstance(cross, Mapping) and cross:
                 cp_grp = jac_v2_grp.require_group("cross_partials")
                 for name, arr in cross.items():
@@ -328,10 +376,10 @@ def write_h5(
         if isinstance(extensions, Mapping) and extensions:
             _write_extensions_group(h5, extensions)
 
-        # Optional regional signals (e.g. fMRI ROI×time) for Regional MNPS.
-        # These are stored under a dedicated /regions group and are intended
-        # primarily for downstream analysis (block‑Jacobian, regional MNPS,
-        # etc.), not for the core ingest‑side Jacobian estimator.
+        # Optional raw regional signals (e.g. fMRI ROI×time) used as
+        # supporting inputs for some downstream analyses. These live under
+        # /regions, but the canonical modality-agnostic regional output lives
+        # under /regional_mnps below.
         regions_bold = getattr(payload, "regions_bold", None)
         if regions_bold is not None and np.size(regions_bold) > 0:
             regions_grp = h5.require_group("regions")
@@ -351,7 +399,7 @@ def write_h5(
             if regions_sfreq is not None:
                 regions_grp.attrs["sfreq"] = float(regions_sfreq)
 
-        # Optional regional MNPS/MNJ results per network
+        # Canonical modality-agnostic regional MNPS/MNJ outputs per network
         regional_mnps = getattr(payload, "regional_mnps", None)
         if isinstance(regional_mnps, Mapping) and regional_mnps:
             reg_mnps_grp = h5.require_group("regional_mnps")

@@ -59,8 +59,8 @@ These are **analysis-agnostic descriptive blocks** embedded in the manifest JSON
 ### Root datasets
 
 - **`/time`** *(float64, shape `[T]`)*: monotonically increasing time (seconds) on the MNPS grid.
-- **`/x`** *(float32, shape `[T,3]`)*: MNPS coordinates \([m,d,e]\).
-- **`/x_dot`** *(float32, shape `[T,3]`)*: derivatives of `x` on the MNPS grid.
+- **`/mnps_3d`** *(float32, shape `[T,3]`)*: MNPS coordinates \([m,d,e]\).
+- **`/mnps_3d_dot`** *(float32, shape `[T,3]`)*: derivatives of `mnps_3d` on the MNPS grid.
 
 Optional root datasets:
 - **`/z`** *(float32, shape `[T,Kz]`)*: embodied/interoceptive channels (if enabled).
@@ -104,27 +104,51 @@ Always created (may be empty if Jacobians were not computed).
 
 ---
 
-### Group: `/jacobian_v2`
+### Group: `/features_raw`
 
-Created if v2 Jacobians exist.
+Created when summarize exports the per-epoch empirical feature surface.
 
-- **`/jacobian_v2/J_hat`** *(float32, shape `[W2,K,K]`)*: Jacobian in Stratified MNPS v2 space.
-- **`/jacobian_v2/J_dot`** *(float32, shape `[W2-1,K,K]`)*: temporal difference.
-- **`/jacobian_v2/centers`** *(int32, shape `[W2]`)*: center index.
-
-Optional subgroup:
-- **`/jacobian_v2/cross_partials/<name>`** *(float32, shape `[W2]`)*: selected elements from the v2 Jacobian as 1D series (dataset names are sanitized; `/` is replaced with `_`).
+- **`/features_raw/values`** *(float32, shape `[T,K]`)*: raw feature matrix in original scale.
+- **`/features_raw/names`** *(utf-8 strings, shape `[K]`)*: feature column names aligned to `values`.
+- **`/features_raw/metadata/*`** *(shape `[K]` per field)*: machine-readable per-feature metadata, including usage flags and provenance.
 
 ---
 
-### Group: `/coords_v2`
+### Group: `/features_robust_z`
 
-Created if `coords_v2` exists.
+Created when summarize exports the strict robust-z feature surface.
 
-- **`/coords_v2/values`** *(float32, shape `[T,9]`)*: Stratified MNPS v2 subcoords in canonical order.
-- **`/coords_v2/names`** *(utf-8 strings, shape `[9]`)*: subcoord names (canonical order: `m_a,m_e,m_o,d_n,d_l,d_s,e_e,e_s,e_m`).
-- **`/coords_v2` attrs**:
-  - **`version`** = `"v2"`
+- **`/features_robust_z/values`** *(float32, shape `[T,K]`)*: strict robust-z feature matrix.
+- **`/features_robust_z/names`** *(utf-8 strings, shape `[K]`)*: feature column names aligned to `values`.
+- **`/features_robust_z/metadata/*`** *(shape `[K]` per field)*: machine-readable per-feature metadata aligned to `names`.
+
+Important:
+- this surface is **strict robust-z only**
+- projection-only steps such as `log10` and `clip` remain represented in provenance metadata and `feature_baselines`, not baked into `features_robust_z`
+
+---
+
+### Group: `/jacobian_9D`
+
+Created if v2 Jacobians exist.
+
+- **`/jacobian_9D/J_hat`** *(float32, shape `[W2,K,K]`)*: Jacobian in Stratified MNPS v2 space.
+- **`/jacobian_9D/J_dot`** *(float32, shape `[W2-1,K,K]`)*: temporal difference.
+- **`/jacobian_9D/centers`** *(int32, shape `[W2]`)*: center index.
+
+Optional subgroup:
+- **`/jacobian_9D/cross_partials/<name>`** *(float32, shape `[W2]`)*: selected elements from the v2 Jacobian as 1D series (dataset names are sanitized; `/` is replaced with `_`).
+
+---
+
+### Group: `/coords_9d`
+
+Created if stratified coordinates exist.
+
+- **`/coords_9d/values`** *(float32, shape `[T,9]`)*: Stratified MNPS subcoords in canonical order.
+- **`/coords_9d/names`** *(utf-8 strings, shape `[9]`)*: subcoord names (canonical order: `m_a,m_e,m_o,d_n,d_l,d_s,e_e,e_s,e_m`).
+- **`/coords_9d` attrs**:
+  - **`version`** = `"9d"`
 
 ---
 
@@ -142,7 +166,8 @@ Rule:
 
 ### Group: `/regions`
 
-Created if regional raw signals exist (typically fMRI parcellation).
+Created if raw regional signals exist (typically fMRI parcellation).
+This is a supporting-input contract, not the canonical regional output contract.
 
 - **`/regions/bold`** *(float32, shape `[n_regions, n_times]`)*: ROI×time matrix.
 - **`/regions/names`** *(utf-8 strings, shape `[n_regions]`)*: ROI names/labels.
@@ -154,6 +179,7 @@ Created if regional raw signals exist (typically fMRI parcellation).
 ### Group: `/regional_mnps`
 
 Created if regional MNPS/MNJ has been computed and attached to the payload.
+This is the canonical modality-agnostic regional output path for both EEG and fMRI.
 
 Per-network structure:
 - **`/regional_mnps/<network_label>/mnps`** *(float32, shape `[Tr,3]`)*: regional MNPS.
