@@ -341,7 +341,7 @@ See `docs/articles/` for theoretical foundations.
 
 ## License
 
-Proprietary - Noetic Diffusion Research
+GNU GENERAL PUBLIC LICENSE v3. Se LICENSE in the root folder.
 
 ## Contact
 

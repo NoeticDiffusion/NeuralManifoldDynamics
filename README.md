@@ -97,4 +97,4 @@ Those runs usually contain:
 
 ## License
 
-GNU GENERAL PUBLIC LICENSE v3
+Se LICENSE in the root folder.
