@@ -139,7 +139,7 @@ noetic_output/
 | `/x_dot` | (T, 3) | MNPS derivatives |
 | `/coords_v2` | (T, 9) | Stratified MNPS (if enabled) |
 | `/jacobian` | (W, 3, 3) | Local Jacobians |
-| `/jacobian_v2` | (W, 9, 9) | Stratified Jacobians (if enabled) |
+| `/jacobian_9D` | (W, 9, 9) | Stratified Jacobians (if enabled) |
 | `/nn/indices` | (T, k) | kNN neighbor indices |
 | `/labels/stage` | (T,) | Sleep stage codes |
 | `/events/*` | varies | Event markers |

@@ -390,7 +390,7 @@ def compute_stratified_blocks_and_cross_partials(
     condition: Optional[str],
     task: Optional[str],
     coords_9d_names: Sequence[str],
-    jacobian_v2: np.ndarray,
+    jacobian_9D: np.ndarray,
     config: Mapping[str, Any],
 ) -> StratifiedBlocksResult:
     """Compute config-driven block summaries and cross-partials from a 9D Jacobian field."""
@@ -459,13 +459,13 @@ def compute_stratified_blocks_and_cross_partials(
         group_names = list(group_indices.keys())
 
         # Precompute for c_sym/c_rot lookups
-        n_timepoints = int(jacobian_v2.shape[0])
+        n_timepoints = int(jacobian_9D.shape[0])
 
         for out_g, in_g in _iter_pairs(group_names, pairs_cfg, include_self=include_self):
             out_idxs = group_indices[out_g]
             in_idxs = group_indices[in_g]
 
-            block_out_in = jacobian_v2[:, out_idxs, :][:, :, in_idxs]  # [T, p_out, p_in]
+            block_out_in = jacobian_9D[:, out_idxs, :][:, :, in_idxs]  # [T, p_out, p_in]
             metrics = _compute_block_metrics(block_out_in, is_diagonal_block=(out_g == in_g))
 
             c_sym_mean = float("nan")
@@ -475,7 +475,7 @@ def compute_stratified_blocks_and_cross_partials(
                 p_in = len(in_idxs)
                 # Only defined when p_out == p_in so block_out_in and block_in_out^T match
                 if p_out == p_in and n_timepoints > 0:
-                    block_in_out = jacobian_v2[:, in_idxs, :][:, :, out_idxs]  # [T, p_in, p_out]
+                    block_in_out = jacobian_9D[:, in_idxs, :][:, :, out_idxs]  # [T, p_in, p_out]
                     sym_vals: list[float] = []
                     rot_vals: list[float] = []
                     for t in range(n_timepoints):
@@ -545,7 +545,7 @@ def compute_stratified_blocks_and_cross_partials(
                 raise ValueError(f"Unknown cross-partial pair [{out_name}, {in_name}] for coords_9d_names={list(coords_9d_names)}")
             i = int(name_to_idx[out_name])
             j = int(name_to_idx[in_name])
-            series = np.asarray(jacobian_v2[:, i, j], dtype=np.float32)
+            series = np.asarray(jacobian_9D[:, i, j], dtype=np.float32)
             key = f"{out_name}__{in_name}"
             cross_series[key] = series
             items.append(

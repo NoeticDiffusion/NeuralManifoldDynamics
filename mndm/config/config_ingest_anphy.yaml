@@ -1,4 +1,4 @@
-version: 1.2
+version: 2.0
 modality: eeg
 
 # ANPHY dataset overlay config.
@@ -23,7 +23,7 @@ source:
 paths:
   processed_dir: "E:/Science_Datasets/ANPHY/processed"
   dataset_received_dirs:
-    ANPHY: "E:/Science_Datasets/ANPHY"
+    ANPHY: "E:/Science_Datasets/ANPHY/Subjects"
 
 preprocess:
   eeg_csd:

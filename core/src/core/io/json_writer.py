@@ -73,7 +73,7 @@ def build_manifest(dataset_id: str, payload: MNPSPayload, diagnostics: Optional[
     events = payload.events or {}
     labels = payload.labels or {}
     jac = payload.jacobian
-    jac_v2 = getattr(payload, "jacobian_v2", None)
+    jac_v2 = getattr(payload, "jacobian_9D", None)
     ws = getattr(payload, "window_start", None)
     we = getattr(payload, "window_end", None)
     manifest: MutableMapping[str, Any] = {
@@ -108,9 +108,9 @@ def build_manifest(dataset_id: str, payload: MNPSPayload, diagnostics: Optional[
     # Optional meta-indices for Stratified (v2) Jacobians when present
     if jac_v2 is not None and np.size(jac_v2) > 0:
         manifest["meta_indices_v2"] = compute_meta_indices(jac_v2)
-        manifest["jacobian_v2"] = {
+        manifest["jacobian_9D"] = {
             "windows": int(jac_v2.shape[0]),
-            "with_centers": bool(getattr(payload, "jacobian_v2_centers", None) is not None),
+            "with_centers": bool(getattr(payload, "jacobian_9D_centers", None) is not None),
         }
 
     if diagnostics:

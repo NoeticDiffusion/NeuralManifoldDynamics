@@ -14,3 +14,4 @@ networkx==3.3
 nibabel==5.2.1
 openneuro-py
 nilearn
+pyarrow

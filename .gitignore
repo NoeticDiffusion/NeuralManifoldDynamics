@@ -217,3 +217,5 @@ openneuro/config/shellscript_download/*
 agent_instruct/
 mndm/config/shellscript_download/*
 openneuro_ingest/config/shellscript_download/*
+mndm/docs/*
+openneuro_ingest/docs/* 
