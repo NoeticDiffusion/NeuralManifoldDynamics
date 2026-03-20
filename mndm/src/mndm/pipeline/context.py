@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, Mapping, Optional, Tuple
 
 from core.paths import resolve_paths
+from ..reproducibility import resolve_reproducibility_policy
 
 logger = logging.getLogger(__name__)
 
@@ -175,6 +176,7 @@ class ResolvedConfig:
     mnps_cfg: Dict[str, Any]
     derivative_cfg: Dict[str, Any]
     extensions_cfg: Dict[str, Any]
+    reproducibility: Dict[str, Any]
 
     @classmethod
     def from_mapping(
@@ -197,6 +199,7 @@ class ResolvedConfig:
         )
         weights, normalize_override, ingest_meta = resolve_mapping_spec(config)
         mnps_cfg = mnps_config_with_overrides(config, mnps_overrides)
+        reproducibility = resolve_reproducibility_policy(config)
         derivative_cfg = {
             "method": mnps_cfg["derivative"].get("method", "sav_gol"),
             "window": int(mnps_cfg["derivative"].get("window", 7)),
@@ -213,6 +216,7 @@ class ResolvedConfig:
             mnps_cfg=mnps_cfg,
             derivative_cfg=derivative_cfg,
             extensions_cfg=extensions_cfg if isinstance(extensions_cfg, Mapping) else {},
+            reproducibility=reproducibility,
         )
 
 
@@ -282,6 +286,10 @@ class SummarizeContext:
     @property
     def extensions_cfg(self) -> Dict[str, Any]:
         return self.resolved.extensions_cfg
+
+    @property
+    def reproducibility(self) -> Dict[str, Any]:
+        return self.resolved.reproducibility
 
     @property
     def dt(self) -> float:

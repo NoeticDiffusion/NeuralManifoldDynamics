@@ -26,6 +26,7 @@ import pandas as pd
 from core.bids import parse_subject_session, parse_subject_session_task_run_acq
 from .context import SummarizeContext
 from .. import bids_index
+from ..file_filters import apply_exclude_file_filters
 from .extractors import (
     build_dataset_label,
     extract_embodied_array,
@@ -63,6 +64,10 @@ from .summary_utils import (
     build_dir_suffix,
     extract_time_bounds,
 )
+from .baseline_qc import (
+    compute_feature_baseline_comparisons,
+    compute_null_sanity_tests,
+)
 from .robustness_helpers import (
     compute_dist_summary,
     compute_emmi_metrics,
@@ -76,6 +81,7 @@ from .. import preprocess
 from core.io import json_writer
 from .. import jacobian, projection, robustness, schema
 from .run_manifest import write_run_manifest
+from ..reproducibility import resolve_reproducibility_policy
 
 logger = logging.getLogger(__name__)
 
@@ -634,7 +640,7 @@ class DatasetSummaryRunner:
     def run(self) -> None:
         logger.info(f"Summarizing {self.ds_id}")
         ds_path = self.processed_dir / self.ds_id
-        self.participants_df = load_participant_table(self.received_dir, self.ds_id)
+        self.participants_df = load_participant_table(self.received_dir, self.ds_id, self.config)
         self._build_participant_meta_map()
         self.index_df = self._read_index(ds_path)
         self._build_index_basename_cache()
@@ -692,7 +698,9 @@ class DatasetSummaryRunner:
                     "summarize_policy": {
                         "allow_group_collisions": bool(self.allow_group_collisions),
                         "qc_policy": self.qc_policy,
+                        "n_jobs": int(self.n_jobs),
                     },
+                    "reproducibility": self.ctx.reproducibility,
                     "grouping_collisions": self.grouping_collision_info,
                 },
             )
@@ -855,27 +863,44 @@ class DatasetSummaryRunner:
 
     def _read_index(self, ds_path: Path) -> Optional[pd.DataFrame]:
         index_path = ds_path / "file_index.csv"
+        index_df: Optional[pd.DataFrame] = None
         if not index_path.exists():
-            return self._build_index_from_received(ds_path)
-        if index_path.stat().st_size == 0:
+            index_df = self._build_index_from_received(ds_path)
+        elif index_path.stat().st_size == 0:
             logger.warning("Empty file_index.csv for %s; rebuilding", self.ds_id)
             try:
                 index_path.unlink()
             except Exception as e:
                 logger.warning("Failed to remove empty file_index.csv for %s: %s", self.ds_id, e)
-            return self._build_index_from_received(ds_path)
-        try:
-            return pd.read_csv(index_path)
-        except pd.errors.EmptyDataError:
-            logger.warning("Empty file_index.csv for %s; rebuilding", self.ds_id)
+            index_df = self._build_index_from_received(ds_path)
+        else:
             try:
-                index_path.unlink()
-            except Exception as e:
-                logger.warning("Failed to remove empty file_index.csv for %s: %s", self.ds_id, e)
-            return self._build_index_from_received(ds_path)
-        except Exception:
-            logger.exception("Failed to read file_index.csv for %s", self.ds_id)
+                index_df = pd.read_csv(index_path)
+            except pd.errors.EmptyDataError:
+                logger.warning("Empty file_index.csv for %s; rebuilding", self.ds_id)
+                try:
+                    index_path.unlink()
+                except Exception as e:
+                    logger.warning("Failed to remove empty file_index.csv for %s: %s", self.ds_id, e)
+                index_df = self._build_index_from_received(ds_path)
+            except Exception:
+                logger.exception("Failed to read file_index.csv for %s", self.ds_id)
+                return None
+        if index_df is None:
             return None
+        filtered, excluded_count, excluded_patterns = apply_exclude_file_filters(
+            index_df,
+            config=self.config,
+            candidate_columns=("path",),
+        )
+        if excluded_count > 0:
+            logger.info(
+                "Excluded %s indexed files for %s via exclude-files=%s",
+                excluded_count,
+                self.ds_id,
+                excluded_patterns,
+            )
+        return filtered
 
     def _build_index_from_received(self, ds_path: Path) -> Optional[pd.DataFrame]:
         ds_root = bids_index.resolve_dataset_root(self.config, self.ctx.received_dir, self.ds_id)
@@ -917,6 +942,18 @@ class DatasetSummaryRunner:
         except Exception:
             logger.exception("Failed to read features table %s for %s", features_path, self.ds_id)
             return None
+        features_df, excluded_count, excluded_patterns = apply_exclude_file_filters(
+            features_df,
+            config=self.config,
+            candidate_columns=("file", "path"),
+        )
+        if excluded_count > 0:
+            logger.info(
+                "Excluded %s feature rows for %s via exclude-files=%s",
+                excluded_count,
+                self.ds_id,
+                excluded_patterns,
+            )
         if features_df.empty:
             logger.warning(f"Features dataframe empty for {self.ds_id}")
             return None
@@ -1089,6 +1126,17 @@ class DatasetSummaryRunner:
             return {}
         return lookup.iloc[0].to_dict()
 
+    def participant_meta_source_info(self) -> Dict[str, Any]:
+        if self.participants_df is None:
+            return {}
+        attrs = getattr(self.participants_df, "attrs", {}) or {}
+        out: Dict[str, Any] = {}
+        for key in ("source_path", "source_format", "subject_id_column"):
+            value = attrs.get(key)
+            if value is not None:
+                out[key] = value
+        return out
+
 
 class SubjectSummaryRunner:
     """Subject/session-level summarization."""
@@ -1128,6 +1176,7 @@ class SubjectSummaryRunner:
 
         sub_id = sub_id if str(sub_id).startswith("sub-") else f"sub-{str(sub_id).zfill(3)}"
         participant_meta = self.dataset.participant_meta_for(sub_id)
+        participant_meta_source = self.dataset.participant_meta_source_info()
 
         # Extract representative filename for task parsing (if available)
         representative_file = None
@@ -1539,7 +1588,7 @@ class SubjectSummaryRunner:
 
         x_dot = _compute_dot(x)
 
-        # KNN and Jacobian
+        # KNN and optional primary Jacobian
         whiten_flag = bool(mnps_cfg.get("whiten", True))
         nn_indices = projection.build_knn_indices(
             x,
@@ -1547,15 +1596,23 @@ class SubjectSummaryRunner:
             metric=mnps_cfg["knn_metric"],
             whiten=whiten_flag,
         )
-        jac_res = jacobian.estimate_local_jacobians(
-            x,
-            x_dot,
-            nn_indices,
-            super_window=mnps_cfg["super_window"],
-            ridge_alpha=mnps_cfg["ridge_alpha"],
-            distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
-            j_dot_dt=float(dt),
+        primary_jac_cfg = (
+            ((config.get("mnps", {}) or {}).get("jacobian", {}) or {})
+            if isinstance(config, Mapping)
+            else {}
         )
+        primary_jac_enabled = bool(primary_jac_cfg.get("enabled", True))
+        jac_res = None
+        if primary_jac_enabled:
+            jac_res = jacobian.estimate_local_jacobians(
+                x,
+                x_dot,
+                nn_indices,
+                super_window=mnps_cfg["super_window"],
+                ridge_alpha=mnps_cfg["ridge_alpha"],
+                distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
+                j_dot_dt=float(dt),
+            )
 
         # Optional Jacobian for v2 coordinates
         jac_res_v2 = None
@@ -1609,6 +1666,16 @@ class SubjectSummaryRunner:
                     coords_9d_hash_saved == coords_9d_hash_knn_input == coords_9d_hash_jac_input
                 ):
                     raise RuntimeError("v2 contract violation: saved coords_9d differs from v2 kNN/Jacobian input.")
+        nn_indices_hash_saved = _stable_hash_array(np.asarray(nn_indices, dtype=np.int32)) if nn_indices is not None else None
+        jacobian_hash_saved = _stable_hash_array(np.asarray(jac_res.j_hat, dtype=np.float32)) if jac_res is not None else None
+        jacobian_dot_hash_saved = _stable_hash_array(np.asarray(jac_res.j_dot, dtype=np.float32)) if jac_res is not None else None
+        jacobian_9d_hash_saved = (
+            _stable_hash_array(np.asarray(jac_res_v2.j_hat, dtype=np.float32)) if jac_res_v2 is not None else None
+        )
+        jacobian_9d_dot_hash_saved = (
+            _stable_hash_array(np.asarray(jac_res_v2.j_dot, dtype=np.float32)) if jac_res_v2 is not None else None
+        )
+        reproducibility_policy = resolve_reproducibility_policy(config, dataset_id=self.dataset.ds_id)
 
         # Optional Stratified (v2) block-Jacobian summaries and cross-partials
         stratified_blocks_result = None
@@ -1782,6 +1849,22 @@ class SubjectSummaryRunner:
         except Exception:
             logger.exception("Failed to compute dist_summary for %s", dataset_label)
 
+        review_qc_cfg = (
+            (config.get("robustness", {}) or {}).get("review_qc", {})
+            if isinstance(config, Mapping)
+            else {}
+        )
+        baseline_comparisons = None
+        try:
+            baseline_comparisons = compute_feature_baseline_comparisons(
+                sub_frame=sub_frame,
+                x=x,
+                dt_sec=float(dt),
+                review_qc_cfg=review_qc_cfg,
+            )
+        except Exception:
+            logger.exception("Failed to compute baseline_comparisons for %s", dataset_label)
+
         # Tier-1 time structure: autocorrelation length (tau)
         tau_summary = None
         try:
@@ -1800,10 +1883,11 @@ class SubjectSummaryRunner:
         # Tier-2 MNJ-adjacent metrics from the primary Jacobian + derived indices
         tier2_jac = None
         try:
-            tier2_jac = compute_tier2_jacobian_metrics(
-                jac_res.j_hat,
-                jacobian_diagnostics=jac_res.diagnostics,
-            )
+            if jac_res is not None:
+                tier2_jac = compute_tier2_jacobian_metrics(
+                    jac_res.j_hat,
+                    jacobian_diagnostics=jac_res.diagnostics,
+                )
         except Exception:
             logger.exception("Failed to compute tier2_jacobian_metrics for %s", dataset_label)
 
@@ -1812,6 +1896,29 @@ class SubjectSummaryRunner:
             emmi = compute_emmi_metrics(x=x, x_dot=x_dot)
         except Exception:
             logger.exception("Failed to compute EMMI metrics for %s", dataset_label)
+
+        null_sanity_tests = None
+        try:
+            file_labels = sub_frame["file"].to_numpy() if "file" in sub_frame.columns else None
+            null_sanity_tests = compute_null_sanity_tests(
+                x=x,
+                dt_sec=float(dt),
+                derivative_cfg=self.ctx.derivative_cfg,
+                derivative_robust_cfg=((config.get("mnps", {}) or {}).get("derivative_robust", {}) or {})
+                if isinstance(config, Mapping)
+                else {},
+                file_labels=file_labels,
+                knn_k=mnps_cfg["knn_k"],
+                knn_metric=mnps_cfg["knn_metric"],
+                whiten=bool(mnps_cfg.get("whiten", True)),
+                super_window=mnps_cfg["super_window"],
+                ridge_alpha=mnps_cfg["ridge_alpha"],
+                distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
+                review_qc_cfg=review_qc_cfg,
+                config=config,
+            )
+        except Exception:
+            logger.exception("Failed to compute null_sanity_tests for %s", dataset_label)
 
         multiverse_psd = None
         if v2_enabled and coords_9d is not None and coords_9d_names and subcoords_spec:
@@ -1863,9 +1970,9 @@ class SubjectSummaryRunner:
             z=z,
             events=events,
             nn_indices=nn_indices,
-            jacobian=jac_res.j_hat,
-            jacobian_dot=jac_res.j_dot,
-            jacobian_centers=jac_res.centers,
+            jacobian=jac_res.j_hat if jac_res is not None else None,
+            jacobian_dot=jac_res.j_dot if jac_res is not None else None,
+            jacobian_centers=jac_res.centers if jac_res is not None else None,
             jacobian_9D=jac_res_v2.j_hat if jac_res_v2 is not None else None,
             jacobian_9D_dot=jac_res_v2.j_dot if jac_res_v2 is not None else None,
             jacobian_9D_centers=jac_res_v2.centers if jac_res_v2 is not None else None,
@@ -1889,6 +1996,8 @@ class SubjectSummaryRunner:
                 "stage_events_path": stage_events_path,
                 "stage_frac_labeled": stage_frac_labeled,
                 "participant_meta": participant_meta,
+                "participant_meta_source": participant_meta_source,
+                "participant_mapped_meta": mapped_meta,
                 "group": mapped_meta.get("group"),
                 "condition": condition,
                 "task": task,
@@ -1953,9 +2062,14 @@ class SubjectSummaryRunner:
                 "x_hash_saved": x_hash_saved,
                 "x_hash_knn_input": x_hash_knn_input,
                 "x_hash_jacobian_input": x_hash_jac_input,
+                "nn_indices_hash_saved": nn_indices_hash_saved,
+                "jacobian_hash_saved": jacobian_hash_saved,
+                "jacobian_dot_hash_saved": jacobian_dot_hash_saved,
                 "coords_9d_hash_saved": coords_9d_hash_saved,
                 "coords_9d_hash_knn_input": coords_9d_hash_knn_input,
                 "coords_9d_hash_jacobian_input": coords_9d_hash_jac_input,
+                "jacobian_9d_hash_saved": jacobian_9d_hash_saved,
+                "jacobian_9d_dot_hash_saved": jacobian_9d_dot_hash_saved,
                 "coords_9d_names": coords_9d_names if coords_9d_names else None,
                 "feature_export_scope": "all_numeric_feature_columns_excluding_metadata",
                 "feature_export_names_hash": feature_names_hash,
@@ -1964,6 +2078,8 @@ class SubjectSummaryRunner:
                 "features_raw_column_count": int(len(features_raw_names)),
                 "features_robust_z_column_count": int(len(features_robust_z_names)),
                 "feature_metadata_fields": sorted(feature_metadata.keys()) if feature_metadata else [],
+                "reproducibility_seed": int(reproducibility_policy.get("seed", 42)),
+                "reproducibility_seed_source": str(reproducibility_policy.get("seed_source", "default")),
             },
         )
         if v2_enabled and coords_9d_names and coords_9d is not None and coords_9d.size:
@@ -2012,6 +2128,8 @@ class SubjectSummaryRunner:
             "run": run_id,
             "acq": acq_id,
             "participant_meta": participant_meta,
+            "participant_meta_source": participant_meta_source,
+            "participant_mapped_meta": mapped_meta,
             "group": mapped_meta.get("group"),
             "condition": condition,
             "task": task,
@@ -2060,12 +2178,16 @@ class SubjectSummaryRunner:
             manifest_extra["robust_summary"] = robust_summary
         if dist_summary:
             manifest_extra["dist_summary"] = dist_summary
+        if baseline_comparisons is not None:
+            manifest_extra["baseline_comparisons"] = baseline_comparisons
         if tau_summary:
             manifest_extra["tau_summary"] = tau_summary
         if tier2_jac:
             manifest_extra["tier2_jacobian"] = tier2_jac
         if emmi:
             manifest_extra["tier2_emmi"] = emmi
+        if null_sanity_tests is not None:
+            manifest_extra["null_sanity_tests"] = null_sanity_tests
         if multiverse_psd is not None:
             manifest_extra["multiverse_psd"] = multiverse_psd
         if entropy_qc:
@@ -2099,6 +2221,20 @@ class SubjectSummaryRunner:
         manifest_extra["provenance"] = {
             "mnps_9d_definition_version": v2_definition_version,
             "mnps_9d_constructs": mnps_9d_constructs,
+            "reproducibility": {
+                **reproducibility_policy,
+                "nn_indices_hash_saved": nn_indices_hash_saved,
+                "x_hash_saved": x_hash_saved,
+                "x_hash_knn_input": x_hash_knn_input,
+                "x_hash_jacobian_input": x_hash_jac_input,
+                "jacobian_hash_saved": jacobian_hash_saved,
+                "jacobian_dot_hash_saved": jacobian_dot_hash_saved,
+                "coords_9d_hash_saved": coords_9d_hash_saved,
+                "coords_9d_hash_knn_input": coords_9d_hash_knn_input,
+                "coords_9d_hash_jacobian_input": coords_9d_hash_jac_input,
+                "jacobian_9d_hash_saved": jacobian_9d_hash_saved,
+                "jacobian_9d_dot_hash_saved": jacobian_9d_dot_hash_saved,
+            },
         }
         manifest_extra["feature_exports"] = {
             "raw_h5_path": "/features_raw",
@@ -2110,14 +2246,16 @@ class SubjectSummaryRunner:
         }
 
         # Add a clear note indicating that these tier-2 metrics are tentative and belong in the analysis repo
-        if any([tau_summary, tier2_jac, emmi, dist_summary]):
+        if any([tau_summary, tier2_jac, emmi, dist_summary, baseline_comparisons, null_sanity_tests]):
             manifest_extra["_TENTATIVE_NOTE"] = (
-                "Metrics such as tier2_jacobian, tier2_emmi, tau_summary, and dist_summary "
-                "are provided as tentative QA summaries only. Real statistical verification "
+                "Metrics such as baseline_comparisons, null_sanity_tests, tier2_jacobian, "
+                "tier2_emmi, tau_summary, and dist_summary are provided as tentative QA summaries only. "
+                "Real statistical verification "
                 "and interpretation must be performed downstream in the analysis repository."
             )
 
-        manifest = json_writer.build_manifest(dataset_label, payload, jac_res.diagnostics, manifest_extra)
+        primary_jac_diagnostics = jac_res.diagnostics if jac_res is not None else None
+        manifest = json_writer.build_manifest(dataset_label, payload, primary_jac_diagnostics, manifest_extra)
 
         self._write_qc_files(
             target_dir=target_dir,
@@ -2129,9 +2267,11 @@ class SubjectSummaryRunner:
             ensemble_summary=ensemble_summary,
             robust_summary=robust_summary,
             dist_summary=dist_summary,
+            baseline_comparisons=baseline_comparisons,
             tau_summary=tau_summary,
             tier2_jacobian=tier2_jac,
             tier2_emmi=emmi,
+            null_sanity_tests=null_sanity_tests,
             entropy_qc=entropy_qc,
         )
         write_summary_manifest_and_h5(
@@ -2139,7 +2279,7 @@ class SubjectSummaryRunner:
             dataset_label=dataset_label,
             manifest=manifest,
             payload=payload,
-            jacobian_diagnostics=jac_res.diagnostics,
+            jacobian_diagnostics=primary_jac_diagnostics,
             sub_id=sub_id,
             ses_id=ses_id,
             condition=condition,
@@ -2491,9 +2631,11 @@ class SubjectSummaryRunner:
         ensemble_summary: Optional[Dict[str, Any]],
         robust_summary: Optional[Dict[str, Any]],
         dist_summary: Optional[Dict[str, Any]],
+        baseline_comparisons: Optional[Dict[str, Any]],
         tau_summary: Optional[Dict[str, Any]],
         tier2_jacobian: Optional[Dict[str, Any]],
         tier2_emmi: Optional[Dict[str, Any]],
+        null_sanity_tests: Optional[Dict[str, Any]],
         entropy_qc: Optional[Dict[str, Any]],
     ) -> None:
         """Write QC-related JSON files."""
@@ -2508,8 +2650,10 @@ class SubjectSummaryRunner:
             ensemble_summary=ensemble_summary,
             robust_summary=robust_summary,
             dist_summary=dist_summary,
+            baseline_comparisons=baseline_comparisons,
             tau_summary=tau_summary,
             tier2_jacobian=tier2_jacobian,
             tier2_emmi=tier2_emmi,
+            null_sanity_tests=null_sanity_tests,
             entropy_qc=entropy_qc,
         )

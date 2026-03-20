@@ -101,6 +101,8 @@ mnps:
   window_sec: 45.0
   overlap: 0.66  # (45 - 15) / 45
   derivative: {method: "sav_gol", window: 5, polyorder: 2} # Reduced window for slow fMRI
+  jacobian:
+    enabled: true
   knn: {k: 10, metric: "euclidean"} # Lower k for shorter fMRI sessions
   ridge: {alpha: 1.0, cv_folds: 3, distance_weighted: true}
   whiten: true
@@ -169,6 +171,12 @@ feature_storage:
 metadata_extraction:
   policy_dir: "mndm/config/condition_task_setup"
   default:
+    participants:
+      # Optional explicit participants table path. When omitted, the loader tries
+      # dataset-root participants.tsv / participants.csv / participants.txt.
+      path:
+      # Optional override if the subject identifier column is not participant_id.
+      subject_id_candidates: ["participant_id", "subject_id", "participant", "subject"]
     group: {candidates: ["Group", "Diagnosis", "group", "diagnosis"]}
     condition: {candidates: ["condition", "Condition"], session_map: {}}
     task: {from_filename: true}

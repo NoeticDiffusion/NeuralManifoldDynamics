@@ -33,6 +33,8 @@ import time
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import uuid4
 
+from .reproducibility import resolve_component_seed
+
 # Disable numba JIT to avoid long import stalls on Windows/venv
 os.environ.setdefault("MNE_USE_NUMBA", "false")
 os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
@@ -1360,7 +1362,12 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             logger.info("ICA skipped: no EEG channels")
             return
         n_comp = int(art_cfg.get("ica_n_components", min(20, len(eeg_picks))))
-        random_state = int(art_cfg.get("ica_random_state", 97))
+        random_state, _ = resolve_component_seed(
+            config,
+            dataset_id=dataset_id,
+            fallback_seed=art_cfg.get("ica_random_state", 97),
+            fallback_source="preprocess.artifacts.ica_random_state",
+        )
         method = str(art_cfg.get("ica_method", "fastica"))
         fit_highpass_hz = float(art_cfg.get("ica_fit_highpass_hz", 1.0) or 1.0)
         try:
@@ -1520,10 +1527,10 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     channels_dict: Dict[str, List[str]] = {}
 
     t_collect0 = time.perf_counter()
-    # EEG (including iEEG: seeg/ecog)
+    # EEG (including iEEG: seeg/ecog and scalp EEG transformed to CSD)
     # MNE returns SI units (V). Convert to µV so PSD band-powers are on a
     # numerically stable scale (~1 µV²/Hz instead of ~1e-12 V²/Hz).
-    eeg_chans = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
+    eeg_chans = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True, csd=True)
     if len(eeg_chans) > 0:
         modality_signals["eeg"] = raw.get_data(picks=eeg_chans) * 1e6
         channels_dict["eeg"] = [raw.ch_names[i] for i in eeg_chans]

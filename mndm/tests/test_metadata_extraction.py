@@ -6,7 +6,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 import pytest
-from mndm.pipeline.extractors import build_dataset_label, extract_mapped_metadata
+from mndm.pipeline.extractors import build_dataset_label, extract_mapped_metadata, load_participant_table
 
 
 class TestExtractMappedMetadata:
@@ -345,6 +345,64 @@ class TestExtractMappedMetadata:
         meta = {"Group": "HC"}
         result = extract_mapped_metadata(meta, config, "ds000001", None)
         assert result["group"] == "Healthy"
+
+    def test_group_candidate_type_column(self):
+        """Dataset-level `type` candidate maps into the canonical group field."""
+        config = {
+            "metadata_extraction": {
+                "datasets": {
+                    "ds003947": {
+                        "group": {
+                            "candidates": ["Group", "Diagnosis", "group", "diagnosis", "type"],
+                            "normalize": {"control": "Control", "psychosis": "FEP"},
+                        }
+                    }
+                }
+            }
+        }
+        meta = {"participant_id": "sub-2235A", "type": "Control"}
+        result = extract_mapped_metadata(meta, config, "ds003947", None, filename="sub-2235A_task-rest_eeg.vhdr")
+        assert result["group"] == "Control"
+
+
+class TestLoadParticipantTable:
+    def test_load_participant_table_uses_configured_csv_path(self, tmp_path: Path):
+        dataset_root = tmp_path / "dsX"
+        dataset_root.mkdir()
+        csv_path = dataset_root / "cohort.csv"
+        csv_path.write_text("subject,group,age\nsub-001,Control,21\n", encoding="utf-8")
+
+        config = {
+            "metadata_extraction": {
+                "datasets": {
+                    "dsX": {
+                        "participants": {
+                            "path": "cohort.csv",
+                            "subject_id_column": "subject",
+                        }
+                    }
+                }
+            }
+        }
+
+        df = load_participant_table(tmp_path, "dsX", config)
+        assert df is not None
+        assert list(df["participant_id"]) == ["sub-001"]
+        assert df.attrs["source_path"].endswith("cohort.csv")
+        assert df.attrs["source_format"] == "csv"
+        assert df.attrs["subject_id_column"] == "participant_id"
+
+    def test_load_participant_table_auto_discovers_txt(self, tmp_path: Path):
+        dataset_root = tmp_path / "dsY"
+        dataset_root.mkdir()
+        txt_path = dataset_root / "participants.txt"
+        txt_path.write_text("subject_id\tGroup\nsub-002\tPatient\n", encoding="utf-8")
+
+        df = load_participant_table(tmp_path, "dsY", config={})
+        assert df is not None
+        assert list(df["participant_id"]) == ["sub-002"]
+        assert df.attrs["source_path"].endswith("participants.txt")
+        assert df.attrs["source_format"] == "txt"
 
 
 class TestBuildDatasetLabel:

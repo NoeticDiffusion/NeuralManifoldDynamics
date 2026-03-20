@@ -126,6 +126,28 @@ def extract_mapped_metadata(
         if policy:
             per_ds = _deep_merge_dict(per_ds if isinstance(per_ds, Mapping) else {}, policy)
 
+    def _is_scalar_meta_value(value: Any) -> bool:
+        return isinstance(value, (str, int, float, bool, np.integer, np.floating, np.bool_))
+
+    def _pick_candidate_value(candidates: Any) -> Optional[str]:
+        if not isinstance(candidates, (list, tuple)):
+            return None
+        key_lookup: Dict[str, str] = {}
+        for key in meta.keys():
+            try:
+                key_lookup[str(key).strip().lower()] = str(key)
+            except Exception:
+                continue
+        for candidate in candidates:
+            cand_norm = str(candidate).strip().lower()
+            actual_key = key_lookup.get(cand_norm)
+            if actual_key is None:
+                continue
+            value = meta.get(actual_key)
+            if _is_scalar_meta_value(value):
+                return str(value).strip()
+        return None
+
     def _normalize(value: Optional[str], mapping: Dict[str, str]) -> Optional[str]:
         if value is None:
             return None
@@ -227,10 +249,8 @@ def extract_mapped_metadata(
     if result["group"] is None and "numeric_rules" in group_spec:
         result["group"] = _apply_numeric_rules(group_spec.get("numeric_rules"))
 
-    for key in group_spec.get("candidates", []):
-        if key in meta and isinstance(meta[key], (str, int, float)):
-            result["group"] = str(meta[key]).strip()
-            break
+    if result["group"] is None:
+        result["group"] = _pick_candidate_value(group_spec.get("candidates", []))
     if result["group"] is None and "default" in group_spec:
         result["group"] = group_spec["default"]
     if "normalize" in group_spec and result["group"]:
@@ -258,16 +278,13 @@ def extract_mapped_metadata(
 
         if effective_session and effective_session in merged_sess:
             for key in merged_sess[effective_session]:
-                if key in meta and isinstance(meta[key], (str, int, float)):
-                    result["condition"] = str(meta[key]).strip()
+                result["condition"] = _pick_candidate_value([key])
+                if result["condition"] is not None:
                     break
 
         # Priority 3: Generic candidates from participants.tsv
         if result["condition"] is None:
-            for key in cond_spec.get("candidates", []):
-                if key in meta and isinstance(meta[key], (str, int, float)):
-                    result["condition"] = str(meta[key]).strip()
-                    break
+            result["condition"] = _pick_candidate_value(cond_spec.get("candidates", []))
 
     # Apply default if still None
     if result["condition"] is None and "default" in cond_spec:
@@ -330,10 +347,7 @@ def extract_mapped_metadata(
 
     # Priority 2: candidates from participants.tsv
     if result["task"] is None:
-        for key in task_spec.get("candidates", []):
-            if key in meta and isinstance(meta[key], (str, int, float)):
-                result["task"] = str(meta[key]).strip()
-                break
+        result["task"] = _pick_candidate_value(task_spec.get("candidates", []))
 
     # Apply default if still None
     if result["task"] is None and "default" in task_spec:
@@ -438,25 +452,88 @@ def extract_events(df: pd.DataFrame) -> Dict[str, np.ndarray]:
     return events
 
 
-def load_participant_table(received_dir: Path, dataset_id: str) -> Optional[pd.DataFrame]:
-    """Load participants.tsv from the received dataset directory."""
-    tsv_path = received_dir / dataset_id / "participants.tsv"
-    if not tsv_path.exists():
-        logger.warning(f"participants.tsv not found at {tsv_path}")
-        return None
+def load_participant_table(
+    received_dir: Path,
+    dataset_id: str,
+    config: Optional[Mapping[str, Any]] = None,
+) -> Optional[pd.DataFrame]:
+    """Load participants table from the received dataset directory.
+
+    Supported formats:
+    - default dataset-root discovery: `participants.tsv`, `participants.csv`, `participants.txt`
+    - YAML override via `metadata_extraction.[default|datasets.<id>].participants.path`
+    """
+    metadata_spec = (config.get("metadata_extraction", {}) if isinstance(config, Mapping) else {}) or {}
+    default_cfg = metadata_spec.get("default", {}) if isinstance(metadata_spec, Mapping) else {}
+    per_ds = (metadata_spec.get("datasets", {}) or {}).get(dataset_id, {}) if isinstance(metadata_spec, Mapping) else {}
+
+    participants_cfg: Dict[str, Any] = {}
+    if isinstance(default_cfg, Mapping) and isinstance(default_cfg.get("participants"), Mapping):
+        participants_cfg.update(dict(default_cfg.get("participants") or {}))
+    if isinstance(per_ds, Mapping) and isinstance(per_ds.get("participants"), Mapping):
+        participants_cfg.update(dict(per_ds.get("participants") or {}))
+
+    dataset_root = received_dir / dataset_id
+    path_value = participants_cfg.get("path")
+    candidate_path: Optional[Path] = None
+    if isinstance(path_value, (str, Path)) and str(path_value).strip():
+        raw_path = Path(str(path_value).strip())
+        candidate_path = raw_path if raw_path.is_absolute() else dataset_root / raw_path
+        if not candidate_path.exists():
+            logger.warning("Configured participants path not found for %s: %s", dataset_id, candidate_path)
+            return None
+    else:
+        for name in ("participants.tsv", "participants.csv", "participants.txt"):
+            path = dataset_root / name
+            if path.exists():
+                candidate_path = path
+                break
+        if candidate_path is None:
+            logger.warning("No participants table found for %s under %s", dataset_id, dataset_root)
+            return None
+
+    sep = participants_cfg.get("sep", participants_cfg.get("delimiter"))
+    if not isinstance(sep, str) or not sep:
+        suffix = candidate_path.suffix.lower()
+        if suffix == ".tsv":
+            sep = "\t"
+        elif suffix == ".csv":
+            sep = ","
+        else:
+            sep = None
+
     try:
-        df = pd.read_csv(tsv_path, sep="\t")
+        read_kwargs: Dict[str, Any] = {}
+        if sep is None:
+            read_kwargs.update({"sep": None, "engine": "python"})
+        else:
+            read_kwargs["sep"] = sep
+        df = pd.read_csv(candidate_path, **read_kwargs)
+
         # Normalize a few common variants to participant_id.
+        subject_id_candidates = participants_cfg.get(
+            "subject_id_candidates",
+            ["participant_id", "subject_id", "participant", "subject"],
+        )
+        subject_id_column = participants_cfg.get("subject_id_column")
+        if isinstance(subject_id_column, str) and subject_id_column.strip():
+            subject_id_candidates = [subject_id_column.strip(), *list(subject_id_candidates or [])]
+
         if "participant_id" not in df.columns:
-            for alt in ("subject_id", "participant", "subject"):
-                if alt in df.columns:
-                    df = df.rename(columns={alt: "participant_id"})
+            col_lookup = {str(col).strip().lower(): str(col) for col in df.columns}
+            for alt in subject_id_candidates:
+                actual = col_lookup.get(str(alt).strip().lower())
+                if actual in df.columns:
+                    df = df.rename(columns={actual: "participant_id"})
                     break
         if "participant_id" not in df.columns:
-            logger.warning("participants.tsv missing participant_id-like column at %s", tsv_path)
+            logger.warning("Participants table missing participant_id-like column at %s", candidate_path)
             return None
         df["participant_id"] = df["participant_id"].astype(str)
+        df.attrs["source_path"] = str(candidate_path)
+        df.attrs["source_format"] = candidate_path.suffix.lower().lstrip(".") or "text"
+        df.attrs["subject_id_column"] = "participant_id"
         return df
     except Exception as exc:
-        logger.warning(f"Failed to load participants.tsv: {exc}")
+        logger.warning("Failed to load participants table %s: %s", candidate_path, exc)
         return None

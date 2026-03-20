@@ -9,9 +9,13 @@ imports:
 datasets:
   - ds003478
 
+paths:
+  dataset_received_dirs:
+    ds003478: "G:/Science_Datasets_longtime_storage/ds003478"
+
 preprocess:
   eeg_csd:
-    enabled: true
+    enabled: false
     lambda2: 1.0e-5
     stiffness: 4.0
     n_legendre_terms: 50

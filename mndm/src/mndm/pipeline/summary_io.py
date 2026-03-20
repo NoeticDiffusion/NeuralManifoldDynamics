@@ -93,7 +93,7 @@ def write_summary_manifest_and_h5(
     dataset_label: str,
     manifest: Mapping[str, Any],
     payload: Any,
-    jacobian_diagnostics: Mapping[str, Any],
+    jacobian_diagnostics: Optional[Mapping[str, Any]],
     sub_id: str,
     ses_id: Optional[str],
     condition: Optional[str],

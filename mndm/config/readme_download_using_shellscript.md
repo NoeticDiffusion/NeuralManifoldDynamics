@@ -56,7 +56,10 @@ Optional flags:
 Once files are in `received/` and an index exists, you can run:
 
 ```powershell
-python -m noetic_ingest.cli features --dataset ds003059 --n-jobs 16 --mem-budget-gb 20
-python -m noetic_ingest.cli summarize --dataset ds003059
+# Optional preflight check before the first run
+python -m mndm.cli prerequisite-check --dataset ds003059
+
+python -m mndm.cli features --dataset ds003059 --n-jobs 16 --mem-budget-gb 20
+python -m mndm.cli summarize --dataset ds003059
 ```
 

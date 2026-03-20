@@ -26,9 +26,11 @@ def write_qc_files(
     ensemble_summary: Optional[Dict[str, Any]],
     robust_summary: Optional[Dict[str, Any]],
     dist_summary: Optional[Dict[str, Any]],
+    baseline_comparisons: Optional[Dict[str, Any]],
     tau_summary: Optional[Dict[str, Any]],
     tier2_jacobian: Optional[Dict[str, Any]],
     tier2_emmi: Optional[Dict[str, Any]],
+    null_sanity_tests: Optional[Dict[str, Any]],
     entropy_qc: Optional[Dict[str, Any]],
 ) -> None:
     """Write QC-related JSON files."""
@@ -59,12 +61,16 @@ def write_qc_files(
             dist_summary=dist_summary,
             entropy_qc=entropy_qc,
         )
+        if baseline_comparisons is not None:
+            qc_summary["baseline_comparisons"] = baseline_comparisons
         if tau_summary:
             qc_summary["tau_summary"] = tau_summary
         if tier2_jacobian:
             qc_summary["tier2_jacobian"] = tier2_jacobian
         if tier2_emmi:
             qc_summary["tier2_emmi"] = tier2_emmi
+        if null_sanity_tests is not None:
+            qc_summary["null_sanity_tests"] = null_sanity_tests
         json_writer.write_json_summary(qc_summary, qc_summary_path)
     except Exception:
         logger.exception("Failed to write qc_summary.json for %s", dataset_label)

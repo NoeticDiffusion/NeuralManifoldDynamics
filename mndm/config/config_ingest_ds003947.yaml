@@ -45,7 +45,7 @@ metadata_extraction:
   datasets:
     ds003947:
       group:
-        candidates: ["Group", "Diagnosis", "group", "diagnosis"]
+        candidates: ["Group", "Diagnosis", "group", "diagnosis", "type"]
         normalize:
           fep: "FEP"
           firstepisodepsychosis: "FEP"

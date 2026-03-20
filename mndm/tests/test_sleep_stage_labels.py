@@ -110,3 +110,63 @@ def test_stage_labels_written_from_events_tsv(monkeypatch, tmp_path: Path):
     assert int(payload.stage[0]) == 0
     assert int(payload.stage[1]) == 2
 
+
+def test_primary_mnps_jacobian_can_be_disabled_via_config(monkeypatch, tmp_path: Path):
+    ctx = _build_ctx(tmp_path)
+    ctx.config["mnps"] = {"jacobian": {"enabled": False}}
+    ctx.config["mnps_9d"] = {"enabled": False}
+    ds_id = "ds005555"
+
+    received_ds = ctx.received_dir / ds_id / "sub-001" / "eeg"
+    received_ds.mkdir(parents=True, exist_ok=True)
+    eeg_name = "sub-001_task-Sleep_acq-psg_eeg.edf"
+    eeg_path = received_ds / eeg_name
+    eeg_path.write_bytes(b"")
+
+    index_df = pd.DataFrame([{"path": str(Path("sub-001/eeg") / eeg_name), "modality": "eeg", "subject": "001"}])
+    features_df = pd.DataFrame(
+        {
+            "file": [eeg_name, eeg_name, eeg_name],
+            "t_start": [0.0, 30.0, 60.0],
+            "t_end": [30.0, 60.0, 90.0],
+            "qc_ok_eeg": [1, 1, 1],
+            "feat_m": np.linspace(0, 1, 3),
+            "feat_d": np.linspace(1, 2, 3),
+            "feat_e": np.linspace(2, 3, 3),
+        }
+    )
+
+    captured = {}
+    monkeypatch.setattr(
+        summary_mod,
+        "write_summary_manifest_and_h5",
+        lambda **kwargs: captured.setdefault("payload", kwargs["payload"]),
+    )
+    monkeypatch.setattr(summary_mod.json_writer, "build_manifest", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(summary_mod.json_writer, "write_json_summary", lambda *_, **__: None)
+
+    def _fail_if_called(*_args, **_kwargs):
+        raise AssertionError("estimate_local_jacobians should not run when mnps.jacobian.enabled=false")
+
+    monkeypatch.setattr(summary_mod.jacobian, "estimate_local_jacobians", _fail_if_called)
+
+    dataset_runner = DatasetSummaryRunner(ctx, ds_id, None, "subject")
+    dataset_runner.participants_df = None
+    dataset_runner.min_seconds = 0
+    dataset_runner.min_epochs = 0
+
+    subject_runner = SubjectSummaryRunner(
+        dataset_runner=dataset_runner,
+        ds_path=ctx.processed_dir / ds_id,
+        mnps_dir=ctx.processed_dir / ds_id,
+        index_df=index_df,
+    )
+
+    subject_runner.run(sub_id="sub-001", ses_id=None, raw_task="Sleep", run_id=None, acq_id="acq-psg", sub_frame=features_df)
+
+    payload = captured.get("payload")
+    assert payload is not None
+    assert payload.jacobian is None
+    assert payload.jacobian_dot is None
+    assert payload.jacobian_centers is None
+

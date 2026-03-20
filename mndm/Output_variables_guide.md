@@ -1,6 +1,6 @@
 ### HDF5 output schema (Noetic Ingest)
 
-This file documents **all nodes (datasets + groups) and relevant HDF5 attributes** written by the ingest pipeline into each `*.h5` (see `openneuro/src/noetic_ingest/io/h5_writer.py`).
+This file documents **all nodes (datasets + groups) and relevant HDF5 attributes** written by the MNDM summarization pipeline into each `*.h5`.
 
 Notation:
 - **T**: number of MNPS timepoints (per-window/epoch on the MNPS grid)

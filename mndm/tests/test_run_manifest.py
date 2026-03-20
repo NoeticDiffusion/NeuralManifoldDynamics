@@ -114,3 +114,28 @@ def test_run_manifest_tracks_raw_region_signals_separately_from_regional_outputs
     assert caps["counts"]["h5_with_raw_region_signals"] == 1
     assert caps["counts"]["h5_with_raw_features"] == 1
     assert caps["counts"]["h5_with_robust_z_features"] == 1
+
+
+def test_run_manifest_includes_reproducibility_block_and_merges_extra(tmp_path: Path):
+    mnps_dir = tmp_path / "mnps_dsX_20260101_000002"
+    rec_dir = mnps_dir / "sub-001_cond_task_run-01"
+    rec_dir.mkdir(parents=True)
+    _write_min_summary_json(rec_dir / "summary.json")
+
+    config = _base_config()
+    config["reproducibility"] = {"seed": 123}
+
+    out_path = write_run_manifest(
+        mnps_dir=mnps_dir,
+        config=config,
+        ds_id="dsX",
+        received_dir=tmp_path / "received",
+        processed_dir=tmp_path / "processed",
+        h5_mode="subject",
+        extra={"reproducibility": {"n_jobs": 4}},
+    )
+
+    manifest = json.loads(out_path.read_text(encoding="utf-8"))
+    assert manifest["reproducibility"]["seed"] == 123
+    assert manifest["reproducibility"]["seed_source"] == "reproducibility.seed"
+    assert manifest["reproducibility"]["n_jobs"] == 4

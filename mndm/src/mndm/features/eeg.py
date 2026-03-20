@@ -37,6 +37,7 @@ from . import eeg_complexity
 from . import eeg_dfc
 from . import eeg_sync
 from core.metrics import graph as graph_metrics
+from ..reproducibility import resolve_component_seed
 
 try:
     from mne.time_frequency import psd_array_multitaper
@@ -99,6 +100,9 @@ def _resolve_epoching_sampling_cfg(config: Mapping[str, Any], dataset_id: Option
                     ds_sampling = ds_cfg.get("sampling", {})
                     if isinstance(ds_sampling, Mapping):
                         merged.update(dict(ds_sampling))
+    repro_cfg = config.get("reproducibility", {}) if isinstance(config, Mapping) else {}
+    if isinstance(repro_cfg, Mapping) and repro_cfg:
+        merged["reproducibility"] = dict(repro_cfg)
     return merged
 
 
@@ -341,7 +345,11 @@ def _select_stage_stratified_blocks(
         return None
     block_minutes = float(sampling_cfg.get("block_minutes", 5) or 5.0)
     block_epochs = max(1, int(round((block_minutes * 60.0) / max(epoch_step_sec, 1e-6))))
-    seed = int(sampling_cfg.get("seed", 42) or 42)
+    seed, _ = resolve_component_seed(
+        {"reproducibility": sampling_cfg.get("reproducibility", {})} if isinstance(sampling_cfg, Mapping) else None,
+        fallback_seed=sampling_cfg.get("seed"),
+        fallback_source="epoching.sampling.seed",
+    )
     rng = np.random.default_rng(seed)
 
     # Default stage mapping (ds005555 AASM codes)

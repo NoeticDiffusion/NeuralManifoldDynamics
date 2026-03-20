@@ -9,6 +9,9 @@ imports:
 datasets:
   - ds005555
 
+exclude-files:
+  - "_acq-headband_"
+
 source:
   name: "OpenNeuro"
   platform: "OpenNeuro"
@@ -64,6 +67,14 @@ robustness:
       central: ["FC1", "FC2", "C3", "Cz", "C4"]
       parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
       temporal: ["T7", "T8", "TP7", "TP8"]
+  review_qc:
+    baseline_comparisons:
+      enabled: true
+      smoothing_window_epochs: 5
+      max_series_per_family: 6
+    null_sanity_tests:
+      enabled: true
+      seed: 42
 
 regional_mnps:
   enabled: true
@@ -87,7 +98,14 @@ ndt_ingest:
         ds005555:
           synchrony: {enabled: false}
           complexity: {enabled: false}
-          dynamic_fc: {enabled: false}
+          dynamic_fc:
+            enabled: true
+            window_length_sec: 4.0
+            step_sec: 1.0
+            max_windows: 64
+            retain_matrices: false
+            summary:
+              variance: true
           graph_metrics: {enabled: false}
 
 metadata_extraction:

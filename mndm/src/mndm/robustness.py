@@ -21,8 +21,23 @@ import numpy as np
 import pandas as pd
 
 from core.stats import robust as robust_stats
+from .reproducibility import resolve_base_seed
 
 logger = logging.getLogger(__name__)
+
+
+def _cfg_with_resolved_seed(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(cfg) if isinstance(cfg, dict) else {}
+    robustness_cfg = out.get("robustness", {})
+    robustness_cfg = dict(robustness_cfg) if isinstance(robustness_cfg, dict) else {}
+    seed, source = resolve_base_seed(out)
+    robustness_cfg["seed"] = int(seed)
+    out["robustness"] = robustness_cfg
+    repro_cfg = dict(out.get("reproducibility", {}) or {}) if isinstance(out.get("reproducibility", {}), dict) else {}
+    repro_cfg.setdefault("seed", int(seed))
+    repro_cfg.setdefault("seed_source", str(source))
+    out["reproducibility"] = repro_cfg
+    return out
 
 
 @dataclass
@@ -86,7 +101,8 @@ def compute_robust_summary(coords_df: pd.DataFrame, transient_mask: np.ndarray, 
             )
     required = ["m", "d", "e"]
 
-    robustness = cfg.get("robustness", {}) if isinstance(cfg, dict) else {}
+    cfg_resolved = _cfg_with_resolved_seed(cfg if isinstance(cfg, dict) else {})
+    robustness = cfg_resolved.get("robustness", {}) if isinstance(cfg_resolved, dict) else {}
     summary_type = str(robustness.get("summary", "median")).lower()
     trim_pct = float(robustness.get("trim_pct", 0.0) or 0.0)
     bootstrap_n = int(robustness.get("bootstrap_n", 1000) or 0)
@@ -213,8 +229,8 @@ def summarize_array(
     dict
         Mapping name -> {'point', 'ci_low', 'ci_high'}.
     """
-
-    return robust_stats.summarize_array(values, axis_names, cfg)
+    cfg_resolved = _cfg_with_resolved_seed(cfg if isinstance(cfg, dict) else {})
+    return robust_stats.summarize_array(values, axis_names, cfg_resolved)
 
 
 def split_half_reliability(

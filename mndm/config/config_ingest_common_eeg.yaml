@@ -146,6 +146,8 @@ mnps:
   window_sec: 8.0
   overlap: 0.5
   derivative: {method: "sav_gol", window: 7, polyorder: 3}
+  jacobian:
+    enabled: true
   derivative_robust:
     enabled: true
     max_jump: 5.0
@@ -260,6 +262,12 @@ metadata_extraction:
   # - mndm/config/condition_task_setup/datasets.yml
   policy_dir: "mndm/config/condition_task_setup"
   default:
+    participants:
+      # Optional explicit participants table path. When omitted, the loader tries
+      # dataset-root participants.tsv / participants.csv / participants.txt.
+      path:
+      # Optional override if the subject identifier column is not participant_id.
+      subject_id_candidates: ["participant_id", "subject_id", "participant", "subject"]
     group: {candidates: ["Group", "Diagnosis", "group", "diagnosis"]}
     condition: {candidates: ["condition", "Condition"]}
     task: {from_filename: true}

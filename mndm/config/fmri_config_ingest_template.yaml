@@ -13,6 +13,11 @@ modality: fmri
 datasets:
   - YOUR_DATASET_ID
 
+# Optional regex filters applied before features and summarize.
+# Example:
+# exclude-files:
+#   - "task-localizer"
+
 paths:
   received_dir: "E:/Science_Datasets/openneuro/received"
   processed_dir: "E:/Science_Datasets/openneuro/processed"
@@ -63,6 +68,8 @@ mnps:
   window_sec: 8.0
   overlap: 0.5
   derivative: {method: "sav_gol", window: 7, polyorder: 3}
+  jacobian:
+    enabled: true
   knn: {k: 20, metric: "euclidean"}
   ridge: {alpha: 1.0, cv_folds: 5, distance_weighted: true}
   whiten: true
@@ -97,6 +104,9 @@ robustness:
 
 metadata_extraction:
   default:
+    participants:
+      path:
+      subject_id_candidates: ["participant_id", "subject_id", "participant", "subject"]
     group: {candidates: ["Group", "Diagnosis", "group", "diagnosis"]}
     condition: {candidates: ["condition", "Condition"], session_map: {}}
     task: {from_filename: true}

@@ -5,6 +5,7 @@ Subcommands:
   - summarize: Project features to MNPS and compute robust summaries.
   - pack: Pack a run directory into a single H5.
   - check-structure: Validate summarized outputs.
+  - prerequisite-check: Validate dataset/config prerequisites before a run.
 """
 
 from __future__ import annotations
@@ -109,6 +110,10 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     p_check.add_argument("--run-selector", choices=["latest", "all"], default=None, help="Which summarized run(s) to check (default: from check-config)")
     p_check.add_argument("--out", type=Path, default=None, help="Optional combined JSON report output path")
 
+    p_pre = sub.add_parser("prerequisite-check", help="Run preflight checks for dataset/config readiness")
+    _add_common_args(p_pre)
+    p_pre.add_argument("--out", type=Path, default=None, help="Optional JSON report output path")
+
     p_all = sub.add_parser("all", help="Run features → summarize")
     _add_common_args(p_all)
 
@@ -211,6 +216,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.data_dir,
             check_config_path=args.check_config,
             run_selector=args.run_selector,
+            out_report=args.out,
+        )
+    elif args.command == "prerequisite-check":
+        from . import orchestrate
+        return orchestrate.cmd_prerequisite_check(
+            config,
+            dataset_ids,
+            args.out_dir,
+            args.data_dir,
             out_report=args.out,
         )
     elif args.command == "all":

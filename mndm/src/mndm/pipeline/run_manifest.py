@@ -18,6 +18,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from core.io import json_writer
 from .. import bids_index
+from ..reproducibility import resolve_reproducibility_policy
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +59,7 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
 
     excerpt: Dict[str, Any] = {
         "mnps": _pick(config, "mnps", {}),
+        "reproducibility": _pick(config, "reproducibility", {}),
         "mnps_9d": {
             "enabled": bool(_pick(_pick(config, "mnps_9d", {}), "enabled", False)),
             "jacobian": _pick(_pick(config, "mnps_9d", {}), "jacobian", {}),
@@ -129,6 +131,12 @@ def _field_guide() -> Dict[str, Any]:
             "features_robust_z/values": "Per-epoch strict robust-z feature matrix [T,K] (no log10/clip baked in).",
             "features_robust_z/names": "Column names for features_robust_z/values.",
             "features_robust_z/metadata/*": "Machine-readable per-feature metadata aligned to features_robust_z/names.",
+            "participant/row_json": "Serialized participant-table row for this subject, copied from the resolved participants file.",
+            "participant/mapped_json": "Canonical mapped metadata derived from participant fields and YAML rules (e.g. group, condition, task).",
+            "participant/source_json": "Provenance for the participant-table lookup, including source path/format and subject-id column used.",
+            "participant attrs field_*": "Scalar participant fields mirrored as H5 attrs for fast access without parsing JSON.",
+            "participant attrs mapped_*": "Scalar mapped metadata mirrored as H5 attrs, e.g. mapped_group, mapped_condition, mapped_task.",
+            "participant attrs source_*": "Scalar provenance attrs for the participant table source.",
             "regional_mnps/<network>/mnps": "Per-network MNPS trajectory [T,3].",
             "regional_mnps/<network>/mnps_dot": "Derivative of regional MNPS trajectory [T,3].",
             "regional_mnps/<network>/jacobian": "Per-network Jacobian tensor [W,3,3].",
@@ -148,6 +156,8 @@ def _field_guide() -> Dict[str, Any]:
             "capabilities.regional_outputs_path": "Canonical regional output path for all modalities.",
             "capabilities.raw_features": "True when H5 files embed `/features_raw/*` feature exports.",
             "capabilities.robust_z_features": "True when H5 files embed `/features_robust_z/*` feature exports.",
+            "participant": "Subject-level participant metadata export group embedded into each H5.",
+            "participant_mapped_meta": "Canonical metadata derived from participant rows plus YAML extraction rules.",
         },
         "source": {
             "source": "Dataset provenance metadata declared in the active YAML config.",
@@ -408,6 +418,7 @@ def write_run_manifest(
     config_digest = _sha256_text(_safe_json_dumps(config))
     excerpt_digest = _sha256_text(_safe_json_dumps(excerpt))
     source_info = _resolve_source_info(config, ds_id)
+    reproducibility = resolve_reproducibility_policy(config, ds_id)
 
     probe = _probe_h5_capabilities(h5_files, max_files=200)
     subj = _summarize_subject_jsons(summary_jsons)
@@ -483,12 +494,18 @@ def write_run_manifest(
         },
         "source": source_info,
         "doi": source_info.get("doi"),
+        "reproducibility": reproducibility,
         "field_guide": _field_guide(),
     }
 
     if extra:
         try:
             manifest["extra"] = dict(extra)
+            extra_repro = manifest["extra"].get("reproducibility")
+            if isinstance(extra_repro, Mapping):
+                merged = dict(reproducibility)
+                merged.update(dict(extra_repro))
+                manifest["reproducibility"] = merged
         except Exception:
             manifest["extra"] = {"note": "extra was not JSON-serializable"}
 

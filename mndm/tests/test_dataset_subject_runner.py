@@ -27,6 +27,7 @@ def dummy_ctx(tmp_path):
         weights={"m": {}, "d": {}, "e": {}},
         normalize_override=None,
         ingest_meta={},
+        reproducibility={"seed": 42, "seed_source": "default"},
         mnps_cfg={
             "window_sec": 4.0,
             "overlap": 0.25,
@@ -34,6 +35,7 @@ def dummy_ctx(tmp_path):
             "derivative": {"method": "sav_gol", "window": 5, "polyorder": 2},
             "knn_k": 5,
             "knn_metric": "euclidean",
+            "ridge_alpha": 1.0,
             "super_window": 3,
             "stage_codebook": {},
             "embodied": {"enabled": False},
@@ -164,4 +166,155 @@ def test_dataset_runner_uses_requested_worker_count(dummy_ctx, monkeypatch, tmp_
     assert executor_calls["max_workers"] == 3
     assert executor_calls["submitted"] == 3
     assert processed == [("sub-001", 1), ("sub-002", 1), ("sub-003", 1)]
+
+
+def test_dataset_runner_keeps_jacobian_hashes_stable_across_n_jobs(dummy_ctx, monkeypatch, tmp_path):
+    captures: dict[int, dict[str, str]] = {}
+
+    class _ImmediateFuture:
+        def result(self):
+            return None
+
+    class _FakeExecutor:
+        def __init__(self, max_workers: int):
+            self.max_workers = max_workers
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def submit(self, fn, *args, **kwargs):
+            fn(*args, **kwargs)
+            return _ImmediateFuture()
+
+    def _run_once(n_jobs: int) -> dict[str, str]:
+        runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=n_jobs)
+        ds_path = tmp_path / f"ds001_{n_jobs}"
+        mnps_dir = ds_path / "MNPS"
+        ds_path.mkdir(parents=True, exist_ok=True)
+        mnps_dir.mkdir(parents=True, exist_ok=True)
+        grouping_items = [
+            (("sub-001", "ses-01", "rest", "run-01", None), pd.DataFrame({"file": ["sub-001_task-rest_eeg.set"]})),
+            (("sub-002", "ses-01", "rest", "run-01", None), pd.DataFrame({"file": ["sub-002_task-rest_eeg.set"]})),
+        ]
+
+        monkeypatch.setattr(summary_mod, "ThreadPoolExecutor", _FakeExecutor)
+        monkeypatch.setattr(summary_mod, "load_participant_table", lambda *_args, **_kwargs: pd.DataFrame())
+        monkeypatch.setattr(runner, "_read_index", lambda _ds_path: pd.DataFrame())
+        monkeypatch.setattr(runner, "_read_features", lambda _ds_path: pd.DataFrame({"file": ["ignored"]}))
+        monkeypatch.setattr(runner, "_apply_subject_filter", lambda frame: frame)
+        monkeypatch.setattr(runner, "_apply_qc_filters", lambda frame: frame)
+        monkeypatch.setattr(runner, "_build_groupings", lambda frame: grouping_items)
+        monkeypatch.setattr(runner, "_create_output_dir", lambda _ds_path: mnps_dir)
+        monkeypatch.setattr(runner, "_write_features_snapshot", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(summary_mod, "write_run_manifest", lambda **_kwargs: None)
+
+        def _fake_subject_run(self, sub_id, ses_id, raw_task, run_id, acq_id, sub_frame):
+            x = np.array(
+                [[0.0, 0.1, 0.2], [0.2, 0.0, 0.1], [0.4, -0.1, 0.0], [0.6, -0.2, -0.1]],
+                dtype=np.float32,
+            )
+            x_dot = np.gradient(x, axis=0).astype(np.float32)
+            nn_idx = np.tile(np.arange(len(x)), (len(x), 1)).astype(np.int32)
+            jac = summary_mod.jacobian.estimate_local_jacobians(x, x_dot, nn_idx, super_window=3, ridge_alpha=1e-4)
+            captures.setdefault(n_jobs, {})[sub_id] = summary_mod._stable_hash_array(jac.j_hat)
+
+        monkeypatch.setattr(summary_mod.SubjectSummaryRunner, "run", _fake_subject_run)
+        runner.run()
+        return dict(captures.get(n_jobs, {}))
+
+    hashes_seq = _run_once(1)
+    hashes_parallel = _run_once(2)
+
+    assert hashes_seq == hashes_parallel
+    assert set(hashes_seq.keys()) == {"sub-001", "sub-002"}
+
+
+def test_subject_runner_exports_reproducibility_provenance(dummy_ctx, monkeypatch, tmp_path):
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
+    runner.participants_df = pd.DataFrame()
+    monkeypatch.setattr(runner, "participant_meta_for", lambda _sub_id: {})
+    monkeypatch.setattr(runner, "participant_meta_source_info", lambda: {})
+    monkeypatch.setattr(runner, "resolve_coverage_policy", lambda **_kwargs: {"min_epochs": 0, "min_seconds": 0.0, "tag": "default"})
+    monkeypatch.setattr(runner, "write_regional_csv_outputs_threadsafe", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "write_stratified_blocks_csv_output_threadsafe", lambda **_kwargs: None)
+
+    subject_runner = SubjectSummaryRunner(
+        dataset_runner=runner,
+        ds_path=tmp_path,
+        mnps_dir=tmp_path / "mnps",
+        index_df=None,
+    )
+    subject_runner.mnps_dir.mkdir(parents=True, exist_ok=True)
+
+    sub_frame = pd.DataFrame(
+        {
+            "file": ["sub-001_task-rest_eeg.set"] * 6,
+            "epoch_id": np.arange(6, dtype=int),
+            "t_start": np.arange(6, dtype=float),
+            "t_end": np.arange(1, 7, dtype=float),
+        }
+    )
+    x = np.array(
+        [
+            [0.0, 0.1, 0.2],
+            [0.2, 0.0, 0.1],
+            [0.4, -0.1, 0.0],
+            [0.6, -0.2, -0.1],
+            [0.8, -0.1, -0.2],
+            [1.0, 0.0, -0.3],
+        ],
+        dtype=np.float32,
+    )
+    captures: dict[str, object] = {}
+
+    monkeypatch.setattr(summary_mod, "extract_mapped_metadata", lambda *_args, **_kwargs: {"group": None, "condition": "rest", "task": "rest"})
+    monkeypatch.setattr(summary_mod, "build_dataset_label", lambda **_kwargs: "ds001:sub-001:rest_rest")
+    monkeypatch.setattr(summary_mod.projection, "project_features_with_coverage", lambda *args, **kwargs: (x, np.ones_like(x, dtype=np.float32), {}))
+    monkeypatch.setattr(summary_mod.projection, "build_feature_export_bundle", lambda *args, **kwargs: {"raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "raw_names": [], "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "robust_z_names": [], "metadata": {}})
+    monkeypatch.setattr(summary_mod, "extract_stage_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subject_runner, "_infer_stage_from_bids_events", lambda *_args, **_kwargs: (None, None, None, None))
+    monkeypatch.setattr(summary_mod, "extract_embodied_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "extract_events", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(subject_runner, "_load_regional_fmri", lambda **_kwargs: (None, None, None))
+    monkeypatch.setattr(summary_mod, "compute_regional_context", lambda **_kwargs: ({}, None, [], {}, None))
+    monkeypatch.setattr(summary_mod, "compute_extensions", lambda **_kwargs: ({}, {}))
+    monkeypatch.setattr(summary_mod, "compute_ensemble_summary_for_subject", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_robust_and_reliability_summaries", lambda **_kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_dist_summary", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_feature_baseline_comparisons", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_tau_summary", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_tier2_jacobian_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_emmi_metrics", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_null_sanity_tests", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_psd_multiverse_stability", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod.robustness, "entropy_sanity_checks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "_get_env_provenance", lambda: {})
+    monkeypatch.setattr(subject_runner, "_write_qc_files", lambda **_kwargs: None)
+
+    def _capture_write(*, target_dir, dataset_label, manifest, payload, **kwargs):
+        captures["manifest"] = manifest
+        captures["payload"] = payload
+
+    monkeypatch.setattr(summary_mod, "write_summary_manifest_and_h5", _capture_write)
+
+    subject_runner.run(
+        sub_id="sub-001",
+        ses_id="ses-01",
+        raw_task="rest",
+        run_id="run-01",
+        acq_id=None,
+        sub_frame=sub_frame,
+    )
+
+    payload = captures["payload"]
+    manifest = captures["manifest"]
+    assert payload.attrs["jacobian_hash_saved"]
+    assert payload.attrs["jacobian_dot_hash_saved"]
+    assert payload.attrs["reproducibility_seed"] == 42
+    repro = manifest["provenance"]["reproducibility"]
+    assert repro["seed"] == 42
+    assert repro["jacobian_hash_saved"] == payload.attrs["jacobian_hash_saved"]
 

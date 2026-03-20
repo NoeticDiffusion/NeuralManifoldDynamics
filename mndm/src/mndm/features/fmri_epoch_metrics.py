@@ -8,6 +8,8 @@ from typing import Any, Dict, Mapping, Sequence
 import numpy as np
 from scipy.signal import welch
 
+from ..reproducibility import resolve_component_seed
+
 try:
     import networkx as nx  # type: ignore
 except Exception:  # pragma: no cover - optional runtime dependency
@@ -64,6 +66,11 @@ def compute_local_metrics(
     compute_gradient_proxy = bool(cfg.get("compute_gradient_proxy", True))
     compute_dfc_variance = bool(cfg.get("compute_dfc_variance", True))
     compute_dvars = bool(cfg.get("compute_dvars", True))
+    modularity_seed, _ = resolve_component_seed(
+        cfg,
+        fallback_seed=cfg.get("modularity_seed", cfg.get("seed")),
+        fallback_source="features.metrics.modularity_seed",
+    )
 
     # 0) Motion surrogate from raw, unfiltered BOLD.
     if compute_dvars:
@@ -99,7 +106,11 @@ def compute_local_metrics(
                 adj = np.maximum(adj, 0.0)
                 if np.any(adj > 0):
                     G = nx.from_numpy_array(adj)
-                    communities = nx.algorithms.community.louvain_communities(G, weight="weight", seed=0)
+                    communities = nx.algorithms.community.louvain_communities(
+                        G,
+                        weight="weight",
+                        seed=int(modularity_seed),
+                    )
                     metrics["fmri_modularity"] = float(nx.algorithms.community.modularity(G, communities, weight="weight"))
             except Exception:
                 logger.debug("Louvain modularity failed for epoch", exc_info=True)

@@ -18,6 +18,7 @@ import pandas as pd
 
 from . import fmri_continuous
 from . import fmri_epoch_metrics
+from ..reproducibility import resolve_base_seed
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +105,12 @@ def compute_fmri_features(signals: Mapping[str, Any], config: Mapping[str, Any])
                 metrics_cfg = ((features_cfg.get("fmri", {}) if isinstance(features_cfg, Mapping) else {}) or {}).get(
                     "metrics", {}
                 ) or {}
+            metrics_cfg = dict(metrics_cfg) if isinstance(metrics_cfg, Mapping) else {}
+            base_seed, _ = resolve_base_seed(config, dataset_id=dataset_id)
+            repro_cfg = metrics_cfg.get("reproducibility", {})
+            repro_cfg = dict(repro_cfg) if isinstance(repro_cfg, Mapping) else {}
+            repro_cfg.setdefault("seed", int(base_seed))
+            metrics_cfg["reproducibility"] = repro_cfg
 
     records: list[Dict[str, Any]] = []
     prev_power_global: Optional[float] = None

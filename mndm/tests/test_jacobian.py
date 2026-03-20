@@ -102,3 +102,20 @@ def test_phase_randomise_preserves_channel_means():
     assert y.shape == x.shape
     assert np.allclose(np.mean(y, axis=0), np.mean(x, axis=0), atol=1e-6)
 
+
+def test_jacobian_is_exactly_deterministic_for_identical_inputs():
+    from mndm.jacobian import estimate_local_jacobians
+
+    rng = np.random.default_rng(2026)
+    x = rng.normal(size=(48, 3)).astype(np.float32)
+    a_true = np.array([[0.1, -0.05, 0.02], [0.04, -0.03, 0.01], [-0.02, 0.03, -0.06]], dtype=np.float32)
+    x_dot = x @ a_true.T
+    nn_idx = np.tile(np.arange(len(x)), (len(x), 1)).astype(np.int32)
+
+    first = estimate_local_jacobians(x, x_dot, nn_idx, super_window=3, ridge_alpha=1e-4)
+    second = estimate_local_jacobians(x, x_dot, nn_idx, super_window=3, ridge_alpha=1e-4)
+
+    assert np.array_equal(first.centers, second.centers)
+    assert np.array_equal(first.j_hat, second.j_hat)
+    assert np.array_equal(first.j_dot, second.j_dot)
+

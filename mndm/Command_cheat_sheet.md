@@ -57,6 +57,9 @@ python -m openneuro.cli download --dataset ds003490
 ### Commands
 
 ```powershell
+# Run a preflight check before the first pipeline run
+python -m mndm.cli prerequisite-check --dataset ds003490
+
 # Compute per-epoch features
 python -m mndm.cli features --dataset ds003490
 
@@ -107,14 +110,17 @@ python -m mndm.cli check-structure --dataset ds003490
 # 1) Download (ingest)
 python -m openneuro.cli download --dataset ds003490
 
-# 2) Recommended one-step MNDM run
+# 2) Preflight check: paths, config, participants table, index preview
+python -m mndm.cli prerequisite-check --dataset ds003490
+
+# 3) Recommended one-step MNDM run
 python -m mndm.cli all --dataset ds003490
 
-# 3) Or run the stages separately
+# 4) Or run the stages separately
 python -m mndm.cli features --dataset ds003490
 python -m mndm.cli summarize --dataset ds003490
 
-# 4) (Optional) Pack H5
+# 5) (Optional) Pack H5
 python -m mndm.cli pack --dataset ds003490
 ```
 
@@ -150,6 +156,7 @@ python -m mndm.cli pack --dataset ds003490
 | Out of memory | Reduce `--n-jobs` |
 | Parquet warnings | Ensure `pyarrow` is installed in `.venv` |
 | Missing features | Check `failed_files.txt` for errors |
+| First run fails early | Run `python -m mndm.cli prerequisite-check --dataset <ds>` |
 
 ---
 

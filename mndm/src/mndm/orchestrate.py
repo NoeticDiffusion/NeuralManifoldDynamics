@@ -20,6 +20,7 @@ import pandas as pd
 
 from core import config_loader
 from . import bids_index
+from .file_filters import apply_exclude_file_filters
 from .parallel import (
     merge_temp_features,
     process_single_file,
@@ -32,6 +33,7 @@ from .parallel import (
 from .pipeline.context import ResolvedConfig, SummarizeContext
 from .pipeline.summary import DatasetSummaryRunner
 from .pipeline.check_structure import run_structure_check
+from .prerequisite_check import format_prerequisite_report, report_to_json, run_prerequisite_check
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +343,18 @@ def cmd_features(
                     index_df["subject"].map(_normalize_subject_token) == subj_str
                 ]
                 logger.info("Filtered to subject %s: %s files", subject, len(index_df))
+            index_df, excluded_count, excluded_patterns = apply_exclude_file_filters(
+                index_df,
+                config=config,
+                candidate_columns=("path",),
+            )
+            if excluded_count > 0:
+                logger.info(
+                    "Excluded %s indexed files for %s via exclude-files=%s",
+                    excluded_count,
+                    ds_id,
+                    excluded_patterns,
+                )
 
             io_policy = resolve_feature_io_policy(config, ds_path, planned_files=len(index_df))
             already_processed_stems: set[str] = set()
@@ -733,6 +747,32 @@ def cmd_check_structure(
         return 0 if bool(report.get("ok", False)) else 2
     except Exception as exc:
         logger.error("Structure check failed: %s", exc)
+        return 1
+
+
+def cmd_prerequisite_check(
+    config: dict,
+    dataset_ids: list[str],
+    out_dir: Path | None,
+    data_dir: Path | None = None,
+    out_report: Path | None = None,
+) -> int:
+    """Run preflight checks before starting an MNDM pipeline run."""
+    try:
+        report = run_prerequisite_check(
+            config=config,
+            dataset_ids=dataset_ids,
+            out_dir=out_dir,
+            data_dir=data_dir,
+        )
+        logger.info("\n%s", format_prerequisite_report(report))
+        if out_report is not None:
+            out_report.parent.mkdir(parents=True, exist_ok=True)
+            out_report.write_text(report_to_json(report), encoding="utf-8")
+            logger.info("Wrote prerequisite report: %s", out_report)
+        return 0 if bool(report.get("ok", False)) else 2
+    except Exception as exc:
+        logger.error("Prerequisite check failed: %s", exc)
         return 1
 
 

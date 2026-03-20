@@ -15,6 +15,7 @@ from typing import Any, Dict, Mapping, Optional
 
 import numpy as np
 import pandas as pd
+from .reproducibility import resolve_base_seed
 
 logger = logging.getLogger(__name__)
 
@@ -316,7 +317,7 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
     try:
         # Deterministic per-file RNG seed (so parallel vs sequential runs match).
         try:
-            base_seed = int(((config.get("robustness", {}) or {}).get("seed", 42)) or 42)
+            base_seed, _ = resolve_base_seed(config)
             seed_token = _stable_seed_token(file_path, config)
             h = hashlib.md5(seed_token.encode("utf-8")).hexdigest()
             file_seed = base_seed + (int(h[:8], 16) % 1_000_000)

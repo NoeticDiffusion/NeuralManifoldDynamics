@@ -85,6 +85,13 @@ def _prepare_attr_value(value: Any) -> Any:
     return str(value)
 
 
+def _write_json_string_dataset(parent: Any, name: str, value: Mapping[str, Any]) -> None:
+    """Write a UTF-8 JSON dataset for nested metadata payloads."""
+    text = json.dumps(value, ensure_ascii=False)
+    str_dtype = h5py.string_dtype(encoding="utf-8")
+    parent.create_dataset(name, data=text, dtype=str_dtype)
+
+
 def _write_extensions_group(h5: h5py.File, extensions: Mapping[str, Any]) -> None:
     """Write nested extension outputs under an ``extensions`` group.
 
@@ -190,18 +197,47 @@ def write_h5(
         # so downstream consumers don't need to parse the manifest/JSON.
         try:
             pmeta = payload.attrs.get("participant_meta", {}) if isinstance(payload.attrs, Mapping) else {}
+            pmeta_source = payload.attrs.get("participant_meta_source", {}) if isinstance(payload.attrs, Mapping) else {}
+            pmeta_mapped = payload.attrs.get("participant_mapped_meta", {}) if isinstance(payload.attrs, Mapping) else {}
             if isinstance(pmeta, Mapping):
                 # Flatten common scalar fields under meta_*
                 for k, v in pmeta.items():
                     if isinstance(v, (str, int, float, bool, np.integer, np.floating, np.bool_)):
                         h5.attrs[f"meta_{k}"] = _prepare_attr_value(v)
 
+                participant_grp = h5.require_group("participant")
+                for k, v in pmeta.items():
+                    if isinstance(v, (str, int, float, bool, np.integer, np.floating, np.bool_)):
+                        participant_grp.attrs[f"field_{_sanitize_h5_key(str(k))}"] = _prepare_attr_value(v)
+                _write_json_string_dataset(participant_grp, "row_json", pmeta)
+
+                if isinstance(pmeta_source, Mapping):
+                    for k, v in pmeta_source.items():
+                        if v is None:
+                            continue
+                        participant_grp.attrs[f"source_{_sanitize_h5_key(str(k))}"] = _prepare_attr_value(v)
+                    if pmeta_source:
+                        _write_json_string_dataset(participant_grp, "source_json", pmeta_source)
+
+                if isinstance(pmeta_mapped, Mapping):
+                    for k, v in pmeta_mapped.items():
+                        if v is None:
+                            continue
+                        participant_grp.attrs[f"mapped_{_sanitize_h5_key(str(k))}"] = _prepare_attr_value(v)
+                    if pmeta_mapped:
+                        _write_json_string_dataset(participant_grp, "mapped_json", pmeta_mapped)
+
                 # Derive 'group' (normalized) from common keys
                 group_raw = None
-                for key in ("Group", "group", "Diagnosis", "diagnosis", "Cohort", "cohort", "condition", "Condition"):
-                    if key in pmeta and isinstance(pmeta[key], (str, int, float)):
-                        group_raw = str(pmeta[key]).strip()
-                        break
+                if isinstance(pmeta_mapped, Mapping):
+                    mapped_group = pmeta_mapped.get("group")
+                    if isinstance(mapped_group, (str, int, float)):
+                        group_raw = str(mapped_group).strip()
+                if not group_raw:
+                    for key in ("Group", "group", "Diagnosis", "diagnosis", "Cohort", "cohort", "condition", "Condition"):
+                        if key in pmeta and isinstance(pmeta[key], (str, int, float)):
+                            group_raw = str(pmeta[key]).strip()
+                            break
                 if group_raw:
                     norm_map = {
                         "pd": "Parkinson",
@@ -223,6 +259,10 @@ def write_h5(
 
                 # Derive 'condition' (e.g., medication status) if per-session fields exist
                 condition_val = None
+                if isinstance(pmeta_mapped, Mapping):
+                    mapped_condition = pmeta_mapped.get("condition")
+                    if isinstance(mapped_condition, (str, int, float)):
+                        condition_val = mapped_condition
                 # Infer session index from dataset_id like dsXXXX:sub-001[:ses-01]
                 ses_tag = None
                 try:
@@ -247,6 +287,10 @@ def write_h5(
                     # (e.g. ds003059 uses session_map → condition to avoid overwrites).
                     if "condition" not in h5.attrs:
                         h5.attrs["condition"] = _prepare_attr_value(condition_val)
+                if "task" not in h5.attrs and isinstance(pmeta_mapped, Mapping):
+                    mapped_task = pmeta_mapped.get("task")
+                    if isinstance(mapped_task, (str, int, float)):
+                        h5.attrs["task"] = _prepare_attr_value(mapped_task)
         except Exception:
             # Do not fail writing if convenience attrs derivation fails
             pass

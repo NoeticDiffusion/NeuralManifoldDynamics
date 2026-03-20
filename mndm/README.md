@@ -68,6 +68,33 @@ $env:PYTHONPATH="H:/SourceRepo2/NeuralManifoldDynamics/mndm/src;H:/SourceRepo2/N
 
 ## Quick Start
 
+### Step-by-Step
+
+```powershell
+# Preflight check: validate paths, config, participants table, and index preview.
+python -m mndm.cli prerequisite-check --dataset ds003490
+
+# Download (ingest)
+python -m openneuro.cli download --dataset ds003490
+
+# Compute per-epoch features (mndm)
+python -m mndm.cli features --dataset ds003490
+
+# Project to MNPS and estimate Jacobians
+python -m mndm.cli summarize --dataset ds003490
+
+# Or run both in one step:
+# python -m mndm.cli all --dataset ds003490
+
+# (Optional) Pack a completed MNPS run (many small H5) into one container H5
+# Output: <processed>/<dataset>/<latest mnps_*>/packed.h5
+python -m mndm.cli pack --dataset ds003490
+```
+
+See [Command_cheat_sheet.md](Command_cheat_sheet.md) for complete CLI reference.
+
+---
+
 ### Summarize MNPS
 
 ```powershell
@@ -80,31 +107,6 @@ python -m mndm.cli summarize --dataset ds003490
 python -m mndm.cli all --dataset ds003490 --n-jobs 12
 ```
 
-### Step-by-Step
-
-```powershell
-Tip: Use `openneuro_ingest` for download, then run `mndm` for features + summarization.
-
-# Download (ingest)
-python -m openneuro.cli download --dataset ds003490
-
-# Compute per-epoch features (mndm)
-python -m mndm.cli features --dataset ds003490
-
-# Project to MNPS and estimate Jacobians
-python -m mndm.cli summarize --dataset ds003490
-
-# Or run both in one step
-python -m mndm.cli all --dataset ds003490
-
-# (Optional) Pack a completed MNPS run (many small H5) into one container H5
-# Output: <processed>/<dataset>/<latest mnps_*>/packed.h5
-python -m mndm.cli pack --dataset ds003490
-```
-
-See [Command_cheat_sheet.md](Command_cheat_sheet.md) for complete CLI reference.
-
----
 
 ## Project Structure
 
@@ -202,6 +204,14 @@ features:
     window_sec: 30.0
     step_sec: 15.0
 ```
+
+### EEG CSD Note
+
+When `preprocess.eeg_csd.enabled=true`, scalp EEG channels transformed by
+`mne.compute_current_source_density(...)` are still exported downstream as the
+`"eeg"` modality for feature extraction. This prevents CSD-transformed scalp
+recordings from disappearing at the modality collection stage simply because
+MNE relabels their channel type from `eeg` to `csd`.
 
 ---
 

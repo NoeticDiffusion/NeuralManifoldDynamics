@@ -91,7 +91,30 @@ def test_write_h5(require_real_h5py):
             "group_label": np.array(["", "frontal"], dtype=object),
             "used_by_mnps_3d": np.array([1, 0], dtype=np.int8),
         },
-        attrs={"fs_out": 4.0, "window_sec": 8.0, "overlap": 0.5, "stage_codebook": {"W": 0}},
+        attrs={
+            "fs_out": 4.0,
+            "window_sec": 8.0,
+            "overlap": 0.5,
+            "reproducibility_seed": 123,
+            "reproducibility_seed_source": "reproducibility.seed",
+            "jacobian_hash_saved": "abc123",
+            "stage_codebook": {"W": 0},
+            "participant_meta": {
+                "participant_id": "sub-001",
+                "type": "Control",
+                "age": 21,
+            },
+            "participant_meta_source": {
+                "source_path": "H:/data/dsX/participants.csv",
+                "source_format": "csv",
+                "subject_id_column": "participant_id",
+            },
+            "participant_mapped_meta": {
+                "group": "Control",
+                "condition": "rest",
+                "task": "rest",
+            },
+        },
         extensions={
             "e_kappa": {
                 "time": np.linspace(0, 1, 5, dtype=np.float32),
@@ -126,6 +149,19 @@ def test_write_h5(require_real_h5py):
             assert "e_kappa" in f["extensions"]
             assert "time" in f["extensions"]["e_kappa"]
             assert "kappa" in f["extensions"]["e_kappa"]
+            assert "participant" in f
+            assert "row_json" in f["participant"]
+            assert "mapped_json" in f["participant"]
+            assert "source_json" in f["participant"]
+            assert f["participant"].attrs["field_participant_id"] == "sub-001"
+            assert f["participant"].attrs["mapped_group"] == "Control"
+            assert f.attrs["meta_type"] == "Control"
+            assert f.attrs["group"] == "Control"
+            assert f.attrs["condition"] == "rest"
+            assert f.attrs["task"] == "rest"
+            assert int(f.attrs["reproducibility_seed"]) == 123
+            assert f.attrs["reproducibility_seed_source"] == "reproducibility.seed"
+            assert f.attrs["jacobian_hash_saved"] == "abc123"
 
 
 def test_write_h5_writes_jacobian_diagnostics_group(require_real_h5py):

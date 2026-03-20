@@ -46,7 +46,8 @@ pip install -r requirements.txt
 If you run directly from this source tree, set `PYTHONPATH` so the package modules resolve correctly:
 
 ```powershell
-$env:PYTHONPATH="H:/SourceRepo2/NeuralManifoldDynamics/mndm/src;H:/SourceRepo2/NeuralManifoldDynamics/core/src;H:/SourceRepo2/NeuralManifoldDynamics/openneuro_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/apollo_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/vitaldb_ingest/src"
+$repo_root="C:/path/to/NeuralManifoldDynamics"
+$env:PYTHONPATH="$repo_root/mndm/src;$repo_root/core/src;$repo_root/openneuro_ingest/src;$repo_root/apollo_ingest/src;$repo_root/vitaldb_ingest/src"
 ```
 
 Example MNDM run:
