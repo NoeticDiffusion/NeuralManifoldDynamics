@@ -55,17 +55,13 @@ def _resolve_chosen_epochs(
 
 def compute_eog_features(signals: Mapping[str, Any], config: Mapping[str, Any]) -> pd.DataFrame:
     """Compute per-epoch EOG features (blink rate).
-    
-    Parameters
-    ----------
-    signals
-        PreprocessedSignals or dict with 'signals' and 'sfreq' keys.
-    config
-        Configuration with epoching parameters.
-    
-    Returns
-    -------
-    DataFrame with columns: epoch_id, eog_blink_rate
+
+    Args:
+        signals: Preprocessed signals dict with ``signals`` and ``sfreq``.
+        config: Configuration with epoching and optional ``features.eog``.
+
+    Returns:
+        DataFrame with ``epoch_id``, ``eog_blink_rate``, etc.
     """
     if "eog" not in signals.get("signals", {}):
         return pd.DataFrame()

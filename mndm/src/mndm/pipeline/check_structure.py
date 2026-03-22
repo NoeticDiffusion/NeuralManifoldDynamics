@@ -32,14 +32,17 @@ logger = logging.getLogger(__name__)
 
 def _utc_now_iso() -> str:
     # Keep consistent with other outputs (UTC + Z suffix).
+    """Internal helper: utc now iso."""
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def _as_dict(m: Any) -> dict:
+    """Internal helper: as dict."""
     return dict(m) if isinstance(m, Mapping) else {}
 
 
 def _load_json(path: Path) -> dict:
+    """Internal helper: load json."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -48,6 +51,7 @@ def _load_json(path: Path) -> dict:
 
 def _looks_fmri_summary(summary: Mapping[str, Any]) -> bool:
     # Heuristic: summary keys that are emitted only by fMRI paths.
+    """Internal helper: looks fmri summary."""
     for key in ("fmri_modularity_provisional_frac",):
         if key in summary:
             return True
@@ -55,6 +59,7 @@ def _looks_fmri_summary(summary: Mapping[str, Any]) -> bool:
 
 
 def _find_recording_h5(recording_dir: Path, require_single: bool = True) -> Tuple[Optional[Path], List[str]]:
+    """Internal helper: find recording h5."""
     issues: List[str] = []
     h5s = sorted(recording_dir.glob("*.h5"))
     if not h5s:
@@ -66,6 +71,7 @@ def _find_recording_h5(recording_dir: Path, require_single: bool = True) -> Tupl
 
 
 def _check_h5_paths(h5: h5py.File, required_paths: List[str]) -> List[str]:
+    """Internal helper: check h5 paths."""
     issues: List[str] = []
     for p in required_paths:
         key = str(p).lstrip("/")
@@ -77,6 +83,7 @@ def _check_h5_paths(h5: h5py.File, required_paths: List[str]) -> List[str]:
 
 
 def _check_h5_group_attrs(h5: h5py.File, group_path: str, attrs: List[str]) -> List[str]:
+    """Internal helper: check h5 group attrs."""
     issues: List[str] = []
     key = str(group_path).lstrip("/")
     if key not in h5:
@@ -113,6 +120,7 @@ def check_run_dir(
     run_dir: Path,
     spec: Mapping[str, Any],
 ) -> RunReport:
+    """Handle check run dir."""
     if h5py is None:
         raise RuntimeError("h5py is required for structure checks but is not installed.")
     spec_d = _as_dict(spec)
@@ -214,6 +222,7 @@ def check_run_dir(
 
 
 def _find_latest_run_dir(ds_processed_dir: Path) -> Optional[Path]:
+    """Internal helper: find latest run dir."""
     runs = [
         p
         for pattern in ("neuralmanifolddynamics_*", "mnps_*")
@@ -226,6 +235,7 @@ def _find_latest_run_dir(ds_processed_dir: Path) -> Optional[Path]:
 
 
 def _find_all_run_dirs(ds_processed_dir: Path) -> List[Path]:
+    """Internal helper: find all run dirs."""
     runs = [
         p
         for pattern in ("neuralmanifolddynamics_*", "mnps_*")
@@ -311,6 +321,7 @@ def run_structure_check(
 
 
 def build_parser(argv: Optional[List[str]] = None) -> argparse.ArgumentParser:
+    """Build and return the argument parser."""
     p = argparse.ArgumentParser(description="Check structure of summarized outputs")
     p.add_argument("--config", type=Path, required=True, help="Path to ingest config_ingest.yaml")
     p.add_argument("--check-config", type=Path, required=True, help="Path to check_structure.yaml")
@@ -322,6 +333,7 @@ def build_parser(argv: Optional[List[str]] = None) -> argparse.ArgumentParser:
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    """Program entry point."""
     logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
     args = build_parser(argv).parse_args(argv)
 

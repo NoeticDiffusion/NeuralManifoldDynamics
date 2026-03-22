@@ -11,30 +11,35 @@ from core.bids import parse_subject_session_task_run_acq
 
 
 def test_parse_subject_and_session_nested_path():
+    """Test parse subject and session nested path."""
     subject, session = parse_subject_session("sub-001/ses-02/eeg/sub-001_ses-02_task-rest_eeg.set")
     assert subject == "sub-001"
     assert session == "ses-02"
 
 
 def test_parse_subject_without_session():
+    """Test parse subject without session."""
     subject, session = parse_subject_session("sub-control01_task-rest_eeg.set")
     assert subject == "sub-control01"
     assert session is None
 
 
 def test_parse_subject_with_letters_and_session_in_parent():
+    """Test parse subject with letters and session in parent."""
     subject, session = parse_subject_session("data/sub-PatientA/ses-night/eeg/file.set")
     assert subject == "sub-PatientA"
     assert session == "ses-night"
 
 
 def test_parse_returns_unknown_when_absent():
+    """Test parse returns unknown when absent."""
     subject, session = parse_subject_session("random/file_without_tags.set")
     assert subject == "sub-unknown"
     assert session is None
 
 
 def test_parse_task_run_from_filename():
+    """Test parse task run from filename."""
     subject, session, task, run = parse_subject_session_task_run("sub-001_ses-01_task-rest_run-1_bold.nii.gz")
     assert subject == "sub-001"
     assert session == "ses-01"
@@ -43,6 +48,7 @@ def test_parse_task_run_from_filename():
 
 
 def test_parse_task_run_none_when_absent():
+    """Test parse task run none when absent."""
     subject, session, task, run = parse_subject_session_task_run("sub-001_task-rest_bold.nii.gz")
     assert subject == "sub-001"
     assert session is None
@@ -51,6 +57,7 @@ def test_parse_task_run_none_when_absent():
 
 
 def test_parse_task_run_acq_from_filename():
+    """Test parse task run acq from filename."""
     subject, session, task, run, acq = parse_subject_session_task_run_acq("sub-001_task-Sleep_acq-psg_eeg.edf")
     assert subject == "sub-001"
     assert session is None
@@ -60,6 +67,7 @@ def test_parse_task_run_acq_from_filename():
 
 
 def test_parse_task_with_hyphenated_value():
+    """Test parse task with hyphenated value."""
     subject, session, task, run = parse_subject_session_task_run(
         "sub-001_ses-01_task-resting-state_run-02_bold.nii.gz"
     )
@@ -70,6 +78,7 @@ def test_parse_task_with_hyphenated_value():
 
 
 def test_parse_acq_with_hyphenated_value():
+    """Test parse acq with hyphenated value."""
     subject, session, task, run, acq = parse_subject_session_task_run_acq(
         "sub-001_task-Sleep_acq-psg-night_run-1_eeg.edf"
     )
@@ -80,6 +89,7 @@ def test_parse_acq_with_hyphenated_value():
 
 
 def test_parse_windows_path_separators():
+    """Test parse windows path separators."""
     subject, session, task, run = parse_subject_session_task_run(
         r"C:\data\sub-010\ses-03\eeg\sub-010_ses-03_task-rest_run-1_eeg.vhdr"
     )
@@ -90,6 +100,7 @@ def test_parse_windows_path_separators():
 
 
 def test_parse_avoids_embedded_false_positive():
+    """Test parse avoids embedded false positive."""
     subject, session = parse_subject_session("xsub-001y/file_without_entities.set")
     assert subject == "sub-unknown"
     assert session is None

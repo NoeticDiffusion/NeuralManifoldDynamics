@@ -12,6 +12,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def _write_summary(path: Path, subject: str) -> None:
+    """Internal helper: write summary."""
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "dataset_id": "dsX",
@@ -25,6 +26,7 @@ def _write_summary(path: Path, subject: str) -> None:
 
 
 def _write_h5(path: Path) -> None:
+    """Internal helper: write h5."""
     with h5py.File(path, "w") as f:
         f.attrs["x_definition"] = "direct_mde_v1"
         f.attrs["weights_hash_direct"] = "abc123"
@@ -35,6 +37,7 @@ def _write_h5(path: Path) -> None:
 
 
 def test_aggregate_uses_latest_run_and_matches_summary_h5(tmp_path: Path):
+    """Test aggregate uses latest run and matches summary h5."""
     from mndm.tools.aggregate_mnps import aggregate
 
     processed = tmp_path / "processed"
@@ -72,6 +75,7 @@ def test_aggregate_uses_latest_run_and_matches_summary_h5(tmp_path: Path):
 
 
 def test_aggregate_skips_corrupt_summary_and_continues(tmp_path: Path):
+    """Test aggregate skips corrupt summary and continues."""
     from mndm.tools.aggregate_mnps import aggregate
 
     processed = tmp_path / "processed"

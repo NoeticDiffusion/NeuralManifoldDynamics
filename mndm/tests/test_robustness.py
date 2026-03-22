@@ -58,10 +58,10 @@ def test_compute_robust_summary_basic():
     assert "coverage_ok" in out
     assert "transient_frac" in out
     
-    # Check that statistics are computed
-    assert "R" in out["incl"]
-    assert "D" in out["incl"]
-    assert "M" in out["incl"]
+    # Legacy R/D/M input should be normalized to canonical m/d/e output.
+    assert "m" in out["incl"]
+    assert "d" in out["incl"]
+    assert "e" in out["incl"]
 
 
 def test_bootstrap_reproducibility():
@@ -90,9 +90,9 @@ def test_bootstrap_reproducibility():
     out2 = compute_robust_summary(rdm_df, transient_mask, config)
     
     # CI95 should be identical
-    assert out1["ci95"]["R"] == out2["ci95"]["R"]
-    assert out1["ci95"]["D"] == out2["ci95"]["D"]
-    assert out1["ci95"]["M"] == out2["ci95"]["M"]
+    assert out1["ci95"]["m"] == out2["ci95"]["m"]
+    assert out1["ci95"]["d"] == out2["ci95"]["d"]
+    assert out1["ci95"]["e"] == out2["ci95"]["e"]
 
 
 def test_compute_robust_summary_handles_mask_length_mismatch():
@@ -111,9 +111,9 @@ def test_compute_robust_summary_handles_mask_length_mismatch():
         transient_mask=np.array([True, False], dtype=bool),
         cfg={"robustness": {"summary": "mean", "bootstrap_n": 16, "seed": 7}},
     )
-    assert set(out["incl"].keys()) == {"R", "D", "M"}
-    assert np.isfinite(out["incl"]["D"])
-    assert np.isfinite(out["excl"]["M"])
+    assert set(out["incl"].keys()) == {"m", "d", "e"}
+    assert np.isfinite(out["incl"]["d"])
+    assert np.isfinite(out["excl"]["e"])
 
 
 def test_summarize_array_and_split_half():

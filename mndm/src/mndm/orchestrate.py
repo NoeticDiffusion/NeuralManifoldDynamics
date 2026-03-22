@@ -240,6 +240,7 @@ def cmd_features(
 ) -> int:
     """Compute features for preprocessed files with parallel processing."""
     def _normalize_subject_token(value: Any) -> str:
+        """Internal helper: normalize subject token."""
         s = str(value).strip()
         if s.lower().startswith("sub-"):
             s = s[4:]
@@ -281,6 +282,7 @@ def cmd_features(
         received_dir = resolved.paths.received_dir
         processed_dir = resolved.paths.processed_dir
         def _build_index(ds_id: str, ds_path: Path) -> Optional[pd.DataFrame]:
+            """Internal helper: build index."""
             ds_root = bids_index.resolve_dataset_root(config, received_dir, ds_id)
             if not ds_root.exists():
                 logger.warning("No file index found for %s and dataset root missing at %s; skipping", ds_id, ds_root)
@@ -503,6 +505,7 @@ def cmd_features(
                 pass
 
             def _handle_result(res: Any) -> None:
+                """Internal helper: handle result."""
                 nonlocal successful_count
                 try:
                     file_path_obj = Path(res.file_path)

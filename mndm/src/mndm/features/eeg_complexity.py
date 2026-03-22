@@ -84,6 +84,7 @@ def compute_eeg_complexity_features(
 
 
 def _parse_config(config: Mapping[str, object] | None, sfreq: float) -> ComplexityConfig:
+    """Internal helper: parse config."""
     cfg = config or {}
     metrics = cfg.get("metrics", {}) if isinstance(cfg, Mapping) else {}
     windows_cfg = cfg.get("windows", {}) if isinstance(cfg, Mapping) else {}
@@ -111,6 +112,7 @@ def _parse_config(config: Mapping[str, object] | None, sfreq: float) -> Complexi
 
 
 def _sliding_windows(n_samples: int, win_len: int, step: int) -> List[slice]:
+    """Internal helper: sliding windows."""
     windows: List[slice] = []
     start = 0
     while start + win_len <= n_samples:
@@ -129,6 +131,7 @@ def _subsample_windows(windows: List[slice], max_windows: int) -> List[slice]:
 
 
 def _sample_entropy(data: np.ndarray) -> float:
+    """Internal helper: sample entropy."""
     if ant is not None:
         try:
             return float(ant.sample_entropy(data, order=2))
@@ -138,6 +141,7 @@ def _sample_entropy(data: np.ndarray) -> float:
 
 
 def _permutation_entropy(data: np.ndarray) -> float:
+    """Internal helper: permutation entropy."""
     if ant is not None:
         try:
             return float(ant.perm_entropy(data, order=3, normalize=True))
@@ -147,6 +151,7 @@ def _permutation_entropy(data: np.ndarray) -> float:
 
 
 def _lz_complexity(data: np.ndarray) -> float:
+    """Internal helper: lz complexity."""
     if ant is not None:
         try:
             return float(ant.lziv_complexity(data, normalize=True))
@@ -156,6 +161,7 @@ def _lz_complexity(data: np.ndarray) -> float:
 
 
 def _multiscale_entropy(data: np.ndarray, scales: int) -> float:
+    """Internal helper: multiscale entropy."""
     if ant is not None:
         try:
             mse = ant.multiscale_entropy(data, scale=scales, maxscale=scales)
@@ -166,6 +172,7 @@ def _multiscale_entropy(data: np.ndarray, scales: int) -> float:
 
 
 def _higuchi_fd(data: np.ndarray) -> float:
+    """Internal helper: higuchi fd."""
     if ant is not None:
         try:
             return float(ant.higuchi_fd(data))

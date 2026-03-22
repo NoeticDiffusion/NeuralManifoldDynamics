@@ -15,6 +15,7 @@ from mndm.pipeline.summary import DatasetSummaryRunner, SubjectSummaryRunner
 
 
 def _build_ctx(tmp_path):
+    """Internal helper: build ctx."""
     received = tmp_path / "received_data"
     processed = tmp_path / "processed_data"
     return SimpleNamespace(
@@ -52,6 +53,7 @@ def _build_ctx(tmp_path):
 
 
 def test_merge_fd_from_confounds_per_epoch(tmp_path):
+    """Test merge fd from confounds per epoch."""
     ctx = _build_ctx(tmp_path)
     ds_id = "ds001"
     received_ds = ctx.received_dir / ds_id
@@ -115,6 +117,7 @@ def test_merge_fd_from_confounds_per_epoch(tmp_path):
 
 
 def test_merge_fd_uses_configured_derivatives_dir(tmp_path):
+    """Test merge fd uses configured derivatives dir."""
     ctx = _build_ctx(tmp_path)
     ds_id = "ds001"
     received_ds = ctx.received_dir / ds_id

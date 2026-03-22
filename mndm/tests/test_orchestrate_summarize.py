@@ -14,6 +14,7 @@ from mndm import orchestrate
 
 
 def test_cmd_summarize_builds_context_and_delegates(monkeypatch):
+    """Test cmd summarize builds context and delegates."""
     captured = {}
 
     class DummyContext:
@@ -33,18 +34,21 @@ def test_cmd_summarize_builds_context_and_delegates(monkeypatch):
     )
 
     def fake_from_mapping(cls, cfg, out_dir, cli_data_dir=None, mnps_overrides=None):
+        """Handle fake from mapping."""
         captured["resolved"] = (cfg, out_dir, cli_data_dir, mnps_overrides)
         return dummy_resolved
 
     monkeypatch.setattr(orchestrate.ResolvedConfig, "from_mapping", classmethod(fake_from_mapping))
 
     def fake_from_resolved(cls, resolved):
+        """Handle fake from resolved."""
         captured["from_resolved"] = resolved
         return dummy_ctx
 
     monkeypatch.setattr(orchestrate.SummarizeContext, "from_resolved", classmethod(fake_from_resolved))
 
     def fake_runner(ctx, dataset_ids, subject, h5_mode):
+        """Handle fake runner."""
         captured["runner"] = (ctx, dataset_ids, subject, h5_mode)
         return 42
 

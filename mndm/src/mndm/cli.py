@@ -36,6 +36,7 @@ def _set_blas_thread_env_defaults() -> None:
 
 
 def _add_common_args(p: argparse.ArgumentParser) -> None:
+    """Internal helper: add common args."""
     p.add_argument("--dataset", nargs="*", default=None, help="OpenNeuro dataset id(s), e.g., ds003490")
     p.add_argument("--config", type=Path, default=Path(__file__).resolve().parents[2] / "config" / "config_ingest.yaml", help="Path to ingest YAML config")
     p.add_argument("--out-dir", type=Path, default=None, help="Processed output base directory (defaults to config paths.processed_dir)")
@@ -59,6 +60,7 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
 
 
 def _mnps_overrides_from_args(args) -> dict:
+    """Internal helper: mnps overrides from args."""
     overrides = {}
     if args.mnps_k is not None:
         overrides["knn_k"] = args.mnps_k
@@ -85,6 +87,7 @@ def _apply_cli_feature_overrides(config: dict, args) -> None:
 
 
 def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
+    """Build and return the argument parser."""
     parser = argparse.ArgumentParser(prog="mndm", description="MNDM computation CLI")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
 
@@ -124,6 +127,7 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     # Must happen before importing modules that may initialize NumPy/SciPy/BLAS.
+    """Program entry point."""
     _set_blas_thread_env_defaults()
 
     parser = build_parser(argv)

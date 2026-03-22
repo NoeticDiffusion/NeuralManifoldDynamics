@@ -11,6 +11,7 @@ from mndm.pipeline.run_manifest import write_run_manifest
 
 
 def _base_config() -> dict:
+    """Internal helper: base config."""
     return {
         "datasets": ["dsX"],
         "paths": {},
@@ -25,6 +26,7 @@ def _base_config() -> dict:
 
 
 def _write_min_summary_json(path: Path) -> None:
+    """Internal helper: write min summary json."""
     payload = {
         "subject": "sub-001",
         "task": "task",
@@ -36,6 +38,7 @@ def _write_min_summary_json(path: Path) -> None:
 
 
 def test_run_manifest_uses_regional_mnps_as_canonical_regional_output(tmp_path: Path):
+    """Test run manifest uses regional mnps as canonical regional output."""
     mnps_dir = tmp_path / "mnps_dsX_20260101_000000"
     rec_dir = mnps_dir / "sub-001_cond_task_run-01"
     rec_dir.mkdir(parents=True)
@@ -78,6 +81,7 @@ def test_run_manifest_uses_regional_mnps_as_canonical_regional_output(tmp_path: 
 
 
 def test_run_manifest_tracks_raw_region_signals_separately_from_regional_outputs(tmp_path: Path):
+    """Test run manifest tracks raw region signals separately from regional outputs."""
     mnps_dir = tmp_path / "mnps_dsX_20260101_000001"
     rec_dir = mnps_dir / "sub-001_cond_task_run-01"
     rec_dir.mkdir(parents=True)
@@ -117,6 +121,7 @@ def test_run_manifest_tracks_raw_region_signals_separately_from_regional_outputs
 
 
 def test_run_manifest_includes_reproducibility_block_and_merges_extra(tmp_path: Path):
+    """Test run manifest includes reproducibility block and merges extra."""
     mnps_dir = tmp_path / "mnps_dsX_20260101_000002"
     rec_dir = mnps_dir / "sub-001_cond_task_run-01"
     rec_dir.mkdir(parents=True)

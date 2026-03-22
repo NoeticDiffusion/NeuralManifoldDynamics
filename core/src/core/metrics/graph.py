@@ -1,4 +1,9 @@
-"""Graph-theoretic metrics shared between EEG and fMRI pipelines."""
+"""Graph-theoretic metrics shared between EEG and fMRI pipelines.
+
+Thresholds a functional connectivity matrix, builds an unweighted graph, and
+computes global efficiency, path length, modularity, participation, and
+optional degree statistics.
+"""
 
 from __future__ import annotations
 
@@ -12,6 +17,13 @@ from networkx.algorithms import community, efficiency_measures
 
 @dataclass
 class ThresholdConfig:
+    """Proportional thresholding parameters for binarizing a FC matrix.
+
+    Attributes:
+        method: Thresholding method name (currently only ``proportional``).
+        density: Target edge density in ``(0, 1]`` for proportional thresholding.
+    """
+
     method: str
     density: float
 
@@ -20,7 +32,19 @@ def compute_graph_metrics(
     fc_matrix: np.ndarray,
     config: Mapping[str, object] | None,
 ) -> Dict[str, float]:
-    """Return graph-level metrics from a functional connectivity matrix."""
+    """Return graph-level metrics from a square functional connectivity matrix.
+
+    Args:
+        fc_matrix: Square 2-D FC matrix.
+        config: Feature/metrics configuration; uses ``metrics`` and ``thresholding``
+            keys to select outputs and proportional density.
+
+    Returns:
+        Dict of scalar feature names (for example ``graph_global_efficiency``).
+
+    Raises:
+        ValueError: If ``fc_matrix`` is not square 2-D or thresholding is invalid.
+    """
 
     if fc_matrix.ndim != 2 or fc_matrix.shape[0] != fc_matrix.shape[1]:
         raise ValueError("fc_matrix must be square 2-D")
@@ -62,6 +86,7 @@ def compute_graph_metrics(
 
 
 def _parse_threshold(cfg) -> ThresholdConfig:
+    """Internal helper: parse threshold."""
     if isinstance(cfg, Mapping):
         method = str(cfg.get("method", "proportional")).lower()
         density = float(cfg.get("density", 0.15))
@@ -76,6 +101,7 @@ def _parse_threshold(cfg) -> ThresholdConfig:
 
 
 def _threshold_matrix(fc: np.ndarray, cfg: ThresholdConfig) -> np.ndarray:
+    """Internal helper: threshold matrix."""
     adj = np.abs(fc.copy())
     np.fill_diagonal(adj, 0.0)
     if cfg.method == "proportional":
@@ -89,6 +115,7 @@ def _threshold_matrix(fc: np.ndarray, cfg: ThresholdConfig) -> np.ndarray:
 
 
 def _participation_coeff(adj: np.ndarray, communities: Sequence[Sequence[int]]) -> np.ndarray:
+    """Internal helper: participation coeff."""
     n = adj.shape[0]
     strengths = adj.sum(axis=1)
     if np.allclose(strengths, 0):

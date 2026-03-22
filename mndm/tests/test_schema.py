@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def _base_payload():
+    """Internal helper: base payload."""
     from mndm.schema import MNPSPayload
 
     return MNPSPayload(
@@ -20,6 +21,7 @@ def _base_payload():
 
 
 def test_normalize_payload_requires_jacobian_dot_shape_match():
+    """Test normalize payload requires jacobian dot shape match."""
     from mndm.schema import normalize_payload
 
     payload = _base_payload()
@@ -30,6 +32,7 @@ def test_normalize_payload_requires_jacobian_dot_shape_match():
 
 
 def test_normalize_payload_rejects_non_numeric_events():
+    """Test normalize payload rejects non numeric events."""
     from mndm.schema import normalize_payload
 
     payload = _base_payload()
@@ -39,6 +42,7 @@ def test_normalize_payload_rejects_non_numeric_events():
 
 
 def test_normalize_coords_9d_returns_contiguous_and_schema_version():
+    """Test normalize coords 9d returns contiguous and schema version."""
     from mndm.schema import mnps_9d_CANONICAL_ORDER, normalize_payload
 
     payload = _base_payload()
@@ -53,6 +57,7 @@ def test_normalize_coords_9d_returns_contiguous_and_schema_version():
 
 
 def test_normalize_coords_9d_can_allow_all_non_finite_columns():
+    """Test normalize coords 9d can allow all non finite columns."""
     from mndm.schema import mnps_9d_CANONICAL_ORDER, _normalize_coords_9d
 
     names = list(mnps_9d_CANONICAL_ORDER)
@@ -73,6 +78,7 @@ def test_normalize_coords_9d_can_allow_all_non_finite_columns():
 
 
 def test_normalize_payload_validates_feature_surfaces_and_metadata():
+    """Test normalize payload validates feature surfaces and metadata."""
     from mndm.schema import normalize_payload
 
     payload = _base_payload()

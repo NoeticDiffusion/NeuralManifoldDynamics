@@ -30,14 +30,17 @@ class DatasetPrerequisiteReport:
 
 
 def _check(name: str, status: str, message: str, **details: Any) -> CheckItem:
+    """Internal helper: check."""
     return CheckItem(name=name, status=status, message=message, details=details)
 
 
 def _has_fail(checks: List[CheckItem]) -> bool:
+    """Internal helper: has fail."""
     return any(item.status == "fail" for item in checks)
 
 
 def _normalize_counts(mapping: Mapping[str, Any]) -> Dict[str, int]:
+    """Internal helper: normalize counts."""
     out: Dict[str, int] = {}
     for key, value in mapping.items():
         try:
@@ -48,6 +51,7 @@ def _normalize_counts(mapping: Mapping[str, Any]) -> Dict[str, int]:
 
 
 def _validate_exclude_patterns(patterns: list[str]) -> CheckItem:
+    """Internal helper: validate exclude patterns."""
     if not patterns:
         return _check("exclude_files", "ok", "No exclude-files configured.", patterns=[])
     invalid: list[dict[str, str]] = []
@@ -73,6 +77,7 @@ def _validate_exclude_patterns(patterns: list[str]) -> CheckItem:
 
 
 def _check_required_sections(config: Mapping[str, Any]) -> CheckItem:
+    """Internal helper: check required sections."""
     required = ["paths", "epoching", "mnps_projection", "mnps"]
     missing = [name for name in required if not isinstance(config.get(name), Mapping)]
     if missing:
@@ -90,6 +95,7 @@ def _load_participants_from_dataset_root(
     config: Mapping[str, Any],
     dataset_id: str,
 ) -> Optional[pd.DataFrame]:
+    """Internal helper: load participants from dataset root."""
     metadata_spec = (config.get("metadata_extraction", {}) if isinstance(config, Mapping) else {}) or {}
     default_cfg = metadata_spec.get("default", {}) if isinstance(metadata_spec, Mapping) else {}
     per_ds = (metadata_spec.get("datasets", {}) or {}).get(dataset_id, {}) if isinstance(metadata_spec, Mapping) else {}
@@ -164,6 +170,7 @@ def run_dataset_prerequisite_check(
     out_dir: Path | None = None,
     data_dir: Path | None = None,
 ) -> DatasetPrerequisiteReport:
+    """Handle run dataset prerequisite check."""
     checks: List[CheckItem] = []
 
     received_dir, processed_dir = resolve_paths(config, out_dir, data_dir)
@@ -338,6 +345,7 @@ def run_prerequisite_check(
     out_dir: Path | None = None,
     data_dir: Path | None = None,
 ) -> Dict[str, Any]:
+    """Handle run prerequisite check."""
     reports = [
         run_dataset_prerequisite_check(
             config=config,
@@ -371,4 +379,5 @@ def format_prerequisite_report(report: Mapping[str, Any]) -> str:
 
 
 def report_to_json(report: Mapping[str, Any]) -> str:
+    """Handle report to json."""
     return json.dumps(report, indent=2, ensure_ascii=False)

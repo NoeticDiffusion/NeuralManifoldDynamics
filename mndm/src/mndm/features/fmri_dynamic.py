@@ -66,6 +66,7 @@ def compute_dynamic_fc_features(
 
 
 def _sliding_windows(n_samples: int, win_len: int, step: int) -> List[slice]:
+    """Internal helper: sliding windows."""
     windows: List[slice] = []
     start = 0
     while start + win_len <= n_samples:
@@ -75,6 +76,7 @@ def _sliding_windows(n_samples: int, win_len: int, step: int) -> List[slice]:
 
 
 def _approx_entropy(series: np.ndarray) -> float:
+    """Internal helper: approx entropy."""
     hist, _ = np.histogram(series[~np.isnan(series)], bins=20, density=True)
     hist = hist[hist > 0]
     if hist.size == 0:

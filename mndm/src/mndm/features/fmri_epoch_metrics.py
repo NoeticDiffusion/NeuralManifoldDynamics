@@ -154,6 +154,7 @@ def _compute_epoch_dvars(epoch_raw: np.ndarray) -> float:
 
 
 def _compute_dfc_variance(epoch_filtered: np.ndarray, sfreq: float, min_timepoints_fc: int) -> float:
+    """Internal helper: compute dfc variance."""
     n_time = int(epoch_filtered.shape[1])
     win_len = max(int(round(15.0 * sfreq)), min_timepoints_fc)
     step = max(int(round(5.0 * sfreq)), 1)
@@ -182,6 +183,7 @@ def _compute_dfc_variance(epoch_filtered: np.ndarray, sfreq: float, min_timepoin
 
 
 def _compute_slow4_slow5_ratio(epoch_filtered: np.ndarray, sfreq: float) -> float:
+    """Internal helper: compute slow4 slow5 ratio."""
     if sfreq <= 0 or epoch_filtered.shape[1] < 4:
         return float("nan")
     try:
@@ -198,6 +200,7 @@ def _compute_slow4_slow5_ratio(epoch_filtered: np.ndarray, sfreq: float) -> floa
 
 
 def _compute_ar1_mean(epoch_filtered: np.ndarray) -> float:
+    """Internal helper: compute ar1 mean."""
     vals: list[float] = []
     for i in range(epoch_filtered.shape[0]):
         x = np.asarray(epoch_filtered[i], dtype=float)
@@ -216,6 +219,7 @@ def _compute_ar1_mean(epoch_filtered: np.ndarray) -> float:
 
 
 def _infer_network_label(region_name: str) -> str:
+    """Internal helper: infer network label."""
     if not region_name:
         return "ROI"
     tokens = [tok for tok in str(region_name).split("_") if tok]
@@ -229,6 +233,7 @@ def _infer_network_label(region_name: str) -> str:
 
 
 def _mean_intra_fc(fc: np.ndarray, idxs: list[int]) -> float:
+    """Internal helper: mean intra fc."""
     if len(idxs) < 2:
         return float("nan")
     sub = fc[np.ix_(idxs, idxs)]
@@ -238,6 +243,7 @@ def _mean_intra_fc(fc: np.ndarray, idxs: list[int]) -> float:
 
 
 def _compute_gradient_ratio(fc: np.ndarray | None, roi_names: Sequence[str] | None) -> float:
+    """Internal helper: compute gradient ratio."""
     if fc is None or roi_names is None:
         return float("nan")
     if len(roi_names) != fc.shape[0]:

@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 def _with_timestamp(base_name: str, default: str, ts_suffix: str) -> str:
+    """Internal helper: with timestamp."""
     name = base_name or default
     root, ext = os.path.splitext(name)
     if not ext:

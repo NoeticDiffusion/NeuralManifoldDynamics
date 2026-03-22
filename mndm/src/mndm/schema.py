@@ -33,50 +33,22 @@ mnps_9d_CANONICAL_ORDER: Sequence[str] = (
 class MNPSPayload:
     """Container for MNPS tensors destined for disk writers.
 
-    Attributes
-    ----------
-    time:
-        1-D array of shape ``[T]`` with monotonically increasing timestamps in
-        seconds.
-    x:
-        2-D array of shape ``[T, 3]`` with MNPS coordinates ``[m, d, e]``
-        (standard case). The Jacobian estimator itself is dimension-agnostic
-        and can operate on higher-dimensional MNPS vectors when needed.
-    x_dot:
-        2-D array of shape ``[T, 3]`` with the derivatives of ``x``.
-    stage:
-        Optional 1-D array of shape ``[T]`` storing integer-coded sleep/task
-        labels aligned to ``time``.
-    z:
-        Optional 2-D array of shape ``[T, K]`` containing embodied channels.
-    events:
-        Mapping from event name to either indices or timestamps. Arrays should
-        be 1-D ``int64`` or ``float64``.
-    nn_indices:
-        Optional 2-D array of shape ``[T, k]`` with ``int32`` neighbour indices.
-    jacobian:
-        Optional 3-D array of shape ``[W, D, D]`` with windowed Jacobian
-        estimates ``J_hat`` for the primary MNPS coordinates (typically
-        ``D=3`` for ``[m, d, e]``).
-    jacobian_dot:
-        Optional 3-D array of shape ``[W, D, D]`` with timeline-aligned
-        Jacobian change rates ``J_dot``.
-    jacobian_centers:
-        Optional 1-D array of shape ``[W]`` with integer indices of the
-        centers of the Jacobian windows.
-    jacobian_9D:
-        Optional 3-D array of shape ``[W2, K, K]`` with windowed Jacobians
-        estimated directly in the Stratified MNPS subcoordinate space
-        (e.g. ``K=9`` for the canonical 9D chart).
-    jacobian_9D_dot:
-        Optional 3-D array of shape ``[W2, K, K]`` with timeline-aligned
-        change rates of the Stratified Jacobians.
-    jacobian_9D_centers:
-        Optional 1-D array of shape ``[W2]`` with window centres for the
-        Stratified Jacobians.
-    attrs:
-        Free-form metadata (sampling rate, codebooks, etc.) written as HDF5
-        attributes or JSON header entries.
+    Attributes:
+        time: 1-D array ``[T]``, monotonically increasing timestamps (seconds).
+        x: 2-D array ``[T, 3]``, MNPS coordinates ``[m, d, e]`` (Jacobian code
+            supports other widths when needed).
+        x_dot: 2-D array ``[T, 3]``, time derivatives of ``x``.
+        stage: Optional 1-D ``[T]`` integer-coded sleep/task labels.
+        z: Optional 2-D ``[T, K]`` embodied channels.
+        events: Mapping from event name to 1-D index or timestamp arrays.
+        nn_indices: Optional ``[T, k]`` neighbour indices (``int32``).
+        jacobian: Optional ``[W, D, D]`` windowed Jacobians ``J_hat`` (often ``D=3``).
+        jacobian_dot: Optional ``[W, D, D]`` Jacobian rates ``J_dot``.
+        jacobian_centers: Optional ``[W]`` window center indices.
+        jacobian_9D: Optional ``[W2, K, K]`` stratified MNPS Jacobians (often ``K=9``).
+        jacobian_9D_dot: Optional ``[W2, K, K]`` stratified Jacobian rates.
+        jacobian_9D_centers: Optional ``[W2]`` stratified window centers.
+        attrs: Free-form metadata for HDF5 attrs / JSON headers.
     """
 
     time: np.ndarray
@@ -168,14 +140,16 @@ class MNPSPayload:
 def _as_float_array(arr: Optional[np.ndarray], dtype: np.dtype, shape_hint: Optional[tuple[int, ...]] = None) -> Optional[np.ndarray]:
     """Normalize arrays to the requested floating dtype.
 
-    Parameters
-    ----------
-    arr:
-        Input array (or ``None``).
-    dtype:
-        Target numpy dtype (e.g. ``np.float32``).
-    shape_hint:
-        Optional shape used to validate the converted array.
+    Args:
+        arr: Input array, or None.
+        dtype: Target NumPy dtype (for example ``np.float32``).
+        shape_hint: If set, required shape after conversion.
+
+    Returns:
+        Converted array, or None if ``arr`` is None.
+
+    Raises:
+        ValueError: If ``shape_hint`` does not match.
     """
 
     if arr is None:
@@ -188,6 +162,7 @@ def _as_float_array(arr: Optional[np.ndarray], dtype: np.dtype, shape_hint: Opti
 
 
 def _validate_optional_array(name: str, arr: Optional[np.ndarray], ndim: int) -> Optional[np.ndarray]:
+    """Internal helper: validate optional array."""
     if arr is None:
         return None
     array = np.asarray(arr)
@@ -203,6 +178,7 @@ def _normalize_feature_surface(
     t_len: int,
     label: str,
 ) -> tuple[Optional[np.ndarray], Optional[list[str]]]:
+    """Internal helper: normalize feature surface."""
     if values is None:
         if names is not None:
             raise ValueError(f"{label}_names requires {label}_values to be present")
@@ -223,6 +199,7 @@ def _normalize_feature_metadata(
     *,
     n_features: int,
 ) -> MutableMapping[str, np.ndarray]:
+    """Internal helper: normalize feature metadata."""
     normalized: Dict[str, np.ndarray] = {}
     for key, value in feature_metadata.items():
         arr = np.asarray(value)
@@ -241,9 +218,13 @@ def _normalize_feature_metadata(
 
 
 def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
-    """Coerce arrays to canonical dtypes and validate shapes.
+    """Coerce arrays to canonical dtypes and validate shapes (mutates ``payload`` in place).
 
-    Returns the same instance to allow chaining, but mutates in-place.
+    Args:
+        payload: MNPS payload to normalize.
+
+    Returns:
+        The same ``MNPSPayload`` instance for chaining.
     """
 
     t = np.asarray(payload.time, dtype=np.float64)
@@ -433,6 +414,7 @@ def _normalize_coords_9d(
     allow_all_non_finite_columns: bool = False,
     return_diagnostics: bool = False,
 ) -> tuple[np.ndarray, list[str]] | tuple[np.ndarray, list[str], Dict[str, Any]]:
+    """Internal helper: normalize coords 9d."""
     if values.ndim != 2:
         raise ValueError(f"coords_9d must be 2-D, got {values.ndim}D")
     if values.shape[1] != len(names):
@@ -509,6 +491,7 @@ def compute_meta_indices(jacobian: Optional[np.ndarray]) -> Dict[str, float]:
     rot_norm = np.linalg.norm(omega, axis=(1, 2))
 
     def _safe_nanmean_1d(arr: np.ndarray) -> float:
+        """Internal helper: safe nanmean 1d."""
         a = np.asarray(arr, dtype=float).ravel()
         a = a[np.isfinite(a)]
         return float(np.mean(a)) if a.size else float("nan")

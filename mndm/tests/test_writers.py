@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_write_json_summary():
+    """Test write json summary."""
     from core.io.json_writer import build_manifest, write_json_summary
     from mndm.schema import MNPSPayload
 
@@ -45,6 +46,7 @@ def test_write_json_summary():
 
 
 def test_write_json_summary_sanitizes_nonfinite_and_paths():
+    """Test write json summary sanitizes nonfinite and paths."""
     from core.io.json_writer import write_json_summary
     import json
 
@@ -68,6 +70,7 @@ def test_write_json_summary_sanitizes_nonfinite_and_paths():
 
 
 def test_write_h5(require_real_h5py):
+    """Test write h5."""
     from core.io.h5_writer import write_h5
     from mndm.schema import MNPSPayload
 
@@ -165,6 +168,7 @@ def test_write_h5(require_real_h5py):
 
 
 def test_write_h5_writes_jacobian_diagnostics_group(require_real_h5py):
+    """Test write h5 writes jacobian diagnostics group."""
     from core.io.h5_writer import write_h5
     from mndm.schema import MNPSPayload
 
@@ -202,6 +206,7 @@ def test_write_h5_writes_jacobian_diagnostics_group(require_real_h5py):
 
 
 def test_write_h5_supports_unicode_label_arrays(require_real_h5py):
+    """Test write h5 supports unicode label arrays."""
     from core.io.h5_writer import write_h5
     from mndm.schema import MNPSPayload
 

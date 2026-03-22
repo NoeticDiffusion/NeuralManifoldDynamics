@@ -1,6 +1,4 @@
-"""
-fmri_continuous.py
-Continuous-session preprocessing helpers for fMRI ROI time series."""
+"""Continuous-session preprocessing helpers for fMRI ROI time series."""
 
 from __future__ import annotations
 
@@ -17,24 +15,14 @@ def process_session_signals(
 ) -> Dict[str, np.ndarray]:
     """Apply continuous-domain transforms before epoch slicing.
 
-    Parameters
-    ----------
-    roi_ts
-        ROI time series with shape ``(n_regions, n_times)``.
-    sfreq
-        Sampling frequency in Hz.
-    config
-        Optional preprocessing configuration. Supported keys:
-        - ``f_low`` / ``f_high`` under this mapping
-        - ``bandpass`` as ``[f_low, f_high]``
-        - ``compute_phase`` (default: True)
+    Args:
+        roi_ts: ROI time series with shape ``(n_regions, n_times)``.
+        sfreq: Sampling frequency in Hz.
+        config: Optional preprocessing mapping; supports ``f_low``/``f_high``,
+            ``bandpass`` as ``[f_low, f_high]``, and ``compute_phase`` (default True).
 
-    Returns
-    -------
-    dict
-        Contains:
-        - ``filtered_ts``: bandpass-filtered series (or raw series if filter invalid)
-        - ``phase_ts``: phase angles from Hilbert transform over the full session
+    Returns:
+        Dict with ``filtered_ts`` and ``phase_ts`` (full-session Hilbert phase).
     """
     if roi_ts.ndim != 2:
         raise ValueError("roi_ts must be 2-D (n_regions, n_times)")

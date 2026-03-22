@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_project_to_mnps_empty():
+    """Test project to mnps empty."""
     from mndm.projection import project_to_mnps
 
     features_df = pd.DataFrame()
@@ -22,6 +23,7 @@ def test_project_to_mnps_empty():
 
 
 def test_project_to_mnps_math():
+    """Test project to mnps math."""
     from mndm.projection import project_to_mnps
 
     features_df = pd.DataFrame({
@@ -44,6 +46,7 @@ def test_project_to_mnps_math():
 
 
 def test_project_features_array():
+    """Test project features array."""
     from mndm.projection import project_features
 
     features_df = pd.DataFrame({
@@ -65,6 +68,7 @@ def test_project_features_array():
 
 
 def test_project_features_renormalizes_when_weighted_feature_missing():
+    """Test project features renormalizes when weighted feature missing."""
     from mndm.projection import project_features, project_features_with_coverage
 
     features_df = pd.DataFrame(
@@ -92,6 +96,7 @@ def test_project_features_renormalizes_when_weighted_feature_missing():
 
 
 def test_project_features_all_missing_axis_returns_nan():
+    """Test project features all missing axis returns nan."""
     from mndm.projection import project_features
 
     features_df = pd.DataFrame(
@@ -112,6 +117,7 @@ def test_project_features_all_missing_axis_returns_nan():
 
 
 def test_estimate_derivatives_central():
+    """Test estimate derivatives central."""
     from mndm.projection import estimate_derivatives
 
     t = np.linspace(0, 1, 5)
@@ -122,6 +128,7 @@ def test_estimate_derivatives_central():
 
 
 def test_estimate_derivatives_propagates_nan_rows():
+    """Test estimate derivatives propagates nan rows."""
     from mndm.projection import estimate_derivatives
 
     x = np.array(
@@ -140,6 +147,7 @@ def test_estimate_derivatives_propagates_nan_rows():
 
 
 def test_estimate_derivatives_segmented_handles_jumps():
+    """Test estimate derivatives segmented handles jumps."""
     from mndm.projection import estimate_derivatives_segmented
 
     t = np.arange(20, dtype=np.float32)
@@ -159,6 +167,7 @@ def test_estimate_derivatives_segmented_handles_jumps():
 
 
 def test_knn_indices_shape():
+    """Test knn indices shape."""
     from mndm.projection import build_knn_indices
 
     x = np.random.rand(10, 3).astype(np.float32)
@@ -167,6 +176,7 @@ def test_knn_indices_shape():
 
 
 def test_knn_indices_single_sample_returns_empty_neighbors():
+    """Test knn indices single sample returns empty neighbors."""
     from mndm.projection import build_knn_indices
 
     x = np.array([[0.1, 0.2, 0.3]], dtype=np.float32)
@@ -175,6 +185,7 @@ def test_knn_indices_single_sample_returns_empty_neighbors():
 
 
 def test_knn_indices_rejects_non_finite_rows():
+    """Test knn indices rejects non finite rows."""
     from mndm.projection import build_knn_indices
 
     x = np.array([[0.0, 1.0, 2.0], [np.nan, 1.0, 2.0]], dtype=np.float32)
@@ -186,6 +197,7 @@ def test_knn_indices_rejects_non_finite_rows():
 
 
 def test_project_features_v2_bounds():
+    """Test project features v2 bounds."""
     from mndm.projection import project_features_v2
 
     features_df = pd.DataFrame({
@@ -209,6 +221,7 @@ def test_project_features_v2_bounds():
 
 
 def test_project_features_v2_constant_maps_to_midpoint():
+    """Test project features v2 constant maps to midpoint."""
     from mndm.projection import project_features_v2
 
     features_df = pd.DataFrame({
@@ -225,6 +238,7 @@ def test_project_features_v2_constant_maps_to_midpoint():
 
 
 def test_project_features_v2_missing_weighted_feature_renormalizes():
+    """Test project features v2 missing weighted feature renormalizes."""
     from mndm.projection import project_features_v2
 
     features_df = pd.DataFrame(
@@ -246,6 +260,7 @@ def test_project_features_v2_missing_weighted_feature_renormalizes():
 
 
 def test_feature_standardization_policy_is_consistent_between_3d_and_9d():
+    """Test feature standardization policy is consistent between 3d and 9d."""
     from mndm.projection import project_features, project_features_v2
 
     features_df = pd.DataFrame(
@@ -298,6 +313,7 @@ def test_feature_standardization_policy_is_consistent_between_3d_and_9d():
 
 
 def test_project_features_with_coverage_preserves_direct_feature_baselines():
+    """Test project features with coverage preserves direct feature baselines."""
     from mndm.projection import project_features_with_coverage
 
     features_df = pd.DataFrame(
@@ -324,6 +340,7 @@ def test_project_features_with_coverage_preserves_direct_feature_baselines():
 
 
 def test_build_feature_export_bundle_exports_all_numeric_features_with_usage_metadata():
+    """Test build feature export bundle exports all numeric features with usage metadata."""
     from mndm.projection import build_feature_export_bundle
 
     features_df = pd.DataFrame(
@@ -358,6 +375,7 @@ def test_build_feature_export_bundle_exports_all_numeric_features_with_usage_met
 
 
 def test_derive_mde_from_v2_group_mean():
+    """Test derive mde from v2 group mean."""
     from mndm.projection import derive_mde_from_v2
 
     coords_9d_names = ["m_a", "m_e", "m_o", "d_n", "d_l", "d_s", "e_e", "e_s", "e_m"]
@@ -383,6 +401,7 @@ def test_derive_mde_from_v2_group_mean():
 
 
 def test_derive_mde_from_v2_missing_axis_columns_returns_nan_axis():
+    """Test derive mde from v2 missing axis columns returns nan axis."""
     from mndm.projection import derive_mde_from_v2
 
     coords_9d_names = ["m_a", "m_e", "m_o"]
@@ -400,6 +419,7 @@ def test_derive_mde_from_v2_missing_axis_columns_returns_nan_axis():
 
 
 def test_derive_mde_from_v2_weighted_mapping_normalizes_columns():
+    """Test derive mde from v2 weighted mapping normalizes columns."""
     from mndm.projection import derive_mde_from_v2
 
     coords_9d_names = ["m_a", "m_e", "m_o", "d_n", "d_l", "d_s", "e_e", "e_s", "e_m"]
@@ -426,6 +446,7 @@ def test_derive_mde_from_v2_weighted_mapping_normalizes_columns():
 
 
 def test_derive_mde_from_v2_group_pooling_sum_returns_sum_not_mean():
+    """Test derive mde from v2 group pooling sum returns sum not mean."""
     from mndm.projection import derive_mde_from_v2
 
     coords_9d_names = ["m_a", "m_e", "m_o"]
@@ -448,6 +469,7 @@ def test_derive_mde_from_v2_group_pooling_sum_returns_sum_not_mean():
 
 
 def test_derive_mde_from_v2_rejects_cross_block_mapping():
+    """Test derive mde from v2 rejects cross block mapping."""
     from mndm.projection import derive_mde_from_v2
 
     coords_9d_names = ["m_a", "m_e", "m_o", "d_n", "d_l", "d_s", "e_e", "e_s", "e_m"]
@@ -465,6 +487,7 @@ def test_derive_mde_from_v2_rejects_cross_block_mapping():
 
 
 def test_construct_and_apply_fixed_projection_runtime_l2_normalization():
+    """Test construct and apply fixed projection runtime l2 normalization."""
     from mndm.projection import apply_fixed_projection, construct_fixed_projection_matrix
 
     names = ["m_a", "m_e", "m_o", "d_n", "d_l", "d_s", "e_e", "e_s", "e_m"]
@@ -491,6 +514,7 @@ def test_construct_and_apply_fixed_projection_runtime_l2_normalization():
 
 
 def test_build_knn_indices_fallback_excludes_self(monkeypatch):
+    """Test build knn indices fallback excludes self."""
     import mndm.projection as projection_mod
 
     monkeypatch.setattr(projection_mod, "cKDTree", None)
@@ -511,6 +535,7 @@ def test_build_knn_indices_fallback_excludes_self(monkeypatch):
 
 
 def test_project_to_mnps_requires_epoch_id():
+    """Test project to mnps requires epoch id."""
     from mndm.projection import project_to_mnps
 
     features_df = pd.DataFrame({"feat": [1.0, 2.0]})

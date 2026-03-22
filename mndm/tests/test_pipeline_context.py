@@ -9,6 +9,7 @@ from mndm.pipeline.context import ResolvedConfig, SummarizeContext
 
 
 def test_summarize_context_from_config_resolves_paths_and_overrides(tmp_path):
+    """Test summarize context from config resolves paths and overrides."""
     config = {
         "paths": {
             "received_dir": str(tmp_path / "received_data"),
@@ -66,6 +67,7 @@ def test_summarize_context_from_config_resolves_paths_and_overrides(tmp_path):
 
 
 def test_resolved_config_from_mapping(tmp_path):
+    """Test resolved config from mapping."""
     config = {
         "paths": {},
         "robustness": {"coverage": {"min_seconds": 5, "min_epochs": 2}},
@@ -78,6 +80,7 @@ def test_resolved_config_from_mapping(tmp_path):
 
 
 def test_resolve_mapping_spec_keeps_legacy_axes_when_partial_override():
+    """Test resolve mapping spec keeps legacy axes when partial override."""
     from mndm.pipeline.context import resolve_mapping_spec
 
     config = {

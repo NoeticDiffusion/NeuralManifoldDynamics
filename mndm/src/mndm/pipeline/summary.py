@@ -188,6 +188,7 @@ def _resolve_entropy_provenance(frame: pd.DataFrame) -> Dict[str, Any]:
         }
 
     def _first_mode(col_name: str) -> Optional[str]:
+        """Internal helper: first mode."""
         if col_name not in frame.columns:
             return None
         series = frame[col_name].dropna()
@@ -453,6 +454,7 @@ class DatasetSummaryRunner:
     """Encapsulate dataset-level summarization logic."""
 
     def __init__(self, ctx: SummarizeContext, ds_id: str, subject_filter: Optional[str], h5_mode: str, n_jobs: int = 1):
+        """Initialize the instance."""
         self.ctx = ctx
         self.ds_id = ds_id
         self.subject_filter = self._normalize_subject(subject_filter) if subject_filter else None
@@ -521,6 +523,7 @@ class DatasetSummaryRunner:
 
     @staticmethod
     def _normalize_subject(value: Optional[str]) -> Optional[str]:
+        """Internal helper: normalize subject."""
         if value is None:
             return None
         value = str(value)
@@ -577,6 +580,7 @@ class DatasetSummaryRunner:
         return subject, session, task, run, acq
 
     def _load_external_dataset_config(self) -> Dict[str, Any]:
+        """Internal helper: load external dataset config."""
         cfg_path = Path(__file__).resolve().parents[4] / "openneuro_ingest" / "config" / f"config_{self.ds_id}.yaml"
         if not cfg_path.exists():
             return {}
@@ -595,6 +599,7 @@ class DatasetSummaryRunner:
 
     @staticmethod
     def _match_value(rule_val: Any, actual_val: Optional[str]) -> bool:
+        """Internal helper: match value."""
         if rule_val is None:
             return True
         if isinstance(rule_val, (list, tuple, set)):
@@ -610,6 +615,7 @@ class DatasetSummaryRunner:
         run_id: Optional[str],
         acq_id: Optional[str],
     ) -> Dict[str, Any]:
+        """Handle resolve coverage policy."""
         policy: Dict[str, Any] = {
             "min_seconds": float(self.min_seconds),
             "min_epochs": int(self.min_epochs),
@@ -638,6 +644,7 @@ class DatasetSummaryRunner:
         return policy
 
     def run(self) -> None:
+        """Run the main workflow for this component."""
         logger.info(f"Summarizing {self.ds_id}")
         ds_path = self.processed_dir / self.ds_id
         self.participants_df = load_participant_table(self.received_dir, self.ds_id, self.config)
@@ -711,6 +718,7 @@ class DatasetSummaryRunner:
         self,
         grouping_key: tuple[Any, Any, Any, Any, Any],
     ) -> tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
+        """Internal helper: normalize grouping key."""
         sub_id, ses_id, raw_task, run_id, acq_id = grouping_key
         if pd.isna(ses_id):
             ses_id = None
@@ -730,6 +738,7 @@ class DatasetSummaryRunner:
         grouping_key: tuple[Any, Any, Any, Any, Any],
         sub_frame: pd.DataFrame,
     ) -> None:
+        """Internal helper: process grouping item."""
         sub_id, ses_id, raw_task, run_id, acq_id = self._normalize_grouping_key(grouping_key)
         runner = SubjectSummaryRunner(
             dataset_runner=self,
@@ -755,6 +764,7 @@ class DatasetSummaryRunner:
         config: Mapping[str, Any],
         dataset_label: str,
     ) -> None:
+        """Handle write regional csv outputs threadsafe."""
         with self._dataset_csv_lock:
             write_regional_csv_outputs(
                 regional_mnps_results=regional_mnps_results,
@@ -773,6 +783,7 @@ class DatasetSummaryRunner:
         mnps_dir: Path,
         dataset_label: str,
     ) -> None:
+        """Handle write stratified blocks csv output threadsafe."""
         with self._dataset_csv_lock:
             write_stratified_blocks_csv_output(
                 stratified_blocks_result=stratified_blocks_result,
@@ -862,6 +873,7 @@ class DatasetSummaryRunner:
         return list(self._index_paths_by_basename.get(name, []))
 
     def _read_index(self, ds_path: Path) -> Optional[pd.DataFrame]:
+        """Internal helper: read index."""
         index_path = ds_path / "file_index.csv"
         index_df: Optional[pd.DataFrame] = None
         if not index_path.exists():
@@ -903,6 +915,7 @@ class DatasetSummaryRunner:
         return filtered
 
     def _build_index_from_received(self, ds_path: Path) -> Optional[pd.DataFrame]:
+        """Internal helper: build index from received."""
         ds_root = bids_index.resolve_dataset_root(self.config, self.ctx.received_dir, self.ds_id)
         if not ds_root.exists():
             logger.warning("Dataset root missing at %s; cannot build file_index.csv", ds_root)
@@ -922,6 +935,7 @@ class DatasetSummaryRunner:
         return bids_index.resolve_dataset_root(self.config, self.ctx.received_dir, self.ds_id)
 
     def _read_features(self, ds_path: Path) -> Optional[pd.DataFrame]:
+        """Internal helper: read features."""
         storage_cfg = self.config.get("feature_storage", {}) if isinstance(self.config, Mapping) else {}
         read_prefer = str(storage_cfg.get("read_prefer", "parquet")).strip().lower() if isinstance(storage_cfg, Mapping) else "parquet"
         if read_prefer not in {"csv", "parquet"}:
@@ -960,6 +974,7 @@ class DatasetSummaryRunner:
         return features_df
 
     def _apply_subject_filter(self, features_df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """Internal helper: apply subject filter."""
         if not self.subject_filter:
             return features_df
         if "file" not in features_df.columns:
@@ -972,6 +987,7 @@ class DatasetSummaryRunner:
         return filtered
 
     def _apply_qc_filters(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """Internal helper: apply qc filters."""
         qc_cols = [c for c in features_df.columns if str(c).startswith("qc_ok_")]
         if not qc_cols:
             return features_df
@@ -1111,12 +1127,14 @@ class DatasetSummaryRunner:
         return grouping_items
 
     def _create_output_dir(self, ds_path: Path) -> Path:
+        """Internal helper: create output dir."""
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         mnps_dir = ds_path / f"neuralmanifolddynamics_{self.ds_id}_{ts}"
         mnps_dir.mkdir(parents=True, exist_ok=True)
         return mnps_dir
 
     def participant_meta_for(self, sub_id: str) -> Dict[str, Any]:
+        """Handle participant meta for."""
         if self._participant_meta_map:
             return dict(self._participant_meta_map.get(sub_id, {}))
         if self.participants_df is None:
@@ -1127,6 +1145,7 @@ class DatasetSummaryRunner:
         return lookup.iloc[0].to_dict()
 
     def participant_meta_source_info(self) -> Dict[str, Any]:
+        """Handle participant meta source info."""
         if self.participants_df is None:
             return {}
         attrs = getattr(self.participants_df, "attrs", {}) or {}
@@ -1148,6 +1167,7 @@ class SubjectSummaryRunner:
         mnps_dir: Path,
         index_df: Optional[pd.DataFrame],
     ):
+        """Initialize the instance."""
         self.dataset = dataset_runner
         self.ctx = dataset_runner.ctx
         self.ds_path = ds_path
@@ -1168,6 +1188,7 @@ class SubjectSummaryRunner:
         acq_id: Optional[str],
         sub_frame: pd.DataFrame,
     ) -> None:
+        """Run the main workflow for this component."""
         config = self.ctx.config
         mnps_cfg = self.ctx.mnps_cfg
         normalize_mode = self.ctx.normalize_override
@@ -1537,6 +1558,7 @@ class SubjectSummaryRunner:
         
         # Explicitly prevent derivative estimation across file boundaries (time aliasing protection)
         def _compute_dot(features_array: np.ndarray) -> np.ndarray:
+            """Internal helper: compute dot."""
             dot_cfg = ((config.get("mnps", {}) or {}).get("derivative_robust", {}) or {}) if isinstance(config, Mapping) else {}
             use_segmented = bool(dot_cfg.get("enabled", True))
             dot_array = np.zeros_like(features_array)
@@ -2385,6 +2407,7 @@ class SubjectSummaryRunner:
         roots: List[Path] = []
 
         def _append_root(v: Any) -> None:
+            """Internal helper: append root."""
             if not isinstance(v, (str, Path)):
                 return
             p = Path(str(v))

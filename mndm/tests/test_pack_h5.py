@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def _write_small_h5(path: Path, dataset_id: str, subject_id: str) -> None:
+    """Internal helper: write small h5."""
     path.parent.mkdir(parents=True, exist_ok=True)
     with h5py.File(path, "w") as f:
         f.attrs["dataset_id"] = dataset_id
@@ -18,6 +19,7 @@ def _write_small_h5(path: Path, dataset_id: str, subject_id: str) -> None:
 
 
 def test_pack_run_excludes_output_and_uses_reserved_index_group(tmp_path: Path):
+    """Test pack run excludes output and uses reserved index group."""
     from mndm.tools.pack_h5 import pack_run
 
     run_dir = tmp_path / "mnps_run"

@@ -19,7 +19,7 @@ def infer_stage_from_bids_events(
     mnps_cfg: Mapping[str, Any],
     dataset_id: str,
 ) -> Tuple[Optional[np.ndarray], Optional[str], Optional[str], Optional[str]]:
-    """Infer per-epoch sleep stage codes from BIDS *_events.tsv for a segment."""
+    """Infer per-epoch sleep stage codes from BIDS ``*_events.tsv`` for a segment."""
     if "file" not in sub_frame.columns or len(sub_frame) == 0:
         return None, None, None, None
 

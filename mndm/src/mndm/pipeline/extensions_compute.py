@@ -51,6 +51,7 @@ def compute_extensions(
     extensions_summary["regional_data_available"] = regional_available
 
     def _run(fn, *args, **kwargs) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+        """Internal helper: run."""
         payload: Dict[str, Any] = {}
         summary: Dict[str, Any] = {}
         fn(*args, extensions_payload=payload, extensions_summary=summary, **kwargs)
@@ -169,6 +170,7 @@ def _compute_e_kappa(
     weights_map = e_kappa_cfg.get("weights") or {}
 
     def _collect_series(names: Sequence[str]) -> Tuple[List[np.ndarray], List[float]]:
+        """Internal helper: collect series."""
         cols: List[np.ndarray] = []
         wts: List[float] = []
         for name in names or []:

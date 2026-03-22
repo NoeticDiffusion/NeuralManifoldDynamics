@@ -258,43 +258,31 @@ def write_stratified_block_jacobians_csv(
 
 
 def _safe_nanmean(x: np.ndarray) -> float:
+    """Internal helper: safe nanmean."""
     if x.size == 0 or np.all(np.isnan(x)):
         return float("nan")
     return float(np.nanmean(x))
 
 
 def _safe_nanstd(x: np.ndarray) -> float:
+    """Internal helper: safe nanstd."""
     if x.size == 0 or np.all(np.isnan(x)):
         return float("nan")
     return float(np.nanstd(x))
 
 
 def _compute_block_metrics(block_field: np.ndarray, is_diagonal_block: bool) -> Dict[str, float]:
-    """Summaries for an ordered block field J^{(A,B)} over time.
+    """Summaries for an ordered Jacobian block ``J^{(A,B)}`` over time.
 
-    Parameters
-    ----------
-    block_field
-        Array of shape [T, p_out, p_in].
-    is_diagonal_block
-        True only when out_group == in_group (e.g. M→M, D→D, E→E).
+    Args:
+        block_field: Array of shape ``(T, p_out, p_in)``.
+        is_diagonal_block: True when ``out_group == in_group`` (``M→M``, etc.).
+            Trace and anisotropy are only meaningful for diagonal blocks; for
+            off-diagonal blocks only Frobenius norms are reported.
 
-        For *diagonal* blocks the trace equals the flow divergence
-        (∑ ∂ṁ_i/∂m_i) and anisotropy measures phase-space curvature —
-        both are geometrically meaningful.
-
-        For *off-diagonal* blocks (e.g. E→M) the trace is a physically
-        meaningless sum of randomly paired cross-derivatives, and anisotropy
-        loses its curvature interpretation.  Only the Frobenius norm (total
-        cross-coupling energy) is valid for off-diagonal blocks.
-
-    Returns
-    -------
-    dict
-        Contains:
-        - block_frobenius_mean  (always valid)
-        - block_trace_mean      (NaN for off-diagonal blocks)
-        - block_anisotropy_mean (NaN for off-diagonal blocks)
+    Returns:
+        Dict with ``block_frobenius_mean``, and ``block_trace_mean`` /
+        ``block_anisotropy_mean`` (NaN when not applicable).
     """
     if block_field.size == 0 or block_field.shape[0] == 0:
         return {
@@ -340,6 +328,7 @@ def _resolve_group_indices(
     coords_9d_names: Sequence[str],
     groups: Mapping[str, Sequence[str]],
 ) -> Dict[str, List[int]]:
+    """Internal helper: resolve group indices."""
     name_to_idx = {str(n): i for i, n in enumerate(coords_9d_names)}
     resolved: Dict[str, List[int]] = {}
     for group_name, members in groups.items():
@@ -360,6 +349,7 @@ def _iter_pairs(
     pairs_cfg: Any,
     include_self: bool,
 ) -> Iterable[Tuple[str, str]]:
+    """Internal helper: iter pairs."""
     if pairs_cfg == "all":
         for out_g in groups:
             for in_g in groups:

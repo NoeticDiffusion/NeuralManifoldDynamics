@@ -465,6 +465,7 @@ class PreprocessedSignals:
 
 
 def _infer_dataset_id(file_path: Path, config: Mapping[str, Any]) -> Optional[str]:
+    """Internal helper: infer dataset id."""
     dataset_ids = config.get("datasets") if isinstance(config, Mapping) else None
     path_str = file_path.as_posix()
     if isinstance(dataset_ids, Iterable):
@@ -496,6 +497,7 @@ def _resolve_fmri_config(config: Mapping[str, Any], dataset_id: Optional[str]) -
 
 
 def _resolve_event_crop_config(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
+    """Internal helper: resolve event crop config."""
     preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
     event_cfg = preprocess_cfg.get("event_crop", {}) if isinstance(preprocess_cfg, Mapping) else {}
     if not isinstance(event_cfg, Mapping):
@@ -555,6 +557,7 @@ def _resolve_eeg_csd_config(config: Mapping[str, Any], dataset_id: Optional[str]
 
 
 def _find_events_file(file_path: Path, cfg: Mapping[str, Any]) -> Optional[Path]:
+    """Internal helper: find events file."""
     explicit = cfg.get("events_path")
     if explicit:
         candidate = Path(explicit)
@@ -807,6 +810,7 @@ def _brainvision_common_infos_bounds(lines: List[str]) -> Optional[Tuple[int, in
 
 
 def _brainvision_get_key(lines: List[str], start: int, end: int, key: str) -> Optional[str]:
+    """Internal helper: brainvision get key."""
     key_l = key.strip().lower()
     kv_re = re.compile(r"^\s*(?P<k>[^=;]+?)\s*=\s*(?P<v>.*)\s*$")
     for i in range(start + 1, end):
@@ -1070,19 +1074,14 @@ def _resolve_target_sfreq(
 
 
 def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
-    """Preprocess a single file (EEG or fMRI) and return signals + metadata.
+    """Preprocess a single file (EEG or fMRI) and return signals plus metadata.
 
-    Parameters
-    ----------
-    file_path
-        Path to raw EEG or fMRI file.
-    config
-        Configuration dict with preprocessing settings.
+    Args:
+        file_path: Path to a raw EEG or fMRI file.
+        config: Ingest configuration with ``preprocess`` and modality sections.
 
-    Returns
-    -------
-    PreprocessedSignals
-        Per-modality arrays, sfreq, channels, and metadata.
+    Returns:
+        :class:`PreprocessedSignals` with arrays, ``sfreq``, channel maps, and meta.
     """
     if mne is None:
         raise RuntimeError("mne is required for EEG preprocessing but is not installed.")
@@ -1331,6 +1330,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     art_method = str(art_cfg.get("method", "none")).lower()
 
     def _apply_eog_regression(r: mne.io.BaseRaw) -> None:
+        """Internal helper: apply eog regression."""
         eeg_picks = mne.pick_types(r.info, eeg=True)
         eog_picks = mne.pick_types(r.info, eog=True)
         if len(eeg_picks) == 0 or len(eog_picks) == 0:
@@ -1354,6 +1354,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             logger.warning("EOG regression failed (%s); continuing without regression", exc)
 
     def _apply_ica(r: mne.io.BaseRaw) -> None:
+        """Internal helper: apply ica."""
         if ICA is None:
             logger.info("ICA not available; skipping ICA artifacts removal")
             return

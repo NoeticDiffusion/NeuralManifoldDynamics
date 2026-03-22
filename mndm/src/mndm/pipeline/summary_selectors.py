@@ -18,6 +18,7 @@ def _match_bold_candidate(
     run_id: Optional[str],
     require_bold_token: bool = True,
 ) -> bool:
+    """Internal helper: match bold candidate."""
     if not path_str:
         return False
     if path_str.startswith("._") or "/._" in path_str or "\\._" in path_str:
@@ -145,6 +146,7 @@ def load_regional_fmri_signals(
     regions_sfreq = None
 
     def _match_candidate(path_str: str) -> bool:
+        """Internal helper: match candidate."""
         return _match_bold_candidate(
             path_str,
             raw_task=raw_task,
@@ -223,6 +225,7 @@ def load_regional_fmri_signals(
                 fmri_rows = fmri_rows[fmri_rows["session"].astype(str) == str(session).replace("ses-", "")]
 
             def _path_matches(path_str: str) -> bool:
+                """Internal helper: path matches."""
                 return _match_bold_candidate(
                     path_str,
                     raw_task=raw_task,

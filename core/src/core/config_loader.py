@@ -1,25 +1,11 @@
-"""Configuration loader and validator for the ingest pipeline.
+"""Configuration loader for the ingest pipeline.
 
-Responsibilities
-----------------
-- Parse YAML configuration (datasets, defaults, feature sets, MNPS weights,
-  robustness parameters, and IO paths).
-- Support optional config composition via an ``imports`` list in YAML
-  (deep-merged in order; local file overrides imported keys).
-- Provide a typed dictionary (or dataclass in future) used by downstream steps.
+Parses YAML (datasets, paths, preprocessing, epoching, features, MNPS,
+robustness, etc.). Supports optional composition via an ``imports`` list in YAML
+(deep-merged in order; the local file overrides imported keys). Returns a dict
+used by downstream steps.
 
-Inputs
-------
-- path: filesystem path to `config_ingest.yaml`.
-
-Outputs
--------
-- Dict-like configuration object with keys such as:
-  {"datasets": [...], "processing": {...}, "features": {...}, "mnps": {...}}.
-
-Dependencies
-------------
-- None at import-time. Optional: `yaml` (PyYAML) during `load_config` execution.
+Requires PyYAML at runtime when :func:`load_config` is called.
 """
 
 from __future__ import annotations
@@ -32,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _deep_merge_dict(base: Mapping[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
-    """Deep merge dictionaries: override wins; nested mappings merge recursively."""
+    """Deep-merge mappings; values in ``override`` win, nested dicts merge recursively."""
     out: Dict[str, Any] = dict(base) if isinstance(base, Mapping) else {}
     if not isinstance(override, Mapping):
         return out
@@ -45,7 +31,7 @@ def _deep_merge_dict(base: Mapping[str, Any], override: Mapping[str, Any]) -> Di
 
 
 def _load_yaml_with_imports(path: Path, stack: Optional[List[Path]] = None) -> Dict[str, Any]:
-    """Load YAML with optional recursive ``imports`` composition."""
+    """Load YAML from ``path``, recursively merging any listed ``imports`` files."""
     try:
         import yaml  # type: ignore
     except Exception as exc:  # pragma: no cover - import error surfaced at runtime
@@ -85,22 +71,15 @@ def _load_yaml_with_imports(path: Path, stack: Optional[List[Path]] = None) -> D
 def load_config(path: Path) -> Dict[str, Any]:
     """Load the ingest configuration from a YAML file.
 
-    Parameters
-    ----------
-    path:
-        Path to the YAML configuration file.
+    Args:
+        path: Path to the YAML configuration file.
 
-    Returns
-    -------
-    dict
+    Returns:
         Parsed configuration with minimal validation.
 
-    Raises
-    ------
-    RuntimeError
-        If PyYAML is not available.
-    ValueError
-        If configuration structure is invalid.
+    Raises:
+        RuntimeError: If PyYAML is not available.
+        ValueError: If the configuration root is invalid or import cycles occur.
     """
     cfg = _load_yaml_with_imports(Path(path))
 

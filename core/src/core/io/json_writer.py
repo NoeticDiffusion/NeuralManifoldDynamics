@@ -1,4 +1,8 @@
-"""JSON writer for MNPS tensor manifest outputs."""
+"""JSON writer for MNPS tensor manifest outputs.
+
+Builds compact JSON manifests summarizing samples, MNPS axes, Jacobian shapes,
+and optional diagnostics; also writes arbitrary JSON summaries to disk.
+"""
 
 from __future__ import annotations
 
@@ -61,6 +65,7 @@ def _to_jsonable(obj: Any) -> Any:
 
 
 def _is_scalar_manifest_value(value: Any) -> bool:
+    """Internal helper: is scalar manifest value."""
     if isinstance(value, (str, bool, int, np.integer)):
         return True
     if isinstance(value, (float, np.floating)):
@@ -68,7 +73,24 @@ def _is_scalar_manifest_value(value: Any) -> bool:
     return False
 
 
-def build_manifest(dataset_id: str, payload: MNPSPayload, diagnostics: Optional[Mapping[str, Any]] = None, extra: Optional[Mapping[str, Any]] = None) -> MutableMapping[str, Any]:
+def build_manifest(
+    dataset_id: str,
+    payload: MNPSPayload,
+    diagnostics: Optional[Mapping[str, Any]] = None,
+    extra: Optional[Mapping[str, Any]] = None,
+) -> MutableMapping[str, Any]:
+    """Build a JSON-serializable manifest dict for an MNPS payload.
+
+    Args:
+        dataset_id: Dataset identifier string.
+        payload: MNPS payload (normalized internally).
+        diagnostics: Optional diagnostics mapping; only scalar values are kept
+            in the manifest (arrays stay in HDF5).
+        extra: Optional extra keys merged into the manifest.
+
+    Returns:
+        Mutable mapping suitable for :func:`write_json_summary` or embedding in H5.
+    """
     payload = normalize_payload(payload)
     events = payload.events or {}
     labels = payload.labels or {}
@@ -179,6 +201,15 @@ def build_manifest(dataset_id: str, payload: MNPSPayload, diagnostics: Optional[
 
 
 def write_json_summary(summary: Mapping[str, Any], out_path: Path) -> Path:
+    """Write ``summary`` to ``out_path`` as UTF-8 JSON with indentation.
+
+    Args:
+        summary: JSON-serializable mapping (NumPy types are converted).
+        out_path: Destination path.
+
+    Returns:
+        Resolved path that was written.
+    """
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:

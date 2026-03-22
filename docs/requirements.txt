@@ -1,0 +1,3 @@
+# Sphinx and Read the Docs (Google-style docstrings via Napoleon)
+sphinx>=7.0,<9
+sphinx-rtd-theme>=2.0

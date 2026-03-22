@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_compute_feature_baseline_comparisons_exports_expected_families():
+    """Test compute feature baseline comparisons exports expected families."""
     from mndm.pipeline.baseline_qc import compute_feature_baseline_comparisons
 
     t = np.linspace(0.0, 6.0 * np.pi, 64, dtype=float)
@@ -55,6 +56,7 @@ def test_compute_feature_baseline_comparisons_exports_expected_families():
 
 
 def test_compute_null_sanity_tests_returns_three_surrogates():
+    """Test compute null sanity tests returns three surrogates."""
     from mndm.pipeline.baseline_qc import compute_null_sanity_tests
 
     t = np.linspace(0.0, 8.0 * np.pi, 96, dtype=float)

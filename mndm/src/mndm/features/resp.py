@@ -18,17 +18,13 @@ logger = logging.getLogger(__name__)
 
 def compute_resp_features(signals: Mapping[str, Any], config: Mapping[str, Any]) -> pd.DataFrame:
     """Compute per-epoch respiration features (rate variance).
-    
-    Parameters
-    ----------
-    signals
-        PreprocessedSignals or dict with 'signals' and 'sfreq' keys.
-    config
-        Configuration with epoching parameters.
-    
-    Returns
-    -------
-    DataFrame with columns: epoch_id, resp_rate_var
+
+    Args:
+        signals: Preprocessed signals dict with ``signals`` and ``sfreq``.
+        config: Configuration with epoching parameters.
+
+    Returns:
+        DataFrame with ``epoch_id``, ``resp_rate_var``, etc.
     """
     if "resp" not in signals.get("signals", {}):
         return pd.DataFrame()

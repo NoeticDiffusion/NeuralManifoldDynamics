@@ -73,18 +73,18 @@ def bandpass_filter(
     h_freq: float,
     order: int = 4,
 ) -> np.ndarray:
-    """Simple zero-phase bandpass.
+    """Simple zero-phase bandpass in the Fourier domain.
 
-    Parameters
-    ----------
-    data
-        Array with shape (..., n_times).
-    sfreq
-        Sampling frequency (Hz).
-    l_freq, h_freq
-        Low and high cut-off frequencies (Hz).
-    order
-        Filter order.
+    Args:
+        data: Array with shape ``(..., n_times)``.
+        sfreq: Sampling frequency in Hz.
+        l_freq: Low cut-off frequency in Hz.
+        h_freq: High cut-off frequency in Hz.
+        order: Kept for API compatibility; implementation uses a rectangular
+            FFT bandpass (not a Butterworth of this order).
+
+    Returns:
+        Filtered array with the same shape as ``data``.
     """
     # Note: `order` is kept for API compatibility, but the current implementation
     # uses an FFT-domain rectangular bandpass to avoid SciPy binary dependencies.
@@ -99,20 +99,15 @@ def compute_energy_from_regions(
 ) -> np.ndarray:
     """Compute a global energy series from regional signals.
 
-    Parameters
-    ----------
-    reg_signals
-        Array with shape (n_regions, n_times).
-    weights
-        Optional weights per region, shape (n_regions,). If None, uniform.
-    window_size
-        Optional window length (in samples) for local power smoothing. If
-        None or <= 1, uses instantaneous squared amplitude.
+    Args:
+        reg_signals: Array with shape ``(n_regions, n_times)``.
+        weights: Optional weights per region, shape ``(n_regions,)``. If None,
+            uses uniform weights.
+        window_size: Optional window length in samples for smoothing squared
+            amplitude. If None or <= 1, uses instantaneous squared amplitude.
 
-    Returns
-    -------
-    E : array, shape (n_times,)
-        Global energy time series.
+    Returns:
+        1-D array ``E`` with shape ``(n_times,)``.
     """
 
     reg_signals = np.asarray(reg_signals, dtype=float)
@@ -153,12 +148,12 @@ def compute_kappa_E_1d(E: np.ndarray, dt: float) -> np.ndarray:
 
         \\kappa_E(t) = \\frac{E''(t)}{\\big(1 + (E'(t))^2\\big)^{3/2}}.
 
-    Parameters
-    ----------
-    E
-        1-D array, shape (n_times,).
-    dt
-        Sampling interval in seconds.
+    Args:
+        E: 1-D array, shape ``(n_times,)``.
+        dt: Sampling interval in seconds.
+
+    Returns:
+        1-D curvature series; first and last samples are set to NaN.
     """
 
     E = np.asarray(E, dtype=float)
@@ -198,21 +193,17 @@ def compute_rfm(
 ) -> RFMResult:
     """Compute Resonant Phase Modes (RFM) from multichannel time series.
 
-    Parameters
-    ----------
-    x
-        Array with shape (n_channels, n_times).
-    sfreq
-        Sampling frequency in Hz (for the time base of ``x``).
-    window_sec
-        Window length in seconds for phase-coherence estimation.
-    step_sec
-        Step size in seconds between successive windows.
-    n_modes
-        Number of leading eigenvectors/modes to return.
-    band
-        Optional (l_freq, h_freq) in Hz. If given, ``x`` is bandpass-filtered
-        before Hilbert transform; if None, no additional filtering is applied.
+    Args:
+        x: Array with shape ``(n_channels, n_times)``.
+        sfreq: Sampling frequency in Hz.
+        window_sec: Window length in seconds for phase-coherence estimation.
+        step_sec: Step between successive windows in seconds.
+        n_modes: Number of leading modes to retain.
+        band: Optional ``(l_freq, h_freq)`` in Hz for bandpass filtering before
+            the Hilbert transform; if None, no extra filtering.
+
+    Returns:
+        :class:`RFMResult` with window centers, eigenvalues/vectors, and dominance.
     """
 
     x = np.asarray(x, dtype=float)
@@ -310,26 +301,19 @@ def compute_OKoh(
     We approximate Betti numbers in a graph-theoretic way:
 
     - :math:`\\beta_0`: number of connected components.
-    - :math:`\\beta_1`: cycle rank = |E| - |V| + :math:`\\beta_0`.
+    - :math:`\\beta_1`: cycle rank (edges minus vertices plus :math:`\\beta_0`).
 
-    Parameters
-    ----------
-    C
-        Functional connectivity matrix, shape (n_nodes, n_nodes).
-    thresholds
-        Thresholds on |C_ij| used to build graphs G(ε). If None, thresholds
-        are chosen from the 10th to 90th percentile of |C_ij| (upper triangle).
-    weights
-        Optional weights for integration over thresholds. If None, uniform.
+    Args:
+        C: Functional connectivity matrix, shape ``(n_nodes, n_nodes)``.
+        thresholds: Thresholds on ``abs(C_ij)`` used to build graphs
+            :math:`G(\\varepsilon)`. If None, thresholds are chosen from the
+            10th to 90th percentile of off-diagonal ``abs(C_ij)`` (upper triangle).
+        weights: Optional weights for integration over thresholds. If None,
+            uniform.
 
-    Returns
-    -------
-    dict with keys:
-        - "thresholds": (n_thr,)
-        - "beta0": (n_thr,)
-        - "beta1": (n_thr,)
-        - "OKoh0": float (weighted sum of beta0)
-        - "OKoh1": float (weighted sum of beta1)
+    Returns:
+        Dictionary with keys ``thresholds``, ``beta0``, ``beta1`` (each
+        ``(n_thr,)`` arrays), ``OKoh0``, and ``OKoh1`` (floats).
     """
 
     C = np.asarray(C, dtype=float)
@@ -426,18 +410,15 @@ def compute_TIG_autocorr(
 
         \\mathrm{TIG} = \\tau / T_\\text{max}.
 
-    Parameters
-    ----------
-    s
-        Array with shape (n_times, n_dims) or (n_times,).
-    dt
-        Sampling interval in seconds.
-    max_lag_sec
-        Maximum lag (seconds) used for autocorrelation.
-    n_lags
-        Number of lag values between 0 and max_lag_sec.
-    T_max
-        Normalisation constant for TIG. If None, ``T_max = max_lag_sec``.
+    Args:
+        s: Array with shape ``(n_times, n_dims)`` or ``(n_times,)``.
+        dt: Sampling interval in seconds.
+        max_lag_sec: Maximum lag in seconds for autocorrelation.
+        n_lags: Number of lag samples between 0 and ``max_lag_sec``.
+        T_max: Normalisation constant for TIG; if None, uses ``max_lag_sec``.
+
+    Returns:
+        Dict with keys such as ``lags_sec``, ``autocorr``, ``tau``, ``TIG``.
     """
 
     s = np.asarray(s, dtype=float)

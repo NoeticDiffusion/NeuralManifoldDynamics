@@ -132,6 +132,7 @@ def resolve_mapping_spec(config: Mapping[str, Any]) -> Tuple[Dict[str, Dict[str,
 
 
 def _extract_axis_weights(axis_cfg: Mapping[str, Any], axis: Optional[str] = None) -> Dict[str, float]:
+    """Internal helper: extract axis weights."""
     if not isinstance(axis_cfg, Mapping):
         return {}
     weights_map = axis_cfg.get("weights")
@@ -186,6 +187,7 @@ class ResolvedConfig:
         cli_data_dir: Path | None = None,
         mnps_overrides: Optional[Dict[str, Any]] = None,
     ) -> "ResolvedConfig":
+        """Construct instance from mapping."""
         received_dir, processed_dir = resolve_paths(config, out_dir, cli_data_dir)
         robustness_cfg = config.get("robustness", {}) if isinstance(config, Mapping) else {}
         if not isinstance(robustness_cfg, Mapping):
@@ -232,6 +234,7 @@ class SummarizeContext:
 
     @classmethod
     def from_resolved(cls, resolved: ResolvedConfig) -> "SummarizeContext":
+        """Construct instance from resolved."""
         return cls(resolved=resolved)
 
     @classmethod
@@ -242,6 +245,7 @@ class SummarizeContext:
         cli_data_dir: Path | None = None,
         mnps_overrides: Optional[Dict[str, Any]] = None,
     ) -> "SummarizeContext":
+        """Construct instance from config."""
         resolved = ResolvedConfig.from_mapping(config, out_dir, cli_data_dir, mnps_overrides)
         return cls.from_resolved(resolved)
 
@@ -249,46 +253,57 @@ class SummarizeContext:
 
     @property
     def config(self) -> Mapping[str, Any]:
+        """Handle config."""
         return self.resolved.raw
 
     @property
     def received_dir(self) -> Path:
+        """Handle received dir."""
         return self.resolved.paths.received_dir
 
     @property
     def processed_dir(self) -> Path:
+        """Handle processed dir."""
         return self.resolved.paths.processed_dir
 
     @property
     def coverage(self) -> CoverageConfig:
+        """Handle coverage."""
         return self.resolved.coverage
 
     @property
     def weights(self) -> Dict[str, Dict[str, float]]:
+        """Handle weights."""
         return self.resolved.weights
 
     @property
     def normalize_override(self) -> Optional[str]:
+        """Handle normalize override."""
         return self.resolved.normalize_override
 
     @property
     def ingest_meta(self) -> Dict[str, str]:
+        """Handle ingest meta."""
         return self.resolved.ingest_meta
 
     @property
     def mnps_cfg(self) -> Dict[str, Any]:
+        """Handle mnps cfg."""
         return self.resolved.mnps_cfg
 
     @property
     def derivative_cfg(self) -> Dict[str, Any]:
+        """Handle derivative cfg."""
         return self.resolved.derivative_cfg
 
     @property
     def extensions_cfg(self) -> Dict[str, Any]:
+        """Handle extensions cfg."""
         return self.resolved.extensions_cfg
 
     @property
     def reproducibility(self) -> Dict[str, Any]:
+        """Handle reproducibility."""
         return self.resolved.reproducibility
 
     @property

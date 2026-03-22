@@ -1,4 +1,8 @@
-"""HDF5 writer for MNPS tensor outputs."""
+"""HDF5 writer for MNPS tensor outputs.
+
+Writes :class:`mndm.schema.MNPSPayload` to a structured HDF5 file (time series,
+MNPS coordinates, Jacobians, labels, optional regional and extension groups).
+"""
 
 from __future__ import annotations
 
@@ -57,6 +61,7 @@ def _create_dataset(parent: Any, name: str, data, compression: str = "gzip", com
 
 
 def _prepare_attr_value(value: Any) -> Any:
+    """Internal helper: prepare attr value."""
     if isinstance(value, (str, bytes)):
         return value
     if isinstance(value, (bool, int, float, np.integer, np.floating, np.bool_)):
@@ -114,6 +119,7 @@ def _write_extensions_group(h5: h5py.File, extensions: Mapping[str, Any]) -> Non
     root = h5.require_group("extensions")
 
     def _write_mapping(parent: h5py.Group, key: str, value: Any) -> None:
+        """Internal helper: write mapping."""
         safe_key = _sanitize_h5_key(str(key))
         if isinstance(value, Mapping):
             sub = parent.require_group(safe_key)
@@ -136,6 +142,7 @@ def _write_feature_surface_group(
     feature_metadata: Optional[Mapping[str, Any]],
     export_transform: str,
 ) -> None:
+    """Internal helper: write feature surface group."""
     if values is None or np.size(values) == 0:
         return
     group = h5.require_group(group_name)
@@ -164,7 +171,21 @@ def write_h5(
     manifest: Optional[Mapping[str, Any]] = None,
     jacobian_diagnostics: Optional[Mapping[str, Any]] = None,
 ) -> Path:
-    """Write MNPS tensors to HDF5 following the shared schema."""
+    """Write MNPS tensors to HDF5 following the shared schema.
+
+    Args:
+        out_path: Output ``.h5`` file path (parent directories are created).
+        dataset_id: Dataset identifier stored in file attributes.
+        payload: Normalized MNPS payload (see :func:`mndm.schema.normalize_payload`).
+        manifest: Optional run manifest dict serialized under ``manifest_json``.
+        jacobian_diagnostics: Optional small Jacobian diagnostics arrays or scalars.
+
+    Returns:
+        ``out_path`` after a successful write.
+
+    Raises:
+        RuntimeError: If ``h5py`` is not installed.
+    """
     if h5py is None:
         raise RuntimeError("h5py is required to write HDF5 outputs.")
 

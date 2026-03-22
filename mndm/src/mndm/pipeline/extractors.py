@@ -92,25 +92,17 @@ def extract_mapped_metadata(
     session: Optional[str],
     filename: Optional[str] = None,
 ) -> Dict[str, Optional[str]]:
-    """Derive generic metadata fields (group/condition/task) from config rules and participant_meta.
+    """Derive generic metadata fields (group/condition/task) from config rules.
 
-    Parameters
-    ----------
-    participant_meta : dict
-        Row from participants.tsv as a dictionary.
-    config : Mapping
-        Full ingest configuration.
-    dataset_id : str
-        Dataset identifier (e.g., "ds003171").
-    session : str, optional
-        Session identifier (e.g., "ses-01").
-    filename : str, optional
-        BIDS filename for parsing task (e.g., "sub-01_ses-01_task-rest_bold.nii.gz").
+    Args:
+        participant_meta: Row from ``participants.tsv`` as a dictionary.
+        config: Full ingest configuration.
+        dataset_id: Dataset identifier (for example ``ds003171``).
+        session: Session identifier (for example ``ses-01``), or None.
+        filename: BIDS filename for parsing task context, or None.
 
-    Returns
-    -------
-    dict
-        Keys: group, condition, task - each may be None if not found.
+    Returns:
+        Dict with keys ``group``, ``condition``, and ``task`` (each optional).
     """
     result: Dict[str, Optional[str]] = {"group": None, "condition": None, "task": None}
     meta = participant_meta or {}
@@ -127,9 +119,11 @@ def extract_mapped_metadata(
             per_ds = _deep_merge_dict(per_ds if isinstance(per_ds, Mapping) else {}, policy)
 
     def _is_scalar_meta_value(value: Any) -> bool:
+        """Internal helper: is scalar meta value."""
         return isinstance(value, (str, int, float, bool, np.integer, np.floating, np.bool_))
 
     def _pick_candidate_value(candidates: Any) -> Optional[str]:
+        """Internal helper: pick candidate value."""
         if not isinstance(candidates, (list, tuple)):
             return None
         key_lookup: Dict[str, str] = {}
@@ -149,6 +143,7 @@ def extract_mapped_metadata(
         return None
 
     def _normalize(value: Optional[str], mapping: Dict[str, str]) -> Optional[str]:
+        """Internal helper: normalize."""
         if value is None:
             return None
         raw = str(value).strip().lower()
@@ -156,6 +151,7 @@ def extract_mapped_metadata(
         return mapping.get(raw, mapping.get(stripped, value))
 
     def _as_float(value: Any) -> Optional[float]:
+        """Internal helper: as float."""
         try:
             if value is None:
                 return None
@@ -442,7 +438,7 @@ def extract_embodied_array(df: pd.DataFrame, embodied_cfg: Dict[str, Any]) -> Op
 
 
 def extract_events(df: pd.DataFrame) -> Dict[str, np.ndarray]:
-    """Extract event columns (prefixed with 'event_') from DataFrame."""
+    """Extract event columns (prefixed with ``event_``) from DataFrame."""
     events: Dict[str, np.ndarray] = {}
     for col in df.columns:
         if str(col).startswith("event_"):

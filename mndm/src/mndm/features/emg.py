@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_epoch_params(config: Mapping[str, Any], dataset_id: Optional[str]) -> tuple[float, float]:
+    """Internal helper: resolve epoch params."""
     return epoch_selection.resolve_epoch_params(config, dataset_id)
 
 
@@ -32,6 +33,7 @@ def _resolve_chosen_epochs(
     epoch_length_samples: int,
     epoch_step_samples: int,
 ) -> Optional[set[int]]:
+    """Internal helper: resolve chosen epochs."""
     if not raw_file_path:
         return None
     try:
@@ -52,17 +54,13 @@ def _resolve_chosen_epochs(
 
 def compute_emg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) -> pd.DataFrame:
     """Compute per-epoch EMG features (RMS).
-    
-    Parameters
-    ----------
-    signals
-        PreprocessedSignals or dict with 'signals' and 'sfreq' keys.
-    config
-        Configuration with epoching parameters.
-    
-    Returns
-    -------
-    DataFrame with columns: epoch_id, emg_rms
+
+    Args:
+        signals: Preprocessed signals dict with ``signals`` and ``sfreq``.
+        config: Configuration with epoching parameters.
+
+    Returns:
+        DataFrame with ``epoch_id``, ``emg_rms``, etc.
     """
     if "emg" not in signals.get("signals", {}):
         return pd.DataFrame()

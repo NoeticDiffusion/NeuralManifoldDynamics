@@ -10,6 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_compute_kappa_E_1d_basic():
+    """Test compute kappa E 1d basic."""
     from mndm.extensions import compute_kappa_E_1d
 
     dt = 0.1
@@ -27,6 +28,7 @@ def test_compute_kappa_E_1d_basic():
 
 
 def test_compute_OKoh_on_simple_graph():
+    """Test compute OKoh on simple graph."""
     from mndm.extensions import compute_OKoh
 
     # Simple 3-node line graph with stronger edges on 0-1 and 1-2
@@ -49,6 +51,7 @@ def test_compute_OKoh_on_simple_graph():
 
 
 def test_compute_TIG_autocorr_reasonable_values():
+    """Test compute TIG autocorr reasonable values."""
     from mndm.extensions import compute_TIG_autocorr
 
     dt = 0.1
@@ -70,6 +73,7 @@ def test_compute_TIG_autocorr_reasonable_values():
 
 
 def test_compute_TIG_autocorr_saturates_and_flags_provisional():
+    """Test compute TIG autocorr saturates and flags provisional."""
     from mndm.extensions import compute_TIG_autocorr
 
     dt = 0.1
@@ -89,6 +93,7 @@ def test_compute_TIG_autocorr_saturates_and_flags_provisional():
 
 @pytest.mark.parametrize("n_channels, n_times", [(3, 256)])
 def test_compute_rfm_shapes(n_channels, n_times):
+    """Test compute rfm shapes."""
     pytest.importorskip("scipy")
     from mndm.extensions import compute_rfm
 

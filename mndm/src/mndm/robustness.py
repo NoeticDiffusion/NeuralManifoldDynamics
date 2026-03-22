@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 
 def _cfg_with_resolved_seed(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    """Internal helper: cfg with resolved seed."""
     out = dict(cfg) if isinstance(cfg, dict) else {}
     robustness_cfg = out.get("robustness", {})
     robustness_cfg = dict(robustness_cfg) if isinstance(robustness_cfg, dict) else {}
@@ -51,6 +52,7 @@ class RobustSummary:
     transient_frac: float
 
     def as_dict(self) -> Dict[str, Any]:
+        """Handle as dict."""
         return {
             "incl": self.incl,
             "excl": self.excl,
@@ -63,19 +65,15 @@ class RobustSummary:
 
 def compute_robust_summary(coords_df: pd.DataFrame, transient_mask: np.ndarray, cfg: Dict[str, Any]) -> Dict[str, Any]:
     """Compute robust summaries for MNPS coordinates.
-    
-    Parameters
-    ----------
-    coords_df
-        DataFrame with columns: epoch_id, m, d, e
-    transient_mask
-        Boolean array marking transient epochs.
-    cfg
-        Configuration dict with robustness settings.
-    
-    Returns
-    -------
-    RobustSummary with incl/excl stats, CI95, stability, coverage.
+
+    Args:
+        coords_df: DataFrame with ``epoch_id`` and ``m``, ``d``, ``e`` (or legacy R/D/M).
+        transient_mask: Boolean array marking transient epochs (aligned to rows).
+        cfg: Configuration with ``robustness`` settings (summary, bootstrap, coverage).
+
+    Returns:
+        Dict with ``incl``, ``excl``, ``ci95``, ``stability``, ``coverage_ok``,
+        and ``transient_frac``.
     """
     if len(coords_df) == 0:
         return {
@@ -127,9 +125,11 @@ def compute_robust_summary(coords_df: pd.DataFrame, transient_mask: np.ndarray, 
     coverage_ok = (len(coords_df) >= min_epochs) and transient_frac < 0.5
 
     def _point(arr: np.ndarray) -> float:
+        """Internal helper: point."""
         return robust_stats.robust_1d(arr, summary=summary_type, trim_pct=trim_pct)
 
     def _finite(arr: pd.Series) -> np.ndarray:
+        """Internal helper: finite."""
         vals = np.asarray(arr.to_numpy(dtype=float), dtype=float)
         return vals[np.isfinite(vals)]
 
@@ -214,20 +214,13 @@ def summarize_array(
 ) -> Dict[str, Dict[str, float]]:
     """Summarize columns of a 2-D array with robust point estimates and CI95.
 
-    Parameters
-    ----------
-    values
-        Array of shape [T, K] with per-epoch values.
-    axis_names
-        Names for the K columns, e.g. ['m_a', 'm_e', ...].
-    cfg
-        Config dict with 'robustness' section (summary, trim_pct,
-        bootstrap_n, seed).
+    Args:
+        values: Array shaped ``(T, K)`` with per-epoch values.
+        axis_names: Names for the ``K`` columns (for example stratified axis names).
+        cfg: Config with ``robustness`` (summary, trim_pct, bootstrap_n, seed).
 
-    Returns
-    -------
-    dict
-        Mapping name -> {'point', 'ci_low', 'ci_high'}.
+    Returns:
+        Mapping ``name -> {'point', 'ci_low', 'ci_high'}``.
     """
     cfg_resolved = _cfg_with_resolved_seed(cfg if isinstance(cfg, dict) else {})
     return robust_stats.summarize_array(values, axis_names, cfg_resolved)
@@ -238,20 +231,18 @@ def split_half_reliability(
     axis_names: Sequence[str],
     split_mode: str = "odd_even",
 ) -> Dict[str, float]:
-    """Compute split-half temporal consistency (correlation) for each axis.
+    """Compute split-half temporal consistency (Pearson correlation) per axis.
 
-    Parameters
-    ----------
-    values
-        Array of shape [T, K] with per-epoch values.
-    axis_names
-        Names for the K columns.
+    Args:
+        values: Array shaped ``(T, K)`` with per-epoch values.
+        axis_names: Names for each column.
+        split_mode: ``odd_even`` (default) or ``first_second`` halves.
 
-    Returns
-    -------
-    dict
-        Mapping name -> Pearson correlation between split traces.
-        NaN when not enough data.
+    Returns:
+        Mapping axis name to correlation; NaN when not enough data.
+
+    Raises:
+        ValueError: If ``values`` shape does not match ``axis_names``.
     """
 
     values = np.asarray(values, dtype=float)
@@ -307,24 +298,15 @@ def entropy_sanity_checks(
 ) -> Dict[str, Dict[str, Any]]:
     """Check for degenerate entropy/efficiency subcoordinates.
 
-    Parameters
-    ----------
-    coords_9d
-        Array of shape [T, K] with Stratified MNPS subcoordinates in [0, 1].
-    coords_9d_names
-        Names for the subcoordinates.
-    target_axes
-        Subset of names to check (default: ['e_e', 'e_s', 'e_m']).
-    var_threshold
-        Variance threshold below which a subcoordinate is considered degenerate.
-    min_unique
-        Minimum number of unique values (after rounding) required to avoid
-        being marked as degenerate.
+    Args:
+        coords_9d: Array ``(T, K)`` with stratified subcoordinates in ``[0, 1]``.
+        coords_9d_names: Name for each coordinate column.
+        target_axes: Subset of names to check (default entropy-like axes).
+        var_threshold: Variance below which a coordinate is flagged degenerate.
+        min_unique: Minimum rounded unique values required for a non-degenerate flag.
 
-    Returns
-    -------
-    dict
-        Mapping axis -> {'var', 'n_unique', 'provisional'}.
+    Returns:
+        Mapping axis name to diagnostics ``var``, ``n_unique``, ``provisional``.
     """
 
     coords_9d = np.asarray(coords_9d, dtype=float)

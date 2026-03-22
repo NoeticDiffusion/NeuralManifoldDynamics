@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_jacobian_recovers_linear_system():
+    """Test jacobian recovers linear system."""
     from mndm.jacobian import estimate_local_jacobians
 
     rng = np.random.default_rng(123)
@@ -27,6 +28,7 @@ def test_jacobian_recovers_linear_system():
 
 
 def test_jacobian_centers_align_with_successful_windows():
+    """Test jacobian centers align with successful windows."""
     from mndm.jacobian import estimate_local_jacobians
 
     rng = np.random.default_rng(7)
@@ -58,6 +60,7 @@ def test_jacobian_centers_align_with_successful_windows():
 
 
 def test_jacobian_dot_is_timeline_aligned_and_zero_at_start():
+    """Test jacobian dot is timeline aligned and zero at start."""
     from mndm.jacobian import estimate_local_jacobians
 
     rng = np.random.default_rng(11)
@@ -78,6 +81,7 @@ def test_jacobian_dot_is_timeline_aligned_and_zero_at_start():
 
 
 def test_jacobian_skips_non_finite_rows_in_neighborhood():
+    """Test jacobian skips non finite rows in neighborhood."""
     from mndm.jacobian import estimate_local_jacobians
 
     rng = np.random.default_rng(101)
@@ -94,6 +98,7 @@ def test_jacobian_skips_non_finite_rows_in_neighborhood():
 
 
 def test_phase_randomise_preserves_channel_means():
+    """Test phase randomise preserves channel means."""
     from mndm.jacobian import phase_randomise
 
     rng = np.random.default_rng(5)
@@ -104,6 +109,7 @@ def test_phase_randomise_preserves_channel_means():
 
 
 def test_jacobian_is_exactly_deterministic_for_identical_inputs():
+    """Test jacobian is exactly deterministic for identical inputs."""
     from mndm.jacobian import estimate_local_jacobians
 
     rng = np.random.default_rng(2026)

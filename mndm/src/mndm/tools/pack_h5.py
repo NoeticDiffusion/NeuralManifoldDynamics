@@ -11,6 +11,7 @@ import numpy as np
 
 
 def _find_latest_mnps_run(ds_path: Path) -> Optional[Path]:
+    """Internal helper: find latest mnps run."""
     runs = [
         p
         for pattern in ("neuralmanifolddynamics_*", "mnps_*")
@@ -25,11 +26,13 @@ def _find_latest_mnps_run(ds_path: Path) -> Optional[Path]:
 
 def _find_h5_files(run_dir: Path) -> List[Path]:
     # Typical layout: <run>/<recording_dir>/*.h5
+    """Internal helper: find h5 files."""
     return sorted(run_dir.glob("**/*.h5"))
 
 
 def _sanitize_group_name(name: str) -> str:
     # HDF5 group names can't contain null bytes; keep it simple and filesystem-safe.
+    """Internal helper: sanitize group name."""
     return (
         str(name)
         .replace("\\", "/")
@@ -40,6 +43,7 @@ def _sanitize_group_name(name: str) -> str:
 
 
 def _attr_str(value: Any) -> str:
+    """Internal helper: attr str."""
     if value is None:
         return ""
     if isinstance(value, (bytes, np.bytes_)):
@@ -55,6 +59,7 @@ def pack_run(
     out_h5: Path,
     overwrite: bool = False,
 ) -> Path:
+    """Handle pack run."""
     run_dir = Path(run_dir)
     out_h5 = Path(out_h5)
     if not run_dir.exists():
@@ -169,6 +174,7 @@ def pack_run(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    """Program entry point."""
     p = argparse.ArgumentParser(description="Pack a MNPS run directory (many small H5) into a single H5 container")
     p.add_argument("--run-dir", type=Path, required=True, help="MNPS run directory (e.g. .../mnps_ds005555_YYYYMMDD_HHMMSS)")
     p.add_argument("--out", type=Path, default=None, help="Output H5 path (default: <run-dir>/packed.h5)")

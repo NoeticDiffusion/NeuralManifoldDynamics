@@ -1,4 +1,8 @@
-"""Robust summaries and lightweight confidence intervals."""
+"""Robust summaries and lightweight confidence intervals.
+
+SciPy-free helpers for medians, trimmed means, order-statistic CIs for the
+median, normal CIs for the mean, and column-wise summaries of 2-D arrays.
+"""
 
 from __future__ import annotations
 
@@ -9,7 +13,17 @@ import numpy as np
 
 
 def robust_1d(values: np.ndarray, summary: str = "median", trim_pct: float = 0.0) -> float:
-    """Compute a robust 1D summary (median or trimmed mean)."""
+    """Compute a robust 1D summary (median or trimmed mean).
+
+    Args:
+        values: 1-D or flattenable numeric array; non-finite values are dropped.
+        summary: ``median``, ``mean``, or ``mean`` with ``trim_pct`` in ``(0,1)``
+            for a trimmed mean.
+        trim_pct: Fraction trimmed from each tail when using trimmed mean.
+
+    Returns:
+        Scalar summary, or NaN if no finite values.
+    """
 
     arr = np.asarray(values, dtype=float)
     arr = arr[np.isfinite(arr)]
@@ -34,7 +48,15 @@ def robust_1d(values: np.ndarray, summary: str = "median", trim_pct: float = 0.0
 
 
 def ci_median_orderstat(values: np.ndarray, alpha: float = 0.05) -> tuple[float, float]:
-    """Approximate (1-alpha) CI for the median using order-statistic ranks."""
+    """Approximate :math:`(1-\\alpha)` CI for the median using order-statistic ranks.
+
+    Args:
+        values: 1-D numeric array.
+        alpha: Two-sided error rate (default 0.05 for a nominal 95% interval).
+
+    Returns:
+        ``(low, high)`` bounds, or ``(nan, nan)`` if too few samples.
+    """
 
     arr = np.asarray(values, dtype=float)
     arr = arr[np.isfinite(arr)]
@@ -56,7 +78,15 @@ def ci_median_orderstat(values: np.ndarray, alpha: float = 0.05) -> tuple[float,
 
 
 def ci_mean_normal(values: np.ndarray, alpha: float = 0.05) -> tuple[float, float]:
-    """Normal-approx CI for the mean (SciPy-free)."""
+    """Normal-approximation CI for the mean (SciPy-free).
+
+    Args:
+        values: 1-D numeric array.
+        alpha: Two-sided error rate.
+
+    Returns:
+        ``(low, high)``, or ``(nan, nan)`` if fewer than two finite samples.
+    """
 
     arr = np.asarray(values, dtype=float)
     arr = arr[np.isfinite(arr)]
@@ -75,7 +105,20 @@ def summarize_array(
     axis_names: Sequence[str],
     cfg: Dict[str, Any],
 ) -> Dict[str, Dict[str, float]]:
-    """Summarize columns of a 2-D array with robust point estimates and CI95."""
+    """Summarize columns of a 2-D array with robust point estimates and CIs.
+
+    Args:
+        values: Array shaped ``(n_rows, len(axis_names))``.
+        axis_names: Names for each column (MNPS axis or feature names).
+        cfg: Must include ``robustness`` settings (summary type, CI method,
+            bootstrap count, seed, etc.).
+
+    Returns:
+        Mapping from axis name to ``{"point", "ci_low", "ci_high"}`` floats.
+
+    Raises:
+        ValueError: If shape does not match ``axis_names``.
+    """
 
     values = np.asarray(values, dtype=float)
     if values.ndim != 2 or values.shape[1] != len(axis_names):

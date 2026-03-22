@@ -1,6 +1,7 @@
-"""
-bids.py
-Utilities for parsing BIDS-style subject/session identifiers.
+"""Utilities for parsing BIDS-style subject, session, task, run, and acq labels.
+
+Regular expressions match BIDS-like entity boundaries in file paths so labels are
+not captured from unrelated substrings inside longer tokens.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ _ACQ_RE = re.compile(r"(?:^|[\\/_ -])acq-([A-Za-z0-9-]+)(?:$|[\\/_ .-])")
 
 
 def _find_tag(path_str: str, pattern: re.Pattern[str]) -> Optional[str]:
+    """Return the first capture group matched by ``pattern`` in ``path_str``, or None."""
     match = pattern.search(path_str)
     if match:
         return match.group(1)
@@ -24,7 +26,15 @@ def _find_tag(path_str: str, pattern: re.Pattern[str]) -> Optional[str]:
 
 
 def parse_subject_session(path_str: str) -> Tuple[str, Optional[str]]:
-    """Extract BIDS subject/session labels from a filepath or filename."""
+    """Extract BIDS ``sub-`` and ``ses-`` labels from a filepath or filename.
+
+    Args:
+        path_str: Any string containing BIDS entities (path or filename).
+
+    Returns:
+        ``(subject, session)`` where ``subject`` defaults to ``sub-unknown`` if
+        missing; ``session`` may be None.
+    """
     s = str(path_str)
     subject = _find_tag(s, _SUBJECT_RE)
     session = _find_tag(s, _SESSION_RE)
@@ -32,13 +42,15 @@ def parse_subject_session(path_str: str) -> Tuple[str, Optional[str]]:
 
 
 def parse_subject_session_task(path_str: str) -> Tuple[str, Optional[str], Optional[str]]:
-    """Extract BIDS subject/session/task labels from a filepath or filename.
+    """Extract BIDS subject, session, and task labels from a filepath or filename.
 
-    Returns
-    -------
-    tuple
-        (subject, session, task) where session and task may be None.
-        Task is returned WITHOUT the 'task-' prefix (e.g., 'audioawake' not 'task-audioawake').
+    Args:
+        path_str: Any string containing BIDS entities.
+
+    Returns:
+        ``(subject, session, task)``. Session and task may be None. Task is
+        returned without the ``task-`` prefix (for example ``audioawake``, not
+        ``task-audioawake``).
     """
     s = str(path_str)
     subject = _find_tag(s, _SUBJECT_RE)
@@ -48,14 +60,15 @@ def parse_subject_session_task(path_str: str) -> Tuple[str, Optional[str], Optio
 
 
 def parse_subject_session_task_run(path_str: str) -> Tuple[str, Optional[str], Optional[str], Optional[str]]:
-    """Extract BIDS subject/session/task/run labels from a filepath or filename.
+    """Extract BIDS subject, session, task, and run labels from a path or filename.
 
-    Returns
-    -------
-    tuple
-        (subject, session, task, run) where session/task/run may be None.
-        Task is returned WITHOUT the 'task-' prefix (e.g., 'audioawake').
-        Run is returned WITH the 'run-' prefix (e.g., 'run-01') for clarity.
+    Args:
+        path_str: Any string containing BIDS entities.
+
+    Returns:
+        ``(subject, session, task, run)``. Session, task, or run may be None.
+        Task omits the ``task-`` prefix. Run includes the ``run-`` prefix (for
+        example ``run-01``).
     """
     s = str(path_str)
     subject = _find_tag(s, _SUBJECT_RE)
@@ -67,14 +80,15 @@ def parse_subject_session_task_run(path_str: str) -> Tuple[str, Optional[str], O
 
 
 def parse_subject_session_task_run_acq(path_str: str) -> Tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]:
-    """Extract BIDS subject/session/task/run/acq labels from a filepath or filename.
+    """Extract BIDS subject, session, task, run, and acquisition labels.
 
-    Returns
-    -------
-    tuple
-        (subject, session, task, run, acq) where session/task/run/acq may be None.
-        Task is returned WITHOUT the 'task-' prefix (e.g., 'Sleep').
-        Run and acq are returned WITH their prefixes (e.g., 'run-01', 'acq-psg').
+    Args:
+        path_str: Any string containing BIDS entities.
+
+    Returns:
+        ``(subject, session, task, run, acq)``. Optional fields may be None.
+        Task omits the ``task-`` prefix. Run and acq include ``run-`` and
+        ``acq-`` prefixes when present (for example ``run-01``, ``acq-psg``).
     """
     s = str(path_str)
     subject = _find_tag(s, _SUBJECT_RE)

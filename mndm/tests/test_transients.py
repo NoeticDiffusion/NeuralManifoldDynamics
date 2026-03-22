@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_detect_transients_empty_bool_contract():
+    """Test detect transients empty bool contract."""
     from mndm.transients import detect_transients
 
     out = detect_transients([], z_thresh=3.0, pad_epochs=1)
@@ -17,6 +18,7 @@ def test_detect_transients_empty_bool_contract():
 
 
 def test_detect_transients_nan_safe_and_padding():
+    """Test detect transients nan safe and padding."""
     from mndm.transients import detect_transients
 
     x = np.array([0.0, np.nan, 0.0, 0.1, 8.0, 0.0, 0.0], dtype=float)
@@ -29,6 +31,7 @@ def test_detect_transients_nan_safe_and_padding():
 
 
 def test_detect_transients_accepts_iterables():
+    """Test detect transients accepts iterables."""
     from mndm.transients import detect_transients
 
     seq = (v for v in [0.0, 0.1, 0.2, 5.0, 0.2, 0.1, 0.0])

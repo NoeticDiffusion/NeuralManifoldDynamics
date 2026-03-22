@@ -108,6 +108,7 @@ def _resolve_feature_pipeline(
     col: str,
     pipeline_map: Optional[Mapping[str, Sequence[str]]] = None,
 ) -> list[str]:
+    """Internal helper: resolve feature pipeline."""
     pipeline = None
     if pipeline_map and col in pipeline_map:
         pipeline = pipeline_map[col]
@@ -119,6 +120,7 @@ def _resolve_feature_pipeline(
 
 
 def _format_pipeline_steps(pipeline: Sequence[str], clip_thresh: float) -> list[str]:
+    """Internal helper: format pipeline steps."""
     applied_steps: list[str] = []
     for step in pipeline:
         step_str = str(step).strip().lower()
@@ -134,6 +136,7 @@ def _format_pipeline_steps(pipeline: Sequence[str], clip_thresh: float) -> list[
 
 
 def _robust_center_and_scale(values: np.ndarray, eps: float = 1e-9) -> tuple[float, float]:
+    """Internal helper: robust center and scale."""
     finite_vals = np.asarray(values, dtype=np.float32)
     if finite_vals.size == 0:
         return float("nan"), float("nan")
@@ -145,6 +148,7 @@ def _robust_center_and_scale(values: np.ndarray, eps: float = 1e-9) -> tuple[flo
 
 
 def _strict_robust_z_column(col_data: np.ndarray, eps: float = 1e-9) -> tuple[np.ndarray, float, float]:
+    """Internal helper: strict robust z column."""
     transformed = np.full(col_data.shape, np.nan, dtype=np.float32)
     mask = np.isfinite(col_data)
     if not mask.any():
@@ -156,6 +160,7 @@ def _strict_robust_z_column(col_data: np.ndarray, eps: float = 1e-9) -> tuple[np
 
 
 def is_export_feature_column(name: str, series: pd.Series) -> bool:
+    """Handle is export feature column."""
     col = str(name).strip()
     if not col or col in FEATURE_EXPORT_EXACT_EXCLUDED:
         return False
@@ -395,20 +400,18 @@ def project_features(
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
     clip_threshold: float = 6.0
 ) -> tuple[np.ndarray, dict[str, dict]]:
-    """Return MNPS coordinates ``x=[m,d,e]`` as a float32 array, and baseline metadata.
+    """Return MNPS coordinates ``x=[m,d,e]`` and per-column baseline metadata.
 
-    Parameters
-    ----------
-    features_df
-        DataFrame with feature columns
-    weights
-        Mapping of axis to feature weights
-    normalize
-        Optional normalization for feature columns used in weights: 'z', 'robust_z' or None
-    feature_standardization
-        Optional mapping of feature -> sequence of operations
-    clip_threshold
-        Threshold for clipping features
+    Args:
+        features_df: DataFrame whose columns include weighted feature names.
+        weights: Mapping ``axis -> {feature_name: weight}`` for ``m``, ``d``, ``e``.
+        normalize: Optional normalization for used columns: ``z``, ``robust_z``, or None.
+        feature_standardization: Optional ``feature -> [transform, ...]`` pipeline.
+        clip_threshold: Symmetric clip limit after transforms when applicable.
+
+    Returns:
+        ``(x, baselines)`` where ``x`` is ``(n_epochs, 3)`` float32 and ``baselines``
+        records normalization stats per feature column.
     """
 
     if len(features_df) == 0:
@@ -480,9 +483,10 @@ def project_features_with_coverage(
 ) -> tuple[np.ndarray, np.ndarray, dict[str, dict]]:
     """Project direct MNPS coordinates and return per-epoch axis coverage.
 
-    Coverage is defined per axis and epoch as:
-        sum(|w_i| for finite weighted features) / sum(|w_i| for configured axis weights)
-    and lies in [0, 1]. It is NaN when an axis has no configured non-zero weights.
+    Coverage is defined per axis and epoch as the ratio of the sum of absolute
+    weights over finite features to the sum of absolute configured axis weights;
+    values lie in ``[0, 1]``. The result is NaN when an axis has no configured
+    non-zero weights.
     """
     x, baselines = project_features(
         features_df, 
@@ -558,20 +562,18 @@ def project_features_v2(
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
     clip_threshold: float = 6.0,
 ) -> tuple[np.ndarray, list[str], dict[str, dict]]:
-    """Return MNPS v2 subcoordinates as a float32 array, their names, and feature baselines.
+    """Return MNPS v2 subcoordinates, their names, and feature baselines.
 
-    Parameters
-    ----------
-    features_df
-        Feature dataframe
-    subcoords
-        Mapping subcoord_name -> {feature_name: weight}
-    normalize
-        Optional normalization for used columns: 'z', 'robust_z' or None
-    feature_standardization
-        Optional mapping of feature -> sequence of operations
-    clip_threshold
-        Threshold for clipping features
+    Args:
+        features_df: Per-epoch feature table.
+        subcoords: Mapping ``subcoord_name -> {feature_name: weight}``.
+        normalize: Optional column normalization: ``z``, ``robust_z``, or None.
+        missing_policy: How missing weights/features are handled (currently ``renorm``).
+        feature_standardization: Optional per-feature transform pipeline.
+        clip_threshold: Clip threshold for normalized features.
+
+    Returns:
+        ``(Xv2, names, baselines)`` with ``Xv2`` shaped ``(n_epochs, n_subcoords)``.
     """
     if len(features_df) == 0 or not subcoords:
         return np.zeros((0, 0), dtype=np.float32), [], {}
@@ -832,20 +834,17 @@ def project_to_mnps(features_df: pd.DataFrame, weights: Mapping[str, Mapping[str
 
 
 def estimate_derivatives(x: np.ndarray, dt: float, method: str = "sav_gol", window: int = 7, polyorder: int = 3) -> np.ndarray:
-    """Estimate ``x_dot`` for MNPS coordinates.
+    """Estimate ``x_dot`` for MNPS coordinates along time.
 
-    Parameters
-    ----------
-    x:
-        Array with shape ``[T, 3]``.
-    dt:
-        Sampling interval in seconds for the MNPS time base.
-    method:
-        Either ``sav_gol`` (default) or ``central``.
-    window:
-        Window length for Savitzky–Golay (must be odd).
-    polyorder:
-        Polynomial order for Savitzky–Golay.
+    Args:
+        x: Array with shape ``(T, 3)`` (or fewer columns).
+        dt: Sampling interval in seconds for the MNPS time base.
+        method: ``sav_gol`` (default) or ``central`` finite differences.
+        window: Savitzky–Golay window length (must be odd).
+        polyorder: Polynomial order for Savitzky–Golay.
+
+    Returns:
+        Derivative array with the same shape as ``x``; NaN rows propagate.
     """
 
     if x.size == 0:

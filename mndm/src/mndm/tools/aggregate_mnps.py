@@ -12,6 +12,7 @@ import pandas as pd
 
 
 def _find_latest_mnps_run(ds_dir: Path) -> Optional[Path]:
+    """Internal helper: find latest mnps run."""
     runs = [
         p
         for pattern in ("neuralmanifolddynamics_*", "mnps_*")
@@ -24,6 +25,7 @@ def _find_latest_mnps_run(ds_dir: Path) -> Optional[Path]:
 
 
 def _find_summary_paths(processed_dir: Path, dataset_id: str, run_dir: Optional[Path] = None) -> List[Path]:
+    """Internal helper: find summary paths."""
     ds_dir = processed_dir / dataset_id
     if run_dir is not None:
         target_run = run_dir if run_dir.is_absolute() else ds_dir / run_dir
@@ -37,11 +39,13 @@ def _find_summary_paths(processed_dir: Path, dataset_id: str, run_dir: Optional[
 
 
 def _read_manifest(path: Path) -> Dict[str, Any]:
+    """Internal helper: read manifest."""
     with path.open("r", encoding="utf-8") as f:
         return json.load(f)
 
 
 def _attr_str(value: Any) -> str:
+    """Internal helper: attr str."""
     if value is None:
         return ""
     if isinstance(value, (bytes, bytearray, np.bytes_)):
@@ -70,6 +74,7 @@ def _nanmean_columns(ds: h5py.Dataset, chunk_rows: int = 8192) -> tuple[np.ndarr
 
 
 def _read_h5_means(h5_path: Path) -> Dict[str, Any]:
+    """Internal helper: read h5 means."""
     out: Dict[str, Any] = {}
     with h5py.File(h5_path, "r") as h5:
         # Model/provenance fields to prevent silent model-mix downstream.
@@ -120,6 +125,7 @@ def _read_h5_means(h5_path: Path) -> Dict[str, Any]:
 
 
 def _flatten_participant_meta(meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Internal helper: flatten participant meta."""
     flat: Dict[str, Any] = {}
     for k, v in meta.items():
         # simple scalar fields only
@@ -170,6 +176,7 @@ def _derive_category(meta: Dict[str, Any], preferred_key: Optional[str] = None) 
 
 
 def _match_h5_for_summary(summary_path: Path, manifest: Mapping[str, Any]) -> Optional[Path]:
+    """Internal helper: match h5 for summary."""
     direct = summary_path.with_suffix(".h5")
     if direct.exists():
         return direct
@@ -196,6 +203,7 @@ def aggregate(
     category_key: Optional[str] = None,
     run_dir: Optional[Path] = None,
 ) -> int:
+    """Handle aggregate."""
     summaries = _find_summary_paths(processed_dir, dataset_id, run_dir=run_dir)
     if not summaries:
         print(f"No summary.json files found under {processed_dir / dataset_id}", file=sys.stderr)
@@ -252,6 +260,7 @@ def aggregate(
 
 
 def main(argv: Optional[List[str]] = None) -> int:
+    """Program entry point."""
     p = argparse.ArgumentParser(description="Aggregate MNPS summaries (JSON+H5) into a CSV")
     p.add_argument("--processed-dir", type=Path, required=True, help="Base processed directory (e.g., E:/Science_Datasets/openneuro/processed)")
     p.add_argument("--dataset", required=True, help="Dataset id (e.g., ds003490)")

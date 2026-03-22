@@ -54,6 +54,7 @@ def compute_static_connectivity_features(
 
 
 def _parse_config(config: Mapping[str, object] | None) -> ConnectivityConfig:
+    """Internal helper: parse config."""
     cfg = config or {}
     return ConnectivityConfig(
         compute_fc=bool(cfg.get("FC_pearson", True)),
@@ -64,6 +65,7 @@ def _parse_config(config: Mapping[str, object] | None) -> ConnectivityConfig:
 
 
 def _bandpass(data: np.ndarray, sfreq: float, f_low: float, f_high: float, order: int = 4) -> np.ndarray:
+    """Internal helper: bandpass."""
     nyq = sfreq / 2.0
     if not (0 < f_low < f_high < nyq):
         return data

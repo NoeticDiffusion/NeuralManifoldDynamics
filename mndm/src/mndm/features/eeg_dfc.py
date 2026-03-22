@@ -77,6 +77,7 @@ def compute_eeg_dynamic_fc_features(
 
 
 def _sliding_windows(n_samples: int, win_len: int, step: int) -> List[slice]:
+    """Internal helper: sliding windows."""
     windows: List[slice] = []
     start = 0
     while start + win_len <= n_samples:
@@ -138,6 +139,7 @@ def _mean_upper_triangle_corr_fast(segment: np.ndarray) -> float:
 
 def _approx_entropy(series: np.ndarray) -> float:
     # Simple discretised entropy estimate
+    """Internal helper: approx entropy."""
     if series.size == 0:
         return float("nan")
     hist, _ = np.histogram(series[~np.isnan(series)], bins=20, density=True)

@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_apply_exclude_file_filters_filters_path_and_file_columns():
+    """Test apply exclude file filters filters path and file columns."""
     from mndm.file_filters import apply_exclude_file_filters
 
     frame = pd.DataFrame(
@@ -36,6 +37,7 @@ def test_apply_exclude_file_filters_filters_path_and_file_columns():
 
 
 def test_resolve_exclude_file_patterns_supports_underscore_alias():
+    """Test resolve exclude file patterns supports underscore alias."""
     from mndm.file_filters import resolve_exclude_file_patterns
 
     patterns = resolve_exclude_file_patterns({"exclude_files": ["foo", "bar"]})

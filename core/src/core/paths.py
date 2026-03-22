@@ -1,4 +1,9 @@
-"""Path resolution helpers shared across packages."""
+"""Path resolution helpers shared across packages.
+
+Chooses ``received_dir`` (raw data root) and ``processed_dir`` from CLI overrides
+or config, with optional ``received_dir_fallbacks`` and scoring by how many
+configured dataset folders exist under each candidate.
+"""
 
 from __future__ import annotations
 
@@ -11,10 +16,20 @@ def resolve_paths(
     cli_out_dir: Path | None,
     cli_data_dir: Path | None = None,
 ) -> Tuple[Path, Path]:
-    """Resolve dataset `received` and `processed` directories."""
+    """Resolve dataset ``received`` (raw) and ``processed`` output directories.
+
+    Args:
+        config: Ingest configuration containing a ``paths`` section.
+        cli_out_dir: If set, overrides ``paths.processed_dir``.
+        cli_data_dir: If set, overrides ``paths.received_dir`` (highest priority).
+
+    Returns:
+        ``(received_dir, processed_dir)`` as resolved :class:`pathlib.Path` objects.
+    """
     paths_cfg = config.get("paths", {}) if isinstance(config, Mapping) else {}
 
     def _dataset_ids_from_config(cfg: Mapping[str, Any]) -> list[str]:
+        """Internal helper: dataset ids from config."""
         raw = cfg.get("datasets", []) if isinstance(cfg, Mapping) else []
         out: list[str] = []
         if not isinstance(raw, list):
@@ -31,6 +46,7 @@ def resolve_paths(
 
     def _score_received_root(root: Path, ds_ids: list[str]) -> int:
         # Score by how many dataset directories exist under this root.
+        """Internal helper: score received root."""
         try:
             if not root.exists() or not root.is_dir():
                 return -1

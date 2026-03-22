@@ -1,23 +1,8 @@
 """BIDS index builder for EEG and fMRI datasets.
 
-Responsibilities
-----------------
-- Traverse downloaded dataset roots and build a file index capturing subject,
-  session, task, run, modality, and key sidecar paths (`*_eeg.json`,
-  `channels.tsv`, `events.tsv`).
-
-Inputs
-------
-- dataset_root: local filesystem path to dataset root.
-
-Outputs
--------
-- DataFrame with columns: path, subject, session, task, run, acq, modality,
-  md5, size, eeg_json, channels_tsv, events_tsv
-
-Dependencies
-------------
-- pandas for DataFrame creation.
+Walks a downloaded dataset root and builds a tabular file index (subject,
+session, task, run, modality, paths to sidecars such as ``*_eeg.json``,
+``channels.tsv``, ``events.tsv``, optional hashes/sizes).
 """
 
 from __future__ import annotations
@@ -113,6 +98,7 @@ def _maybe_compute_md5(path: Path, size_bytes: int, max_bytes: int) -> Optional[
 
 
 def _extract_subject_candidate(token: str) -> Optional[str]:
+    """Internal helper: extract subject candidate."""
     m = re.search(r"\b(?:sub-)?([A-Za-z]+[0-9]{2,})\b", str(token))
     if not m:
         return None
@@ -148,6 +134,7 @@ def _pick_best_fmri_events_tsv(
     run: Optional[str],
     acq: Optional[str],
 ) -> Optional[Path]:
+    """Internal helper: pick best fmri events tsv."""
     direct = parent / f"{stem}_events.tsv"
     if direct.exists():
         return direct
@@ -161,6 +148,7 @@ def _pick_best_fmri_events_tsv(
         return None
 
     def _score(p: Path) -> int:
+        """Internal helper: score."""
         name = p.name.lower()
         s = 0
         if stem.lower() in name:
@@ -212,17 +200,16 @@ def build_file_index(
     config: Mapping[str, Any] | None = None,
     dataset_id: str | None = None,
 ) -> pd.DataFrame:
-    """Build file index for EEG and fMRI files in a BIDS dataset.
-    
-    Parameters
-    ----------
-    dataset_root
-        Path to dataset root directory.
-    
-    Returns
-    -------
-    DataFrame with columns: path, subject, session, task, run, acq, modality,
-    md5, size, eeg_json, channels_tsv, events_tsv
+    """Build a file index for EEG and fMRI files under a BIDS dataset root.
+
+    Args:
+        dataset_root: Path to the dataset root directory.
+        config: Optional ingest config (pattern overrides per modality/dataset).
+        dataset_id: Optional dataset id for per-dataset config branches.
+
+    Returns:
+        DataFrame with ``path``, ``subject``, ``session``, ``task``, ``run``,
+        ``acq``, ``modality``, ``md5``, ``size``, and sidecar path columns.
     """
     records: List[Dict[str, Any]] = []
     root = Path(dataset_root)

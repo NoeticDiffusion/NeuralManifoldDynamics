@@ -24,20 +24,24 @@ logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
+    """Internal helper: utc now iso."""
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _safe_json_dumps(obj: Any) -> str:
     # json_writer already knows how to coerce numpy scalars/arrays, so we re-use that.
+    """Internal helper: safe json dumps."""
     coerced = json_writer._to_jsonable(obj)  # type: ignore[attr-defined]
     return json.dumps(coerced, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
 def _sha256_text(text: str) -> str:
+    """Internal helper: sha256 text."""
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _pick(d: Mapping[str, Any], key: str, default: Any = None) -> Any:
+    """Internal helper: pick."""
     try:
         return d.get(key, default)
     except Exception:
@@ -86,6 +90,7 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
 
 
 def _list_files(root: Path, pattern: str) -> list[Path]:
+    """Internal helper: list files."""
     try:
         return [p for p in root.rglob(pattern) if p.is_file()]
     except Exception:
@@ -93,6 +98,7 @@ def _list_files(root: Path, pattern: str) -> list[Path]:
 
 
 def _read_json(path: Path) -> Optional[Dict[str, Any]]:
+    """Internal helper: read json."""
     try:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
@@ -167,6 +173,7 @@ def _field_guide() -> Dict[str, Any]:
 
 
 def _resolve_source_info(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
+    """Internal helper: resolve source info."""
     raw = _pick(config, "source", {})
     src = dict(raw) if isinstance(raw, Mapping) else {}
 
@@ -191,6 +198,7 @@ def _merge_summary_meta(d: Mapping[str, Any]) -> Dict[str, Any]:
 
 
 def _summarize_subject_jsons(summary_jsons: Sequence[Path]) -> Dict[str, Any]:
+    """Internal helper: summarize subject jsons."""
     subjects: set[str] = set()
     tasks: set[str] = set()
     conditions: set[str] = set()
@@ -398,6 +406,7 @@ def write_run_manifest(
     h5_mode: str,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> Path:
+    """Handle write run manifest."""
     mnps_dir = Path(mnps_dir)
     ds_received_root = bids_index.resolve_dataset_root(config, Path(received_dir), ds_id)
     ds_processed_root = Path(processed_dir) / ds_id
@@ -429,6 +438,7 @@ def write_run_manifest(
         import subprocess
 
         def _find_git_root(start: Path) -> Optional[Path]:
+            """Internal helper: find git root."""
             cur = start.resolve()
             for candidate in [cur, *cur.parents]:
                 if (candidate / ".git").exists():

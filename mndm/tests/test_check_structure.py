@@ -11,6 +11,7 @@ from mndm.pipeline.check_structure import check_run_dir
 
 
 def _write_min_summary(path: Path, fmri: bool, regional_available: bool = False) -> None:
+    """Internal helper: write min summary."""
     payload = {
         "dataset_id": "dsX:sub-001:cond_task_run-01",
         "subject": "sub-001",
@@ -26,11 +27,13 @@ def _write_min_summary(path: Path, fmri: bool, regional_available: bool = False)
 
 
 def _write_required_qc_files(rec_dir: Path) -> None:
+    """Internal helper: write required qc files."""
     (rec_dir / "qc_summary.json").write_text("{}", encoding="utf-8")
     (rec_dir / "qc_reliability.json").write_text("{}", encoding="utf-8")
 
 
 def test_check_structure_flags_missing_fmri_raw_regions(tmp_path: Path):
+    """Test check structure flags missing fmri raw regions."""
     run_dir = tmp_path / "mnps_dsX_20260101_000000"
     rec = run_dir / "sub-001_cond_task_run-01"
     rec.mkdir(parents=True)
@@ -89,6 +92,7 @@ def test_check_structure_flags_missing_fmri_raw_regions(tmp_path: Path):
 
 
 def test_check_structure_passes_with_fmri_raw_regions(tmp_path: Path):
+    """Test check structure passes with fmri raw regions."""
     run_dir = tmp_path / "mnps_dsX_20260101_000001"
     rec = run_dir / "sub-001_cond_task_run-01"
     rec.mkdir(parents=True)
@@ -153,6 +157,7 @@ def test_check_structure_passes_with_fmri_raw_regions(tmp_path: Path):
 
 
 def test_check_structure_flags_missing_regional_outputs_independent_of_modality(tmp_path: Path):
+    """Test check structure flags missing regional outputs independent of modality."""
     run_dir = tmp_path / "mnps_dsX_20260101_000002"
     rec = run_dir / "sub-001_cond_task_run-01"
     rec.mkdir(parents=True)
@@ -204,6 +209,7 @@ def test_check_structure_flags_missing_regional_outputs_independent_of_modality(
 
 
 def test_check_structure_passes_with_regional_outputs_independent_of_modality(tmp_path: Path):
+    """Test check structure passes with regional outputs independent of modality."""
     run_dir = tmp_path / "mnps_dsX_20260101_000003"
     rec = run_dir / "sub-001_cond_task_run-01"
     rec.mkdir(parents=True)

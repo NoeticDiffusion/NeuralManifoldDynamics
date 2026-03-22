@@ -11,6 +11,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_merge_temp_features_dedupes_by_file_epoch_id(tmp_path: Path):
+    """Test merge temp features dedupes by file epoch id."""
     from mndm.parallel import merge_temp_features
 
     ds_path = tmp_path / "ds"
@@ -36,6 +37,7 @@ def test_merge_temp_features_dedupes_by_file_epoch_id(tmp_path: Path):
 
 
 def test_merge_temp_features_fallback_drop_duplicates_without_keys(tmp_path: Path):
+    """Test merge temp features fallback drop duplicates without keys."""
     from mndm.parallel import merge_temp_features
 
     ds_path = tmp_path / "ds2"
@@ -47,6 +49,7 @@ def test_merge_temp_features_fallback_drop_duplicates_without_keys(tmp_path: Pat
 
 
 def test_write_qc_json_serializes_numpy_types(tmp_path: Path):
+    """Test write qc json serializes numpy types."""
     from mndm.parallel import write_qc_json
 
     meta = {
@@ -71,6 +74,7 @@ def test_write_qc_json_serializes_numpy_types(tmp_path: Path):
 
 
 def test_merge_feature_frames_warns_on_length_only_alignment(caplog):
+    """Test merge feature frames warns on length only alignment."""
     from mndm.parallel import _merge_feature_frames
 
     df_base = pd.DataFrame({"epoch_id": [10, 11, 12], "eeg_feat": [1.0, 2.0, 3.0]})
@@ -83,6 +87,7 @@ def test_merge_feature_frames_warns_on_length_only_alignment(caplog):
 
 
 def test_merge_feature_frames_adds_embodied_proxy_priority():
+    """Test merge feature frames adds embodied proxy priority."""
     from mndm.parallel import _merge_feature_frames
 
     df_eeg = pd.DataFrame(
@@ -120,6 +125,7 @@ def test_merge_feature_frames_adds_embodied_proxy_priority():
 
 
 def test_resolve_feature_io_policy_auto_large_prefers_parquet(tmp_path: Path):
+    """Test resolve feature io policy auto large prefers parquet."""
     from mndm.parallel import resolve_feature_io_policy
 
     cfg = {
@@ -138,6 +144,7 @@ def test_resolve_feature_io_policy_auto_large_prefers_parquet(tmp_path: Path):
 
 
 def test_merge_temp_features_prefers_parquet_when_both_exist(monkeypatch, tmp_path: Path):
+    """Test merge temp features prefers parquet when both exist."""
     from mndm.parallel import merge_temp_features
 
     ds_path = tmp_path / "ds3"

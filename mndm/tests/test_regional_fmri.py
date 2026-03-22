@@ -18,6 +18,7 @@ from mndm.pipeline.regions import group_region_indices
 
 
 def _build_ctx(tmp_path):
+    """Internal helper: build ctx."""
     received = tmp_path / "received_data"
     processed = tmp_path / "processed_data"
     ctx = SimpleNamespace(
@@ -62,6 +63,7 @@ def _build_ctx(tmp_path):
 
 
 def test_subject_runner_ingests_fmri_regions(monkeypatch, tmp_path):
+    """Test subject runner ingests fmri regions."""
     ctx = _build_ctx(tmp_path)
     ds_id = "ds001"
     received_ds = ctx.received_dir / ds_id
@@ -105,6 +107,7 @@ def test_subject_runner_ingests_fmri_regions(monkeypatch, tmp_path):
     ).astype(np.float32)
 
     def fake_preprocess_fmri(path, config):
+        """Handle fake preprocess fmri."""
         assert Path(path) == bold_path
         return SimpleNamespace(
             signals={"fmri": fmri_data},
@@ -155,6 +158,7 @@ def test_subject_runner_ingests_fmri_regions(monkeypatch, tmp_path):
 
 
 def test_group_region_indices_aliases():
+    """Test group region indices aliases."""
     groups = group_region_indices(["Vis_left", "default_mode_1", "SAL_ROI"])
     assert "VIS" in groups and groups["VIS"] == [0]
     assert "DMN" in groups and groups["DMN"] == [1]
@@ -162,6 +166,7 @@ def test_group_region_indices_aliases():
 
 
 def test_merge_fd_from_confounds_per_epoch(tmp_path):
+    """Test merge fd from confounds per epoch."""
     ctx = _build_ctx(tmp_path)
     ds_id = "ds001"
     received_ds = ctx.received_dir / ds_id

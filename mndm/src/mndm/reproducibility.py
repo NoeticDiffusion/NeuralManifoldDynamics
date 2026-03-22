@@ -29,10 +29,12 @@ DETERMINISTIC_OUTPUTS: tuple[str, ...] = (
 
 
 def _as_mapping(value: Any) -> Mapping[str, Any]:
+    """Internal helper: as mapping."""
     return value if isinstance(value, Mapping) else {}
 
 
 def _int_seed(value: Any, default: int = DEFAULT_SEED) -> int:
+    """Internal helper: int seed."""
     try:
         return int(value)
     except Exception:
@@ -43,6 +45,7 @@ def _resolve_reproducibility_cfg(
     config: Mapping[str, Any] | None,
     dataset_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Internal helper: resolve reproducibility cfg."""
     root = _as_mapping(_as_mapping(config).get("reproducibility"))
     merged: Dict[str, Any] = {k: v for k, v in root.items() if k != "datasets"}
     ds_map = _as_mapping(root.get("datasets"))
@@ -55,6 +58,7 @@ def _legacy_base_seed(
     config: Mapping[str, Any] | None,
     dataset_id: Optional[str] = None,
 ) -> Tuple[int, str]:
+    """Internal helper: legacy base seed."""
     cfg = _as_mapping(config)
     robustness_cfg = _as_mapping(cfg.get("robustness"))
     if "seed" in robustness_cfg:
@@ -84,6 +88,7 @@ def resolve_base_seed(
     config: Mapping[str, Any] | None,
     dataset_id: Optional[str] = None,
 ) -> Tuple[int, str]:
+    """Handle resolve base seed."""
     repro_cfg = _resolve_reproducibility_cfg(config, dataset_id)
     if "seed" in repro_cfg:
         return _int_seed(repro_cfg.get("seed")), "reproducibility.seed"
@@ -98,6 +103,7 @@ def resolve_component_seed(
     fallback_source: Optional[str] = None,
     offset: int = 0,
 ) -> Tuple[int, str]:
+    """Handle resolve component seed."""
     repro_cfg = _resolve_reproducibility_cfg(config, dataset_id)
     if "seed" in repro_cfg:
         return _int_seed(repro_cfg.get("seed")) + int(offset), "reproducibility.seed"
@@ -111,6 +117,7 @@ def resolve_reproducibility_policy(
     config: Mapping[str, Any] | None,
     dataset_id: Optional[str] = None,
 ) -> Dict[str, Any]:
+    """Handle resolve reproducibility policy."""
     seed, source = resolve_base_seed(config, dataset_id)
     return {
         "seed": int(seed),

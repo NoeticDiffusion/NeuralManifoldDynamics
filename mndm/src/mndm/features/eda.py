@@ -18,17 +18,13 @@ logger = logging.getLogger(__name__)
 
 def compute_eda_features(signals: Mapping[str, Any], config: Mapping[str, Any]) -> pd.DataFrame:
     """Compute per-epoch EDA features (tonic median, phasic energy).
-    
-    Parameters
-    ----------
-    signals
-        DataFrame with columns: epoch_id, eda_tonic_med, eda_phasic_energy
-    config
-        Configuration with epoching parameters.
-    
-    Returns
-    -------
-    DataFrame with per-epoch EDA features.
+
+    Args:
+        signals: Preprocessed signals dict containing ``eda`` under ``signals``.
+        config: Configuration with epoching parameters.
+
+    Returns:
+        Per-epoch DataFrame with tonic/phasic summary columns.
     """
     if "eda" not in signals.get("signals", {}):
         return pd.DataFrame()

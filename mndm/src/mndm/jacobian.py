@@ -21,6 +21,7 @@ class JacobianResult:
 
 
 def _gather_indices(center: int, nn_idx: np.ndarray, super_window: int, total: int) -> np.ndarray:
+    """Internal helper: gather indices."""
     half = super_window // 2
     candidates: list[np.ndarray] = []
     for offset in range(-half, half + 1):
@@ -36,6 +37,7 @@ def _gather_indices(center: int, nn_idx: np.ndarray, super_window: int, total: i
 
 
 def _fit_ridge(design: np.ndarray, target: np.ndarray, alpha: float, sample_weights: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
+    """Internal helper: fit ridge."""
     if sample_weights is not None:
         # Apply sqrt weights to rows: W^{1/2} X, W^{1/2} y
         w = np.sqrt(sample_weights).reshape(-1, 1).astype(np.float32)
@@ -202,6 +204,7 @@ def estimate_local_jacobians(
 
 
 def phase_randomise(x: np.ndarray, seed: Optional[int] = None) -> np.ndarray:
+    """Handle phase randomise."""
     rng = np.random.default_rng(seed)
     fft = np.fft.rfft(x, axis=0)
     phases = rng.uniform(0, 2 * np.pi, size=fft.shape)
@@ -218,6 +221,7 @@ def phase_randomise(x: np.ndarray, seed: Optional[int] = None) -> np.ndarray:
 
 
 def window_shuffle(x: np.ndarray, window: int, seed: Optional[int] = None) -> np.ndarray:
+    """Handle window shuffle."""
     if window <= 1:
         return x.copy()
     rng = np.random.default_rng(seed)

@@ -21,17 +21,12 @@ logger = logging.getLogger(__name__)
 class EnsembleGroupDef:
     """Resolved ensemble group definition for a given recording.
 
-    Attributes
-    ----------
-    name:
-        Raw group name from the config (e.g. "frontal").
-    safe_name:
-        Normalised identifier used in feature column names
-        (e.g. "frontal", "parietal_occipital").
-    indices:
-        Indices of EEG channels belonging to the group.
-    channels:
-        Resolved EEG channel names for the group (as present in the data).
+    Attributes:
+        name: Raw group name from the config (for example ``frontal``).
+        safe_name: Normalised identifier used in feature column suffixes
+            (for example ``parietal_occipital``).
+        indices: Indices of EEG channels belonging to the group.
+        channels: Resolved EEG channel names as present in the data.
     """
 
     name: str
@@ -43,12 +38,11 @@ class EnsembleGroupDef:
 def sanitize_group_name(name: str) -> str:
     """Return a safe group identifier for use in column suffixes.
 
-    Examples
-    --------
-    >>> sanitize_group_name("Frontal")
-    'frontal'
-    >>> sanitize_group_name("Parietal/Occipital")
-    'parietal_occipital'
+    Examples:
+        >>> sanitize_group_name("Frontal")
+        'frontal'
+        >>> sanitize_group_name("Parietal/Occipital")
+        'parietal_occipital'
     """
 
     base = str(name).strip().lower()
@@ -61,15 +55,30 @@ def sanitize_group_name(name: str) -> str:
 def _canonical_channel(label: str) -> str:
     """Canonicalize a channel label for robust matching.
 
-    We upper-case, strip whitespace, and drop non-alphanumeric characters so
-    that labels like "Fp1", "FP1 ", and "Fp1-REF" map to the same key.
+    Upper-cases, strips whitespace, and drops non-alphanumeric characters so
+    labels such as ``Fp1``, ``FP1``, and ``Fp1-REF`` map to the same key.
+
+    Args:
+        label: Raw channel label string.
+
+    Returns:
+        Canonical key string.
     """
 
     return re.sub(r"[^0-9A-Z]+", "", str(label).strip().upper())
 
 
 def resolve_config_groups(cfg: Optional[Mapping[str, Any]], dataset_id: Optional[str]) -> Dict[str, List[str]]:
-    """Resolve ensemble group definitions from config for a dataset."""
+    """Resolve ensemble group definitions from config for a dataset.
+
+    Args:
+        cfg: ``robustness.ensembles`` (or similar) mapping with ``groups`` and
+            optional per-dataset overrides under ``datasets.<id>``.
+        dataset_id: Current dataset id, or None to use only global groups.
+
+    Returns:
+        Mapping from group name to list of channel label strings.
+    """
 
     if not isinstance(cfg, Mapping):
         return {}
@@ -100,7 +109,16 @@ def realize_ensemble_groups(
     dataset_id: Optional[str],
     available_channels: Sequence[str],
 ) -> List[EnsembleGroupDef]:
-    """Resolve config groups against the available EEG channels."""
+    """Resolve configured groups against ``available_channels`` and return defs.
+
+    Args:
+        cfg: Ensemble configuration (see :func:`resolve_config_groups`).
+        dataset_id: Dataset id for per-dataset overrides.
+        available_channels: Channel names in recording order.
+
+    Returns:
+        List of :class:`EnsembleGroupDef` entries with non-empty channel sets.
+    """
 
     if not available_channels:
         return []

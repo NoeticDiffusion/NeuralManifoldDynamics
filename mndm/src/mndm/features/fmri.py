@@ -1,11 +1,8 @@
-"""
-fmri.py
-fMRI feature extraction with continuous preprocessing before epoching.
+"""fMRI feature extraction with continuous preprocessing before epoching.
 
-Ingest contract:
-- continuous time-domain transforms are applied at session level first
-- a single epoch loop defines temporal resolution
-- local per-window metrics are then computed from sliced continuous outputs
+Ingest contract: session-level continuous transforms run first; a single epoch
+loop defines temporal resolution; per-window metrics are computed from sliced
+continuous outputs.
 """
 
 from __future__ import annotations
@@ -26,31 +23,15 @@ logger = logging.getLogger(__name__)
 def compute_fmri_features(signals: Mapping[str, Any], config: Mapping[str, Any]) -> pd.DataFrame:
     """Compute per-window fMRI metrics from regional BOLD time series.
 
-    Parameters
-    ----------
-    signals
-        Mapping with keys:
-        - "signals": dict containing "fmri": array [n_regions, n_times].
-        - "sfreq": sampling frequency in Hz (1 / TR).
-        - "channels": dict containing "fmri": list of region names (optional).
-        - "dataset_id": optional dataset identifier.
-    config
-        Configuration dict. Window settings are read from ``features.fmri`` /
-        ``epoching``. Continuous bandpass/phase settings are read from either
-        ``preprocessing`` or ``preprocess.fmri``.
+    Args:
+        signals: Mapping with ``signals`` (``fmri`` array ``[n_regions, n_times]``),
+            ``sfreq`` (1/TR in Hz), optional ``channels``/``dataset_id``, etc.
+        config: Windowing from ``features.fmri`` / ``epoching``; continuous
+            preprocessing from ``preprocessing`` or ``preprocess.fmri``.
 
-    Returns
-    -------
-    DataFrame
-        One row per time window, with columns:
-        - epoch_id, t_start, t_end
-        - fmri_variance_global, fmri_FC_mean, fmri_kuramoto_global
-        - fmri_entropy_global (legacy alias for fmri_region_var_mean)
-        - fmri_lf_power (legacy alias for fmri_signal_power)
-        - fmri_region_var_mean
-        - fmri_signal_power
-        - fmri_lf_power_delta, fmri_lf_power_delta_valid
-        - fmri_window_sec, fmri_step_sec, fmri_window_samples, fmri_step_samples, fmri_sfreq
+    Returns:
+        One row per window with epoch timing, global/regional metrics, FC
+        summaries, and bookkeeping columns (window length, step, sample counts).
     """
     fmri_data = _validate_and_extract_data(signals)
     n_regions, n_times = fmri_data.shape
@@ -187,6 +168,7 @@ def compute_fmri_features(signals: Mapping[str, Any], config: Mapping[str, Any])
 
 
 def _validate_and_extract_data(signals: Mapping[str, Any]) -> np.ndarray:
+    """Internal helper: validate and extract data."""
     sig_dict = signals.get("signals", {})
     if "fmri" not in sig_dict:
         return np.zeros((0, 0), dtype=float)
@@ -197,6 +179,7 @@ def _validate_and_extract_data(signals: Mapping[str, Any]) -> np.ndarray:
 
 
 def _compute_window_params(config: Mapping[str, Any], sfreq: float, dataset_id: Any) -> Tuple[float, float, int, int]:
+    """Internal helper: compute window params."""
     features_cfg = config.get("features", {}) if isinstance(config, Mapping) else {}
     fmri_cfg = features_cfg.get("fmri", {}) if isinstance(features_cfg, Mapping) else {}
     epoching_cfg = config.get("epoching", {}) if isinstance(config, Mapping) else {}
@@ -220,6 +203,7 @@ def _compute_window_params(config: Mapping[str, Any], sfreq: float, dataset_id: 
 
 
 def _resolve_continuous_cfg(config: Mapping[str, Any]) -> Dict[str, Any]:
+    """Internal helper: resolve continuous cfg."""
     result: Dict[str, Any] = {}
     if not isinstance(config, Mapping):
         return result

@@ -21,17 +21,11 @@ logger = logging.getLogger(__name__)
 class EnsembleGroupDef:
     """Resolved ensemble group definition for a given recording.
 
-    Attributes
-    ----------
-    name:
-        Raw group name from the config (e.g. "frontal").
-    safe_name:
-        Normalised identifier used in feature column names
-        (e.g. "frontal", "parietal_occipital").
-    indices:
-        Indices of EEG channels belonging to the group.
-    channels:
-        Resolved EEG channel names for the group (as present in the data).
+    Attributes:
+        name: Raw group name from the config (for example ``frontal``).
+        safe_name: Normalised identifier for column suffixes.
+        indices: Indices of EEG channels belonging to the group.
+        channels: Resolved EEG channel names as present in the data.
     """
 
     name: str
@@ -43,12 +37,11 @@ class EnsembleGroupDef:
 def sanitize_group_name(name: str) -> str:
     """Return a safe group identifier for use in column suffixes.
 
-    Examples
-    --------
-    >>> sanitize_group_name("Frontal")
-    'frontal'
-    >>> sanitize_group_name("Parietal/Occipital")
-    'parietal_occipital'
+    Examples:
+        >>> sanitize_group_name("Frontal")
+        'frontal'
+        >>> sanitize_group_name("Parietal/Occipital")
+        'parietal_occipital'
     """
 
     base = str(name).strip().lower()
@@ -71,18 +64,12 @@ def _canonical_channel(label: str) -> str:
 def resolve_config_groups(cfg: Optional[Mapping[str, Any]], dataset_id: Optional[str]) -> Dict[str, List[str]]:
     """Resolve ensemble group definitions from config for a dataset.
 
-    Parameters
-    ----------
-    cfg:
-        The ``robustness.ensembles`` config section.
-    dataset_id:
-        Current dataset id (e.g. "ds003490") or ``None``.
+    Args:
+        cfg: The ``robustness.ensembles`` config section.
+        dataset_id: Current dataset id (for example ``ds003490``) or None.
 
-    Returns
-    -------
-    dict
-        Mapping ``group_name -> [channel labels]`` after applying
-        per-dataset overrides on top of any default ``groups``.
+    Returns:
+        Mapping ``group_name -> [channel labels]`` with per-dataset overrides.
     """
 
     if not isinstance(cfg, Mapping):
@@ -116,21 +103,15 @@ def realize_ensemble_groups(
     dataset_id: Optional[str],
     available_channels: Sequence[str],
 ) -> List[EnsembleGroupDef]:
-    """Resolve config groups against the available EEG channels.
+    """Resolve config groups against ``available_channels``.
 
-    Parameters
-    ----------
-    cfg:
-        The ``robustness.ensembles`` config section.
-    dataset_id:
-        Current dataset id (e.g. "ds003490") or ``None``.
-    available_channels:
-        Channel names in the recording (as provided by the pipeline).
+    Args:
+        cfg: The ``robustness.ensembles`` config section.
+        dataset_id: Current dataset id or None.
+        available_channels: Channel names in recording order.
 
-    Returns
-    -------
-    list
-        List of resolved EnsembleGroupDef objects (may be empty).
+    Returns:
+        List of :class:`EnsembleGroupDef` with non-empty channel sets.
     """
 
     if not available_channels:

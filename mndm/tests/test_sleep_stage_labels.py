@@ -11,6 +11,7 @@ from mndm.pipeline import summary as summary_mod
 
 
 def _build_ctx(tmp_path: Path):
+    """Internal helper: build ctx."""
     received = tmp_path / "received"
     processed = tmp_path / "processed"
     return SimpleNamespace(
@@ -47,6 +48,7 @@ def _build_ctx(tmp_path: Path):
 
 
 def test_stage_labels_written_from_events_tsv(monkeypatch, tmp_path: Path):
+    """Test stage labels written from events tsv."""
     ctx = _build_ctx(tmp_path)
     ds_id = "ds005555"
 
@@ -112,6 +114,7 @@ def test_stage_labels_written_from_events_tsv(monkeypatch, tmp_path: Path):
 
 
 def test_primary_mnps_jacobian_can_be_disabled_via_config(monkeypatch, tmp_path: Path):
+    """Test primary mnps jacobian can be disabled via config."""
     ctx = _build_ctx(tmp_path)
     ctx.config["mnps"] = {"jacobian": {"enabled": False}}
     ctx.config["mnps_9d"] = {"enabled": False}
@@ -146,6 +149,7 @@ def test_primary_mnps_jacobian_can_be_disabled_via_config(monkeypatch, tmp_path:
     monkeypatch.setattr(summary_mod.json_writer, "write_json_summary", lambda *_, **__: None)
 
     def _fail_if_called(*_args, **_kwargs):
+        """Internal helper: fail if called."""
         raise AssertionError("estimate_local_jacobians should not run when mnps.jacobian.enabled=false")
 
     monkeypatch.setattr(summary_mod.jacobian, "estimate_local_jacobians", _fail_if_called)

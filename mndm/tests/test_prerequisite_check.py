@@ -7,6 +7,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_run_dataset_prerequisite_check_reports_ok_for_minimal_dataset(tmp_path):
+    """Test run dataset prerequisite check reports ok for minimal dataset."""
     from mndm.prerequisite_check import run_dataset_prerequisite_check
 
     received_dir = tmp_path / "received"
@@ -41,6 +42,7 @@ def test_run_dataset_prerequisite_check_reports_ok_for_minimal_dataset(tmp_path)
 
 
 def test_run_dataset_prerequisite_check_fails_for_invalid_exclude_regex(tmp_path):
+    """Test run dataset prerequisite check fails for invalid exclude regex."""
     from mndm.prerequisite_check import run_dataset_prerequisite_check
 
     received_dir = tmp_path / "received"

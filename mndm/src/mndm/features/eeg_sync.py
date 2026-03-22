@@ -1,32 +1,15 @@
 """EEG synchrony features (coherence/PLV/PPC/PLI/wPLI/dPLI).
 
-This module operates on continuous preprocessed EEG arrays and produces summary
-statistics per band / ROI pair as configured in the v1.2 ingest spec.
+Operates on continuous preprocessed EEG arrays and produces summary statistics
+per band and ROI pair as configured in the v1.2 ingest spec.
 
-Inputs
-------
-- eeg_data : np.ndarray, shape (n_channels, n_samples)
-- sfreq : sampling frequency in Hz
-- channel_names : list of channel labels (matching eeg_data order)
-- config : dict with entries:
-    {
-        "bands": [{"name": "...", "f_low": ..., "f_high": ...}, ...],
-        "windows": {"length_sec": float, "step_sec": float},
-        "metrics": {"coherence": bool, "plv": bool, ...},
-        "roi_pairs": [{"name": "...", "channels": ["C3", "P3"]}, ...],
-        "outputs": {"summary_stats": ["mean","std"], "time_resolved": false},
-    }
+Typical inputs are ``eeg_data`` (channels × samples), ``sfreq``, channel
+labels, and a ``config`` mapping with ``bands``, ``windows``, ``metrics``,
+``roi_pairs``, and ``outputs``.
 
-Outputs
--------
-dict mapping feature_name -> float
-    e.g. "eeg_sync_alpha_FP_plv_mean": 0.74
-
-Notes
------
-- Time-resolved outputs are currently not persisted (the ingest pipeline stores
-  per-window tensors elsewhere). The module focuses on summary stats.
-- The implementation favours clarity; heavy users can profile and optimise later.
+Returns a dict mapping feature names to floats (for example
+``eeg_sync_alpha_FP_plv_mean``). Time-resolved tensors are not persisted here;
+the ingest pipeline stores per-window tensors elsewhere.
 """
 
 from __future__ import annotations
@@ -130,6 +113,7 @@ class BandDef:
 
 
 def _parse_bands(bands_cfg) -> List[BandDef]:
+    """Internal helper: parse bands."""
     bands_input = bands_cfg if isinstance(bands_cfg, Iterable) and bands_cfg else DEFAULT_BANDS
     bands: List[BandDef] = []
     for item in bands_input:
@@ -146,12 +130,14 @@ def _parse_bands(bands_cfg) -> List[BandDef]:
 
 
 def _parse_summary_stats(stats_cfg) -> List[str]:
+    """Internal helper: parse summary stats."""
     if isinstance(stats_cfg, Sequence) and stats_cfg:
         return [str(s).lower() for s in stats_cfg]
     return ["mean", "std"]
 
 
 def _resolve_pairs(roi_pairs_cfg: Iterable[Mapping[str, object]], channel_names: Sequence[str]) -> List[PairDef]:
+    """Internal helper: resolve pairs."""
     name_to_idx = {str(ch).upper(): idx for idx, ch in enumerate(channel_names)}
     pairs: List[PairDef] = []
     for entry in roi_pairs_cfg:
@@ -170,6 +156,7 @@ def _resolve_pairs(roi_pairs_cfg: Iterable[Mapping[str, object]], channel_names:
 
 
 def _sliding_windows(n_samples: int, win_len: int, step: int) -> List[slice]:
+    """Internal helper: sliding windows."""
     windows: List[slice] = []
     start = 0
     while start + win_len <= n_samples:
@@ -188,6 +175,7 @@ def _subsample_windows(windows: List[slice], max_windows: int) -> List[slice]:
 
 
 def _bandpass(data: np.ndarray, sfreq: float, f_low: float, f_high: float, order: int = 4) -> np.ndarray:
+    """Internal helper: bandpass."""
     nyq = sfreq / 2.0
     if not (0 < f_low < f_high < nyq):
         raise ValueError(f"Invalid bandpass limits ({f_low}, {f_high}) for sfreq={sfreq}")
@@ -204,6 +192,7 @@ def _compute_metrics_for_pair(
     windows: Sequence[slice],
     metrics: Mapping[str, object],
 ) -> Dict[str, np.ndarray]:
+    """Internal helper: compute metrics for pair."""
     out: Dict[str, np.ndarray] = {}
     if not windows:
         return out
@@ -246,6 +235,7 @@ def _compute_metrics_for_pair(
 
     def _window_sum(arr: np.ndarray) -> np.ndarray:
         # prefix sum trick: sum(arr[s:e]) = csum[e] - csum[s]
+        """Internal helper: window sum."""
         csum = np.concatenate([np.asarray([0], dtype=arr.dtype), np.cumsum(arr, dtype=arr.dtype)])
         return csum[ends] - csum[starts]
 
@@ -280,6 +270,7 @@ def _compute_metrics_for_pair(
 
 
 def _mean_coherence(x: np.ndarray, y: np.ndarray, sfreq: float) -> float:
+    """Internal helper: mean coherence."""
     nperseg = min(len(x), 256)
     if nperseg < 8:
         return float("nan")
@@ -290,6 +281,7 @@ def _mean_coherence(x: np.ndarray, y: np.ndarray, sfreq: float) -> float:
 def _ppc_unbiased(phase_diff: np.ndarray) -> float:
     # PPC formula using pairwise cosines:
     # PPC = (|sum exp(i*phi)|^2 - N) / (N*(N-1))
+    """Internal helper: ppc unbiased."""
     complex_sum = np.sum(np.exp(1j * phase_diff))
     N = phase_diff.size
     if N < 2:
@@ -300,6 +292,7 @@ def _ppc_unbiased(phase_diff: np.ndarray) -> float:
 
 
 def _reduce_stat(series: np.ndarray, stat: str) -> float | None:
+    """Internal helper: reduce stat."""
     if series.size == 0:
         return None
     if stat == "mean":

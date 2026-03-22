@@ -65,15 +65,12 @@ def _as_mnps_array(mnps_trajectory: np.ndarray) -> np.ndarray:
 def compute_jacobian_metrics(j_hat: np.ndarray) -> Dict[str, float]:
     """Compute summary metrics from a Jacobian field.
 
-    Parameters
-    ----------
-    j_hat : array
-        Jacobian matrices [T, 3, 3].
+    Args:
+        j_hat: Jacobian stack with shape ``(T, 3, 3)``.
 
-    Returns
-    -------
-    dict
-        Summary metrics: trace_mean, frobenius_mean, rotation_norm_mean, anisotropy_mean.
+    Returns:
+        Dict with ``trace_mean``, ``frobenius_mean``, ``rotation_norm_mean``,
+        ``anisotropy_mean``, etc.
     """
     if j_hat.size == 0 or j_hat.shape[0] == 0:
         return {
@@ -154,15 +151,11 @@ def compute_jacobian_metrics(j_hat: np.ndarray) -> Dict[str, float]:
 def compute_mnps_metrics(mnps: np.ndarray) -> Dict[str, float]:
     """Compute summary metrics from MNPS coordinates.
 
-    Parameters
-    ----------
-    mnps : array
-        MNPS coordinates [T, 3] for axes (m, d, e).
+    Args:
+        mnps: MNPS array with shape ``(T, 3)`` for axes ``(m, d, e)``.
 
-    Returns
-    -------
-    dict
-        Summary metrics for each axis: mean, std, median, IQR, MAD.
+    Returns:
+        Per-axis mean, std, median, IQR, MAD keys (``m_mean``, ``d_*``, ``e_*``).
     """
     if mnps.size == 0 or mnps.shape[0] == 0:
         return {
@@ -172,6 +165,7 @@ def compute_mnps_metrics(mnps: np.ndarray) -> Dict[str, float]:
         }
 
     def _axis_metrics(values: np.ndarray, prefix: str) -> Dict[str, float]:
+        """Internal helper: axis metrics."""
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             return {
@@ -219,10 +213,12 @@ def compute_stratified_metrics(
     axis_map = {"m": 0, "d": 1, "e": 2}
 
     def _sanitize(name: str) -> str:
+        """Internal helper: sanitize."""
         out = str(name).strip().replace(" ", "_").replace("-", "_")
         return "".join(ch for ch in out if ch.isalnum() or ch == "_")
 
     def _axis_metrics(values: np.ndarray, base: str) -> Dict[str, float]:
+        """Internal helper: axis metrics."""
         finite = values[np.isfinite(values)]
         if finite.size == 0:
             return {
@@ -589,16 +585,12 @@ def write_regional_mnps_csv(
     output_path: Path,
     append: bool = False,
 ) -> None:
-    """Write regional MNPS summaries to CSV file.
+    """Write regional MNPS summaries to a CSV file.
 
-    Parameters
-    ----------
-    summaries : list
-        List of RegionalMNPSSummary objects from multiple segments.
-    output_path : Path
-        Output CSV file path.
-    append : bool
-        If True, append to existing file; otherwise overwrite.
+    Args:
+        summaries: One or more :class:`RegionalMNPSSummary` instances.
+        output_path: Destination CSV path.
+        append: If True, append without rewriting header when file exists.
     """
     all_rows = []
     for summary in summaries:
@@ -720,24 +712,15 @@ def compute_block_jacobian_rows(
     config: Mapping[str, Any],
     include_self: bool = False,
 ) -> List[Dict[str, Any]]:
-    """Compute cross-block Jacobians from per-network stratified [T,9] trajectories.
+    """Compute cross-block Jacobians from per-network stratified ``(T, 9)`` trajectories.
 
-    Parameters
-    ----------
-    summary : RegionalMNPSSummary
-        Regional MNPS results containing per-network ``stratified`` [T, 9] arrays.
-    config : Mapping
-        Full pipeline config (not just regional_mnps section) so that ``modality``,
-        ``mnps`` derivative params, and ``regional_mnps.jacobian`` settings are
-        accessible.
-    include_self : bool
-        Whether to include intra-block (M→M, D→D, E→E) pairs.
+    Args:
+        summary: Regional results including per-network ``stratified`` arrays.
+        config: Full pipeline config (``modality``, ``mnps``, ``regional_mnps``, …).
+        include_self: Whether to include intra-block pairs (``M→M``, …).
 
-    Returns
-    -------
-    list of dicts
-        One row per (network, source_block, target_block).  Empty if fMRI or
-        ``block_jacobians.enabled`` is False.
+    Returns:
+        List of row dicts (empty for fMRI or when block Jacobians are disabled).
     """
     # Hard-exit for fMRI: 9D sub-trajectories are rank-deficient per network due
     # to the smooth BOLD signal; cross-block Jacobians have no empirical basis.
@@ -912,22 +895,14 @@ def write_block_jacobians_csv(
     append: bool = False,
     include_self: bool = False,
 ) -> None:
-    """Compute and write cross-block Jacobian rows to CSV (EEG only).
+    """Compute and write cross-block Jacobian rows to CSV (EEG-oriented).
 
-    Parameters
-    ----------
-    summaries : list
-        Regional MNPS summaries from one or more segments.
-    config : Mapping
-        Full pipeline config (must contain ``modality``, ``mnps``, and
-        ``regional_mnps.block_jacobians``).
-    output_path : Path
-        Output CSV path.
-    append : bool
-        Append to existing file if True.
-    include_self : bool
-        Whether to include intra-block (M→M, etc.) pairs as a default
-        (overridden by ``block_jacobians.include_self`` in config).
+    Args:
+        summaries: Regional MNPS summaries from one or more segments.
+        config: Full pipeline config including ``regional_mnps.block_jacobians``.
+        output_path: Output CSV path.
+        append: Append to an existing CSV when True.
+        include_self: Default for intra-block pairs (config may override).
     """
     all_rows: List[Dict[str, Any]] = []
     for summary in summaries:

@@ -30,6 +30,7 @@ FMRI_VARIANCE_POWER_CANDIDATES = [
 
 
 def _safe_float(value: Any) -> float:
+    """Internal helper: safe float."""
     try:
         return float(value)
     except Exception:
@@ -37,6 +38,7 @@ def _safe_float(value: Any) -> float:
 
 
 def _corr_1d(a: np.ndarray, b: np.ndarray) -> float:
+    """Internal helper: corr 1d."""
     mask = np.isfinite(a) & np.isfinite(b)
     aa = np.asarray(a[mask], dtype=float)
     bb = np.asarray(b[mask], dtype=float)
@@ -51,6 +53,7 @@ def _corr_1d(a: np.ndarray, b: np.ndarray) -> float:
 
 
 def _approx_entropy_1d(series: np.ndarray, bins: int = 20) -> float:
+    """Internal helper: approx entropy 1d."""
     finite = np.asarray(series, dtype=float)
     finite = finite[np.isfinite(finite)]
     if finite.size < 4:
@@ -63,6 +66,7 @@ def _approx_entropy_1d(series: np.ndarray, bins: int = 20) -> float:
 
 
 def _series_summary(series: np.ndarray, dt_sec: float) -> Dict[str, Any]:
+    """Internal helper: series summary."""
     arr = np.asarray(series, dtype=float).reshape(-1)
     finite = arr[np.isfinite(arr)]
     out: Dict[str, Any] = {
@@ -89,6 +93,7 @@ def _series_summary(series: np.ndarray, dt_sec: float) -> Dict[str, Any]:
 
 
 def _summarize_series_against_axes(series: np.ndarray, x: np.ndarray, dt_sec: float) -> Dict[str, Any]:
+    """Internal helper: summarize series against axes."""
     summary = _series_summary(series, dt_sec=dt_sec)
     axis_corrs = {
         axis: _corr_1d(np.asarray(series, dtype=float).reshape(-1), x[:, idx])
@@ -106,6 +111,7 @@ def _summarize_series_against_axes(series: np.ndarray, x: np.ndarray, dt_sec: fl
 
 
 def _global_numeric_columns(sub_frame: pd.DataFrame) -> list[str]:
+    """Internal helper: global numeric columns."""
     cols: list[str] = []
     for col in sub_frame.columns:
         if "__g_" in str(col):
@@ -117,6 +123,7 @@ def _global_numeric_columns(sub_frame: pd.DataFrame) -> list[str]:
 
 
 def _order_candidates(candidates: Sequence[str], preferred: Sequence[str]) -> list[str]:
+    """Internal helper: order candidates."""
     seen: set[str] = set()
     out: list[str] = []
     for name in preferred:
@@ -131,6 +138,7 @@ def _order_candidates(candidates: Sequence[str], preferred: Sequence[str]) -> li
 
 
 def _select_baseline_families(sub_frame: pd.DataFrame, max_series_per_family: int) -> Dict[str, list[str]]:
+    """Internal helper: select baseline families."""
     numeric_cols = _global_numeric_columns(sub_frame)
     entropy_cols = [
         c
@@ -227,6 +235,7 @@ def _filtered_x_and_files(
     x: np.ndarray,
     file_labels: Optional[Sequence[Any]],
 ) -> tuple[np.ndarray, Optional[np.ndarray], float]:
+    """Internal helper: filtered x and files."""
     arr = np.asarray(x, dtype=np.float32)
     if arr.ndim != 2 or arr.shape[1] != 3:
         return np.zeros((0, 3), dtype=np.float32), None, 0.0
@@ -249,6 +258,7 @@ def _compute_dot(
     derivative_robust_cfg: Optional[Mapping[str, Any]],
     file_labels: Optional[Sequence[Any]],
 ) -> np.ndarray:
+    """Internal helper: compute dot."""
     robust_cfg = derivative_robust_cfg or {}
     use_segmented = bool(robust_cfg.get("enabled", True))
     method = str(derivative_cfg.get("method", "sav_gol"))
@@ -301,6 +311,7 @@ def _compute_dot(
 
 
 def _path_metrics(x: np.ndarray, dt_sec: float) -> Dict[str, Any]:
+    """Internal helper: path metrics."""
     if x.shape[0] < 2:
         return {"path_total": float("nan"), "step_mean": float("nan"), "step_median": float("nan")}
     steps = np.linalg.norm(np.diff(x, axis=0), axis=1)
@@ -326,6 +337,7 @@ def _summarize_surrogate(
     ridge_alpha: float,
     distance_weighted: bool,
 ) -> Dict[str, Any]:
+    """Internal helper: summarize surrogate."""
     x_dot = _compute_dot(
         x,
         dt_sec=dt_sec,
@@ -368,6 +380,7 @@ def _summarize_surrogate(
 
 
 def _mean_axis_metric(summary: Mapping[str, Any], key: str) -> float:
+    """Internal helper: mean axis metric."""
     vals = []
     axes = summary.get("axes", {}) if isinstance(summary, Mapping) else {}
     for axis in AXIS_NAMES:
@@ -378,6 +391,7 @@ def _mean_axis_metric(summary: Mapping[str, Any], key: str) -> float:
 
 
 def _mean_axis_tau(summary: Mapping[str, Any]) -> float:
+    """Internal helper: mean axis tau."""
     vals = []
     tau = summary.get("tau_summary", {}) if isinstance(summary, Mapping) else {}
     for axis in AXIS_NAMES:
@@ -388,6 +402,7 @@ def _mean_axis_tau(summary: Mapping[str, Any]) -> float:
 
 
 def _comparison_to_original(original: Mapping[str, Any], surrogate: Mapping[str, Any]) -> Dict[str, Any]:
+    """Internal helper: comparison to original."""
     orig_std = _mean_axis_metric(original, "std")
     surr_std = _mean_axis_metric(surrogate, "std")
     orig_tau = _mean_axis_tau(original)
@@ -400,6 +415,7 @@ def _comparison_to_original(original: Mapping[str, Any], surrogate: Mapping[str,
     surr_rot = _safe_float((((surrogate.get("jacobian") or {}).get("tier2") or {}).get("rotation_coherence") or {}).get("mean_resultant_length"))
 
     def _ratio(num: float, den: float) -> float:
+        """Internal helper: ratio."""
         if not (np.isfinite(num) and np.isfinite(den)) or abs(den) < 1e-8:
             return float("nan")
         return float(num / den)

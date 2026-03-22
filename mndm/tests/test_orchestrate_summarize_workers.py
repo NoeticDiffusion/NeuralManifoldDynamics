@@ -9,6 +9,7 @@ from mndm import orchestrate
 
 
 def test_cmd_summarize_forwards_n_jobs(monkeypatch):
+    """Test cmd summarize forwards n jobs."""
     resolved = object()
     ctx = object()
     calls = {}
@@ -25,6 +26,7 @@ def test_cmd_summarize_forwards_n_jobs(monkeypatch):
     )
 
     def _fake_summarize_with_context(ctx_arg, dataset_ids, subject=None, h5_mode="subject", n_jobs=1):
+        """Internal helper: fake summarize with context."""
         calls["ctx"] = ctx_arg
         calls["dataset_ids"] = dataset_ids
         calls["subject"] = subject

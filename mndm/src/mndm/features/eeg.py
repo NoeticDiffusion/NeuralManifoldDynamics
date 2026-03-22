@@ -1,21 +1,8 @@
-"""
-eeg.py
-EEG feature extraction (bandpower, ratios, entropy).
+"""EEG feature extraction (bandpower, ratios, entropy, optional ensembles).
 
-Inputs
-------
-- signals: dict-like structure with EEG array(s) and metadata.
-- config: dict with epoching parameters and EEG feature settings.
-
-Outputs
--------
-- DataFrame with per-epoch features: epoch_id, t_start, t_end, bandpowers,
-  ratios, sample_entropy.
-
-Dependencies
-------------
-- numpy, scipy.signal for spectral analysis.
-- pandas for DataFrame output.
+Consumes a preprocessed ``signals`` mapping (EEG arrays and metadata) and ingest
+``config`` (epoching and ``features.eeg``); returns a per-epoch DataFrame
+(``epoch_id``, timing, spectral features, etc.).
 """
 
 from __future__ import annotations
@@ -82,6 +69,7 @@ def _compute_hjorth_metrics(data: np.ndarray) -> Tuple[float, float]:
 
 
 def _default_stage_map() -> Dict[str, int]:
+    """Internal helper: default stage map."""
     return {"W": 0, "Wake": 0, "N1": 1, "N2": 2, "N3": 3, "REM": 4, "R": 4, "L": -1}
 
 def _resolve_epoching_sampling_cfg(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
@@ -408,20 +396,15 @@ def _select_stage_stratified_blocks(
 def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) -> pd.DataFrame:
     """Compute per-epoch EEG features (with optional channel-shift ensembles).
 
-    Parameters
-    ----------
-    signals
-        PreprocessedSignals or dict with 'signals' and 'sfreq' keys.
-    config
-        Configuration with epoching and feature settings.
+    Args:
+        signals: PreprocessedSignals or dict with ``signals`` and ``sfreq`` keys.
+        config: Configuration with epoching and feature settings.
 
-    Returns
-    -------
-    DataFrame
-        Per-epoch features with columns:
-        - Global montage: eeg_delta/theta/alpha/beta/gamma, ratios, entropy.
-        - Optional per-group features when robustness.ensembles is enabled:
-          eeg_<band>__g_<group>, eeg_alpha_theta__g_<group>, etc.
+    Returns:
+        Per-epoch features. Columns include global montage bands
+        (``eeg_delta`` … ``eeg_gamma``), ratios, and entropy; optional per-group
+        columns when ``robustness.ensembles`` is enabled, using column name
+        patterns such as ``eeg_delta__g_frontal`` or ``eeg_alpha_theta__g_frontal``.
     """
     eeg_signals = signals.get("signals", {})
     if "eeg" not in eeg_signals:

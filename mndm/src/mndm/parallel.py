@@ -224,14 +224,11 @@ class WorkerResult:
 
 
 def worker_init(base_seed: int, worker_id: int):
-    """Initialize worker process with BLAS threads and seed.
-    
-    Parameters
-    ----------
-    base_seed
-        Base seed from config.
-    worker_id
-        Unique worker identifier.
+    """Initialize worker process with BLAS threads pinned to a single thread.
+
+    Args:
+        base_seed: Base seed from config (reserved for future RNG wiring).
+        worker_id: Worker index for logging.
     """
     # Set BLAS threads before importing NumPy/SciPy
     os.environ["OMP_NUM_THREADS"] = "1"
@@ -275,21 +272,17 @@ def _stable_seed_token(file_path: Path, config: Dict[str, Any]) -> str:
 
 
 def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult:
-    """Process a single file and return features DataFrame.
-    
-    This function is designed to be called in a worker process.
-    It sets BLAS threads to 1 and performs cleanup after processing.
-    
-    Parameters
-    ----------
-    file_path
-        Path to the EEG file to process.
-    config
-        Configuration dictionary.
-    
-    Returns
-    -------
-    WorkerResult with success status and features DataFrame.
+    """Process a single file and return a :class:`WorkerResult`.
+
+    Intended for worker processes: pins BLAS threads and returns features or an
+    error payload.
+
+    Args:
+        file_path: Path to the recording to process.
+        config: Ingest configuration dictionary.
+
+    Returns:
+        :class:`WorkerResult` with ``success``, ``features_df``, timings, etc.
     """
     _set_blas_threads()
     
@@ -299,12 +292,14 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
     rss_peak = rss_start
 
     def _track_rss() -> None:
+        """Internal helper: track rss."""
         nonlocal rss_peak
         r = _process_rss_gb()
         if r > rss_peak:
             rss_peak = r
 
     def _attach_memory_meta(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Internal helper: attach memory meta."""
         out = dict(meta or {})
         start = float(rss_start) if rss_start > 0 else None
         peak = float(rss_peak) if rss_peak > 0 else None
@@ -486,15 +481,12 @@ def write_temp_features_csv(
     io_policy: Optional[Mapping[str, Any]] = None,
 ):
     """Write temp features in CSV/Parquet according to IO policy.
-    
-    Parameters
-    ----------
-    features_df
-        DataFrame to write.
-    csv_path
-        Base path for CSV file.
-    file_hash
-        Hash to make filename unique.
+
+    Args:
+        features_df: DataFrame to persist.
+        csv_path: Base path (stem used with ``features_<hash>``).
+        file_hash: Short hash token for unique filenames.
+        io_policy: Optional ``write_csv`` / ``write_parquet`` flags.
     """
     if len(features_df) == 0:
         return
@@ -520,14 +512,10 @@ def write_temp_features_csv(
 def write_qc_json(meta: Optional[Dict[str, Any]], target_dir: Path, file_name: str) -> None:
     """Persist per-file QC / artifact metadata as JSON.
 
-    Parameters
-    ----------
-    meta
-        Metadata dict returned from preprocessing (PreprocessedSignals.meta).
-    target_dir
-        Directory where QC JSON files should be written.
-    file_name
-        Original EEG file name (used to derive QC filename).
+    Args:
+        meta: Metadata from preprocessing (``PreprocessedSignals.meta``).
+        target_dir: Output directory for QC JSON files.
+        file_name: Original recording file name (stem used in output name).
     """
     if not meta:
         return
@@ -559,16 +547,14 @@ def write_intermediate_json(features_df: pd.DataFrame, target_dir: Path, file_na
 
 
 def merge_temp_features(ds_path: Path, io_policy: Optional[Mapping[str, Any]] = None) -> pd.DataFrame:
-    """Merge temporary feature CSV files into single DataFrame.
-    
-    Parameters
-    ----------
-    ds_path
-        Dataset directory path.
-    
-    Returns
-    -------
-    Merged DataFrame of all features.
+    """Merge temporary per-file feature exports under ``ds_path`` into one table.
+
+    Args:
+        ds_path: Dataset working directory containing ``features_*`` shards.
+        io_policy: Optional ``read_prefer`` (``csv`` or ``parquet``).
+
+    Returns:
+        Concatenated feature DataFrame.
     """
     read_prefer = str((io_policy or {}).get("read_prefer", "parquet")).lower()
     if read_prefer not in {"csv", "parquet"}:

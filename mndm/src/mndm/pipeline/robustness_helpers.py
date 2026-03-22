@@ -138,6 +138,7 @@ def compute_tau_summary(
         policy = "strict"
 
     def _acf_tau_1d(col: np.ndarray) -> float:
+        """Internal helper: acf tau 1d."""
         x = np.asarray(col, dtype=float)
         finite_mask = np.isfinite(x)
         if not np.all(finite_mask):
@@ -298,11 +299,13 @@ def compute_emmi_metrics(x: np.ndarray, x_dot: np.ndarray) -> Dict[str, float]:
     speed = np.linalg.norm(Xd, axis=1)
 
     def _finite_median(arr: np.ndarray) -> float:
+        """Internal helper: finite median."""
         a = np.asarray(arr, dtype=float)
         a = a[np.isfinite(a)]
         return float(np.median(a)) if a.size else float("nan")
 
     def _finite_mean(arr: np.ndarray) -> float:
+        """Internal helper: finite mean."""
         a = np.asarray(arr, dtype=float)
         a = a[np.isfinite(a)]
         return float(np.mean(a)) if a.size else float("nan")
@@ -320,6 +323,7 @@ def compute_emmi_metrics(x: np.ndarray, x_dot: np.ndarray) -> Dict[str, float]:
         mv_abs_med = float(abs(m_med) * abs(d_med) * abs(e_med))
 
     def _safe_ratio(num: float, den: float, abs_den_floor: float = 1e-6) -> float:
+        """Internal helper: safe ratio."""
         if not (np.isfinite(num) and np.isfinite(den)):
             return float("nan")
         if abs(float(den)) < float(abs_den_floor):

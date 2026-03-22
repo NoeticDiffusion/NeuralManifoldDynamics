@@ -38,6 +38,7 @@ def compute_spectral_fractal_features(
 
 
 def _parse_config(config: Mapping[str, object] | None) -> SpectralConfig:
+    """Internal helper: parse config."""
     cfg = config or {}
     return SpectralConfig(
         spectral_entropy=bool(cfg.get("spectral_entropy", True)),
@@ -45,6 +46,7 @@ def _parse_config(config: Mapping[str, object] | None) -> SpectralConfig:
 
 
 def _spectral_entropy(psd: np.ndarray, freqs: np.ndarray) -> float:
+    """Internal helper: spectral entropy."""
     psd = np.abs(psd)
     psd /= np.sum(psd) + 1e-12
     return float(-np.sum(psd * np.log(psd + 1e-12)))

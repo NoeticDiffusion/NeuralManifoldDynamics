@@ -66,11 +66,12 @@ def resolve_epoching_sampling_cfg(config: Mapping[str, Any], dataset_id: Optiona
 
 
 def default_stage_map() -> Dict[str, int]:
+    """Handle default stage map."""
     return {"W": 0, "Wake": 0, "N1": 1, "N2": 2, "N3": 3, "REM": 4, "R": 4, "L": -1}
 
 
 def find_events_tsv_for_raw(file_path: str) -> Optional[Path]:
-    """Best-effort locate BIDS *_events.tsv next to a raw file path."""
+    """Best-effort locate BIDS ``*_events.tsv`` next to a raw file path."""
     if not file_path:
         return None
     try:
@@ -264,6 +265,7 @@ def label_epochs_with_stages(
 
 
 def _contiguous_runs(indices: np.ndarray) -> List[tuple[int, int]]:
+    """Internal helper: contiguous runs."""
     if indices.size == 0:
         return []
     idx = np.sort(indices.astype(int))

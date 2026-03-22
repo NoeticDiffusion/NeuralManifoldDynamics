@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_sanitize_group_name_basic():
+    """Test sanitize group name basic."""
     from core.ensembles import sanitize_group_name
 
     assert sanitize_group_name("Frontal") == "frontal"
@@ -17,6 +18,7 @@ def test_sanitize_group_name_basic():
 
 
 def test_realize_ensemble_groups_basic():
+    """Test realize ensemble groups basic."""
     from core.ensembles import EnsembleGroupDef, realize_ensemble_groups
 
     cfg = {
@@ -60,6 +62,7 @@ def test_compute_ensemble_summary_for_subject_mean_var(monkeypatch):
 
     # Stub ensemble group resolution to always return two groups
     def _fake_resolve_config_groups(cfg, dataset_id):
+        """Internal helper: fake resolve config groups."""
         return {"g1": ["Cz"], "g2": ["Pz"]}
 
     # Patch in the module where the names are looked up
@@ -69,6 +72,7 @@ def test_compute_ensemble_summary_for_subject_mean_var(monkeypatch):
     call_counter = {"i": 0}
 
     def _fake_project_features_v2(df, spec, normalize=None):
+        """Internal helper: fake project features v2."""
         call_counter["i"] += 1
         if call_counter["i"] == 1:
             coords = np.tile(np.array([1.0, 2.0], dtype=np.float32), (10, 1))

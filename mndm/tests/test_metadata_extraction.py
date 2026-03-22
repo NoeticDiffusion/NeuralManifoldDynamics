@@ -367,6 +367,7 @@ class TestExtractMappedMetadata:
 
 class TestLoadParticipantTable:
     def test_load_participant_table_uses_configured_csv_path(self, tmp_path: Path):
+        """Test load participant table uses configured csv path."""
         dataset_root = tmp_path / "dsX"
         dataset_root.mkdir()
         csv_path = dataset_root / "cohort.csv"
@@ -393,6 +394,7 @@ class TestLoadParticipantTable:
         assert df.attrs["subject_id_column"] == "participant_id"
 
     def test_load_participant_table_auto_discovers_txt(self, tmp_path: Path):
+        """Test load participant table auto discovers txt."""
         dataset_root = tmp_path / "dsY"
         dataset_root.mkdir()
         txt_path = dataset_root / "participants.txt"

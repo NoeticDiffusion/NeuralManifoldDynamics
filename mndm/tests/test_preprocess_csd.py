@@ -34,12 +34,14 @@ def test_preprocess_file_preserves_csd_as_eeg_modality(tmp_path, monkeypatch):
     csd_applied = {"value": False}
 
     def _fake_csd(in_raw, **_kwargs):
+        """Internal helper: fake csd."""
         csd_applied["value"] = True
         return in_raw
 
     original_pick_types = preprocess_mod.mne.pick_types
 
     def _pick_types_with_csd(info, **kwargs):
+        """Internal helper: pick types with csd."""
         if not csd_applied["value"]:
             return original_pick_types(info, **kwargs)
         if kwargs.get("csd", False):

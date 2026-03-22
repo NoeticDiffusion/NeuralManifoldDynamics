@@ -56,6 +56,7 @@ def compute_phase_synchrony_features(
 
 
 def _parse_config(config: Mapping[str, object] | None) -> PhaseConfig:
+    """Internal helper: parse config."""
     cfg = config or {}
     band = cfg.get("bandpass_hz", {"f_low": 0.01, "f_high": 0.1})
     regional_sets = cfg.get("regional_sets", []) if isinstance(cfg, Mapping) else []
@@ -67,6 +68,7 @@ def _parse_config(config: Mapping[str, object] | None) -> PhaseConfig:
 
 
 def _bandpass_phase(data: np.ndarray, sfreq: float, f_low: float, f_high: float, order: int = 4) -> np.ndarray:
+    """Internal helper: bandpass phase."""
     nyq = sfreq / 2.0
     if not (0 < f_low < f_high < nyq):
         filtered = data
@@ -78,6 +80,7 @@ def _bandpass_phase(data: np.ndarray, sfreq: float, f_low: float, f_high: float,
 
 
 def _kuramoto_order_parameter(phases: np.ndarray) -> np.ndarray:
+    """Internal helper: kuramoto order parameter."""
     n_nodes, n_times = phases.shape
     if n_nodes == 0:
         return np.zeros(n_times, dtype=float)
@@ -87,6 +90,7 @@ def _kuramoto_order_parameter(phases: np.ndarray) -> np.ndarray:
 
 
 def _resolve_indices(members, name_to_idx) -> Sequence[int]:
+    """Internal helper: resolve indices."""
     indices = []
     if isinstance(members, Sequence) and not isinstance(members, str):
         for name in members:

@@ -21,12 +21,14 @@ from mndm.pipeline.regional_mnps import (
 
 
 def _fake_mnps(n: int = 120) -> np.ndarray:
+    """Internal helper: fake mnps."""
     rng = np.random.default_rng(42)
     return rng.normal(size=(n, 3)).astype(np.float32)
 
 
 class TestComputeJacobianMetrics:
     def test_metrics_computed(self):
+        """Test metrics computed."""
         j_hat = np.random.randn(10, 3, 3).astype(np.float32)
         metrics = compute_jacobian_metrics(j_hat)
         assert "trace_mean" in metrics
@@ -35,12 +37,14 @@ class TestComputeJacobianMetrics:
         assert "anisotropy_mean" in metrics
 
     def test_zero_jacobian_has_finite_anisotropy(self):
+        """Test zero jacobian has finite anisotropy."""
         metrics = compute_jacobian_metrics(np.zeros((5, 3, 3), dtype=np.float32))
         assert metrics["anisotropy_mean"] == pytest.approx(1.0)
 
 
 class TestComputeMNPSMetrics:
     def test_metrics_computed(self):
+        """Test metrics computed."""
         metrics = compute_mnps_metrics(np.random.rand(20, 3).astype(np.float32))
         assert "m_mean" in metrics
         assert "d_mean" in metrics
@@ -49,6 +53,7 @@ class TestComputeMNPSMetrics:
 
 class TestComputeRegionalMNPSForNetwork:
     def test_valid_network_produces_result(self):
+        """Test valid network produces result."""
         config = {
             "mnps": {"time_step_sec": 2.0, "derivative": {"method": "central"}},
             "jacobian": {"enabled": True, "super_window": 3},
@@ -65,6 +70,7 @@ class TestComputeRegionalMNPSForNetwork:
         assert "trace_mean" in result.metrics
 
     def test_invalid_when_not_precomputed_trajectory(self):
+        """Test invalid when not precomputed trajectory."""
         result = compute_regional_mnps_for_network(
             network_label="DMN",
             mnps_trajectory=np.random.randn(120),  # 1D legacy input must fail
@@ -77,6 +83,7 @@ class TestComputeRegionalMNPSForNetwork:
 
 class TestComputeAllRegionalMNPS:
     def test_requires_precomputed_network_mnps(self):
+        """Test requires precomputed network mnps."""
         summary = compute_all_regional_mnps(
             group_ts={"DMN": np.random.randn(200)},
             sfreq=0.5,
@@ -86,6 +93,7 @@ class TestComputeAllRegionalMNPS:
         assert summary.n_networks == 0
 
     def test_multiple_networks(self):
+        """Test multiple networks."""
         config = {
             "min_segment_length_tr": 20,
             "networks": [],
@@ -108,6 +116,7 @@ class TestComputeAllRegionalMNPS:
 
 class TestSummaryToDataframeRows:
     def test_rows_generated(self):
+        """Test rows generated."""
         summary = RegionalMNPSSummary(
             subject="sub-001",
             session=None,
@@ -131,6 +140,7 @@ class TestSummaryToDataframeRows:
 
 class TestBlockJacobiansRemoved:
     def test_block_rows_return_empty(self):
+        """Test block rows return empty."""
         summary = RegionalMNPSSummary(
             subject="sub-001",
             session=None,

@@ -19,6 +19,7 @@ from mndm.pipeline.extensions_compute import compute_extensions
 
 @pytest.fixture
 def dummy_ctx(tmp_path):
+    """Handle dummy ctx."""
     return SimpleNamespace(
         config={"robustness": {"coverage": {}}},
         received_dir=tmp_path,
@@ -49,6 +50,7 @@ def dummy_ctx(tmp_path):
 
 
 def test_dataset_runner_subject_filter(dummy_ctx):
+    """Test dataset runner subject filter."""
     runner = DatasetSummaryRunner(dummy_ctx, "ds001", "001", "subject")
     frame = pd.DataFrame(
         {
@@ -65,6 +67,7 @@ def test_dataset_runner_subject_filter(dummy_ctx):
 
 
 def test_dataset_runner_groupings_from_file_column(dummy_ctx):
+    """Test dataset runner groupings from file column."""
     runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject")
     frame = pd.DataFrame(
         {
@@ -112,6 +115,7 @@ def test_tig_extension_computation(dummy_ctx, tmp_path):
 
 
 def test_dataset_runner_uses_requested_worker_count(dummy_ctx, monkeypatch, tmp_path):
+    """Test dataset runner uses requested worker count."""
     runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=3)
     ds_path = tmp_path / "ds001"
     mnps_dir = ds_path / "MNPS"
@@ -128,19 +132,24 @@ def test_dataset_runner_uses_requested_worker_count(dummy_ctx, monkeypatch, tmp_
 
     class _ImmediateFuture:
         def result(self):
+            """Handle result."""
             return None
 
     class _FakeExecutor:
         def __init__(self, max_workers: int):
+            """Initialize the instance."""
             executor_calls["max_workers"] = max_workers
 
         def __enter__(self):
+            """Dunder method __enter__."""
             return self
 
         def __exit__(self, exc_type, exc, tb):
+            """Dunder method __exit__."""
             return False
 
         def submit(self, fn, *args, **kwargs):
+            """Handle submit."""
             executor_calls["submitted"] += 1
             fn(*args, **kwargs)
             return _ImmediateFuture()
@@ -169,27 +178,34 @@ def test_dataset_runner_uses_requested_worker_count(dummy_ctx, monkeypatch, tmp_
 
 
 def test_dataset_runner_keeps_jacobian_hashes_stable_across_n_jobs(dummy_ctx, monkeypatch, tmp_path):
+    """Test dataset runner keeps jacobian hashes stable across n jobs."""
     captures: dict[int, dict[str, str]] = {}
 
     class _ImmediateFuture:
         def result(self):
+            """Handle result."""
             return None
 
     class _FakeExecutor:
         def __init__(self, max_workers: int):
+            """Initialize the instance."""
             self.max_workers = max_workers
 
         def __enter__(self):
+            """Dunder method __enter__."""
             return self
 
         def __exit__(self, exc_type, exc, tb):
+            """Dunder method __exit__."""
             return False
 
         def submit(self, fn, *args, **kwargs):
+            """Handle submit."""
             fn(*args, **kwargs)
             return _ImmediateFuture()
 
     def _run_once(n_jobs: int) -> dict[str, str]:
+        """Internal helper: run once."""
         runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=n_jobs)
         ds_path = tmp_path / f"ds001_{n_jobs}"
         mnps_dir = ds_path / "MNPS"
@@ -212,6 +228,7 @@ def test_dataset_runner_keeps_jacobian_hashes_stable_across_n_jobs(dummy_ctx, mo
         monkeypatch.setattr(summary_mod, "write_run_manifest", lambda **_kwargs: None)
 
         def _fake_subject_run(self, sub_id, ses_id, raw_task, run_id, acq_id, sub_frame):
+            """Internal helper: fake subject run."""
             x = np.array(
                 [[0.0, 0.1, 0.2], [0.2, 0.0, 0.1], [0.4, -0.1, 0.0], [0.6, -0.2, -0.1]],
                 dtype=np.float32,
@@ -233,6 +250,7 @@ def test_dataset_runner_keeps_jacobian_hashes_stable_across_n_jobs(dummy_ctx, mo
 
 
 def test_subject_runner_exports_reproducibility_provenance(dummy_ctx, monkeypatch, tmp_path):
+    """Test subject runner exports reproducibility provenance."""
     runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
     runner.participants_df = pd.DataFrame()
     monkeypatch.setattr(runner, "participant_meta_for", lambda _sub_id: {})
@@ -295,6 +313,7 @@ def test_subject_runner_exports_reproducibility_provenance(dummy_ctx, monkeypatc
     monkeypatch.setattr(subject_runner, "_write_qc_files", lambda **_kwargs: None)
 
     def _capture_write(*, target_dir, dataset_label, manifest, payload, **kwargs):
+        """Internal helper: capture write."""
         captures["manifest"] = manifest
         captures["payload"] = payload
 

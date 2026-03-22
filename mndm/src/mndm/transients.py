@@ -1,16 +1,7 @@
-"""T
-transients.py
-ransient detection for R time-series (z-spike/CUSUM tagging).
+"""Transient detection for R time-series (z-spike / CUSUM-style tagging).
 
-Inputs
-------
-- r_series: array of per-epoch R values.
-- z_thresh: z-score threshold for spike detection.
-- pad_epochs: number of epochs to pad around detected transients.
-
-Outputs
--------
-- Boolean mask marking transient regions (True = transient).
+Uses robust location/scale, z-score thresholding, and optional symmetric padding
+around detected spikes.
 """
 
 from __future__ import annotations
@@ -25,19 +16,14 @@ logger = logging.getLogger(__name__)
 
 def detect_transients(r_series: Iterable[float], z_thresh: float = 3.0, pad_epochs: int = 1) -> np.ndarray:
     """Detect transients in a 1-D series using robust z-score thresholding.
-    
-    Parameters
-    ----------
-    r_series
-        Array of per-epoch R values.
-    z_thresh
-        Z-score threshold for spike detection.
-    pad_epochs
-        Number of epochs to pad around detected transients.
-    
-    Returns
-    -------
-    Boolean array (True = transient epoch).
+
+    Args:
+        r_series: Per-epoch R values (or any 1-D numeric series).
+        z_thresh: Threshold on robust z-scores for marking spikes.
+        pad_epochs: Half-width (in epochs) of morphological padding around spikes.
+
+    Returns:
+        Boolean array, True on transient epochs (same length as input).
     """
     r_array = np.asarray(list(r_series), dtype=float)
     if r_array.size == 0:
