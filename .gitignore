@@ -222,4 +222,4 @@ openneuro_ingest/docs/*
 .cursor/plans/*
 mndm/config/config_ingest_apollo_sedation_restingstate.yaml
 mndm/config/config_ingest_apollo_sedation_restingstate.yaml
-.python2txt/*
+.python2txt/

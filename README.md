@@ -96,6 +96,12 @@ Those runs usually contain:
 - `pyarrow` is recommended so feature tables can use parquet cleanly.
 - Worker count and memory budget are controlled from the CLI, especially for `mndm.cli features` and `mndm.cli all`.
 
+
+## Read the docs
+
+https://neuralmanifolddynamics.readthedocs.io/en/latest/index.html
+
+
 ## License
 
 Se LICENSE in the root folder.
