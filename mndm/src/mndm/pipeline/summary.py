@@ -58,6 +58,10 @@ from .summary_events import (
     estimate_coverage_seconds,
     map_events_to_labels,
 )
+from .state_labels import (
+    build_within_run_labels,
+    summarize_within_run_manifest,
+)
 from .summary_qc import write_qc_files
 from .summary_utils import (
     apply_fd_censoring,
@@ -1736,6 +1740,28 @@ class SubjectSummaryRunner:
                 if c in sub_frame.columns:
                     stage_column = c
                     break
+        within_run_labels = self._build_within_run_labels(
+            config=config,
+            sub_id=sub_id,
+            ses_id=ses_id,
+            task=task,
+            raw_task=raw_task,
+            run_id=run_id,
+            acq_id=acq_id,
+            tr_sec=self._resolve_run_tr_seconds(sub_frame),
+            time=time,
+            window_start=window_start,
+            window_end=window_end,
+            sub_frame=sub_frame,
+        )
+        effective_stage_codebook = mnps_cfg["stage_codebook"]
+        if stage is None and within_run_labels.stage is not None:
+            stage = within_run_labels.stage
+            stage_source = within_run_labels.stage_source
+            stage_column = within_run_labels.stage_column
+            if within_run_labels.stage_codebook:
+                effective_stage_codebook = within_run_labels.stage_codebook
+
         stage_frac_labeled = None
         if stage is not None and len(stage) > 0:
             try:
@@ -2012,7 +2038,7 @@ class SubjectSummaryRunner:
                 "fs_out": mnps_cfg["fs_out"],
                 "window_sec": mnps_cfg["window_sec"],
                 "overlap": mnps_cfg["overlap"],
-                "stage_codebook": mnps_cfg["stage_codebook"],
+                "stage_codebook": effective_stage_codebook,
                 "stage_source": stage_source,
                 "stage_column": stage_column,
                 "stage_events_path": stage_events_path,
@@ -2119,9 +2145,14 @@ class SubjectSummaryRunner:
             payload.extensions = extensions_payload
 
         # Event mapping to labels (opt-in)
+        labels_combined: Dict[str, np.ndarray] = {}
+        if within_run_labels.labels:
+            labels_combined.update(within_run_labels.labels)
         labels_mapped = self._map_events_to_labels(config, time, window_start, window_end, events)
         if labels_mapped:
-            payload.labels = labels_mapped
+            labels_combined.update(labels_mapped)
+        if labels_combined:
+            payload.labels = labels_combined
 
         # Add regional MNPS/MNJ results
         if regional_mnps_results and regional_mnps_results.n_networks > 0:
@@ -2159,6 +2190,7 @@ class SubjectSummaryRunner:
             "stage_column": stage_column,
             "stage_events_path": stage_events_path,
             "stage_frac_labeled": stage_frac_labeled,
+            "within_run_labels": summarize_within_run_manifest(within_run_labels.manifest) if within_run_labels.manifest else None,
             "coverage": {
                 "rule_tag": coverage_tag,
                 "min_seconds_effective": min_seconds_eff,
@@ -2642,6 +2674,53 @@ class SubjectSummaryRunner:
             events=events,
             dataset_id=self.dataset.ds_id,
         )
+
+    def _build_within_run_labels(
+        self,
+        *,
+        config: Mapping[str, Any],
+        sub_id: str,
+        ses_id: Optional[str],
+        task: Optional[str],
+        raw_task: Optional[str],
+        run_id: Optional[str],
+        acq_id: Optional[str],
+        tr_sec: Optional[float],
+        time: np.ndarray,
+        window_start: np.ndarray,
+        window_end: np.ndarray,
+        sub_frame: pd.DataFrame,
+    ) -> Any:
+        """Build optional within-run labels aligned to the MNPS time axis."""
+        return build_within_run_labels(
+            config=config,
+            dataset_id=self.dataset.ds_id,
+            dataset_root=self._dataset_root(),
+            sub_id=sub_id,
+            ses_id=ses_id,
+            task=task,
+            raw_task=raw_task,
+            run_id=run_id,
+            acq_id=acq_id,
+            tr_sec=tr_sec,
+            time=time,
+            window_start=window_start,
+            window_end=window_end,
+            sub_frame=sub_frame,
+        )
+
+    @staticmethod
+    def _resolve_run_tr_seconds(sub_frame: pd.DataFrame) -> Optional[float]:
+        """Best-effort TR resolution for within-run label sources using TR indices."""
+        if "fmri_sfreq" in sub_frame.columns:
+            try:
+                sfreq = pd.to_numeric(sub_frame["fmri_sfreq"], errors="coerce").to_numpy(dtype=float)
+                finite = sfreq[np.isfinite(sfreq) & (sfreq > 0)]
+                if finite.size:
+                    return float(1.0 / finite[0])
+            except Exception:
+                pass
+        return None
 
     def _write_qc_files(
         self,

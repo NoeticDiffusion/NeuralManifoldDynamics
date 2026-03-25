@@ -89,6 +89,9 @@ regional_mnps:
 metadata_extraction:
   datasets:
     ds006623:
+      participants:
+        path: "G:/Science_Datasets_longtime_storage/ds006623/Participant_Info.csv"
+        subject_id_column: "Subjects"
       group:
         default: "Healthy"
       condition:
@@ -100,3 +103,55 @@ metadata_extraction:
       task:
         from_filename: true
         compound_conditions: ["recovery", "awake", "light", "deep"]
+
+within_run_labels:
+  datasets:
+    ds006623:
+      enabled: true
+      output_name: "within_run_state_v1"
+      write_to_stage: true
+      write_to_labels: true
+      codebook_name: "within_run_state_v1"
+      rules:
+        - id: "ds006623_lor_task2"
+          match:
+            task: "imagery"
+            run: "run-2"
+          source:
+            type: "boundary_table"
+            path: "G:/Science_Datasets_longtime_storage/ds006623/LOR_ROR_Timing.csv"
+            subject_column: "Subject"
+            boundaries:
+              lor:
+                column: "LOR time (TR in task2)"
+                units: "tr_index"
+                index_origin: 1
+                na_values: ["N/A", "NA", ""]
+          segments:
+            - label: "pre_lor"
+              end: "lor"
+              on_missing_boundary: "expand"
+            - label: "unresponsive"
+              start: "lor"
+              on_missing_boundary: "skip"
+        - id: "ds006623_ror_task3"
+          match:
+            task: "imagery"
+            run: "run-3"
+          source:
+            type: "boundary_table"
+            path: "G:/Science_Datasets_longtime_storage/ds006623/LOR_ROR_Timing.csv"
+            subject_column: "Subject"
+            boundaries:
+              ror:
+                column: "ROR time (TR in task3)"
+                units: "tr_index"
+                index_origin: 1
+                na_values: ["N/A", "NA", ""]
+          segments:
+            - label: "unresponsive"
+              end: "ror"
+              on_missing_boundary: "expand"
+            - label: "post_ror"
+              start: "ror"
+              on_missing_boundary: "skip"

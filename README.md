@@ -90,6 +90,13 @@ Those runs usually contain:
 - `features_snapshot.json`
 - per-subject or per-run subdirectories with `summary.json`, QC JSON, and HDF5 outputs
 
+Some datasets also carry labels that vary within a single run instead of staying constant for the whole recording. MNDM now supports these as time-aligned labels on the MNPS axis, for example:
+
+- `ds006623`: keeps run identity such as `task=imagery` but writes within-run anesthesia state as `pre_lor`, `unresponsive`, `post_ror`
+- sleep datasets: can write changing sleep stages within one recording instead of forcing them into one scalar run condition
+
+These labels are written alongside the MNPS trajectory rather than replacing run-level metadata.
+
 ## Development Notes
 
 - `requirements.txt` is shared from the repo root.

@@ -56,6 +56,8 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
     epoch_ds = _pick(_pick(_pick(config, "epoching", {}), "datasets", {}), ds_id, None)
     meta_ds = _pick(_pick(_pick(config, "metadata_extraction", {}), "datasets", {}), ds_id, None)
     mnps_9d_ds = _pick(_pick(_pick(config, "mnps_9d", {}), "datasets", {}), ds_id, None)
+    within_run_labels = _pick(config, "within_run_labels", {})
+    within_run_labels_ds = _pick(_pick(within_run_labels, "datasets", {}), ds_id, None)
 
     robustness = _pick(config, "robustness", {})
     coverage = _pick(robustness, "coverage", {})
@@ -83,6 +85,7 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
             "preprocess_fmri": fmri_pre_ds,
             "epoching": epoch_ds,
             "metadata_extraction": meta_ds,
+            "within_run_labels": within_run_labels_ds,
         },
         "source": _pick(config, "source", {}),
     }

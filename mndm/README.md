@@ -30,6 +30,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
   - FD censoring of high-motion epochs (framewise_displacement > 0.5 mm, ±1 neighbour)
   - Provisional flag for fMRI modularity when a window has very few volumes
   - Event→MNPS mapping (opt-in) writing binary labels aligned to MNPS time
+  - Within-run state labeling for datasets where labels change inside one run, with support for boundary tables, interval tables, and feature-derived stage columns
   - Window start/end (seconds) per MNPS point in HDF5 for clearer time alignment
 
 ---
@@ -213,6 +214,68 @@ When `preprocess.eeg_csd.enabled=true`, scalp EEG channels transformed by
 recordings from disappearing at the modality collection stage simply because
 MNE relabels their channel type from `eeg` to `csd`.
 
+### Within-Run Labels
+
+Some datasets need two different label layers:
+
+- run-level metadata such as `task`, `run`, and a stable `condition`
+- time-varying labels that change within the same run
+
+MNDM supports this through `within_run_labels`, which maps external timing/state information onto the MNPS time axis and writes the result to `payload.stage` and/or `payload.labels[...]`.
+
+Supported source types:
+
+- `boundary_table`: transition points such as LOR/ROR
+- `interval_table`: start/stop/label intervals such as sleep scoring windows
+- `column_from_features`: stage columns that already exist per epoch in `features.csv` or `features.parquet`
+
+Example config shape:
+
+```yaml
+within_run_labels:
+  datasets:
+    dsExample:
+      enabled: true
+      output_name: "within_run_state_v1"
+      write_to_stage: true
+      write_to_labels: true
+      codebook:
+        wake: 0
+        n2: 2
+        rem: 4
+      rules:
+        - id: "sleep_intervals"
+          match:
+            task: "sleep"
+            run: "run-1"
+          source:
+            type: "interval_table"
+            path: "labels/sleep_intervals.csv"
+            subject_column: "subject"
+            start_column: "start"
+            end_column: "end"
+            label_column: "label"
+            units: "seconds"
+```
+
+Dataset-specific logic should live in config, not in core summary logic.
+
+### `ds006623` Special Case
+
+`ds006623` is a concrete example of within-run state labeling:
+
+- run identity remains `task=imagery`
+- `run-2` is split at `LOR time (TR in task2)` into `pre_lor` and `unresponsive`
+- `run-3` is split at `ROR time (TR in task3)` into `unresponsive` and `post_ror`
+- `ROR=N/A` keeps the run labeled `unresponsive` until run end
+
+The dataset overlay `config/config_ingest_ds006623.yaml` now points to:
+
+- `G:/Science_Datasets_longtime_storage/ds006623/LOR_ROR_Timing.csv`
+- `G:/Science_Datasets_longtime_storage/ds006623/Participant_Info.csv`
+
+This keeps run-level labels such as `imagery` stable while exposing the clinically relevant state sequence on the MNPS axis.
+
 ---
 
 ## Output Format
@@ -261,7 +324,8 @@ The `/regions/*` group is optional supporting input data, mainly for raw fMRI re
 | `/jacobian/J_dot` | (W, 3, 3) | Jacobian time derivatives |
 | `/jacobian/centers` | (W,) | Window center indices |
 | `/nn/indices` | (T, k) | kNN neighbor indices |
-| `/labels/stage` | (T,) | Sleep stage labels |
+| `/labels/stage` | (T,) | Canonical integer-coded per-window state series, e.g. sleep stages or within-run anesthesia state |
+| `/labels/<name>` | (T,) | Additional aligned labels, binary, numeric, or categorical |
 | `/regional_mnps/<network>/mnps` | (Tr, 3) | Canonical regional MNPS output for any modality |
 | `/regions/bold` | (R, T') | Optional raw regional fMRI time series |
 | `/extensions/e_kappa/*` | varies | Energetic curvature |
@@ -286,6 +350,11 @@ The `/regions/*` group is optional supporting input data, mainly for raw fMRI re
   "extensions": {
     "e_kappa": { "mean_kappa": 0.042 },
     "tig": { "tau": 12.5, "TIG": 0.79 }
+  },
+  "within_run_labels": {
+    "output_name": "within_run_state_v1",
+    "assigned_frac": 1.0,
+    "matched_rules": [{ "id": "ds006623_lor_task2", "source_type": "boundary_table" }]
   }
 }
 ```
