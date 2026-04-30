@@ -1,0 +1,110 @@
+version: 2.0
+modality: nwb_mouse_eeg
+
+imports:
+  - "./config_ingest_common_nwb_mouse_eeg.yaml"
+
+datasets:
+  - dandi_000458
+
+source:
+  name: "DANDI 000458"
+  platform: "DANDI"
+  format: "NWB"
+  dataset_id: "000458"
+  dataset_name: "Simultaneous electroencephalography, extracellular electrophysiology, and cortical electrical stimulation in head-fixed mice"
+  dataset_version: "draft"
+  species: "Mus musculus"
+  species_profile: "lab_mouse_epidural_eeg_v1"
+  url: "https://dandiarchive.org/dandiset/000458"
+
+paths:
+  received_dir: "data/dandi/raw"
+  processed_dir: "data/dandi/processed"
+  dataset_received_dirs:
+    dandi_000458: "data/dandi/raw/000458"
+
+preprocess:
+  nwb:
+    datasets:
+      dandi_000458:
+        # Leave unset until probe confirms the exact surface EEG ElectricalSeries path.
+        series_path: null
+        prefer_series_keywords: ["eeg", "surface", "electrical", "lfp", "ecephys"]
+        channel_type: "eeg"
+        scale_to_microvolts: true
+
+metadata_extraction:
+  datasets:
+    dandi_000458:
+      group:
+        default: "mouse"
+      condition:
+        candidates: ["condition", "state", "epoch", "anesthesia"]
+        normalize:
+          awake: "awake"
+          wake: "awake"
+          isoflurane: "isoflurane"
+          anesthesia: "isoflurane"
+          anaesthesia: "isoflurane"
+          recovery: "recovery"
+      task:
+        default: "eeg_state"
+
+state_labels:
+  enabled: true
+  source: "nwb_intervals"
+  output_name: "nwb_state"
+  source_output_name: "nwb_state_source"
+  write_to_stage: true
+  write_to_features: true
+  # NWB standard tables first; custom /intervals/* tables are searched after
+  # these so dataset-specific state tables still work without hardcoding names.
+  candidate_intervals: ["epochs", "trials"]
+  include_custom_intervals: true
+  behavioral_fallback: true
+  point_events_to_windows: true
+  point_event_max_duration_sec: 1.0
+  label_candidates:
+    - "state"
+    - "condition"
+    - "anesthesia_state"
+    - "behavioral_epoch"
+    - "tags"
+    - "epoch"
+    - "label"
+  normalize:
+    awake: "awake"
+    wake: "awake"
+    isoflurane: "isoflurane"
+    isoflurane_induction: "isoflurane_induction"
+    isoflurane_anesthesia: "isoflurane_anesthesia"
+    anesthesia: "isoflurane"
+    anaesthesia: "isoflurane"
+    recovery: "recovery"
+  codebook:
+    awake: 0
+    isoflurane_induction: 1
+    isoflurane: 2
+    isoflurane_anesthesia: 2
+    recovery: 3
+
+within_run_labels:
+  datasets:
+    dandi_000458:
+      enabled: true
+      output_name: "nwb_state"
+      write_to_stage: false
+      write_to_labels: true
+      rules:
+        - id: "dandi_000458_nwb_state_from_features"
+          source:
+            type: "column_from_features"
+            column: "nwb_state"
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+
+regional_mnps:
+  enabled: false

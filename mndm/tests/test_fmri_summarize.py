@@ -67,7 +67,7 @@ def test_cmd_summarize_with_fmri_features(tmp_path, require_real_h5py):
     assert rc == 0
 
     # Check that an MNPS directory and HDF5 file were created
-    mnps_dirs = list(ds_path.glob("mnps_*"))
+    mnps_dirs = list(ds_path.glob(f"neuralmanifolddynamics_{ds_id}_*"))
     assert mnps_dirs
     # h5 files are in subject subdirectories (e.g., mnps_*/sub-unknown_ses-unknown/*.h5)
     h5_files = list(mnps_dirs[0].glob("**/*.h5"))

@@ -164,6 +164,73 @@ def _pick_best_fmri_events_tsv(
     return max(candidates, key=_score)
 
 
+def _parse_bids_entities_from_stem(stem: str) -> Dict[str, Optional[str]]:
+    """Extract common BIDS entities from a file stem."""
+    entities: Dict[str, Optional[str]] = {
+        "subject": None,
+        "session": None,
+        "task": None,
+        "run": None,
+        "acq": None,
+    }
+    for part in stem.split("_"):
+        if part.startswith("sub-"):
+            entities["subject"] = part[4:]
+        elif part.startswith("ses-"):
+            entities["session"] = part[4:]
+        elif part.startswith("task-"):
+            entities["task"] = part[5:]
+        elif part.startswith("run-"):
+            entities["run"] = part[4:]
+        elif part.startswith("acq-"):
+            entities["acq"] = part[4:]
+    return entities
+
+
+def _probe_nwb_index_metadata(nwb_file: Path) -> Dict[str, str]:
+    """Return lightweight NWB metadata for file-index provenance."""
+    meta = {
+        "nwb_acquisitions": "",
+        "nwb_processing_modules": "",
+        "nwb_intervals": "",
+        "nwb_devices": "",
+        "nwb_modality_hints": "",
+        "nwb_probe_error": "",
+    }
+    try:
+        import h5py
+
+        with h5py.File(nwb_file, "r") as handle:
+            acquisitions = sorted(str(k) for k in handle.get("acquisition", {}).keys())
+            processing = sorted(str(k) for k in handle.get("processing", {}).keys())
+            intervals = sorted(str(k) for k in handle.get("intervals", {}).keys())
+            devices = sorted(str(k) for k in handle.get("general/devices", {}).keys())
+        search_space = " ".join(acquisitions + processing + intervals + devices).lower()
+        hints: list[str] = []
+        if "ecephys" in search_space or "electrical" in search_space or "lfp" in search_space:
+            hints.append("ecephys")
+        if "eeg" in search_space:
+            hints.append("eeg")
+        if "emg" in search_space:
+            hints.append("emg")
+        if "ophys" in search_space or "image" in search_space:
+            hints.append("ophys")
+        if "behavior" in search_space:
+            hints.append("behavior")
+        meta.update(
+            {
+                "nwb_acquisitions": "|".join(acquisitions),
+                "nwb_processing_modules": "|".join(processing),
+                "nwb_intervals": "|".join(intervals),
+                "nwb_devices": "|".join(devices),
+                "nwb_modality_hints": "|".join(dict.fromkeys(hints)),
+            }
+        )
+    except Exception as exc:
+        meta["nwb_probe_error"] = str(exc)
+    return meta
+
+
 def _resolve_fmri_indexing_options(
     config: Mapping[str, Any] | None,
     dataset_id: str | None,
@@ -316,6 +383,53 @@ def build_file_index(
             )
 
     # ------------------------------------------------------------------
+    # NWB files (DANDI/local NWB source assets)
+    # ------------------------------------------------------------------
+    for nwb_file in root.rglob("*.nwb"):
+        try:
+            rel_path = nwb_file.relative_to(root)
+        except ValueError:
+            continue
+
+        if _should_skip_relpath(rel_path):
+            continue
+        parts = rel_path.parts
+        if "derivatives" in parts:
+            continue
+
+        entities = _parse_bids_entities_from_stem(nwb_file.stem)
+        subject = entities["subject"] or _infer_non_bids_subject(parts, nwb_file.stem)
+
+        try:
+            size = nwb_file.stat().st_size
+            md5_hash = _maybe_compute_md5(nwb_file, size_bytes=size, max_bytes=md5_max_bytes)
+        except Exception as e:
+            logger.warning(f"Could not stat {nwb_file}: {e}")
+            size = 0
+            md5_hash = None
+
+        nwb_meta = _probe_nwb_index_metadata(nwb_file)
+        records.append(
+            {
+                "path": str(nwb_file.relative_to(root)),
+                "subject": subject,
+                "session": entities["session"],
+                "task": entities["task"],
+                "run": entities["run"],
+                "acq": entities["acq"],
+                "modality": "nwb",
+                "md5": md5_hash,
+                "size": size,
+                "eeg_json": None,
+                "channels_tsv": None,
+                "events_tsv": None,
+                "fmri_json": None,
+                "fmri_events_tsv": None,
+                **nwb_meta,
+            }
+        )
+
+    # ------------------------------------------------------------------
     # fMRI BOLD files
     # ------------------------------------------------------------------
     bold_patterns, require_func_dir = _resolve_fmri_indexing_options(config, dataset_id)
@@ -422,6 +536,12 @@ def build_file_index(
         "events_tsv",
         "fmri_json",
         "fmri_events_tsv",
+        "nwb_acquisitions",
+        "nwb_processing_modules",
+        "nwb_intervals",
+        "nwb_devices",
+        "nwb_modality_hints",
+        "nwb_probe_error",
     ]
     df = pd.DataFrame(records, columns=columns)
     if not df.empty and "modality" in df.columns:

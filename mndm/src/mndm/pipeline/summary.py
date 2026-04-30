@@ -81,7 +81,7 @@ from .robustness_helpers import (
     compute_psd_multiverse_stability,
     compute_robust_and_reliability_summaries,
 )
-from .. import preprocess
+from .. import nwb_intervals, preprocess
 from core.io import json_writer
 from .. import jacobian, projection, robustness, schema
 from .run_manifest import write_run_manifest
@@ -1725,6 +1725,7 @@ class SubjectSummaryRunner:
                 )
 
         # Extract auxiliary arrays
+        effective_stage_codebook = mnps_cfg["stage_codebook"]
         stage = extract_stage_array(sub_frame, mnps_cfg["stage_codebook"])
         stage_source: Optional[str] = None
         stage_column: Optional[str] = None
@@ -1740,6 +1741,17 @@ class SubjectSummaryRunner:
                 if c in sub_frame.columns:
                     stage_column = c
                     break
+            try:
+                state_cfg = nwb_intervals.resolve_state_labels_config(config, self.dataset.ds_id)
+                state_codebook = state_cfg.get("codebook", {}) if isinstance(state_cfg, Mapping) else {}
+                if bool(state_cfg.get("enabled", False)) and "nwb_state" in sub_frame.columns and isinstance(state_codebook, Mapping):
+                    effective_stage_codebook = {
+                        str(k): int(v)
+                        for k, v in state_codebook.items()
+                    }
+                    stage_source = "features_csv:nwb_intervals"
+            except Exception:
+                logger.exception("Failed resolving NWB state codebook for %s", dataset_label)
         within_run_labels = self._build_within_run_labels(
             config=config,
             sub_id=sub_id,
@@ -1754,7 +1766,6 @@ class SubjectSummaryRunner:
             window_end=window_end,
             sub_frame=sub_frame,
         )
-        effective_stage_codebook = mnps_cfg["stage_codebook"]
         if stage is None and within_run_labels.stage is not None:
             stage = within_run_labels.stage
             stage_source = within_run_labels.stage_source

@@ -18,6 +18,7 @@ The repository is organized around a shared pipeline:
 
 - `mndm`: Core MNPS pipeline. Handles `features`, `summarize`, `all`, `pack`, and structure validation. See `mndm/README.md`.
 - `openneuro_ingest`: OpenNeuro-facing download and ingest utilities. Use this when pulling public datasets before MNDM processing.
+- `dandi_ingest`: DANDI-facing listing, manifest, download, and NWB probing utilities for DANDI archive assets.
 - `apollo_ingest`: Ingest helpers for Apollo-style sources used in this repo.
 - `vitaldb_ingest`: Ingest helpers for VitalDB-style sources used in this repo.
 - `core`: Shared config loading, path resolution, I/O helpers, and common utilities used across packages.
@@ -47,7 +48,7 @@ If you run directly from this source tree, set `PYTHONPATH` so the package modul
 
 ```powershell
 $repo_root="C:/path/to/NeuralManifoldDynamics"
-$env:PYTHONPATH="$repo_root/mndm/src;$repo_root/core/src;$repo_root/openneuro_ingest/src;$repo_root/apollo_ingest/src;$repo_root/vitaldb_ingest/src"
+$env:PYTHONPATH="$repo_root/mndm/src;$repo_root/core/src;$repo_root/openneuro_ingest/src;$repo_root/apollo_ingest/src;$repo_root/vitaldb_ingest/src;$repo_root"
 ```
 
 Example MNDM run:
@@ -56,12 +57,20 @@ Example MNDM run:
 python -m mndm.cli all --dataset ds003490 --config mndm/config/config_ingest_ds003490.yaml --n-jobs 12
 ```
 
+Example DANDI manifest/probe flow:
+
+```powershell
+python -m dandi_ingest.cli list --config dandi_ingest/configs/dandi_000718.yaml
+python -m dandi_ingest.cli probe --config dandi_ingest/configs/dandi_000718.yaml
+```
+
 ## Where To Read Next
 
 - MNDM usage and output contracts: `mndm/README.md`
 - MNDM command reference: `mndm/Command_cheat_sheet.md`
 - MNDM output schema details: `mndm/Output_variables_guide.md`
 - OpenNeuro ingest details: `openneuro_ingest/`
+- DANDI ingest configs and adapters: `dandi_ingest/`
 
 ## Repository Layout
 
@@ -70,6 +79,7 @@ NeuralManifoldDynamics/
 ├── core/
 ├── mndm/
 ├── openneuro_ingest/
+├── dandi_ingest/
 ├── apollo_ingest/
 ├── vitaldb_ingest/
 ├── requirements.txt

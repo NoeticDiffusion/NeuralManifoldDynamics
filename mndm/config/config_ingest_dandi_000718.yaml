@@ -1,0 +1,50 @@
+version: 2.0
+modality: nwb_rodent
+
+imports:
+  - "./config_ingest_common_nwb_rodent.yaml"
+
+datasets:
+  - dandi_000718
+
+source:
+  name: "DANDI 000718"
+  platform: "DANDI"
+  format: "NWB"
+  dataset_id: "000718"
+  dataset_name: "Offline ensemble co-reactivation and memory integration"
+  dataset_version: "draft"
+  species: "rodent"
+  url: "https://dandiarchive.org/dandiset/000718"
+
+paths:
+  received_dir: "data/dandi/raw"
+  processed_dir: "data/dandi/processed"
+  dataset_received_dirs:
+    dandi_000718: "data/dandi/raw/000718"
+
+preprocess:
+  nwb:
+    datasets:
+      dandi_000718:
+        series_path: null
+        prefer_series_keywords: ["lfp", "electrical", "ecephys", "eeg"]
+        channel_type: "eeg"
+        scale_to_microvolts: true
+
+metadata_extraction:
+  datasets:
+    dandi_000718:
+      group:
+        default: "DANDI"
+      condition:
+        default: "unknown"
+      task:
+        default: "nwb"
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+
+regional_mnps:
+  enabled: false

@@ -1,0 +1,73 @@
+version: 2.0
+modality: nwb_rodent
+
+imports:
+  - "./config_ingest_common_nwb.yaml"
+
+source:
+  species: "rodent"
+
+preprocess:
+  sfreq: 500
+  sfreq_candidates: [500, 1000, 1250, 2500]
+  notch_hz: 60
+  eeg_bandpass: [1, 150]
+  reref: "average"
+  nwb:
+    channel_type: "eeg"
+    prefer_series_keywords: ["lfp", "electrical", "ecephys", "eeg"]
+    scale_to_microvolts: true
+
+epoching:
+  length_s: 4.0
+  step_s: 2.0
+  datasets: {}
+
+features:
+  eeg_psd:
+    method: "multitaper"
+    bandwidth: null
+    fmin: 1.0
+    fmax: 150.0
+  # Keep canonical column names (`eeg_delta`, `eeg_theta`, etc.) while
+  # adapting band edges for rodent/LFP-style recordings.
+  eeg_bands:
+    delta: [1, 4]
+    theta: [4, 12]
+    alpha: [12, 20]
+    beta: [20, 35]
+    gamma: [35, 90]
+    high_gamma: [90, 150]
+  ratios:
+    alpha_theta: ["alpha", "theta"]
+    beta_alpha: ["beta", "alpha"]
+
+robustness:
+  coverage:
+    min_seconds: 30
+    min_epochs: 10
+    datasets: {}
+  ensembles:
+    enabled: false
+    min_channels: 3
+    groups: {}
+    datasets: {}
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps:
+  fs_out: 2.0
+  window_sec: 4.0
+  overlap: 0.5
+  derivative: {method: "sav_gol", window: 7, polyorder: 3}
+  jacobian:
+    enabled: true
+  knn: {k: 20, metric: "euclidean"}
+  ridge: {alpha: 1.0, cv_folds: 5, distance_weighted: true}
+  whiten: true
+  super_window: 3

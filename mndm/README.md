@@ -40,6 +40,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - Python 3.11+
 - Dependencies: `numpy`, `scipy`, `pandas`, `mne`, `h5py`, `pyyaml`, `tqdm`, `joblib`
 - Optional: `openneuro-py` (for dataset downloads)
+- Optional: `dandi`, `pynwb` (for DANDI archive access and NWB inputs)
 - Optional but recommended for feature storage: `pyarrow`
 
 ---
@@ -62,7 +63,7 @@ pip install -r requirements.txt
 If you run from this source checkout without installing packages editably, set `PYTHONPATH` before invoking `mndm`:
 
 ```powershell
-$env:PYTHONPATH="H:/SourceRepo2/NeuralManifoldDynamics/mndm/src;H:/SourceRepo2/NeuralManifoldDynamics/core/src;H:/SourceRepo2/NeuralManifoldDynamics/openneuro_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/apollo_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/vitaldb_ingest/src"
+$env:PYTHONPATH="H:/SourceRepo2/NeuralManifoldDynamics/mndm/src;H:/SourceRepo2/NeuralManifoldDynamics/core/src;H:/SourceRepo2/NeuralManifoldDynamics/openneuro_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/apollo_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/vitaldb_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics"
 ```
 
 ---
@@ -77,6 +78,10 @@ python -m mndm.cli prerequisite-check --dataset ds003490
 
 # Download (ingest)
 python -m openneuro.cli download --dataset ds003490
+
+# Or list/probe DANDI NWB assets before pointing an MNDM NWB config at the local raw root.
+# python -m dandi_ingest.cli list --config dandi_ingest/configs/dandi_000718.yaml
+# python -m dandi_ingest.cli probe --config dandi_ingest/configs/dandi_000718.yaml
 
 # Compute per-epoch features (mndm)
 python -m mndm.cli features --dataset ds003490

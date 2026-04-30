@@ -1,0 +1,108 @@
+version: 2.0
+modality: nwb_mouse_eeg
+
+imports:
+  - "./config_ingest_common_nwb_rodent.yaml"
+
+source:
+  species: "Mus musculus"
+  species_profile: "lab_mouse_epidural_eeg_v1"
+
+preprocess:
+  sfreq: 250
+  sfreq_candidates: [250, 500, 1000]
+  notch_hz: 60
+  eeg_bandpass: [0.5, 100]
+  # Chronic epidural mouse EEG is often already recorded against a hardware
+  # reference. Do not apply CAR unless a dataset overlay explicitly requests it.
+  reref: null
+  nwb:
+    channel_type: "eeg"
+    prefer_series_keywords: ["eeg", "lfp", "electrical", "ecephys"]
+    scale_to_microvolts: true
+
+mouse_eeg_profile:
+  profile_id: "lab_mouse_epidural_eeg_v1"
+  intended_scope: "chronic epidural screw EEG in laboratory mouse"
+  notes:
+    - "Narrow EEG-specific profile; do not use as the default for all rodent NWB/ecephys assets."
+    - "Montage fields are provenance metadata for audit and downstream interpretation, not preprocessing geometry."
+    - "Gamma upper bound is numeric because feature extraction expects finite band edges; adjust fmax per dataset if sampling is lower."
+  montage:
+    coordinate_system: "stereotaxic_mm"
+    eeg_screws:
+      - name: "F"
+        label: "frontal_right"
+        ap_mm: 1.0
+        ap_reference: "bregma"
+        ml_mm: 1.5
+        hemisphere: "R"
+        tissue: "epidural_skull_screw"
+      - name: "P"
+        label: "parietal_right"
+        ap_mm: 1.0
+        ap_reference: "lambda"
+        ml_mm: 1.5
+        hemisphere: "R"
+        tissue: "epidural_skull_screw"
+    reference:
+      default_policy: "cerebellum_skull_screw"
+      alternatives:
+        - "neck_wire"
+    ground:
+      default_policy: "cerebellum_skull_screw"
+      alternatives:
+        - "neck_wire"
+  frequency_band_sources:
+    general_bands: "https://pmc.ncbi.nlm.nih.gov/articles/PMC11067159/"
+    sleep_theta: "https://pmc.ncbi.nlm.nih.gov/articles/PMC4781694/"
+    montage_protocol: "https://pmc.ncbi.nlm.nih.gov/articles/PMC4781694/"
+    reference_ground_examples:
+      - "https://pmc.ncbi.nlm.nih.gov/articles/PMC10842913/"
+      - "https://link.springer.com/article/10.1186/s12868-019-0490-z"
+  frequency_requirements:
+    gamma_interpretation_min_sfreq_hz: 250
+    preferred_sfreq_hz: [250, 500]
+
+epoching:
+  length_s: 4.0
+  step_s: 2.0
+  datasets: {}
+
+features:
+  eeg_psd:
+    method: "multitaper"
+    bandwidth: null
+    fmin: 0.5
+    fmax: 100.0
+  eeg_bands:
+    delta: [0.5, 4]
+    theta: [4, 8]
+    theta_sleep: [6, 10]
+    alpha: [8, 13]
+    beta: [13, 32]
+    gamma: [32, 100]
+  ratios:
+    alpha_theta: ["alpha", "theta"]
+    beta_alpha: ["beta", "alpha"]
+    theta_sleep_theta: ["theta_sleep", "theta"]
+
+robustness:
+  coverage:
+    min_seconds: 30
+    min_epochs: 10
+    datasets: {}
+  ensembles:
+    enabled: false
+    min_channels: 2
+    groups:
+      frontal: ["F", "frontal_right"]
+      parietal: ["P", "parietal_right"]
+    datasets: {}
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false

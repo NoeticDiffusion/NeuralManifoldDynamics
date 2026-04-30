@@ -1,0 +1,29 @@
+dataset:
+  config_id: dandi_000718
+  adapter: dataset_000718
+  dandiset_id: "000718"
+  version: draft
+  target_mndm_dataset_id: dandi_000718
+
+storage:
+  output_root: data/dandi
+  raw_root: data/dandi/raw/000718
+  manifest_root: data/dandi/manifests/000718
+  triage_root: data/dandi/triage/000718
+
+selection:
+  path_filters:
+    - ".nwb"
+  subject_filters: []
+  session_filters: []
+  asset_limit: 6
+
+execution:
+  metadata_only: true
+  streaming_allowed: true
+
+outputs:
+  manifest_json: data/dandi/manifests/000718/dandi_000718_manifest.json
+  manifest_csv: data/dandi/manifests/000718/dandi_000718_manifest.csv
+  triage_markdown: data/dandi/triage/000718/dandi_000718_triage.md
+  probe_json: data/dandi/triage/000718/dandi_000718_probe.json

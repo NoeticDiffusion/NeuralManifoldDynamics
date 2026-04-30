@@ -1,0 +1,68 @@
+version: 2.0
+modality: nwb
+
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets: []
+
+source:
+  name: "DANDI"
+  platform: "DANDI"
+  format: "NWB"
+  dataset_id: null
+  dataset_name: null
+  dataset_version: null
+  species: null
+  doi: null
+  url: null
+  acknowledgement: null
+
+paths:
+  received_dir: "data/dandi/raw"
+  processed_dir: "data/dandi/processed"
+  dataset_received_dirs: {}
+
+preprocess:
+  sfreq: 250
+  sfreq_candidates: [250, 500, 1000]
+  notch_hz: 60
+  eeg_bandpass: [1, 100]
+  reref: "average"
+  eeg_csd:
+    enabled: false
+  nwb:
+    enabled: true
+    # First-pass support is continuous ephys-like ElectricalSeries/LFP data.
+    # Calcium/ophys and spike trains are intentionally probe-only for now.
+    series_path: null
+    prefer_series_keywords: ["lfp", "electrical", "eeg"]
+    channel_type: "eeg"
+    scale_to_microvolts: true
+    datasets: {}
+
+features:
+  eeg_psd:
+    method: "multitaper"
+    bandwidth: null
+    fmin: 1.0
+    fmax: 100.0
+  eeg_bands:
+    delta: [1, 4]
+    theta: [4, 8]
+    alpha: [8, 12]
+    beta: [13, 30]
+    gamma: [30, 80]
+  ratios:
+    alpha_theta: ["alpha", "theta"]
+    beta_alpha: ["beta", "alpha"]
+
+metadata_extraction:
+  default:
+    participants:
+      path:
+      subject_id_candidates: ["participant_id", "subject_id", "subject"]
+    group: {candidates: ["group", "Group", "genotype", "Genotype"]}
+    condition: {candidates: ["condition", "Condition", "state", "State"], session_map: {}}
+    task: {from_filename: true}
+  datasets: {}

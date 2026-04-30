@@ -177,6 +177,10 @@ def _estimate_peak_ram_per_file(file_path: Path, file_size_bytes: int) -> tuple[
         return float(max(0.45, size_gb * 1.8)), "size_fallback_edf_v2"
     if suffixes.endswith(".vhdr") or suffixes.endswith(".eeg") or suffixes.endswith(".set"):
         return float(max(0.9, size_gb * 3.5)), "size_fallback_eeg_v1"
+    if suffixes.endswith(".nwb"):
+        # NWB files can contain multiple acquisition families; the first MNDM
+        # path loads a selected ElectricalSeries plus modest filtering overhead.
+        return float(max(0.7, size_gb * 2.5)), "size_fallback_nwb_v1"
     if suffixes.endswith(".nii") or suffixes.endswith(".nii.gz"):
         hdr = _parse_nifti_header_stats(file_path)
         if hdr:

@@ -24,6 +24,7 @@ from . import eeg_complexity
 from . import eeg_dfc
 from . import eeg_sync
 from core.metrics import graph as graph_metrics
+from .. import nwb_intervals
 from ..reproducibility import resolve_component_seed
 
 try:
@@ -495,6 +496,20 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     sampling_cfg = epoch_selection.resolve_epoching_sampling_cfg(config, dataset_id)
     chosen_meta: List[tuple[int, int, int]] = meta_all
     stage_per_epoch: Optional[np.ndarray] = None
+    nwb_epoch_labels = nwb_intervals.NwbEpochLabels()
+    if raw_file_path and str(raw_file_path).lower().endswith(".nwb"):
+        try:
+            nwb_epoch_labels = nwb_intervals.align_nwb_intervals_to_epochs(
+                file_path=Path(str(raw_file_path)),
+                config=config,
+                dataset_id=dataset_id,
+                epoch_meta=meta_all,
+                sfreq=float(sfreq),
+            )
+            if nwb_epoch_labels.stage is not None:
+                stage_per_epoch = nwb_epoch_labels.stage
+        except Exception:
+            logger.exception("NWB interval state-label extraction failed for %s", raw_file_path)
     if (
         isinstance(sampling_cfg, Mapping)
         and bool(sampling_cfg.get("enabled", False))
@@ -658,6 +673,25 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                     stage_by_epoch_id[int(epoch_id_all)] = int(stage_per_epoch[i_meta])
         except Exception:
             stage_by_epoch_id = {}
+    nwb_labels_by_epoch_id: Dict[str, Dict[int, Any]] = {}
+    if nwb_epoch_labels.labels:
+        for label_name, values in nwb_epoch_labels.labels.items():
+            try:
+                arr = np.asarray(values, dtype=object)
+                value_map: Dict[int, Any] = {}
+                for i_meta, (epoch_id_all, _, _) in enumerate(meta_all):
+                    if i_meta >= len(arr):
+                        continue
+                    raw_value = arr[i_meta]
+                    if raw_value is None:
+                        continue
+                    value = str(raw_value).strip()
+                    if value:
+                        value_map[int(epoch_id_all)] = value
+                if value_map:
+                    nwb_labels_by_epoch_id[str(label_name)] = value_map
+            except Exception:
+                logger.exception("Failed to align NWB label column '%s'", label_name)
 
     # Compute PSD in batch (primary method)
     t_psd0 = time.perf_counter()
@@ -768,13 +802,17 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     ratios = features_cfg.get("ratios", {})
 
     for i, (epoch_id, start_idx, end_idx) in enumerate(meta):
-        features_dict: Dict[str, float] = {
+        features_dict: Dict[str, Any] = {
             "epoch_id": epoch_id,
             "t_start": start_idx / sfreq,
             "t_end": end_idx / sfreq,
         }
         if stage_by_epoch_id:
             features_dict["stage"] = int(stage_by_epoch_id.get(int(epoch_id), -1))
+        for label_name, value_map in nwb_labels_by_epoch_id.items():
+            value = value_map.get(int(epoch_id))
+            if value is not None:
+                features_dict[label_name] = value
 
         # --- Global montage (index 0) ---
         for band_name, (low, high) in eeg_bands.items():

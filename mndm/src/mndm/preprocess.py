@@ -468,12 +468,22 @@ def _infer_dataset_id(file_path: Path, config: Mapping[str, Any]) -> Optional[st
     """Internal helper: infer dataset id."""
     dataset_ids = config.get("datasets") if isinstance(config, Mapping) else None
     path_str = file_path.as_posix()
-    if isinstance(dataset_ids, Iterable):
-        for ds in dataset_ids:
+    normalized_ids: List[str] = []
+    if isinstance(dataset_ids, (str, bytes)):
+        dataset_iterable: Iterable[Any] = [str(dataset_ids)]
+    elif isinstance(dataset_ids, Iterable):
+        dataset_iterable = dataset_ids
+    else:
+        dataset_iterable = []
+    if dataset_iterable:
+        for ds in dataset_iterable:
             ds_str = str(ds)
+            normalized_ids.append(ds_str)
             token = f"/{ds_str}/"
             if token in path_str:
                 return ds_str
+        if len(normalized_ids) == 1:
+            return normalized_ids[0]
     for parent in file_path.parents:
         name = parent.name
         if name.startswith("ds") and name[2:].isdigit():
@@ -549,6 +559,21 @@ def _resolve_eeg_csd_config(config: Mapping[str, Any], dataset_id: Optional[str]
         return {}
     merged: Dict[str, Any] = {k: csd_cfg[k] for k in csd_cfg if k != "datasets"}
     ds_overrides = csd_cfg.get("datasets", {}) if isinstance(csd_cfg.get("datasets", {}), Mapping) else {}
+    if dataset_id and isinstance(ds_overrides, Mapping):
+        ds_cfg = ds_overrides.get(dataset_id)
+        if isinstance(ds_cfg, Mapping):
+            merged.update(ds_cfg)
+    return merged
+
+
+def _resolve_nwb_config(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
+    """Resolve NWB preprocessing configuration with optional per-dataset overrides."""
+    preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
+    nwb_cfg = preprocess_cfg.get("nwb", {}) if isinstance(preprocess_cfg, Mapping) else {}
+    if not isinstance(nwb_cfg, Mapping):
+        return {}
+    merged: Dict[str, Any] = {k: nwb_cfg[k] for k in nwb_cfg if k != "datasets"}
+    ds_overrides = nwb_cfg.get("datasets", {}) if isinstance(nwb_cfg.get("datasets", {}), Mapping) else {}
     if dataset_id and isinstance(ds_overrides, Mapping):
         ds_cfg = ds_overrides.get(dataset_id)
         if isinstance(ds_cfg, Mapping):
@@ -1073,6 +1098,238 @@ def _resolve_target_sfreq(
     }
 
 
+def _iter_nwb_electrical_series(container: Any, prefix: str = "") -> Iterable[Tuple[str, Any]]:
+    """Yield candidate NWB ElectricalSeries-like objects from a container."""
+    if container is None:
+        return
+    try:
+        items = container.items() if hasattr(container, "items") else []
+    except Exception:
+        items = []
+    for name, obj in items:
+        path = f"{prefix}/{name}" if prefix else str(name)
+        class_name = obj.__class__.__name__.lower()
+        if hasattr(obj, "data") and (hasattr(obj, "electrodes") or "electrical" in class_name):
+            yield path, obj
+        if hasattr(obj, "electrical_series"):
+            try:
+                for series_name, series_obj in obj.electrical_series.items():
+                    yield f"{path}/{series_name}", series_obj
+            except Exception:
+                pass
+        if hasattr(obj, "data_interfaces"):
+            try:
+                yield from _iter_nwb_electrical_series(obj.data_interfaces, path)
+            except Exception:
+                pass
+
+
+def _find_nwb_electrical_series(nwbfile: Any, nwb_cfg: Mapping[str, Any]) -> Tuple[str, Any]:
+    """Select the configured or first available ElectricalSeries-like object."""
+    candidates: list[Tuple[str, Any]] = []
+    try:
+        candidates.extend(_iter_nwb_electrical_series(getattr(nwbfile, "acquisition", {}), "acquisition"))
+    except Exception:
+        pass
+    try:
+        candidates.extend(_iter_nwb_electrical_series(getattr(nwbfile, "processing", {}), "processing"))
+    except Exception:
+        pass
+    if not candidates:
+        raise ValueError("No ElectricalSeries-like NWB acquisition or processing object found.")
+
+    requested = str(nwb_cfg.get("series_path", "") or "").strip()
+    if requested:
+        for path, obj in candidates:
+            if path == requested or path.endswith(f"/{requested}") or requested in path:
+                return path, obj
+        raise ValueError(f"Configured preprocess.nwb.series_path={requested!r} was not found.")
+
+    prefer = [str(x).lower() for x in nwb_cfg.get("prefer_series_keywords", ["lfp", "electrical", "eeg"]) or []]
+    for keyword in prefer:
+        for path, obj in candidates:
+            haystack = f"{path} {obj.__class__.__name__}".lower()
+            if keyword and keyword in haystack:
+                return path, obj
+    return candidates[0]
+
+
+def _nwb_series_sfreq(series: Any) -> float:
+    rate = getattr(series, "rate", None)
+    if rate is not None:
+        try:
+            return float(rate)
+        except Exception:
+            pass
+    timestamps = getattr(series, "timestamps", None)
+    if timestamps is not None:
+        arr = np.asarray(timestamps[:], dtype=float)
+        diffs = np.diff(arr)
+        diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+        if diffs.size:
+            return float(1.0 / np.median(diffs))
+    raise ValueError("NWB ElectricalSeries has neither a valid rate nor usable timestamps.")
+
+
+def _nwb_series_channel_names(series: Any, n_channels: int) -> List[str]:
+    names: List[str] = []
+    electrodes = getattr(series, "electrodes", None)
+    table = getattr(electrodes, "table", None)
+    for col_name in ("label", "labels", "channel_name", "location", "group_name"):
+        try:
+            if table is not None and col_name in table.colnames:
+                values = list(table[col_name].data[:])
+                names = [str(values[i]) for i in range(min(n_channels, len(values)))]
+                break
+        except Exception:
+            continue
+    if len(names) < n_channels:
+        names.extend([f"nwb_ch{idx:03d}" for idx in range(len(names), n_channels)])
+    seen: Dict[str, int] = {}
+    unique: List[str] = []
+    for name in names[:n_channels]:
+        count = seen.get(name, 0)
+        seen[name] = count + 1
+        unique.append(name if count == 0 else f"{name}_{count + 1}")
+    return unique
+
+
+def _nwb_data_to_channels_by_samples(series: Any) -> np.ndarray:
+    data = np.asarray(series.data[:], dtype=float)
+    conversion = getattr(series, "conversion", None)
+    if conversion is not None:
+        try:
+            data = data * float(conversion)
+        except Exception:
+            pass
+    offset = getattr(series, "offset", None)
+    if offset is not None:
+        try:
+            data = data + float(offset)
+        except Exception:
+            pass
+    if data.ndim == 1:
+        data = data[np.newaxis, :]
+    elif data.ndim == 2:
+        # NWB TimeSeries convention is usually time x channel.
+        if data.shape[0] >= data.shape[1]:
+            data = data.T
+    else:
+        raise ValueError(f"Expected 1D or 2D ElectricalSeries data, got shape {data.shape}.")
+    return data
+
+
+def _nwb_unit_to_microvolt_factor(unit: Any, *, scale_to_microvolts: bool) -> float:
+    """Return factor from the NWB physical unit to microvolts."""
+    if not scale_to_microvolts:
+        return 1.0
+    unit_text = str(unit or "").strip().lower()
+    if unit_text in {"v", "volt", "volts"}:
+        return 1e6
+    if unit_text in {"mv", "millivolt", "millivolts"}:
+        return 1e3
+    if unit_text in {"uv", "µv", "microvolt", "microvolts"}:
+        return 1.0
+    # Preserve previous behavior for sparse metadata, but make known units safer.
+    return 1e6
+
+
+def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
+    """Preprocess a continuous NWB ElectricalSeries into the existing EEG feature contract."""
+    if mne is None:
+        raise RuntimeError("mne is required for NWB preprocessing but is not installed.")
+    try:
+        from pynwb import NWBHDF5IO
+    except ImportError as exc:
+        raise RuntimeError("pynwb is required for NWB preprocessing. Install it with `pip install pynwb`.") from exc
+
+    t_pre0 = time.perf_counter()
+    dataset_id = _infer_dataset_id(file_path, config)
+    preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
+    nwb_cfg = _resolve_nwb_config(config, dataset_id)
+    source_cfg = config.get("source", {}) if isinstance(config, Mapping) else {}
+
+    with NWBHDF5IO(str(file_path), "r", load_namespaces=True) as io:
+        nwbfile = io.read()
+        series_path, series = _find_nwb_electrical_series(nwbfile, nwb_cfg)
+        original_sfreq = _nwb_series_sfreq(series)
+        data = _nwb_data_to_channels_by_samples(series)
+        channel_names = _nwb_series_channel_names(series, data.shape[0])
+        nwb_unit = getattr(series, "unit", None)
+        nwb_conversion = getattr(series, "conversion", None)
+        nwb_offset = getattr(series, "offset", None)
+        subject = getattr(nwbfile, "subject", None)
+        species = str(getattr(subject, "species", "") or source_cfg.get("species") or nwb_cfg.get("species", "") or "")
+        nwb_session_id = getattr(nwbfile, "session_id", None)
+
+    ch_type = str(nwb_cfg.get("channel_type", "eeg") or "eeg").lower()
+    if ch_type not in {"eeg", "seeg", "ecog"}:
+        ch_type = "eeg"
+    info = mne.create_info(ch_names=channel_names, sfreq=float(original_sfreq), ch_types=[ch_type] * len(channel_names))
+    raw = mne.io.RawArray(data, info, verbose=False)
+
+    preprocess_timings: Dict[str, float] = {}
+    crop_cfg = _resolve_crop_config(config, dataset_id)
+    if crop_cfg:
+        tmin = float(crop_cfg.get("start_sec", 0) or 0.0)
+        tmax_val = crop_cfg.get("stop_sec", None)
+        tmax = float(tmax_val) if tmax_val is not None else None
+        try:
+            raw.crop(tmin=max(tmin, 0.0), tmax=tmax)
+        except Exception as exc:
+            logger.warning("NWB crop failed for %s (%s); continuing without crop", file_path.name, exc)
+
+    target_sfreq, sfreq_policy = _resolve_target_sfreq(
+        original_sfreq=float(original_sfreq),
+        preprocess_cfg=preprocess_cfg if isinstance(preprocess_cfg, Mapping) else {},
+    )
+    if raw.info["sfreq"] != target_sfreq:
+        raw.resample(target_sfreq, verbose=False)
+    preprocess_timings["resample"] = float(time.perf_counter() - t_pre0)
+
+    notch_hz = preprocess_cfg.get("notch_hz", None) if isinstance(preprocess_cfg, Mapping) else None
+    if notch_hz is not None:
+        raw.notch_filter(freqs=notch_hz, verbose=False)
+
+    eeg_bandpass = preprocess_cfg.get("eeg_bandpass", [1, 45]) if isinstance(preprocess_cfg, Mapping) else [1, 45]
+    if eeg_bandpass is not None and len(eeg_bandpass) == 2:
+        raw.filter(l_freq=eeg_bandpass[0], h_freq=eeg_bandpass[1], verbose=False)
+
+    reref = preprocess_cfg.get("reref", None) if isinstance(preprocess_cfg, Mapping) else None
+    eeg_picks = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
+    if str(reref).lower() == "average" and len(eeg_picks) > 0:
+        eeg_data = raw.get_data(picks=eeg_picks)
+        raw._data[eeg_picks, :] = eeg_data - np.mean(eeg_data, axis=0, keepdims=True)  # type: ignore[attr-defined]
+
+    scale_to_microvolts = bool(nwb_cfg.get("scale_to_microvolts", True))
+    unit_factor = _nwb_unit_to_microvolt_factor(nwb_unit, scale_to_microvolts=scale_to_microvolts)
+    signals = {"eeg": raw.get_data(picks=eeg_picks) * unit_factor}
+    channels = {"eeg": [raw.ch_names[i] for i in eeg_picks]}
+    preprocess_timings["total"] = float(time.perf_counter() - t_pre0)
+
+    meta: Dict[str, Any] = {
+        "file": str(file_path),
+        "dataset_id": dataset_id,
+        "source_format": "NWB",
+        "species": species or None,
+        "dandiset_id": source_cfg.get("dataset_id") if isinstance(source_cfg, Mapping) else None,
+        "nwb_session_id": str(nwb_session_id) if nwb_session_id else None,
+        "nwb_series_path": series_path,
+        "nwb_channel_type": ch_type,
+        "nwb_unit": str(nwb_unit) if nwb_unit is not None else None,
+        "nwb_conversion": float(nwb_conversion) if nwb_conversion is not None else None,
+        "nwb_offset": float(nwb_offset) if nwb_offset is not None else None,
+        "nwb_scale_to_microvolts": scale_to_microvolts,
+        "nwb_unit_to_output_factor": float(unit_factor),
+        "original_sfreq": float(original_sfreq),
+        "target_sfreq_resolved": float(raw.info["sfreq"]),
+        "sfreq_policy": sfreq_policy,
+        "timings": preprocess_timings,
+    }
+    logger.info("Preprocessed NWB %s from %s: %d channels", file_path.name, series_path, len(channels["eeg"]))
+    return PreprocessedSignals(signals=signals, sfreq=float(raw.info["sfreq"]), channels=channels, meta=meta)
+
+
 def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
     """Preprocess a single file (EEG or fMRI) and return signals plus metadata.
 
@@ -1088,6 +1345,8 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     suffixes = "".join(file_path.suffixes).lower()
     if suffixes.endswith(".nii") or suffixes.endswith(".nii.gz"):
         return preprocess_fmri(file_path, config)
+    if suffixes.endswith(".nwb"):
+        return preprocess_nwb(file_path, config)
     # We can infer dataset id from the path (no file I/O) and use it for
     # dataset-specific loading quirks before MNE touches the file.
     dataset_id_hint = _infer_dataset_id(file_path, config)
