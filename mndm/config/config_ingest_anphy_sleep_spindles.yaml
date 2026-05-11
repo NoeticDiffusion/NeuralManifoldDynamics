@@ -1,0 +1,66 @@
+# ANPHY — sleep-spindle event-locked overlay
+#
+# Imports the base ANPHY config and overrides only the settings needed for
+# short-window event-locked MNPS analysis. The 20 s / 10 s staging profile is
+# preserved in config_ingest_anphy.yaml for macro-stage work.
+#
+# Usage:
+#   python -m mndm.cli all --dataset ANPHY \
+#     --config mndm/config/config_ingest_anphy_sleep_spindles.yaml
+#
+# Stage annotations for ANPHY are loaded from text sidecar files (*.txt / *.ann)
+# via the sleep_annotations mechanism and mapped to window midpoints.
+
+imports:
+  - "./config_ingest_anphy.yaml"
+
+# ── Epoching override ──────────────────────────────────────────────────────
+epoching:
+  datasets:
+    ANPHY:
+      profile: "sleep_spindle_event_locked_v1"
+      length_s: 6.0
+      step_s: 2.0
+      sampling:
+        enabled: false
+        # Stage columns for ANPHY text annotation files
+        stage_columns: ["stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+
+# ── Event-locked analysis ─────────────────────────────────────────────────
+event_locked:
+  datasets:
+    ANPHY:
+      enabled: true
+      profile: "sleep_spindle_event_locked_v1"
+      event_types: ["sleep_spindle"]
+      stage_filter: ["N2"]
+      reference: "peak"
+      bins:
+        pre_far:   [-30.0, -10.0]
+        pre_near:  [-10.0,   0.0]
+        event:     [  0.0,   3.0]
+        post_near: [  3.0,  10.0]
+        post_far:  [ 10.0,  30.0]
+      exclude_stage_transition_margin_sec: 30.0
+      min_overlap_fraction: 0.0
+      controls:
+        stage: "N2"
+        n_controls_per_event: 3
+        exclusion_margin_sec: 30.0
+        time_of_night_quartile_match: true
+        seed: 42
+      export:
+        write_parquet: true
+        write_csv: true
+        include_coords_9d: true
+        provenance_in_every_row: true
+
+# ── Relax coverage thresholds for short windows ───────────────────────────
+robustness:
+  coverage:
+    datasets:
+      ANPHY:
+        min_seconds: 30
+        min_epochs: 20

@@ -1260,7 +1260,23 @@ class SubjectSummaryRunner:
             run=run_id,
             acq=acq_id,
         )
-        dt = mnps_cfg["window_sec"] * (1.0 - mnps_cfg["overlap"])
+        _cfg_dt = mnps_cfg["window_sec"] * (1.0 - mnps_cfg["overlap"])
+        if "t_start" in sub_frame.columns and "t_end" in sub_frame.columns and len(sub_frame) > 1:
+            _t_s_raw = pd.to_numeric(sub_frame["t_start"], errors="coerce")
+            _measured_dt = float(_t_s_raw.diff().dropna().median())
+            if np.isfinite(_measured_dt) and _measured_dt > 0:
+                dt = _measured_dt
+                if abs(dt - _cfg_dt) > 0.1:
+                    logger.info(
+                        "Epoch step %.3f s (from t_start) differs from mnps config formula"
+                        " %.3f s (window_sec=%.1f, overlap=%.4f). "
+                        "Using measured step for time axis and Jacobian dt.",
+                        dt, _cfg_dt, mnps_cfg["window_sec"], mnps_cfg["overlap"],
+                    )
+            else:
+                dt = _cfg_dt
+        else:
+            dt = _cfg_dt
         coverage_seconds_measured, coverage_method = self._estimate_coverage_seconds(sub_frame, dt)
         coverage_seconds_assumed = float(len(sub_frame) * dt)
         coverage_seconds_effective = (
@@ -1556,8 +1572,15 @@ class SubjectSummaryRunner:
                 logger.warning("Skipping %s: all epochs dropped by missing-axis policy", dataset_label)
                 return
 
-        # Time index and derivatives
-        time = projection.build_time_index(len(sub_frame), mnps_cfg["window_sec"], mnps_cfg["overlap"])
+        # Time index and derivatives.
+        # Prefer feature-epoch midpoints (t_start + t_end) / 2 when available so
+        # /time is the true window-center regardless of the mnps.window_sec config.
+        if "t_start" in sub_frame.columns and "t_end" in sub_frame.columns:
+            _t_s = pd.to_numeric(sub_frame["t_start"], errors="coerce")
+            _t_e = pd.to_numeric(sub_frame["t_end"], errors="coerce")
+            time = ((_t_s + _t_e) / 2.0).to_numpy(dtype=np.float64)
+        else:
+            time = projection.build_time_index(len(sub_frame), mnps_cfg["window_sec"], mnps_cfg["overlap"])
         window_start, window_end = self._extract_time_bounds(sub_frame, time, mnps_cfg["window_sec"])
         
         # Explicitly prevent derivative estimation across file boundaries (time aliasing protection)

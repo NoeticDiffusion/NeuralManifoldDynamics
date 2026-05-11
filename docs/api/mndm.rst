@@ -174,6 +174,26 @@ Pipeline
    :members:
    :undoc-members:
 
+.. automodule:: mndm.pipeline.event_annotations
+   :members:
+   :undoc-members:
+
+.. automodule:: mndm.pipeline.event_alignment
+   :members:
+   :undoc-members:
+
+.. automodule:: mndm.pipeline.control_matching
+   :members:
+   :undoc-members:
+
+.. automodule:: mndm.pipeline.event_locked_config
+   :members:
+   :undoc-members:
+
+.. automodule:: mndm.pipeline.event_locked_export
+   :members:
+   :undoc-members:
+
 .. automodule:: mndm.pipeline.summary_selectors
    :members:
    :undoc-members:

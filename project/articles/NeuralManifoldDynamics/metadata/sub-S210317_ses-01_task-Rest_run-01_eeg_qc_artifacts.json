@@ -1,0 +1,142 @@
+{
+  "file": "E:\\Science_Datasets\\openneuro\\received\\ds004511\\sub-S210317\\ses-01\\eeg\\sub-S210317_ses-01_task-Rest_run-01_eeg.edf",
+  "dataset_id": "ds004511",
+  "original_sfreq": 3000.0,
+  "target_sfreq_resolved": 250.0,
+  "sfreq_policy": {
+    "base_sfreq": 250.0,
+    "candidates": [
+      250.0,
+      256.0
+    ],
+    "selected_sfreq": 250.0,
+    "selection_mode": "integer_ratio_candidate",
+    "integer_ratio": true,
+    "ratio": 12.0
+  },
+  "crop_window": {
+    "tmin": null,
+    "tmax": null
+  },
+  "artifact": {
+    "method": "none",
+    "bad_eeg_channels": [
+      "Foto",
+      "Sync",
+      "Gnd-Ref",
+      "Gnd-Ref1",
+      "Gnd-Ref2",
+      "Gnd-Ref3",
+      "Batt_0",
+      "Batt_1",
+      "Batt_2",
+      "Batt_3",
+      "Ref"
+    ],
+    "bad_eeg_reasons": {
+      "Foto": {
+        "var": 2.159156944944932e-14,
+        "flat": true,
+        "high_var": false,
+        "low_corr": true,
+        "corr": 0.01068888995059861
+      },
+      "Sync": {
+        "var": 1.2869578271775967e-21,
+        "flat": true,
+        "high_var": false,
+        "low_corr": true,
+        "corr": -0.010688889950600687
+      },
+      "Gnd-Ref": {
+        "var": 1.4797302337376215e-45,
+        "flat": true,
+        "high_var": false,
+        "low_corr": true,
+        "corr": 0.0037119726300630885
+      },
+      "Gnd-Ref1": {
+        "var": 1.4797302337376215e-45,
+        "flat": true,
+        "high_var": false,
+        "low_corr": true,
+        "corr": 0.0037119726300630885
+      },
+      "Gnd-Ref2": {
+        "var": 1.4797302337376215e-45,
+        "flat": true,
+        "high_var": false,
+        "low_corr": true,
+        "corr": 0.0037119726300630885
+      },
+      "Gnd-Ref3": {
+        "var": 1.4797302337376215e-45,
+        "flat": true,
+        "high_var": false,
+        "low_corr": true,
+        "corr": 0.0037119726300630885
+      },
+      "Batt_0": {
+        "var": 7.346580253955485e-08,
+        "flat": false,
+        "high_var": true,
+        "low_corr": false,
+        "corr": 0.695838965119515
+      },
+      "Batt_1": {
+        "var": 7.550648552742154e-08,
+        "flat": false,
+        "high_var": true,
+        "low_corr": false,
+        "corr": 0.6958387015954687
+      },
+      "Batt_2": {
+        "var": 7.606326434619681e-08,
+        "flat": false,
+        "high_var": true,
+        "low_corr": false,
+        "corr": 0.6958381118621553
+      },
+      "Batt_3": {
+        "var": 7.554230822052779e-08,
+        "flat": false,
+        "high_var": true,
+        "low_corr": false,
+        "corr": 0.6958389137232694
+      },
+      "Ref": {
+        "var": 1.4797302337376215e-45,
+        "flat": true,
+        "high_var": false,
+        "low_corr": true,
+        "corr": 0.0037119726300630885
+      }
+    }
+  },
+  "eeg_csd": {
+    "enabled": true,
+    "applied": false,
+    "reason": "failed:Cannot fit headshape without digitization , info[\"dig\"] is None",
+    "lambda2": 1e-05,
+    "stiffness": 4.0,
+    "n_legendre_terms": 50
+  },
+  "timings": {
+    "load_and_crop": 3.818204800132662,
+    "channel_prep": 0.0019740997813642025,
+    "pre_resample_channel_prune": 0.0009381999261677265,
+    "resample_early": 13.204610100015998,
+    "artifact_reduction": 1.2996606528759003e-06,
+    "notch": 0.43082879995927215,
+    "bandpass": 0.4944044998846948,
+    "resample_late": 1.2996606528759003e-06,
+    "bad_channel_detection_drop": 0.28701609978452325,
+    "eeg_csd": 0.001973100006580353,
+    "reref": 0.09429580019786954,
+    "collect_modalities": 0.07460719998925924,
+    "total": 18.447384299710393
+  },
+  "worker_rss_gb_start": 0.4615821838378906,
+  "worker_rss_gb_peak": 0.5832939147949219,
+  "worker_rss_gb_delta_peak": 0.12171173095703125
+}

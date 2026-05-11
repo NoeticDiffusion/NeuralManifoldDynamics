@@ -13,6 +13,7 @@ The repository is organized around a shared pipeline:
 3. Compute per-epoch or per-window features.
 4. Project features into MNPS spaces.
 5. Write subject-level and run-level outputs for analysis and QC.
+6. Optionally build derived event-locked sidecars from annotated events.
 
 ## Main Packages
 
@@ -64,6 +65,14 @@ python -m dandi_ingest.cli list --config dandi_ingest/configs/dandi_000718.yaml
 python -m dandi_ingest.cli probe --config dandi_ingest/configs/dandi_000718.yaml
 ```
 
+Example event-locked profile run for the sleep-spindle track:
+
+```powershell
+python -m mndm.cli all --dataset ds005555 --config mndm/config/config_ingest_ds005555_sleep_spindles.yaml --n-jobs 12
+```
+
+The sleep-spindle configuration keeps the canonical HDF5 measurement output separate from derived event-locked sidecars. Spindle annotations, event-window alignment, matched controls, and baseline-corrected summaries should be treated as downstream analysis artifacts with their own provenance.
+
 ## Where To Read Next
 
 - MNDM usage and output contracts: `mndm/README.md`
@@ -106,6 +115,8 @@ Some datasets also carry labels that vary within a single run instead of staying
 - sleep datasets: can write changing sleep stages within one recording instead of forcing them into one scalar run condition
 
 These labels are written alongside the MNPS trajectory rather than replacing run-level metadata.
+
+Derived event-locked outputs, such as YASA-derived sleep-spindle sidecars for `ds005555`, are intentionally not part of the canonical HDF5 measurement surface unless a future release promotes a stable derived-event schema. They are joinable back to HDF5 trajectories by subject and window identifiers.
 
 ## Development Notes
 

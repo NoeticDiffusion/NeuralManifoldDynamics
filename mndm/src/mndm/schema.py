@@ -81,6 +81,11 @@ class MNPSPayload:
     window_end: Optional[np.ndarray] = None
     # Optional binary labels aligned to MNPS time (e.g., mapped events)
     labels: MutableMapping[str, np.ndarray] = field(default_factory=dict)
+    # Optional columnar event annotation table (see pipeline/event_annotations.py).
+    # When present, the h5_writer serializes it under /events/ with one dataset
+    # per column and a _schema_version attribute.  The legacy 1-D ``events`` dict
+    # is preserved for backward compatibility.
+    event_table_columns: MutableMapping[str, Any] = field(default_factory=dict)
     # Optional stratified MNPS coordinates (typically 9D)
     coords_9d: Optional[np.ndarray] = None
     coords_9d_names: Optional[list[str]] = None
@@ -112,6 +117,7 @@ class MNPSPayload:
             "z": self.z,
             "events": dict(self.events),
             "labels": dict(self.labels),
+            "event_table_columns": dict(self.event_table_columns),
             "nn_indices": self.nn_indices,
             "jacobian": self.jacobian,
             "jacobian_dot": self.jacobian_dot,

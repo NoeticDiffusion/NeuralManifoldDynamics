@@ -1,0 +1,669 @@
+{
+  "dataset_id": "ds004511",
+  "rows": 55772,
+  "columns": [
+    "eeg_alpha",
+    "eeg_alpha__g_central",
+    "eeg_alpha__g_frontal",
+    "eeg_alpha__g_parietal_occipital",
+    "eeg_alpha__g_temporal",
+    "eeg_alpha_theta",
+    "eeg_alpha_theta__g_central",
+    "eeg_alpha_theta__g_frontal",
+    "eeg_alpha_theta__g_parietal_occipital",
+    "eeg_alpha_theta__g_temporal",
+    "eeg_beta",
+    "eeg_beta__g_central",
+    "eeg_beta__g_frontal",
+    "eeg_beta__g_parietal_occipital",
+    "eeg_beta__g_temporal",
+    "eeg_beta_alpha",
+    "eeg_beta_alpha__g_central",
+    "eeg_beta_alpha__g_frontal",
+    "eeg_beta_alpha__g_parietal_occipital",
+    "eeg_beta_alpha__g_temporal",
+    "eeg_delta",
+    "eeg_delta__g_central",
+    "eeg_delta__g_frontal",
+    "eeg_delta__g_parietal_occipital",
+    "eeg_delta__g_temporal",
+    "eeg_entropy_backend",
+    "eeg_entropy_construct",
+    "eeg_entropy_degraded_mode",
+    "eeg_entropy_metric",
+    "eeg_entropy_reason",
+    "eeg_gamma",
+    "eeg_gamma__g_central",
+    "eeg_gamma__g_frontal",
+    "eeg_gamma__g_parietal_occipital",
+    "eeg_gamma__g_temporal",
+    "eeg_highfreq_power_30_45",
+    "eeg_highfreq_power_30_45__g_central",
+    "eeg_highfreq_power_30_45__g_frontal",
+    "eeg_highfreq_power_30_45__g_parietal_occipital",
+    "eeg_highfreq_power_30_45__g_temporal",
+    "eeg_hjorth_complexity",
+    "eeg_hjorth_complexity__g_central",
+    "eeg_hjorth_complexity__g_frontal",
+    "eeg_hjorth_complexity__g_parietal_occipital",
+    "eeg_hjorth_complexity__g_temporal",
+    "eeg_hjorth_mobility",
+    "eeg_hjorth_mobility__g_central",
+    "eeg_hjorth_mobility__g_frontal",
+    "eeg_hjorth_mobility__g_parietal_occipital",
+    "eeg_hjorth_mobility__g_temporal",
+    "eeg_permutation_entropy",
+    "eeg_permutation_entropy__g_central",
+    "eeg_permutation_entropy__g_frontal",
+    "eeg_permutation_entropy__g_parietal_occipital",
+    "eeg_permutation_entropy__g_temporal",
+    "eeg_sample_entropy",
+    "eeg_sample_entropy__g_central",
+    "eeg_sample_entropy__g_frontal",
+    "eeg_sample_entropy__g_parietal_occipital",
+    "eeg_sample_entropy__g_temporal",
+    "eeg_theta",
+    "eeg_theta__g_central",
+    "eeg_theta__g_frontal",
+    "eeg_theta__g_parietal_occipital",
+    "eeg_theta__g_temporal",
+    "embodied_arousal_proxy",
+    "embodied_arousal_proxy_source",
+    "eog_blink_rate",
+    "epoch_id",
+    "file",
+    "qc_ok_eeg",
+    "qc_ok_eog",
+    "t_end",
+    "t_end__dup1",
+    "t_start",
+    "t_start__dup1"
+  ],
+  "column_stats": {
+    "eeg_alpha": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.26338139754157947,
+      "std": 0.406062405519192,
+      "median": 0.1903816736834985,
+      "mad": 0.0775722728901358
+    },
+    "eeg_alpha__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 2.769060124269403,
+      "std": 4.331668395728784,
+      "median": 1.5564080361577608,
+      "mad": 0.7476972893459093
+    },
+    "eeg_alpha__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 4.7587625140184535,
+      "std": 7.206525880225985,
+      "median": 2.9299185427529624,
+      "mad": 1.2337071011192455
+    },
+    "eeg_alpha__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 6.0564417083453295,
+      "std": 12.62970734196219,
+      "median": 2.7625445393600567,
+      "mad": 1.2551595230128336
+    },
+    "eeg_alpha__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 2.069898510885775,
+      "std": 2.184418516074987,
+      "median": 1.3940279724441673,
+      "mad": 0.595605823009445
+    },
+    "eeg_alpha_theta": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.7014365273477675,
+      "std": 1.2507867025057364,
+      "median": 0.38039017810947406,
+      "mad": 0.17372785047777817
+    },
+    "eeg_alpha_theta__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.1208693550053552,
+      "std": 1.3554199008222407,
+      "median": 0.72840887829537,
+      "mad": 0.26167167211016706
+    },
+    "eeg_alpha_theta__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.9484940879535603,
+      "std": 1.7354534351734028,
+      "median": 0.460126914578957,
+      "mad": 0.2094970534159773
+    },
+    "eeg_alpha_theta__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.6350445211475462,
+      "std": 3.069910563318045,
+      "median": 0.7413291655129312,
+      "mad": 0.3719579165878302
+    },
+    "eeg_alpha_theta__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.7745512140407531,
+      "std": 0.918866471266899,
+      "median": 0.5273613596474754,
+      "mad": 0.22175155553810424
+    },
+    "eeg_beta": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.42482607002211065,
+      "std": 1.4331396090800597,
+      "median": 0.27327267393370736,
+      "mad": 0.09151941664989055
+    },
+    "eeg_beta__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 2.842599471797168,
+      "std": 4.051493927146262,
+      "median": 2.0091774507847893,
+      "mad": 0.6553178291225995
+    },
+    "eeg_beta__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 4.306620573442056,
+      "std": 3.928367823864759,
+      "median": 3.4416243916842566,
+      "mad": 1.0123247993827622
+    },
+    "eeg_beta__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 3.8923664389462456,
+      "std": 3.9332854107462194,
+      "median": 3.0765302992568246,
+      "mad": 1.1193828379413238
+    },
+    "eeg_beta__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 6.512885647843229,
+      "std": 11.422950914496386,
+      "median": 3.1118300572424054,
+      "mad": 1.5955364197719217
+    },
+    "eeg_beta_alpha": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.672707950723004,
+      "std": 1.202557238347869,
+      "median": 1.52048502303465,
+      "mad": 0.4262624503251886
+    },
+    "eeg_beta_alpha__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.5819780073367176,
+      "std": 1.203996689247805,
+      "median": 1.3802885403488858,
+      "mad": 0.5257465524796586
+    },
+    "eeg_beta_alpha__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.340673676583444,
+      "std": 0.7173884605942797,
+      "median": 1.28092740818218,
+      "mad": 0.43085619262815694
+    },
+    "eeg_beta_alpha__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.211899460075324,
+      "std": 0.7281731983072997,
+      "median": 1.123107592235141,
+      "mad": 0.46567370126526103
+    },
+    "eeg_beta_alpha__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 3.335751507255458,
+      "std": 3.2099292209646593,
+      "median": 2.321366807712606,
+      "mad": 1.1454449243905862
+    },
+    "eeg_delta": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 3.435197286011255,
+      "std": 5.712130289226384,
+      "median": 2.1476684076579735,
+      "mad": 1.4634490214592408
+    },
+    "eeg_delta__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 5.363170248582698,
+      "std": 11.431543932418577,
+      "median": 4.260551876334395,
+      "mad": 1.23133366865982
+    },
+    "eeg_delta__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 46.39176069892213,
+      "std": 44.12200388054635,
+      "median": 34.85003250651753,
+      "mad": 18.73178865426639
+    },
+    "eeg_delta__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 21.737541637906784,
+      "std": 18.52913472736472,
+      "median": 17.122381799174,
+      "mad": 8.531163149110235
+    },
+    "eeg_delta__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 15.143575171685901,
+      "std": 17.57893696924409,
+      "median": 10.346888508033533,
+      "mad": 5.348366032844748
+    },
+    "eeg_entropy_backend": {
+      "missing_rate": 0.0,
+      "dtype": "object"
+    },
+    "eeg_entropy_construct": {
+      "missing_rate": 0.0,
+      "dtype": "object"
+    },
+    "eeg_entropy_degraded_mode": {
+      "missing_rate": 0.0,
+      "dtype": "bool",
+      "mean": 0.0,
+      "std": 0.0,
+      "median": 0.0,
+      "mad": 0.0
+    },
+    "eeg_entropy_metric": {
+      "missing_rate": 0.0,
+      "dtype": "object"
+    },
+    "eeg_entropy_reason": {
+      "missing_rate": 1.0,
+      "dtype": "float64"
+    },
+    "eeg_gamma": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.25990353137580624,
+      "std": 1.372293460633402,
+      "median": 0.11614225616326615,
+      "mad": 0.040861711826452644
+    },
+    "eeg_gamma__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.399104385593177,
+      "std": 3.454629369737058,
+      "median": 0.6554277283279775,
+      "mad": 0.2552660785306205
+    },
+    "eeg_gamma__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 2.1286490505641074,
+      "std": 2.8766739563154577,
+      "median": 1.3674537968492921,
+      "mad": 0.5371905101394898
+    },
+    "eeg_gamma__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.6028057400228524,
+      "std": 2.858087361001939,
+      "median": 0.8265123784462898,
+      "mad": 0.3876049261156943
+    },
+    "eeg_gamma__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 5.928889806677523,
+      "std": 14.74274049746466,
+      "median": 1.9972886354648502,
+      "mad": 1.4006217121572657
+    },
+    "eeg_highfreq_power_30_45": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.25990353137580624,
+      "std": 1.372293460633402,
+      "median": 0.11614225616326615,
+      "mad": 0.040861711826452644
+    },
+    "eeg_highfreq_power_30_45__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.399104385593177,
+      "std": 3.454629369737058,
+      "median": 0.6554277283279775,
+      "mad": 0.2552660785306205
+    },
+    "eeg_highfreq_power_30_45__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 2.1286490505641074,
+      "std": 2.8766739563154577,
+      "median": 1.3674537968492921,
+      "mad": 0.5371905101394898
+    },
+    "eeg_highfreq_power_30_45__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1.6028057400228524,
+      "std": 2.858087361001939,
+      "median": 0.8265123784462898,
+      "mad": 0.3876049261156943
+    },
+    "eeg_highfreq_power_30_45__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 5.928889806677523,
+      "std": 14.74274049746466,
+      "median": 1.9972886354648502,
+      "mad": 1.4006217121572657
+    },
+    "eeg_hjorth_complexity": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 4.040719306105634,
+      "std": 1.4766100894101475,
+      "median": 3.821967858062723,
+      "mad": 0.950845765906962
+    },
+    "eeg_hjorth_complexity__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 2.627539661275848,
+      "std": 0.46120303479065894,
+      "median": 2.626207825770914,
+      "mad": 0.24707090635324502
+    },
+    "eeg_hjorth_complexity__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 4.340525599101711,
+      "std": 1.2791745786718083,
+      "median": 4.221758678223651,
+      "mad": 0.8381107272718409
+    },
+    "eeg_hjorth_complexity__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 3.3658412824306607,
+      "std": 1.011842409396829,
+      "median": 3.1860769393899915,
+      "mad": 0.6118934696423652
+    },
+    "eeg_hjorth_complexity__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 2.7418852831964853,
+      "std": 0.9993992823443154,
+      "median": 2.5194616452069036,
+      "mad": 0.5705737721222341
+    },
+    "eeg_hjorth_mobility": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.3562202889086968,
+      "std": 0.1367352230611809,
+      "median": 0.331952494922818,
+      "mad": 0.0857647754896122
+    },
+    "eeg_hjorth_mobility__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.38487260352625224,
+      "std": 0.0903999282045939,
+      "median": 0.3615343741700521,
+      "mad": 0.04387941305695503
+    },
+    "eeg_hjorth_mobility__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.2812317717967888,
+      "std": 0.09706461654988167,
+      "median": 0.264040307431456,
+      "mad": 0.05815154206874189
+    },
+    "eeg_hjorth_mobility__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.27538783780850623,
+      "std": 0.09062574216731356,
+      "median": 0.26229829606983773,
+      "mad": 0.05292728222603518
+    },
+    "eeg_hjorth_mobility__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.41844938744925236,
+      "std": 0.1540020975922212,
+      "median": 0.40446314976219216,
+      "mad": 0.11801011272831086
+    },
+    "eeg_permutation_entropy": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.8792391636776214,
+      "std": 0.026736283227757226,
+      "median": 0.8816769652563016,
+      "mad": 0.015718488178475876
+    },
+    "eeg_permutation_entropy__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.7433114324869696,
+      "std": 0.03272440528142255,
+      "median": 0.7451177598973922,
+      "mad": 0.020417403930184763
+    },
+    "eeg_permutation_entropy__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.7928494838730514,
+      "std": 0.06108967759616734,
+      "median": 0.7953798714252154,
+      "mad": 0.04134211262942561
+    },
+    "eeg_permutation_entropy__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.6962481041664845,
+      "std": 0.04417101244434754,
+      "median": 0.699632893526327,
+      "mad": 0.026740824266893726
+    },
+    "eeg_permutation_entropy__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.7535471425028758,
+      "std": 0.04168469458909767,
+      "median": 0.7608680465442601,
+      "mad": 0.02434944270487599
+    },
+    "eeg_sample_entropy": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.8792391636776214,
+      "std": 0.026736283227757226,
+      "median": 0.8816769652563016,
+      "mad": 0.015718488178475876
+    },
+    "eeg_sample_entropy__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.7433114324869696,
+      "std": 0.03272440528142255,
+      "median": 0.7451177598973922,
+      "mad": 0.020417403930184763
+    },
+    "eeg_sample_entropy__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.7928494838730514,
+      "std": 0.06108967759616734,
+      "median": 0.7953798714252154,
+      "mad": 0.04134211262942561
+    },
+    "eeg_sample_entropy__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.6962481041664845,
+      "std": 0.04417101244434754,
+      "median": 0.699632893526327,
+      "mad": 0.026740824266893726
+    },
+    "eeg_sample_entropy__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.7535471425028758,
+      "std": 0.04168469458909767,
+      "median": 0.7608680465442601,
+      "mad": 0.02434944270487599
+    },
+    "eeg_theta": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.6941812118734064,
+      "std": 1.2897611716597843,
+      "median": 0.4695744540599527,
+      "mad": 0.25604075986215025
+    },
+    "eeg_theta__g_central": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 2.507410103985812,
+      "std": 3.1383946932301683,
+      "median": 2.066170989739434,
+      "mad": 0.6446237787391818
+    },
+    "eeg_theta__g_frontal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 7.675014846146617,
+      "std": 6.935727267017396,
+      "median": 5.766764294963139,
+      "mad": 2.3629955903124333
+    },
+    "eeg_theta__g_parietal_occipital": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 4.498370515752143,
+      "std": 3.927537412700594,
+      "median": 3.7636283307021134,
+      "mad": 1.4148708141550657
+    },
+    "eeg_theta__g_temporal": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 3.408919281401889,
+      "std": 3.039097099898901,
+      "median": 2.6482010818806474,
+      "mad": 1.0294328570981643
+    },
+    "embodied_arousal_proxy": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.40376667503406727,
+      "std": 0.31385269783017017,
+      "median": 0.375,
+      "mad": 0.25
+    },
+    "embodied_arousal_proxy_source": {
+      "missing_rate": 0.0,
+      "dtype": "object"
+    },
+    "eog_blink_rate": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 0.40376667503406727,
+      "std": 0.31385269783017017,
+      "median": 0.375,
+      "mad": 0.25
+    },
+    "epoch_id": {
+      "missing_rate": 0.0,
+      "dtype": "int64",
+      "mean": 348.9883274761529,
+      "std": 277.926382541275,
+      "median": 257.0,
+      "mad": 193.0
+    },
+    "file": {
+      "missing_rate": 0.0,
+      "dtype": "object"
+    },
+    "qc_ok_eeg": {
+      "missing_rate": 0.0,
+      "dtype": "bool",
+      "mean": 1.0,
+      "std": 0.0,
+      "median": 1.0,
+      "mad": 0.0
+    },
+    "qc_ok_eog": {
+      "missing_rate": 0.0,
+      "dtype": "bool",
+      "mean": 1.0,
+      "std": 0.0,
+      "median": 1.0,
+      "mad": 0.0
+    },
+    "t_end": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1403.9533099046116,
+      "std": 1111.7055301651,
+      "median": 1036.0,
+      "mad": 772.0
+    },
+    "t_end__dup1": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1403.9533099046116,
+      "std": 1111.7055301651,
+      "median": 1036.0,
+      "mad": 772.0
+    },
+    "t_start": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1395.9533099046116,
+      "std": 1111.7055301651,
+      "median": 1028.0,
+      "mad": 772.0
+    },
+    "t_start__dup1": {
+      "missing_rate": 0.0,
+      "dtype": "float64",
+      "mean": 1395.9533099046116,
+      "std": 1111.7055301651,
+      "median": 1028.0,
+      "mad": 772.0
+    }
+  },
+  "features_snapshot_hash": "8c0bf682e1fac6f879f4687e862d50e4e95607023b7a6f329f0f5905bcde0462"
+}

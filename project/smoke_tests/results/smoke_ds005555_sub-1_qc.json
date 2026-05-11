@@ -1,0 +1,34 @@
+{
+  "n_rows_total": 621,
+  "n_spindle_event_rows": 222,
+  "n_matched_control_rows": 399,
+  "alignment_qc": {
+    "n_events_input": 133,
+    "n_events_excluded_non_finite": 0,
+    "n_events_excluded_stage_transition": 22,
+    "n_events_aligned": 111,
+    "n_rows_total": 222,
+    "bins_used": [
+      "pre_far",
+      "pre_near",
+      "event",
+      "post_near",
+      "post_far"
+    ],
+    "reference": "onset"
+  },
+  "control_qc": {
+    "seed": 1729,
+    "n_events_input": 133,
+    "n_events_with_full_match": 133,
+    "n_events_with_partial_match": 0,
+    "n_events_with_no_match": 0,
+    "n_controls_requested_per_event": 3,
+    "target_stage": 2,
+    "exclusion_margin_sec": 30.0,
+    "match_success_rate": 1.0
+  },
+  "output_paths": [
+    "H:\\SourceRepo2\\NeuralManifoldDynamics\\project\\smoke_tests\\results\\smoke_ds005555_sub-1.csv"
+  ]
+}

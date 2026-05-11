@@ -1,0 +1,138 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="920" viewBox="0 0 1600 920" role="img" aria-labelledby="title desc">
+  <title id="title">NeuralManifoldDynamics processing flow</title>
+  <desc id="desc">Overview of dataset ingest, feature extraction, MNPS projection, Jacobian estimation, and output artifacts.</desc>
+
+  <defs>
+    <style>
+      .title { font: 700 28px "Times New Roman", serif; fill: #111827; }
+      .subtitle { font: 400 16px "Times New Roman", serif; fill: #374151; }
+      .section { font: 700 20px "Times New Roman", serif; fill: #111827; }
+      .label { font: 700 18px "Times New Roman", serif; fill: #111827; }
+      .body { font: 400 15px "Times New Roman", serif; fill: #1f2937; }
+      .small { font: 400 13px "Times New Roman", serif; fill: #4b5563; }
+      .box { fill: #ffffff; stroke: #374151; stroke-width: 2; rx: 14; ry: 14; }
+      .soft { fill: #f8fafc; stroke: #94a3b8; stroke-width: 1.5; rx: 12; ry: 12; }
+      .accentA { fill: #eff6ff; stroke: #2563eb; stroke-width: 2; rx: 14; ry: 14; }
+      .accentB { fill: #f0fdf4; stroke: #16a34a; stroke-width: 2; rx: 14; ry: 14; }
+      .accentC { fill: #fff7ed; stroke: #ea580c; stroke-width: 2; rx: 14; ry: 14; }
+      .accentD { fill: #faf5ff; stroke: #9333ea; stroke-width: 2; rx: 14; ry: 14; }
+      .arrow { stroke: #334155; stroke-width: 3; fill: none; marker-end: url(#arrowhead); }
+      .dash { stroke: #64748b; stroke-width: 2; fill: none; stroke-dasharray: 8 6; marker-end: url(#arrowhead); }
+    </style>
+    <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#334155"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1600" height="920" fill="#ffffff"/>
+
+  <text x="800" y="52" text-anchor="middle" class="title">NeuralManifoldDynamics: Ingest and Measurement Flow</text>
+  <text x="800" y="82" text-anchor="middle" class="subtitle">Operational overview of source data, feature construction, MNPS projection, Jacobian estimation, and exported artifacts</text>
+
+  <text x="110" y="135" class="section">1. Data source and indexing</text>
+  <rect x="80" y="155" width="300" height="118" class="accentA"/>
+  <text x="105" y="188" class="label">Source datasets</text>
+  <text x="105" y="216" class="body">OpenNeuro, local BIDS, or</text>
+  <text x="105" y="238" class="body">dataset-specific raw directories</text>
+  <text x="105" y="260" class="small">Examples: EEG, iEEG, fMRI, peripheral channels</text>
+
+  <rect x="430" y="155" width="320" height="118" class="accentA"/>
+  <text x="455" y="188" class="label">Indexing and dataset resolution</text>
+  <text x="455" y="216" class="body">Resolve dataset root, scan files,</text>
+  <text x="455" y="238" class="body">capture sidecars and subject metadata</text>
+  <text x="455" y="260" class="small">Output: file_index.csv</text>
+
+  <line x1="380" y1="214" x2="430" y2="214" class="arrow"/>
+
+  <text x="110" y="345" class="section">2. Preprocess and feature extraction</text>
+  <rect x="80" y="365" width="300" height="152" class="accentB"/>
+  <text x="105" y="398" class="label">Preprocess</text>
+  <text x="105" y="426" class="body">Filtering, rereferencing, resampling,</text>
+  <text x="105" y="448" class="body">optional EEG CSD, modality handling,</text>
+  <text x="105" y="470" class="body">epoching and QC masking</text>
+  <text x="105" y="500" class="small">Coverage-aware and config-driven</text>
+
+  <rect x="430" y="365" width="320" height="152" class="accentB"/>
+  <text x="455" y="398" class="label">Feature extraction</text>
+  <text x="455" y="426" class="body">EEG/fMRI/peripheral metrics per epoch</text>
+  <text x="455" y="448" class="body">with provenance, QC, and resume support</text>
+  <text x="455" y="470" class="body">CSV/parquet plus intermediate JSON</text>
+  <text x="455" y="500" class="small">Examples: bandpower, entropy, Hjorth, regional features</text>
+
+  <line x1="380" y1="441" x2="430" y2="441" class="arrow"/>
+  <path d="M 590 273 L 590 320 L 230 320 L 230 365" class="arrow"/>
+  <path d="M 750 441 L 790 441 L 790 280 L 830 280" class="arrow"/>
+
+  <text x="860" y="135" class="section">3. Projection-ready feature surfaces</text>
+  <rect x="830" y="155" width="320" height="152" class="accentC"/>
+  <text x="855" y="188" class="label">Projection-time standardization</text>
+  <text x="855" y="216" class="body">Config-defined transforms applied to</text>
+  <text x="855" y="238" class="body">weighted features before projection</text>
+  <text x="855" y="260" class="small">Typical policy: robust_z -&gt; clip, with explicit log10 overrides</text>
+  <text x="855" y="284" class="small">Baselines retained as provenance</text>
+
+  <rect x="1200" y="155" width="320" height="152" class="accentC"/>
+  <text x="1225" y="188" class="label">Exported feature matrices</text>
+  <text x="1225" y="216" class="body">/features_raw/*</text>
+  <text x="1225" y="238" class="body">/features_robust_z/*</text>
+  <text x="1225" y="260" class="small">Strict robust-z export is separate from</text>
+  <text x="1225" y="282" class="small">projection-only log10 or clipping steps</text>
+
+  <line x1="1150" y1="230" x2="1200" y2="230" class="dash"/>
+
+  <text x="860" y="385" class="section">4. Measurement objects</text>
+  <rect x="830" y="405" width="220" height="150" class="accentD"/>
+  <text x="855" y="438" class="label">coords_9d</text>
+  <text x="855" y="466" class="body">Stratified coordinate chart</text>
+  <text x="855" y="488" class="body">m_a ... e_m</text>
+  <text x="855" y="518" class="small">Coverage-aware, validated, and</text>
+  <text x="855" y="540" class="small">checked for duplicate subcoordinate signals</text>
+
+  <rect x="1090" y="405" width="220" height="150" class="accentD"/>
+  <text x="1115" y="438" class="label">mnps_3d</text>
+  <text x="1115" y="466" class="body">Canonical 3D export</text>
+  <text x="1115" y="488" class="body">[m, d, e]</text>
+  <text x="1115" y="518" class="small">Derived from fixed 9D -&gt; 3D projection</text>
+  <text x="1115" y="540" class="small">in current reference contracts</text>
+
+  <rect x="1350" y="405" width="170" height="150" class="soft"/>
+  <text x="1375" y="438" class="label">mnps_3d_dot</text>
+  <text x="1375" y="466" class="body">Temporal derivative</text>
+  <text x="1375" y="488" class="body">of canonical 3D path</text>
+
+  <line x1="990" y1="307" x2="990" y2="405" class="arrow"/>
+  <line x1="1050" y1="480" x2="1090" y2="480" class="arrow"/>
+  <line x1="1310" y1="480" x2="1350" y2="480" class="arrow"/>
+
+  <text x="110" y="610" class="section">5. Dynamical summaries and regional outputs</text>
+  <rect x="80" y="630" width="300" height="170" class="box"/>
+  <text x="105" y="663" class="label">Jacobians</text>
+  <text x="105" y="691" class="body">Primary 3D: /jacobian/*</text>
+  <text x="105" y="713" class="body">Stratified: /jacobian_9D/*</text>
+  <text x="105" y="735" class="body">Optional cross-partials and</text>
+  <text x="105" y="757" class="body">block-level summaries</text>
+  <text x="105" y="785" class="small">Only exported when support and conditioning permit</text>
+
+  <rect x="430" y="630" width="320" height="170" class="box"/>
+  <text x="455" y="663" class="label">Regional outputs</text>
+  <text x="455" y="691" class="body">Canonical derived outputs:</text>
+  <text x="455" y="713" class="body">/regional_mnps/&lt;network&gt;/*</text>
+  <text x="455" y="741" class="body">Optional supporting raw signals:</text>
+  <text x="455" y="763" class="body">/regions/*</text>
+  <text x="455" y="785" class="small">Shared export logic across EEG channel groups and fMRI networks</text>
+
+  <rect x="830" y="630" width="690" height="170" class="box"/>
+  <text x="855" y="663" class="label">Self-describing outputs</text>
+  <text x="855" y="691" class="body">Run directory: neuralmanifolddynamics_&lt;dataset&gt;_&lt;timestamp&gt;</text>
+  <text x="855" y="713" class="body">run_manifest.json, features_snapshot.json, summary.json, QC JSON, HDF5</text>
+  <text x="855" y="735" class="body">Embedded tabular exports, feature provenance, coverage diagnostics, naming guide</text>
+  <text x="855" y="763" class="small">Goal: stable measurement contract for downstream analysis, not ingest-time interpretation</text>
+
+  <line x1="1160" y1="555" x2="1160" y2="630" class="arrow"/>
+  <line x1="940" y1="555" x2="230" y2="630" class="dash"/>
+  <line x1="1210" y1="555" x2="590" y2="630" class="dash"/>
+
+  <rect x="80" y="835" width="1440" height="48" class="soft"/>
+  <text x="800" y="865" text-anchor="middle" class="body">Separation of layers: source data -> preprocessing/features -> measurement objects -> dynamical summaries -> auditable serialized artifacts</text>
+</svg>

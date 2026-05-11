@@ -1,0 +1,102 @@
+# ds005555 — sleep-spindle event-locked overlay
+#
+# Imports the base ds005555 config and overrides only the settings needed for
+# short-window event-locked MNPS analysis. The 30 s staging profile is
+# preserved in config_ingest_ds005555.yaml for macro-stage work.
+#
+# Usage:
+#   python -m mndm.cli all --dataset ds005555 \
+#     --config mndm/config/config_ingest_ds005555_sleep_spindles.yaml
+#
+# Key differences from base config:
+#   - 6 s windows, 2 s step (spindle-compatible temporal resolution)
+#   - Stage-stratified sampling disabled (event-locked sampler controls epoch selection)
+#   - Sleep stage labels still inferred from BIDS events.tsv via sampling.stage_columns
+#     and mapped to short windows by midpoint assignment
+#   - event_locked section added with generic node + named spindle profile
+#   - Profile name, bins, reference, seed recorded in manifest provenance
+
+imports:
+  - "./config_ingest_ds005555.yaml"
+
+# ── Local path overrides ──────────────────────────────────────────────────
+# Data lives on M: on this machine. Override received/processed dirs here
+# rather than modifying the shared base config.
+paths:
+  received_dir: "M:/datasets/received/openneuro"
+  processed_dir: "M:/datasets/processed/openneuro"
+
+# ── Epoching override ──────────────────────────────────────────────────────
+# Switch to short windows suitable for spindle-scale temporal resolution.
+# Stage labels are still inferred from events.tsv and aligned to window
+# midpoints by the existing infer_stage_from_bids_events() mechanism.
+epoching:
+  datasets:
+    ds005555:
+      profile: "sleep_spindle_event_locked_v1"
+      length_s: 6.0
+      step_s: 2.0
+      sampling:
+        # Disable stage-stratified block sampling.
+        # All N2 windows are retained; event-locked sampler controls selection.
+        enabled: false
+        # Preserve stage column spec so /labels/stage is still inferred.
+        stage_columns: ["stage_hum", "stage_ai", "stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+
+# ── Event-locked analysis ─────────────────────────────────────────────────
+# Generic event_locked node. The profile name ties these settings to the
+# epoching profile above and appears verbatim in manifest / export provenance.
+#
+# event_types: which EventTable types to process (not hard-coded in core)
+# stage_filter: only process events whose enclosing MNPS window is this stage
+# reference: which event timestamp to use as t=0 for bins (peak | onset | offset)
+# bins: named relative-time bins in seconds (lo inclusive, hi exclusive)
+# controls: matched non-event window settings
+event_locked:
+  datasets:
+    ds005555:
+      enabled: true
+      profile: "sleep_spindle_event_locked_v1"
+      event_types: ["sleep_spindle"]
+      stage_filter: ["N2"]
+      reference: "peak"   # use spindle peak when available; fallback to onset
+      bins:
+        pre_far:   [-30.0, -10.0]
+        pre_near:  [-10.0,   0.0]
+        event:     [  0.0,   3.0]
+        post_near: [  3.0,  10.0]
+        post_far:  [ 10.0,  30.0]
+      exclude_stage_transition_margin_sec: 30.0
+      min_overlap_fraction: 0.0
+      controls:
+        stage: "N2"
+        n_controls_per_event: 3
+        exclusion_margin_sec: 30.0
+        time_of_night_quartile_match: true
+        seed: 42
+      export:
+        write_parquet: true
+        write_csv: true
+        include_coords_9d: true
+        provenance_in_every_row: true
+
+# ── Disable heavyweight features not needed for spindle-scale windows ─────
+# Dynamic FC is expensive and designed for longer windows; disable here.
+ndt_ingest:
+  modalities:
+    eeg:
+      datasets:
+        ds005555:
+          dynamic_fc:
+            enabled: false
+
+# ── Relax coverage thresholds for short windows ───────────────────────────
+# 6 s windows produce many more epochs than 30 s; lower min_seconds accordingly.
+robustness:
+  coverage:
+    datasets:
+      ds005555:
+        min_seconds: 30
+        min_epochs: 20

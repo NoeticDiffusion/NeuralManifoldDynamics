@@ -377,6 +377,21 @@ def write_h5(
             for name, arr in payload.events.items():
                 _create_dataset(events_grp, name, arr)
 
+        # Columnar event annotation table (EventTable → dict of arrays).
+        # Written under /events/ alongside any legacy 1-D event arrays.
+        # A _schema_version attribute distinguishes the columnar layout.
+        event_table_cols = getattr(payload, "event_table_columns", None)
+        if isinstance(event_table_cols, Mapping) and event_table_cols:
+            events_grp = h5.require_group("events")
+            for col_name, col_data in event_table_cols.items():
+                safe = _sanitize_h5_key(str(col_name))
+                if isinstance(col_data, (bytes, np.bytes_)):
+                    # Scalar metadata (e.g. _schema_version)
+                    events_grp.attrs[safe] = col_data.decode("utf-8") if isinstance(col_data, bytes) else col_data.decode("utf-8")
+                else:
+                    _create_dataset(events_grp, safe, col_data)
+            events_grp.attrs["_has_event_table"] = True
+
         if payload.nn_indices is not None and payload.nn_indices.size:
             nn_grp = h5.require_group("nn")
             _create_dataset(nn_grp, "indices", payload.nn_indices)

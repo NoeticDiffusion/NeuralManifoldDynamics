@@ -30,6 +30,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
   - FD censoring of high-motion epochs (framewise_displacement > 0.5 mm, ±1 neighbour)
   - Provisional flag for fMRI modularity when a window has very few volumes
   - Event→MNPS mapping (opt-in) writing binary labels aligned to MNPS time
+  - Generic event annotation tables, event-window alignment, matched controls, and event-locked sidecar exports for downstream analyses
   - Within-run state labeling for datasets where labels change inside one run, with support for boundary tables, interval tables, and feature-derived stage columns
   - Window start/end (seconds) per MNPS point in HDF5 for clearer time alignment
 
@@ -41,6 +42,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - Dependencies: `numpy`, `scipy`, `pandas`, `mne`, `h5py`, `pyyaml`, `tqdm`, `joblib`
 - Optional: `openneuro-py` (for dataset downloads)
 - Optional: `dandi`, `pynwb` (for DANDI archive access and NWB inputs)
+- Optional: `yasa` (for detector-derived sleep-spindle annotations in downstream event-locked workflows)
 - Optional but recommended for feature storage: `pyarrow`
 
 ---
@@ -219,6 +221,25 @@ When `preprocess.eeg_csd.enabled=true`, scalp EEG channels transformed by
 recordings from disappearing at the modality collection stage simply because
 MNE relabels their channel type from `eeg` to `csd`.
 
+### Event-Locked Analysis Sidecars
+
+MNDM now includes generic helpers for event-locked analyses:
+
+- `mndm.pipeline.event_annotations`: load and serialize event tables such as detector-derived sleep spindles
+- `mndm.pipeline.event_alignment`: map events to MNPS windows and relative-time bins
+- `mndm.pipeline.control_matching`: select matched non-event control windows
+- `mndm.pipeline.event_locked_export`: write flat analysis tables with provenance
+
+These helpers are designed as a derived analysis layer. The canonical HDF5 output remains the measurement surface (`/mnps_3d`, `/coords_9d`, `/jacobian`, `/labels`, feature surfaces, and provenance). Event annotations, event-window mappings, matched controls, and baseline-corrected summaries should be kept as sidecars or clearly marked derived groups unless a future release promotes a stable derived-event schema.
+
+For the sleep-spindle profile, use the event-locked overlay rather than replacing the standard sleep-stage configuration:
+
+```powershell
+python -m mndm.cli all --dataset ds005555 --config mndm/config/config_ingest_ds005555_sleep_spindles.yaml --n-jobs 12
+```
+
+This overlay uses short windows suitable for spindle-scale event alignment while preserving stage labels as time-aligned annotations.
+
 ### Within-Run Labels
 
 Some datasets need two different label layers:
@@ -331,6 +352,7 @@ The `/regions/*` group is optional supporting input data, mainly for raw fMRI re
 | `/nn/indices` | (T, k) | kNN neighbor indices |
 | `/labels/stage` | (T,) | Canonical integer-coded per-window state series, e.g. sleep stages or within-run anesthesia state |
 | `/labels/<name>` | (T,) | Additional aligned labels, binary, numeric, or categorical |
+| `/events/*` | varies | Optional event annotation columns when event tables are attached to a payload |
 | `/regional_mnps/<network>/mnps` | (Tr, 3) | Canonical regional MNPS output for any modality |
 | `/regions/bold` | (R, T') | Optional raw regional fMRI time series |
 | `/extensions/e_kappa/*` | varies | Energetic curvature |

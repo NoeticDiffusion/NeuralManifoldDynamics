@@ -12,8 +12,9 @@ datalad==1.2.3
 datalad-installer
 networkx==3.3
 nibabel==5.2.1
-openneuro-py
-nilearn
-pyarrow
-dandi
-pynwb
+openneuro-py==2026.3.0
+nilearn==0.13.1
+pyarrow==23.0.1
+dandi==0.75.1
+pynwb==3.1.3
+yasa==0.7.0

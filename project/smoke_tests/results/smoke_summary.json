@@ -1,0 +1,54 @@
+[
+  {
+    "dataset": "ds005555",
+    "subject": "sub-1",
+    "total_staging_epochs": 915,
+    "n2_epochs": 398,
+    "synthetic_spindles_injected": 133,
+    "validation_warnings": [],
+    "n_events_aligned": 111,
+    "n_events_excluded_transition": 22,
+    "n_spindle_rows": 222,
+    "n_control_rows": 399,
+    "match_success_rate": 1.0,
+    "n_full_matches": 133,
+    "n_partial_matches": 0,
+    "n_no_matches": 0,
+    "bin_counts": {
+      "pre_far": 111,
+      "event": 111
+    },
+    "event_window_frac": 1.0,
+    "mnps_finite_frac": 1.0,
+    "coords_9d_present": true,
+    "csv_out": "H:\\SourceRepo2\\NeuralManifoldDynamics\\project\\smoke_tests\\results\\smoke_ds005555_sub-1.csv",
+    "qc_json_out": "H:\\SourceRepo2\\NeuralManifoldDynamics\\project\\smoke_tests\\results\\smoke_ds005555_sub-1_qc.json",
+    "elapsed_sec": 0.28
+  },
+  {
+    "dataset": "ANPHY",
+    "subject": "EPCTL01",
+    "total_staging_epochs": 958,
+    "n2_epochs": 471,
+    "synthetic_spindles_injected": 157,
+    "validation_warnings": [],
+    "n_events_aligned": 136,
+    "n_events_excluded_transition": 21,
+    "n_spindle_rows": 272,
+    "n_control_rows": 471,
+    "match_success_rate": 1.0,
+    "n_full_matches": 157,
+    "n_partial_matches": 0,
+    "n_no_matches": 0,
+    "bin_counts": {
+      "pre_far": 136,
+      "event": 136
+    },
+    "event_window_frac": 1.0,
+    "mnps_finite_frac": 1.0,
+    "coords_9d_present": true,
+    "csv_out": "H:\\SourceRepo2\\NeuralManifoldDynamics\\project\\smoke_tests\\results\\smoke_ANPHY_EPCTL01.csv",
+    "qc_json_out": "H:\\SourceRepo2\\NeuralManifoldDynamics\\project\\smoke_tests\\results\\smoke_ANPHY_EPCTL01_qc.json",
+    "elapsed_sec": 0.4
+  }
+]
