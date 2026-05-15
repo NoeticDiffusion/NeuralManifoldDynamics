@@ -43,6 +43,10 @@ try:
     import mne
 except Exception:  # pragma: no cover - optional dependency
     mne = None  # type: ignore
+try:
+    import wfdb  # type: ignore
+except Exception:  # pragma: no cover - optional dependency
+    wfdb = None  # type: ignore
 import numpy as np
 import pandas as pd
 
@@ -1234,6 +1238,149 @@ def _nwb_unit_to_microvolt_factor(unit: Any, *, scale_to_microvolts: bool) -> fl
     return 1e6
 
 
+def _wfdb_channel_type(name: str) -> str:
+    """Infer a coarse MNE channel type from a WFDB signal name."""
+    ch = str(name or "").strip().lower()
+    if ch.startswith("ecg") or ch.startswith("ekg"):
+        return "ecg"
+    if "eog" in ch:
+        return "eog"
+    if "emg" in ch:
+        return "emg"
+    if "resp" in ch or "thor" in ch or "abd" in ch:
+        return "resp"
+    if "eda" in ch or "gsr" in ch:
+        return "misc"
+    return "eeg"
+
+
+def _wfdb_unit_to_microvolt_factor(unit: Any, *, scale_to_microvolts: bool) -> float:
+    """Return factor from WFDB unit to microvolts."""
+    if not scale_to_microvolts:
+        return 1.0
+    text = str(unit or "").strip().lower()
+    if text in {"v", "volt", "volts"}:
+        return 1e6
+    if text in {"mv", "millivolt", "millivolts"}:
+        return 1e3
+    if text in {"uv", "µv", "microvolt", "microvolts"}:
+        return 1.0
+    # "nu" in I-CARE headers denotes normalized/no-unit values; keep unchanged.
+    if text in {"nu", "adu", "au", ""}:
+        return 1.0
+    return 1.0
+
+
+def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
+    """Preprocess PhysioNet/WFDB recordings from .hea/.mat pairs."""
+    if mne is None:
+        raise RuntimeError("mne is required for WFDB preprocessing but is not installed.")
+    if wfdb is None:
+        raise RuntimeError("wfdb is required for WFDB preprocessing. Install with `pip install wfdb`.")
+
+    t_pre0 = time.perf_counter()
+    dataset_id = _infer_dataset_id(file_path, config)
+    preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
+    wfdb_cfg = preprocess_cfg.get("wfdb", {}) if isinstance(preprocess_cfg, Mapping) else {}
+    if not isinstance(wfdb_cfg, Mapping):
+        wfdb_cfg = {}
+
+    record_stem = str(file_path.with_suffix(""))
+    try:
+        record = wfdb.rdrecord(record_stem)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to read WFDB record for {file_path}. "
+            "Ensure matching signal files (e.g., .mat/.dat) are present."
+        ) from exc
+
+    data = np.asarray(getattr(record, "p_signal", None), dtype=float)
+    if data.ndim != 2 or data.size == 0:
+        raise RuntimeError(f"WFDB record {file_path} has unexpected signal shape: {data.shape}")
+
+    sig_names = list(getattr(record, "sig_name", []) or [])
+    if len(sig_names) != data.shape[1]:
+        sig_names = [f"wfdb_ch{idx:03d}" for idx in range(data.shape[1])]
+    units = list(getattr(record, "units", []) or [])
+    if len(units) != data.shape[1]:
+        units = [""] * data.shape[1]
+
+    ch_types = [_wfdb_channel_type(name) for name in sig_names]
+    fs = float(getattr(record, "fs", 0.0) or 0.0)
+    if fs <= 0:
+        raise RuntimeError(f"WFDB record {file_path} has invalid sampling rate: {fs}")
+
+    info = mne.create_info(ch_names=sig_names, sfreq=fs, ch_types=ch_types)
+    raw = mne.io.RawArray(data.T, info, verbose=False)
+
+    # Optional dataset-specific channel typing overrides.
+    _apply_channel_typing(raw, dataset_id, config)
+
+    crop_cfg = _resolve_crop_config(config, dataset_id)
+    if crop_cfg:
+        tmin = float(crop_cfg.get("start_sec", 0) or 0.0)
+        tmax_val = crop_cfg.get("stop_sec", None)
+        tmax = float(tmax_val) if tmax_val is not None else None
+        try:
+            raw.crop(tmin=max(tmin, 0.0), tmax=tmax)
+        except Exception as exc:
+            logger.warning("WFDB crop failed for %s (%s); continuing without crop", file_path.name, exc)
+
+    target_sfreq, sfreq_policy = _resolve_target_sfreq(
+        original_sfreq=float(fs),
+        preprocess_cfg=preprocess_cfg if isinstance(preprocess_cfg, Mapping) else {},
+    )
+    if raw.info["sfreq"] != target_sfreq:
+        raw.resample(target_sfreq, verbose=False)
+
+    notch_hz = preprocess_cfg.get("notch_hz", None) if isinstance(preprocess_cfg, Mapping) else None
+    eeg_picks = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
+    if notch_hz is not None and len(eeg_picks) > 0:
+        raw.notch_filter(freqs=notch_hz, picks=eeg_picks, verbose=False)
+
+    eeg_bandpass = preprocess_cfg.get("eeg_bandpass", [1, 45]) if isinstance(preprocess_cfg, Mapping) else [1, 45]
+    if eeg_bandpass is not None and len(eeg_bandpass) == 2 and len(eeg_picks) > 0:
+        raw.filter(l_freq=eeg_bandpass[0], h_freq=eeg_bandpass[1], picks=eeg_picks, verbose=False)
+
+    reref = preprocess_cfg.get("reref", None) if isinstance(preprocess_cfg, Mapping) else None
+    if str(reref).lower() == "average" and len(eeg_picks) > 0:
+        eeg_data = raw.get_data(picks=eeg_picks)
+        raw._data[eeg_picks, :] = eeg_data - np.mean(eeg_data, axis=0, keepdims=True)  # type: ignore[attr-defined]
+
+    if len(eeg_picks) == 0:
+        raise RuntimeError(f"No EEG channels detected in WFDB record: {file_path}")
+
+    scale_to_microvolts = bool(wfdb_cfg.get("scale_to_microvolts", True))
+    eeg_indices = set(int(i) for i in eeg_picks)
+    eeg_scale = np.array(
+        [
+            _wfdb_unit_to_microvolt_factor(units[idx], scale_to_microvolts=scale_to_microvolts)
+            for idx in range(len(sig_names))
+            if idx in eeg_indices
+        ],
+        dtype=float,
+    )
+    eeg_values = raw.get_data(picks=eeg_picks)
+    if eeg_scale.shape[0] == eeg_values.shape[0]:
+        eeg_values = eeg_values * eeg_scale[:, np.newaxis]
+
+    preprocess_timings: Dict[str, float] = {"total": float(time.perf_counter() - t_pre0)}
+    meta: Dict[str, Any] = {
+        "file": str(file_path),
+        "dataset_id": dataset_id,
+        "source_format": "WFDB",
+        "wfdb_record_name": str(getattr(record, "record_name", "") or ""),
+        "wfdb_scale_to_microvolts": scale_to_microvolts,
+        "original_sfreq": float(fs),
+        "target_sfreq_resolved": float(raw.info["sfreq"]),
+        "sfreq_policy": sfreq_policy,
+        "timings": preprocess_timings,
+    }
+    channels = {"eeg": [raw.ch_names[i] for i in eeg_picks]}
+    logger.info("Preprocessed WFDB %s with %d EEG channel(s)", file_path.name, len(channels["eeg"]))
+    return PreprocessedSignals(signals={"eeg": eeg_values}, sfreq=float(raw.info["sfreq"]), channels=channels, meta=meta)
+
+
 def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
     """Preprocess a continuous NWB ElectricalSeries into the existing EEG feature contract."""
     if mne is None:
@@ -1347,6 +1494,8 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         return preprocess_fmri(file_path, config)
     if suffixes.endswith(".nwb"):
         return preprocess_nwb(file_path, config)
+    if suffixes.endswith(".hea"):
+        return preprocess_wfdb(file_path, config)
     # We can infer dataset id from the path (no file I/O) and use it for
     # dataset-specific loading quirks before MNE touches the file.
     dataset_id_hint = _infer_dataset_id(file_path, config)

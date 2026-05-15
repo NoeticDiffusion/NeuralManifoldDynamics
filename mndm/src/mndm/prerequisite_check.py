@@ -95,72 +95,16 @@ def _load_participants_from_dataset_root(
     config: Mapping[str, Any],
     dataset_id: str,
 ) -> Optional[pd.DataFrame]:
-    """Internal helper: load participants from dataset root."""
-    metadata_spec = (config.get("metadata_extraction", {}) if isinstance(config, Mapping) else {}) or {}
-    default_cfg = metadata_spec.get("default", {}) if isinstance(metadata_spec, Mapping) else {}
-    per_ds = (metadata_spec.get("datasets", {}) or {}).get(dataset_id, {}) if isinstance(metadata_spec, Mapping) else {}
+    """Internal helper: load participants via shared extraction pipeline."""
+    from .pipeline.extractors import load_participant_table
 
-    participants_cfg: Dict[str, Any] = {}
-    if isinstance(default_cfg, Mapping) and isinstance(default_cfg.get("participants"), Mapping):
-        participants_cfg.update(dict(default_cfg.get("participants") or {}))
-    if isinstance(per_ds, Mapping) and isinstance(per_ds.get("participants"), Mapping):
-        participants_cfg.update(dict(per_ds.get("participants") or {}))
-
-    path_value = participants_cfg.get("path")
-    candidate_path: Optional[Path] = None
-    if isinstance(path_value, (str, Path)) and str(path_value).strip():
-        raw_path = Path(str(path_value).strip())
-        candidate_path = raw_path if raw_path.is_absolute() else dataset_root / raw_path
-        if not candidate_path.exists():
-            return None
-    else:
-        for name in ("participants.tsv", "participants.csv", "participants.txt"):
-            path = dataset_root / name
-            if path.exists():
-                candidate_path = path
-                break
-        if candidate_path is None:
-            return None
-
-    sep = participants_cfg.get("sep", participants_cfg.get("delimiter"))
-    if not isinstance(sep, str) or not sep:
-        suffix = candidate_path.suffix.lower()
-        if suffix == ".tsv":
-            sep = "\t"
-        elif suffix == ".csv":
-            sep = ","
-        else:
-            sep = None
-
-    read_kwargs: Dict[str, Any] = {}
-    if sep is None:
-        read_kwargs.update({"sep": None, "engine": "python"})
-    else:
-        read_kwargs["sep"] = sep
-    df = pd.read_csv(candidate_path, **read_kwargs)
-
-    subject_id_candidates = participants_cfg.get(
-        "subject_id_candidates",
-        ["participant_id", "subject_id", "participant", "subject"],
-    )
-    subject_id_column = participants_cfg.get("subject_id_column")
-    if isinstance(subject_id_column, str) and subject_id_column.strip():
-        subject_id_candidates = [subject_id_column.strip(), *list(subject_id_candidates or [])]
-
-    if "participant_id" not in df.columns:
-        col_lookup = {str(col).strip().lower(): str(col) for col in df.columns}
-        for alt in subject_id_candidates:
-            actual = col_lookup.get(str(alt).strip().lower())
-            if actual in df.columns:
-                df = df.rename(columns={actual: "participant_id"})
-                break
-    if "participant_id" not in df.columns:
-        return None
-    df["participant_id"] = df["participant_id"].astype(str)
-    df.attrs["source_path"] = str(candidate_path)
-    df.attrs["source_format"] = candidate_path.suffix.lower().lstrip(".") or "text"
-    df.attrs["subject_id_column"] = "participant_id"
-    return df
+    cfg = dict(config) if isinstance(config, Mapping) else {}
+    paths_cfg = dict(cfg.get("paths", {})) if isinstance(cfg.get("paths", {}), Mapping) else {}
+    ds_dirs = dict(paths_cfg.get("dataset_received_dirs", {})) if isinstance(paths_cfg.get("dataset_received_dirs", {}), Mapping) else {}
+    ds_dirs[dataset_id] = str(dataset_root)
+    paths_cfg["dataset_received_dirs"] = ds_dirs
+    cfg["paths"] = paths_cfg
+    return load_participant_table(dataset_root.parent, dataset_id, cfg)
 
 
 def run_dataset_prerequisite_check(

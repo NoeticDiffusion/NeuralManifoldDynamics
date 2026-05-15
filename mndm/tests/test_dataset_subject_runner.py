@@ -66,6 +66,37 @@ def test_dataset_runner_subject_filter(dummy_ctx):
     assert filtered["file"].iloc[0].startswith("sub-001")
 
 
+def test_dataset_runner_subject_filter_non_bids_filename_regex(dummy_ctx):
+    """Subject filter should work for non-BIDS filenames via filename_parse."""
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "metadata_extraction": {
+            "datasets": {
+                "physionet_icare_2_1": {
+                    "filename_parse": {
+                        "regex": r"^(?P<subject>\d{4})_(?P<run>\d{3})_(?P<acq>\d{3})_EEG\.hea$",
+                        "subject_pad": 4,
+                    }
+                }
+            }
+        },
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "physionet_icare_2_1", "0332", "subject")
+    frame = pd.DataFrame(
+        {
+            "file": [
+                "0332_001_022_EEG.hea",
+                "0333_001_022_EEG.hea",
+            ]
+        }
+    )
+
+    filtered = runner._apply_subject_filter(frame)
+    assert filtered is not None
+    assert len(filtered) == 1
+    assert filtered["file"].iloc[0] == "0332_001_022_EEG.hea"
+
+
 def test_dataset_runner_groupings_from_file_column(dummy_ctx):
     """Test dataset runner groupings from file column."""
     runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject")
@@ -336,4 +367,159 @@ def test_subject_runner_exports_reproducibility_provenance(dummy_ctx, monkeypatc
     repro = manifest["provenance"]["reproducibility"]
     assert repro["seed"] == 42
     assert repro["jacobian_hash_saved"] == payload.attrs["jacobian_hash_saved"]
+
+
+def test_subject_runner_exports_time_reference_extension(dummy_ctx, monkeypatch, tmp_path):
+    """Subject runner exports time-reference attrs + extension + manifest."""
+    dataset_root = tmp_path / "received_physio" / "training"
+    header_dir = dataset_root / "0332"
+    header_dir.mkdir(parents=True, exist_ok=True)
+    header_path = header_dir / "0332_001_022_EEG.hea"
+    header_path.write_text(
+        "\n".join(
+            [
+                "0332_001_022_EEG 1 200 1000",
+                "#Start time: 22:59:08",
+                "#End time: 23:10:08",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "paths": {
+            "dataset_received_dirs": {
+                "physionet_icare_2_1": str(dataset_root),
+            }
+        },
+        "time_reference": {
+            "enabled": True,
+            "schema_version": "time_reference.v1",
+            "parser": "wfdb_header",
+            "anchor": "first_recording",
+            "bins_hours": [0, 24, 48, 72],
+            "datasets": {"physionet_icare_2_1": {"enabled": True}},
+        },
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "physionet_icare_2_1", None, "subject", n_jobs=1)
+    runner.participants_df = pd.DataFrame()
+    runner._build_participant_meta_map()
+    monkeypatch.setattr(runner, "participant_meta_for", lambda _sub_id: {})
+    monkeypatch.setattr(runner, "participant_meta_source_info", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "resolve_coverage_policy",
+        lambda **_kwargs: {"min_epochs": 0, "min_seconds": 0.0, "tag": "default"},
+    )
+    monkeypatch.setattr(runner, "write_regional_csv_outputs_threadsafe", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "write_stratified_blocks_csv_output_threadsafe", lambda **_kwargs: None)
+
+    index_df = pd.DataFrame(
+        [
+            {
+                "path": "0332/0332_001_022_EEG.hea",
+                "subject": "0332",
+                "run": "001",
+                "acq": "022",
+                "modality": "eeg",
+            }
+        ]
+    )
+    subject_runner = SubjectSummaryRunner(
+        dataset_runner=runner,
+        ds_path=tmp_path,
+        mnps_dir=tmp_path / "mnps",
+        index_df=index_df,
+    )
+    subject_runner.mnps_dir.mkdir(parents=True, exist_ok=True)
+
+    sub_frame = pd.DataFrame(
+        {
+            "file": ["0332/0332_001_022_EEG.hea"] * 6,
+            "epoch_id": np.arange(6, dtype=int),
+            "t_start": np.arange(0, 12, 2, dtype=float),
+            "t_end": np.arange(2, 14, 2, dtype=float),
+        }
+    )
+    x = np.array(
+        [
+            [0.0, 0.1, 0.2],
+            [0.2, 0.0, 0.1],
+            [0.4, -0.1, 0.0],
+            [0.6, -0.2, -0.1],
+            [0.8, -0.1, -0.2],
+            [1.0, 0.0, -0.3],
+        ],
+        dtype=np.float32,
+    )
+    captures: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        summary_mod,
+        "extract_mapped_metadata",
+        lambda *_args, **_kwargs: {"group": None, "condition": "rest", "task": "continuous_eeg"},
+    )
+    monkeypatch.setattr(summary_mod, "build_dataset_label", lambda **_kwargs: "physionet_icare_2_1:sub-0332:rest")
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "project_features_with_coverage",
+        lambda *args, **kwargs: (x, np.ones_like(x, dtype=np.float32), {}),
+    )
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "build_feature_export_bundle",
+        lambda *args, **kwargs: {
+            "raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "raw_names": [],
+            "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "robust_z_names": [],
+            "metadata": {},
+        },
+    )
+    monkeypatch.setattr(summary_mod, "extract_stage_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subject_runner, "_infer_stage_from_bids_events", lambda *_args, **_kwargs: (None, None, None, None))
+    monkeypatch.setattr(summary_mod, "extract_embodied_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "extract_events", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(subject_runner, "_load_regional_fmri", lambda **_kwargs: (None, None, None))
+    monkeypatch.setattr(summary_mod, "compute_regional_context", lambda **_kwargs: ({}, None, [], {}, None))
+    monkeypatch.setattr(summary_mod, "compute_extensions", lambda **_kwargs: ({}, {}))
+    monkeypatch.setattr(summary_mod, "compute_ensemble_summary_for_subject", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_robust_and_reliability_summaries", lambda **_kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_dist_summary", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_feature_baseline_comparisons", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_tau_summary", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_tier2_jacobian_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_emmi_metrics", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_null_sanity_tests", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_psd_multiverse_stability", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod.robustness, "entropy_sanity_checks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "_get_env_provenance", lambda: {})
+    monkeypatch.setattr(subject_runner, "_write_qc_files", lambda **_kwargs: None)
+
+    def _capture_write(*, target_dir, dataset_label, manifest, payload, **kwargs):
+        """Capture summary write arguments for assertions."""
+        captures["manifest"] = manifest
+        captures["payload"] = payload
+
+    monkeypatch.setattr(summary_mod, "write_summary_manifest_and_h5", _capture_write)
+
+    subject_runner.run(
+        sub_id="sub-0332",
+        ses_id=None,
+        raw_task="continuous_eeg",
+        run_id="001",
+        acq_id="022",
+        sub_frame=sub_frame,
+    )
+
+    payload = captures["payload"]
+    manifest = captures["manifest"]
+    assert "time_reference" in payload.extensions
+    assert "run" in payload.extensions["time_reference"]
+    assert "windows" in payload.extensions["time_reference"]
+    assert payload.attrs["time_reference_schema_version"] == "time_reference.v1"
+    assert payload.attrs["time_reference_status"] == "ok"
+    assert "time_reference" in manifest
+    assert manifest["time_reference"]["status"] == "ok"
 

@@ -278,6 +278,9 @@ The current reference configurations, `ds000228` for fMRI [@richardson2023_ds000
 == DANDI / NWB ingest path
 In addition to BIDS-style OpenNeuro EEG/fMRI workflows, the repository includes a DANDI/NWB ingest path for selected neurophysiology assets [@dandi2022; @nwb2022]. This path is implemented as a constrained adapter layer rather than as a claim of full NWB ecosystem coverage. DANDI helper configs create asset manifests and probe local `.nwb` files, while MNDM configs such as `config_ingest_dandi_000718.yaml` and `config_ingest_dandi_000458.yaml` route NWB electrical-series data through the same downstream feature, MNPS, and HDF5 writer contracts used by the rest of the package. Where NWB interval tables expose behavioral or state labels, these can be mapped onto the MNPS time axis through `state_labels` / `within_run_labels` and serialized alongside the trajectory as `/labels/stage` or named labels. This makes DANDI/NWB support part of the source-format and label-alignment surface of the measurement contract, not a separate theoretical model.
 
+== PhysioNet / WFDB ingest path and clock provenance
+In parallel with the DANDI/NWB path, the repository now includes a PhysioNet ingest utility for cohort-level selection, checksum-aware transfer, resumable downloads, and manifest logging. On the MNDM side, WFDB headers (`.hea`) with paired signal files (`.mat`/`.dat`) are routed through the same canonical feature, MNPS, and HDF5 measurement contract used by other modalities. For WFDB overlays where `time_reference.enabled = true`, the export layer preserves the canonical relative-time surfaces (`/time`, `/window_start`, `/window_end`) and adds explicit clock-provenance extensions under `/extensions/time_reference/run/*` and `/extensions/time_reference/windows/*`. This extension is metadata-oriented: it improves temporal auditability and cross-run alignment without redefining the underlying MNPS coordinate contract.
+
 = Axis Construction
 The same reference configurations construct global `mnps_3d` and `coords_9d` as follows. The rows below should be read as modality-specific operationalizations under a shared chart family, not as claims of one-to-one physiological homology between EEG and fMRI features and not as a redefinition of the underlying theoretical axes.
 
@@ -372,6 +375,8 @@ The HDF5 contract is more explicit than before. Important paths now include:
 - `coords_9d/names`
 - `jacobian/J_hat`
 - `window_start` and `window_end`
+- `extensions/time_reference/run/*`
+- `extensions/time_reference/windows/*`
 - `labels/stage`
 - `regional_mnps/<network>/mnps`
 - `regional_mnps/<network>/jacobian`
@@ -380,7 +385,7 @@ The HDF5 contract is more explicit than before. Important paths now include:
 The previous ambiguity of short names such as `x` has been removed.
 
 == Self-Description Through Manifests
-Each run writes `run_manifest.json`, which now includes a field guide describing the meaning of key HDF5 paths. This is important because the export contract should be legible to both human users and automated readers without requiring separate source-code inspection.
+Each run writes `run_manifest.json`, which now includes a field guide describing the meaning of key HDF5 paths. Capability probes in the same manifest can also report extension presence (including `time_reference`) so that downstream tooling can branch on available temporal metadata without schema guessing. This is important because the export contract should be legible to both human users and automated readers without requiring separate source-code inspection.
 
 Selected summary tables that were previously emitted only as CSV files are now also embedded into HDF5 as columnar exports under `extensions/tabular_exports`. This makes the HDF5 file a more self-contained artifact.
 

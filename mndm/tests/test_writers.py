@@ -123,7 +123,18 @@ def test_write_h5(require_real_h5py):
                 "time": np.linspace(0, 1, 5, dtype=np.float32),
                 "energy": np.linspace(0, 1, 5, dtype=np.float32),
                 "kappa": np.zeros(5, dtype=np.float32),
-            }
+            },
+            "time_reference": {
+                "run": {
+                    "status": "ok",
+                    "schema_version": "time_reference.v1",
+                },
+                "windows": {
+                    "window_start_from_run_sec": np.linspace(0, 8, 5, dtype=np.float32),
+                    "window_end_from_run_sec": np.linspace(2, 10, 5, dtype=np.float32),
+                    "window_bin_id": np.array([0, 0, 1, 1, 1], dtype=np.int32),
+                },
+            },
         },
     )
 
@@ -152,6 +163,10 @@ def test_write_h5(require_real_h5py):
             assert "e_kappa" in f["extensions"]
             assert "time" in f["extensions"]["e_kappa"]
             assert "kappa" in f["extensions"]["e_kappa"]
+            assert "time_reference" in f["extensions"]
+            assert "run" in f["extensions"]["time_reference"]
+            assert "windows" in f["extensions"]["time_reference"]
+            assert "window_bin_id" in f["extensions"]["time_reference"]["windows"]
             assert "participant" in f
             assert "row_json" in f["participant"]
             assert "mapped_json" in f["participant"]

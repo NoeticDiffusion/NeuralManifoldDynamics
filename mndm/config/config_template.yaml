@@ -1,0 +1,215 @@
+version: 2.0
+# Choose modality profile for this dataset overlay:
+# - eeg
+# - nwb
+# - nwb_rodent
+# - nwb_mouse_eeg
+modality: eeg
+
+# Start from one common base and override only what is dataset-specific.
+imports:
+  - "./config_ingest_common_eeg.yaml"
+  # - "./config_ingest_common_nwb.yaml"
+  # - "./config_ingest_common_nwb_rodent.yaml"
+  # - "./config_ingest_common_nwb_mouse_eeg.yaml"
+
+datasets:
+  - example_dataset
+
+source:
+  name: "Example Source"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "example_dataset"
+  dataset_name: "Example Dataset Name"
+  dataset_version: null
+  species: null
+  doi: null
+  url: null
+  acknowledgement: null
+
+paths:
+  # You can either set global roots:
+  received_dir: "E:/Science_Datasets/openneuro/received"
+  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  # ...or explicit per-dataset roots:
+  dataset_received_dirs:
+    example_dataset: "E:/Science_Datasets/openneuro/received/example_dataset"
+
+preprocess:
+  # Generic EEG settings (also useful for WFDB EEG overlays).
+  sfreq: 250
+  sfreq_candidates: [250, 256, 500, 1000]
+  notch_hz: 50
+  eeg_bandpass: [1, 45]
+  reref: "average"
+  artifacts:
+    method: "none"
+
+  # WFDB-specific toggles (used by PhysioNet I-CARE style .hea/.mat/.dat inputs).
+  wfdb:
+    scale_to_microvolts: false
+
+  # NWB-specific toggles (used when imports include an NWB common profile).
+  nwb:
+    enabled: true
+    series_path: null
+    prefer_series_keywords: ["lfp", "electrical", "ecephys", "eeg"]
+    channel_type: "eeg"
+    scale_to_microvolts: true
+    datasets: {}
+
+  # Optional dataset-specific channel typing policies.
+  channel_typing:
+    enabled: true
+    policy_dir: "mndm/config/channel_typing"
+    datasets: {}
+      # example_dataset:
+      #   rules_file: "example_dataset_channel_typing.yml"
+      #   fallback_type: "eeg"
+
+epoching:
+  # Global fallback values.
+  length_s: 8.0
+  step_s: 4.0
+  datasets:
+    example_dataset:
+      # Common defaults for continuous runs:
+      length_s: 8.0
+      step_s: 4.0
+      # Optional profile naming if used by downstream logic:
+      # profile: "default_v1"
+
+      # Optional sampling control:
+      # sampling:
+      #   enabled: false
+
+robustness:
+  coverage:
+    min_seconds: 60
+    min_epochs: 20
+    datasets:
+      example_dataset:
+        min_seconds: 60
+        min_epochs: 20
+  ensembles:
+    enabled: false
+    min_channels: 3
+    groups: {}
+    datasets: {}
+      # example_dataset:
+      #   groups:
+      #     frontal: ["Fp1", "Fp2", "F3", "F4", "Fz"]
+      #     central: ["C3", "C4", "Cz"]
+
+# Optional run-clock enrichment for WFDB-based datasets.
+# Keeps /time, /window_start, /window_end unchanged and adds:
+# /extensions/time_reference/run/*
+# /extensions/time_reference/windows/*
+time_reference:
+  enabled: false
+  schema_version: "time_reference.v1"
+  parser: "wfdb_header"
+  anchor: "first_recording"
+  bins_hours: [0, 24, 48, 72]
+  datasets:
+    # Enable for WFDB datasets (e.g. PhysioNet I-CARE).
+    example_dataset:
+      enabled: false
+      parser: "wfdb_header"
+      anchor: "first_recording"
+      bins_hours: [0, 24, 48, 72]
+
+metadata_extraction:
+  datasets:
+    example_dataset:
+      # Optional filename parser for non-BIDS file names.
+      # Example for I-CARE: 0332_001_022_EEG.hea
+      # filename_parse:
+      #   regex: "^(?P<subject>\\d{4})_(?P<run>\\d{3})_(?P<acq>\\d{3})_EEG\\.hea$"
+      #   subject_pad: 4
+
+      participants:
+        # Optional generic key:value sidecar ingest.
+        # Useful for files like "0332.txt" with patient metadata.
+        # sidecar_files:
+        #   enabled: true
+        #   parser: "key_value"
+        #   file_globs:
+        #     - "*/[0-9][0-9][0-9][0-9].txt"
+        #   key_value_separator: ":"
+        #   key_normalization: "snake_case"
+        #   value_cast: "auto"
+        #   subject_id:
+        #     from_key: "Patient"
+        #     regex: "(?P<subject>\\d{3,8})"
+        #     strip_prefixes: ["sub-"]
+        #     pad: 4
+        #     prefix: "sub-"
+        {}
+
+      group:
+        default: "UNKNOWN_GROUP"
+      condition:
+        default: "unknown_condition"
+      task:
+        # set default task or keep from_filename: true if BIDS naming is informative
+        default: "unknown_task"
+        # from_filename: true
+
+# Optional event-locked workflow (sleep spindle style overlays).
+event_locked:
+  datasets: {}
+    # example_dataset:
+    #   enabled: true
+    #   profile: "event_locked_v1"
+    #   event_types: ["sleep_spindle"]
+    #   stage_filter: ["N2"]
+    #   reference: "peak"
+    #   bins:
+    #     pre_far: [-30.0, -10.0]
+    #     pre_near: [-10.0, 0.0]
+    #     event: [0.0, 3.0]
+    #     post_near: [3.0, 10.0]
+    #     post_far: [10.0, 30.0]
+    #   controls:
+    #     stage: "N2"
+    #     n_controls_per_event: 3
+    #     seed: 42
+
+# Optional pseudo-stage proxy when explicit stage labels are absent.
+pseudo_stage:
+  datasets: {}
+    # example_dataset:
+    #   enabled: true
+    #   label: "N2_PROXY"
+    #   code: 2
+    #   unknown_code: -1
+    #   min_criteria: 2
+    #   min_labeled_fraction: 0.10
+    #   spindle_columns: ["event_sleep_spindle_density", "spindle_density"]
+    #   sigma_columns: ["eeg_alpha", "eeg_beta"]
+    #   emg_columns: ["embodied_arousal_proxy", "eeg_gamma"]
+
+# Optional regional and stratified Jacobian exports.
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+# Optional NDT ingest toggles used in some overlays.
+ndt_ingest:
+  modalities:
+    eeg:
+      datasets: {}
+        # example_dataset:
+        #   dynamic_fc:
+        #     enabled: false

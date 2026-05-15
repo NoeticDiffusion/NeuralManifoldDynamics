@@ -101,6 +101,9 @@ def _extract_subject_candidate(token: str) -> Optional[str]:
     """Internal helper: extract subject candidate."""
     m = re.search(r"\b(?:sub-)?([A-Za-z]+[0-9]{2,})\b", str(token))
     if not m:
+        token_str = str(token).strip()
+        if token_str.isdigit() and len(token_str) >= 3:
+            return token_str
         return None
     candidate = m.group(1)
     low = candidate.lower()
@@ -288,7 +291,7 @@ def build_file_index(
     # ------------------------------------------------------------------
     # EEG files (unchanged behaviour, now with fmri_* fields set to None)
     # ------------------------------------------------------------------
-    eeg_extensions = [".edf", ".vhdr", ".set", ".bdf"]
+    eeg_extensions = [".edf", ".vhdr", ".set", ".bdf", ".hea"]
     for ext in eeg_extensions:
         for eeg_file in root.rglob(f"*{ext}"):
             try:
@@ -301,6 +304,19 @@ def build_file_index(
             parts = rel_path.parts
             if "derivatives" in parts:
                 continue
+
+            # WFDB headers (*.hea) require a paired signal file (*.mat or *.dat).
+            # During active downloads we may temporarily have header-only records;
+            # skip those to avoid guaranteed preprocessing failures.
+            if eeg_file.suffix.lower() == ".hea":
+                has_paired_signal = False
+                for signal_ext in (".mat", ".dat"):
+                    paired = eeg_file.with_suffix(signal_ext)
+                    if paired.exists():
+                        has_paired_signal = True
+                        break
+                if not has_paired_signal:
+                    continue
 
             # Parse BIDS filename
             stem_parts = eeg_file.stem.split("_")

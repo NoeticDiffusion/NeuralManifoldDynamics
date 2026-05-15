@@ -175,6 +175,21 @@ def _estimate_peak_ram_per_file(file_path: Path, file_size_bytes: int) -> tuple[
                 return float(est), "edf_header_v2"
         # Fallback when header parsing fails.
         return float(max(0.45, size_gb * 1.8)), "size_fallback_edf_v2"
+    if suffixes.endswith(".hea"):
+        # WFDB headers are tiny while paired signal files (.mat/.dat) dominate RAM.
+        # Estimate from sibling signal file size when available.
+        sibling_sizes = []
+        for ext in (".mat", ".dat"):
+            candidate = file_path.with_suffix(ext)
+            if candidate.exists():
+                try:
+                    sibling_sizes.append(float(candidate.stat().st_size) / (1024.0 ** 3))
+                except Exception:
+                    continue
+        if sibling_sizes:
+            paired_size_gb = max(sibling_sizes)
+            return float(max(0.6, paired_size_gb * 2.2)), "size_fallback_wfdb_header_pair_v1"
+        return float(max(0.6, size_gb * 8.0)), "size_fallback_wfdb_header_only_v1"
     if suffixes.endswith(".vhdr") or suffixes.endswith(".eeg") or suffixes.endswith(".set"):
         return float(max(0.9, size_gb * 3.5)), "size_fallback_eeg_v1"
     if suffixes.endswith(".nwb"):

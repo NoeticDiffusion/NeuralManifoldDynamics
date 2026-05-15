@@ -1,0 +1,29 @@
+dataset:
+  slug: "i-care"
+  version: "2.1"
+  base_url: "https://physionet.org"
+  remote_root: "files/i-care/2.1"
+  records_file: "RECORDS"
+  checksums_file: "SHA256SUMS.txt"
+
+subset:
+  strategy: "random_n_patients"
+  patient_count: 100
+  random_seed: 20260512
+  max_total_gb: 300
+  enforce_budget: true
+  min_patient_count: 30
+  # Keep full longitudinal EEG segments per selected patient.
+  include_file_globs:
+    - "*_EEG.hea"
+    - "*_EEG.mat"
+    - "*.txt"
+  include_top_level_files:
+    - "LICENSE.txt"
+    - "RECORDS"
+    - "SHA256SUMS.txt"
+
+download:
+  output_subdir: "i-care_2_1_random100_longitudinal"
+  max_parallel_downloads: 6
+  dry_run: true

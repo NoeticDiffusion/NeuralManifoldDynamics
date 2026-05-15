@@ -58,6 +58,12 @@ Example MNDM run:
 python -m mndm.cli all --dataset ds003490 --config mndm/config/config_ingest_ds003490.yaml --n-jobs 12
 ```
 
+Bootstrap a new dataset overlay from the generic template:
+
+```powershell
+copy mndm/config/config_template.yaml mndm/config/config_ingest_my_dataset.yaml
+```
+
 Example DANDI manifest/probe flow:
 
 ```powershell
@@ -76,10 +82,11 @@ The sleep-spindle configuration keeps the canonical HDF5 measurement output sepa
 ## Where To Read Next
 
 - MNDM usage and output contracts: `mndm/README.md`
+- MNDM generic config template: `mndm/config/config_template.yaml`
 - MNDM command reference: `mndm/Command_cheat_sheet.md`
 - MNDM output schema details: `mndm/Output_variables_guide.md`
 - OpenNeuro ingest details: `openneuro_ingest/`
-- DANDI ingest configs and adapters: `dandi_ingest/`
+- DANDI ingest usage/configs/adapters: `dandi_ingest/README.md`
 
 ## Repository Layout
 
@@ -108,6 +115,13 @@ Those runs usually contain:
 - `run_manifest.json`
 - `features_snapshot.json`
 - per-subject or per-run subdirectories with `summary.json`, QC JSON, and HDF5 outputs
+
+For WFDB overlays with `time_reference.enabled: true`, H5 outputs also include:
+
+- `/extensions/time_reference/run/*`
+- `/extensions/time_reference/windows/*`
+
+and `run_manifest.json` reports capability flags for time-reference presence.
 
 Some datasets also carry labels that vary within a single run instead of staying constant for the whole recording. MNDM now supports these as time-aligned labels on the MNPS axis, for example:
 

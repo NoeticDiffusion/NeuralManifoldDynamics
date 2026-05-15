@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 h5py = pytest.importorskip("h5py")
@@ -74,10 +75,13 @@ def test_run_manifest_uses_regional_mnps_as_canonical_regional_output(tmp_path: 
     assert caps["raw_features_path"] == "/features_raw"
     assert caps["robust_z_features"] is True
     assert caps["robust_z_features_path"] == "/features_robust_z"
+    assert caps["time_reference"] is False
+    assert caps["time_reference_path"] == "/extensions/time_reference"
     assert caps["counts"]["h5_with_regional_outputs"] == 1
     assert caps["counts"]["h5_with_raw_region_signals"] == 0
     assert caps["counts"]["h5_with_raw_features"] == 1
     assert caps["counts"]["h5_with_robust_z_features"] == 1
+    assert caps["counts"]["h5_with_time_reference"] == 0
 
 
 def test_run_manifest_tracks_raw_region_signals_separately_from_regional_outputs(tmp_path: Path):
@@ -114,10 +118,12 @@ def test_run_manifest_tracks_raw_region_signals_separately_from_regional_outputs
     assert caps["raw_region_signals"] is True
     assert caps["raw_features"] is True
     assert caps["robust_z_features"] is True
+    assert caps["time_reference"] is False
     assert caps["counts"]["h5_with_regional_outputs"] == 0
     assert caps["counts"]["h5_with_raw_region_signals"] == 1
     assert caps["counts"]["h5_with_raw_features"] == 1
     assert caps["counts"]["h5_with_robust_z_features"] == 1
+    assert caps["counts"]["h5_with_time_reference"] == 0
 
 
 def test_run_manifest_includes_reproducibility_block_and_merges_extra(tmp_path: Path):
@@ -144,3 +150,36 @@ def test_run_manifest_includes_reproducibility_block_and_merges_extra(tmp_path: 
     assert manifest["reproducibility"]["seed"] == 123
     assert manifest["reproducibility"]["seed_source"] == "reproducibility.seed"
     assert manifest["reproducibility"]["n_jobs"] == 4
+
+
+def test_run_manifest_detects_time_reference_capability(tmp_path: Path):
+    """Detect `/extensions/time_reference/*` in capability probe + field guide."""
+    mnps_dir = tmp_path / "mnps_dsX_20260101_000003"
+    rec_dir = mnps_dir / "sub-001_cond_task_run-01"
+    rec_dir.mkdir(parents=True)
+    _write_min_summary_json(rec_dir / "summary.json")
+
+    with h5py.File(rec_dir / "sub-001_cond_task_run-01.h5", "w") as h5:
+        tr = h5.require_group("extensions").require_group("time_reference")
+        run = tr.require_group("run")
+        run.create_dataset("status", data=np.array("ok", dtype=h5py.string_dtype(encoding="utf-8")))
+        windows = tr.require_group("windows")
+        windows.create_dataset("window_start_from_anchor_sec", data=[0.0, 2.0, 4.0])
+
+    out_path = write_run_manifest(
+        mnps_dir=mnps_dir,
+        config=_base_config(),
+        ds_id="dsX",
+        received_dir=tmp_path / "received",
+        processed_dir=tmp_path / "processed",
+        h5_mode="subject",
+    )
+
+    manifest = json.loads(out_path.read_text(encoding="utf-8"))
+    caps = manifest["capabilities"]
+    assert caps["time_reference"] is True
+    assert caps["time_reference_path"] == "/extensions/time_reference"
+    assert caps["counts"]["h5_with_time_reference"] == 1
+    h5_paths = manifest["field_guide"]["h5_paths"]
+    assert "extensions/time_reference/run/*" in h5_paths
+    assert "extensions/time_reference/windows/*" in h5_paths

@@ -1,0 +1,30 @@
+dataset:
+  slug: "i-care"
+  version: "2.1"
+  base_url: "https://physionet.org"
+  remote_root: "files/i-care/2.1"
+  records_file: "RECORDS"
+  checksums_file: "SHA256SUMS.txt"
+
+subset:
+  strategy: "first_n_patients"
+  patient_count: 2
+  # Keep smoke runs compact while still downloading real waveform pairs.
+  max_files_per_patient: 3
+  include_file_globs:
+    - "*_EEG.hea"
+    - "*_EEG.mat"
+    - "*.txt"
+  # RECORDS entries that have no extension are expanded with these suffixes.
+  expand_record_extensions:
+    - ".hea"
+    - ".mat"
+    - ".txt"
+  include_top_level_files:
+    - "LICENSE.txt"
+    - "RECORDS"
+    - "SHA256SUMS.txt"
+
+download:
+  output_subdir: "i-care_2_1_first_n_patients"
+  dry_run: true

@@ -29,6 +29,7 @@ from .. import bids_index
 from ..file_filters import apply_exclude_file_filters
 from .extractors import (
     build_dataset_label,
+    derive_pseudo_stage_array,
     extract_embodied_array,
     extract_events,
     extract_mapped_metadata,
@@ -68,6 +69,7 @@ from .summary_utils import (
     build_dir_suffix,
     extract_time_bounds,
 )
+from .time_reference import build_time_reference_for_run
 from .baseline_qc import (
     compute_feature_baseline_comparisons,
     compute_null_sanity_tests,
@@ -984,7 +986,26 @@ class DatasetSummaryRunner:
         if "file" not in features_df.columns:
             logger.warning("Subject filter requested but 'file' column missing; skipping subject filter")
             return features_df
-        filtered = features_df[features_df["file"].astype(str).str.contains(self.subject_filter)]
+        file_series = features_df["file"].astype(str)
+
+        # Robust path: resolve effective subject per file using the same parser
+        # as grouping (BIDS + optional metadata_extraction filename_parse regex).
+        unique_files = pd.unique(file_series)
+        for file_name in unique_files:
+            if file_name not in self._file_entity_cache:
+                self._file_entity_cache[file_name] = self._parse_file_entities(file_name)
+        parsed_subjects = file_series.map(lambda f: self._file_entity_cache.get(f, ("sub-unknown", None, None, None, None))[0])
+        mask = parsed_subjects == self.subject_filter
+
+        # Backward-compatible fallback for legacy datasets where file parsing is
+        # intentionally minimal and subject ID appears directly in filename text.
+        if not bool(mask.any()):
+            legacy_mask = file_series.str.contains(self.subject_filter, na=False)
+            if self.subject_filter.startswith("sub-"):
+                legacy_mask = legacy_mask | file_series.str.contains(self.subject_filter[4:], na=False)
+            mask = legacy_mask
+
+        filtered = features_df[mask]
         if filtered.empty:
             logger.warning(f"No epochs for subject {self.subject_filter} in {self.ds_id}")
             return None
@@ -1140,13 +1161,53 @@ class DatasetSummaryRunner:
     def participant_meta_for(self, sub_id: str) -> Dict[str, Any]:
         """Handle participant meta for."""
         if self._participant_meta_map:
-            return dict(self._participant_meta_map.get(sub_id, {}))
+            for candidate in self._participant_lookup_candidates(sub_id):
+                hit = self._participant_meta_map.get(candidate)
+                if hit:
+                    return dict(hit)
+            return {}
         if self.participants_df is None:
             return {}
-        lookup = self.participants_df[self.participants_df["participant_id"].astype(str) == sub_id]
+        candidates = set(self._participant_lookup_candidates(sub_id))
+        lookup = self.participants_df[self.participants_df["participant_id"].astype(str).isin(candidates)]
         if lookup.empty:
             return {}
         return lookup.iloc[0].to_dict()
+
+    @staticmethod
+    def _participant_lookup_candidates(sub_id: str) -> list[str]:
+        """Build candidate participant-id variants for robust matching."""
+        value = str(sub_id or "").strip()
+        if not value:
+            return []
+        candidates: list[str] = [value]
+
+        if value.lower().startswith("sub-"):
+            bare = value[4:]
+            if bare:
+                candidates.append(bare)
+        else:
+            bare = value
+            candidates.append(f"sub-{bare}")
+
+        if bare.isdigit():
+            stripped = bare.lstrip("0") or "0"
+            for width in (3, 4, len(bare), len(stripped)):
+                if width <= 0:
+                    continue
+                padded = stripped.zfill(width)
+                candidates.append(padded)
+                candidates.append(f"sub-{padded}")
+
+        deduped: list[str] = []
+        seen: set[str] = set()
+        for candidate in candidates:
+            key = candidate.strip()
+            if not key or key in seen:
+                continue
+            deduped.append(key)
+            seen.add(key)
+        return deduped
 
     def participant_meta_source_info(self) -> Dict[str, Any]:
         """Handle participant meta source info."""
@@ -1582,6 +1643,20 @@ class SubjectSummaryRunner:
         else:
             time = projection.build_time_index(len(sub_frame), mnps_cfg["window_sec"], mnps_cfg["overlap"])
         window_start, window_end = self._extract_time_bounds(sub_frame, time, mnps_cfg["window_sec"])
+        time_reference_result = build_time_reference_for_run(
+            config=config if isinstance(config, Mapping) else {},
+            dataset_id=self.dataset.ds_id,
+            dataset_root=self._dataset_root(),
+            index_df=self.index_df,
+            lookup_rel_paths_by_file_value=self.dataset._lookup_rel_paths_by_file_value,
+            sub_id=sub_id,
+            run_id=run_id,
+            acq_id=acq_id,
+            representative_file=representative_file,
+            sub_frame=sub_frame,
+            window_start=window_start,
+            window_end=window_end,
+        )
         
         # Explicitly prevent derivative estimation across file boundaries (time aliasing protection)
         def _compute_dot(features_array: np.ndarray) -> np.ndarray:
@@ -1753,6 +1828,7 @@ class SubjectSummaryRunner:
         stage_source: Optional[str] = None
         stage_column: Optional[str] = None
         stage_events_path: Optional[str] = None
+        stage_proxy_info: Optional[Dict[str, Any]] = None
         if stage is None:
             try:
                 stage, stage_source, stage_column, stage_events_path = self._infer_stage_from_bids_events(sub_frame)
@@ -1795,6 +1871,48 @@ class SubjectSummaryRunner:
             stage_column = within_run_labels.stage_column
             if within_run_labels.stage_codebook:
                 effective_stage_codebook = within_run_labels.stage_codebook
+        if stage is None:
+            try:
+                stage_proxy_candidate, stage_proxy_info = derive_pseudo_stage_array(
+                    sub_frame,
+                    config=config,
+                    dataset_id=self.dataset.ds_id,
+                    stage_codebook=effective_stage_codebook if isinstance(effective_stage_codebook, Mapping) else {},
+                )
+                if stage_proxy_candidate is not None:
+                    stage = stage_proxy_candidate
+                    stage_source = "pseudo_stage_proxy"
+                    proxy_cols = []
+                    if stage_proxy_info.get("spindle_column"):
+                        proxy_cols.append(str(stage_proxy_info.get("spindle_column")))
+                    if stage_proxy_info.get("sigma_column"):
+                        proxy_cols.append(str(stage_proxy_info.get("sigma_column")))
+                    if stage_proxy_info.get("emg_column"):
+                        proxy_cols.append(str(stage_proxy_info.get("emg_column")))
+                    if proxy_cols:
+                        proxy_cols = list(dict.fromkeys(proxy_cols))
+                    stage_column = ",".join(proxy_cols) if proxy_cols else "proxy"
+
+                    label = stage_proxy_info.get("label")
+                    code = stage_proxy_info.get("code")
+                    if label is not None and code is not None:
+                        try:
+                            current_codebook = {
+                                str(k): int(v)
+                                for k, v in (effective_stage_codebook.items() if isinstance(effective_stage_codebook, Mapping) else [])
+                            }
+                        except Exception:
+                            current_codebook = {}
+                        current_codebook[str(label)] = int(code)
+                        effective_stage_codebook = current_codebook
+                elif stage_proxy_info and stage_proxy_info.get("status") not in {"ok", None}:
+                    logger.info(
+                        "Pseudo-stage skipped for %s (status=%s)",
+                        dataset_label,
+                        stage_proxy_info.get("status"),
+                    )
+            except Exception:
+                logger.exception("Failed to derive pseudo-stage labels for %s", dataset_label)
 
         stage_frac_labeled = None
         if stage is not None and len(stage) > 0:
@@ -1896,13 +2014,16 @@ class SubjectSummaryRunner:
             group_names=group_names,
             region_groups=region_groups,
         )
+        merged_extensions = dict(extensions_payload) if isinstance(extensions_payload, Mapping) else {}
+        time_reference_extension = time_reference_result.get("extension")
+        if isinstance(time_reference_extension, Mapping) and time_reference_extension:
+            merged_extensions["time_reference"] = dict(time_reference_extension)
         if tabular_exports_h5:
-            merged_extensions = dict(extensions_payload) if isinstance(extensions_payload, Mapping) else {}
             existing_tables = merged_extensions.get("tabular_exports")
             merged_tables = dict(existing_tables) if isinstance(existing_tables, Mapping) else {}
             merged_tables.update(tabular_exports_h5)
             merged_extensions["tabular_exports"] = merged_tables
-            extensions_payload = merged_extensions
+        extensions_payload = merged_extensions
 
         # Ensemble and robustness summaries
         ensemble_summary = None
@@ -2077,6 +2198,13 @@ class SubjectSummaryRunner:
                 "stage_column": stage_column,
                 "stage_events_path": stage_events_path,
                 "stage_frac_labeled": stage_frac_labeled,
+                "pseudo_stage_status": stage_proxy_info.get("status") if isinstance(stage_proxy_info, Mapping) else None,
+                "pseudo_stage_label": stage_proxy_info.get("label") if isinstance(stage_proxy_info, Mapping) else None,
+                "pseudo_stage_code": stage_proxy_info.get("code") if isinstance(stage_proxy_info, Mapping) else None,
+                "pseudo_stage_labeled_fraction": stage_proxy_info.get("labeled_fraction") if isinstance(stage_proxy_info, Mapping) else None,
+                "pseudo_stage_sigma_column": stage_proxy_info.get("sigma_column") if isinstance(stage_proxy_info, Mapping) else None,
+                "pseudo_stage_emg_column": stage_proxy_info.get("emg_column") if isinstance(stage_proxy_info, Mapping) else None,
+                "pseudo_stage_spindle_column": stage_proxy_info.get("spindle_column") if isinstance(stage_proxy_info, Mapping) else None,
                 "participant_meta": participant_meta,
                 "participant_meta_source": participant_meta_source,
                 "participant_mapped_meta": mapped_meta,
@@ -2162,6 +2290,11 @@ class SubjectSummaryRunner:
                 "feature_metadata_fields": sorted(feature_metadata.keys()) if feature_metadata else [],
                 "reproducibility_seed": int(reproducibility_policy.get("seed", 42)),
                 "reproducibility_seed_source": str(reproducibility_policy.get("seed_source", "default")),
+                **(
+                    dict(time_reference_result.get("attrs"))
+                    if isinstance(time_reference_result.get("attrs"), Mapping)
+                    else {}
+                ),
             },
         )
         if v2_enabled and coords_9d_names and coords_9d is not None and coords_9d.size:
@@ -2224,6 +2357,7 @@ class SubjectSummaryRunner:
             "stage_column": stage_column,
             "stage_events_path": stage_events_path,
             "stage_frac_labeled": stage_frac_labeled,
+            "pseudo_stage": stage_proxy_info if isinstance(stage_proxy_info, Mapping) else None,
             "within_run_labels": summarize_within_run_manifest(within_run_labels.manifest) if within_run_labels.manifest else None,
             "coverage": {
                 "rule_tag": coverage_tag,
@@ -2236,6 +2370,8 @@ class SubjectSummaryRunner:
             },
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
+        if isinstance(time_reference_result.get("manifest"), Mapping):
+            manifest_extra["time_reference"] = dict(time_reference_result["manifest"])
         if stratified_blocks_result is not None:
             if stratified_blocks_result.blocks_manifest:
                 rows_light: list[dict[str, Any]] = []

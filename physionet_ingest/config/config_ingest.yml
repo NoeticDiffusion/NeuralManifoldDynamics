@@ -1,0 +1,25 @@
+paths:
+  # Root for downloaded raw files.
+  download_root: "E:/Science_Datasets/physionet/received"
+  # Root for manifests, logs, and run metadata.
+  metadata_root: "E:/Science_Datasets/physionet/metadata"
+
+network:
+  timeout_seconds: 60
+  retries: 3
+  retry_backoff_seconds: 2.0
+  chunk_size_bytes: 1048576
+  user_agent: "NeuralManifoldDynamics-PhysioNetIngest/1.0"
+
+auth_env:
+  username: "PHYSIONET_USERNAME"
+  password: "PHYSIONET_PASSWORD"
+
+download:
+  overwrite: false
+  verify_checksum: true
+  write_manifest_csv: true
+  write_manifest_jsonl: true
+
+logging:
+  level: "INFO"

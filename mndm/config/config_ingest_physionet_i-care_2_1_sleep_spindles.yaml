@@ -1,0 +1,139 @@
+# PhysioNet I-CARE — sleep-spindle event-locked overlay
+#
+# Mirrors the ds005555 sleep-spindle setup: short overlapping epochs,
+# event-locked bins, and stronger QC/ensemble settings, but adapted to
+# I-CARE WFDB channel naming.
+imports:
+  - "./config_ingest_physionet_i-care_2_1.yaml"
+
+epoching:
+  datasets:
+    physionet_icare_2_1:
+      profile: "sleep_spindle_event_locked_v1"
+      length_s: 6.0
+      step_s: 2.0
+      sampling:
+        # Event-locked workflow should control epoch selection.
+        enabled: false
+
+event_locked:
+  datasets:
+    physionet_icare_2_1:
+      enabled: true
+      profile: "sleep_spindle_event_locked_v1"
+      event_types: ["sleep_spindle"]
+      # Stage labels are derived via pseudo-stage proxy below.
+      stage_filter: ["N2_PROXY"]
+      reference: "peak"
+      bins:
+        pre_far:   [-30.0, -10.0]
+        pre_near:  [-10.0,   0.0]
+        event:     [  0.0,   3.0]
+        post_near: [  3.0,  10.0]
+        post_far:  [ 10.0,  30.0]
+      exclude_stage_transition_margin_sec: 30.0
+      min_overlap_fraction: 0.0
+      controls:
+        stage: "N2_PROXY"
+        n_controls_per_event: 3
+        exclusion_margin_sec: 30.0
+        time_of_night_quartile_match: true
+        seed: 42
+      export:
+        write_parquet: true
+        write_csv: true
+        include_coords_9d: true
+        provenance_in_every_row: true
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      # Confirmed in current I-CARE headers:
+      # C3, C4, O1, O2, Cz, F3, F4, F7, F8, Fz, Fp1, Fp2, Fpz, P3, P4, Pz, T3, T4, T5, T6
+      frontal: ["Fp1", "Fp2", "Fpz", "F3", "F4", "F7", "F8", "Fz"]
+      central: ["C3", "C4", "Cz"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2"]
+      temporal: ["T3", "T4", "T5", "T6"]
+      midline: ["Fpz", "Fz", "Cz", "Pz"]
+      left_hemisphere: ["Fp1", "F3", "F7", "C3", "P3", "O1", "T3", "T5"]
+      right_hemisphere: ["Fp2", "F4", "F8", "C4", "P4", "O2", "T4", "T6"]
+  review_qc:
+    baseline_comparisons:
+      enabled: true
+      smoothing_window_epochs: 5
+      max_series_per_family: 6
+    null_sanity_tests:
+      enabled: true
+      seed: 42
+  coverage:
+    datasets:
+      physionet_icare_2_1:
+        min_seconds: 30
+        min_epochs: 20
+
+time_reference:
+  datasets:
+    physionet_icare_2_1:
+      enabled: true
+      parser: "wfdb_header"
+      anchor: "first_recording"
+      bins_hours: [0, 24, 48, 72]
+
+mnps:
+  stage_codebook:
+    N2_PROXY: 2
+
+pseudo_stage:
+  datasets:
+    physionet_icare_2_1:
+      enabled: true
+      label: "N2_PROXY"
+      code: 2
+      unknown_code: -1
+      # Require at least 2/3 criteria to be true per window.
+      min_criteria: 2
+      min_labeled_fraction: 0.10
+      # Primary spindle-density channels if available; otherwise pipeline
+      # falls back to sigma proxy from eeg_alpha.
+      spindle_columns:
+        - "event_sleep_spindle_density"
+        - "spindle_density"
+        - "event_sleep_spindle_count"
+        - "event_sleep_spindle"
+      spindle_burst_quantile_min: 0.75
+      spindle_density_window_epochs: 15
+      spindle_density_min: 0.20
+      # Sigma-like activity proxy in current feature set.
+      sigma_columns:
+        - "eeg_alpha"
+        - "eeg_beta"
+      sigma_quantile_min: 0.60
+      # Low EMG proxy (high-frequency power should be relatively low in N2-like windows).
+      emg_columns:
+        - "embodied_arousal_proxy"
+        - "eeg_highfreq_power_30_45"
+        - "eeg_gamma"
+      emg_quantile_max: 0.40
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: true
+
+mnps_9d:
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+ndt_ingest:
+  modalities:
+    eeg:
+      datasets:
+        physionet_icare_2_1:
+          dynamic_fc:
+            enabled: false

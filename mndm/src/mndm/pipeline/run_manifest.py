@@ -56,6 +56,8 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
     epoch_ds = _pick(_pick(_pick(config, "epoching", {}), "datasets", {}), ds_id, None)
     meta_ds = _pick(_pick(_pick(config, "metadata_extraction", {}), "datasets", {}), ds_id, None)
     mnps_9d_ds = _pick(_pick(_pick(config, "mnps_9d", {}), "datasets", {}), ds_id, None)
+    time_ref_cfg = _pick(config, "time_reference", {})
+    time_ref_ds = _pick(_pick(time_ref_cfg, "datasets", {}), ds_id, None)
     within_run_labels = _pick(config, "within_run_labels", {})
     within_run_labels_ds = _pick(_pick(within_run_labels, "datasets", {}), ds_id, None)
 
@@ -78,6 +80,14 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
         "mnps_extensions": {"keys": sorted(list(_pick(config, "mnps_extensions", {}).keys()))}
         if isinstance(_pick(config, "mnps_extensions", {}), Mapping)
         else {},
+        "time_reference": {
+            "enabled": bool(_pick(time_ref_cfg, "enabled", False)),
+            "schema_version": _pick(time_ref_cfg, "schema_version", None),
+            "parser": _pick(time_ref_cfg, "parser", None),
+            "anchor": _pick(time_ref_cfg, "anchor", None),
+            "bins_hours": _pick(time_ref_cfg, "bins_hours", None),
+            "dataset_override": time_ref_ds,
+        },
         "robustness": {"coverage": {"default": {k: coverage.get(k) for k in ("min_seconds", "min_epochs")}, "dataset_override": coverage_ds}},
         "dataset_cfg": {
             "download": download_ds,
@@ -150,6 +160,8 @@ def _field_guide() -> Dict[str, Any]:
             "regional_mnps/<network>/mnps_dot": "Derivative of regional MNPS trajectory [T,3].",
             "regional_mnps/<network>/jacobian": "Per-network Jacobian tensor [W,3,3].",
             "regional_mnps/<network>/stratified": "Per-network stratified trajectory [T,K] when enabled.",
+            "extensions/time_reference/run/*": "Run-level clock provenance and anchor-relative offsets (schema_version, status, parser, run start/end).",
+            "extensions/time_reference/windows/*": "Window-level aligned timelines relative to run and anchor (start/end arrays, bin id/labels).",
             "extensions/tabular_exports/*": "Columnar exports of CSV-style summary tables embedded into H5.",
             "labels/stage": "Optional stage labels aligned to time.",
             "events/*": "Optional event arrays (indices or timestamps).",
@@ -165,6 +177,7 @@ def _field_guide() -> Dict[str, Any]:
             "capabilities.regional_outputs_path": "Canonical regional output path for all modalities.",
             "capabilities.raw_features": "True when H5 files embed `/features_raw/*` feature exports.",
             "capabilities.robust_z_features": "True when H5 files embed `/features_robust_z/*` feature exports.",
+            "capabilities.time_reference": "True when H5 files embed `/extensions/time_reference/*` timeline provenance.",
             "participant": "Subject-level participant metadata export group embedded into each H5.",
             "participant_mapped_meta": "Canonical metadata derived from participant rows plus YAML extraction rules.",
         },
@@ -282,6 +295,7 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
     has_v2_like_count = 0
     has_raw_features_count = 0
     has_robust_z_features_count = 0
+    has_time_reference_count = 0
     bad_files: list[str] = []
 
     for p in h5_paths[: max_files if max_files > 0 else len(h5_paths)]:
@@ -358,6 +372,14 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
                     except Exception:
                         pass
 
+                if "extensions" in f and "time_reference" in f["extensions"]:
+                    try:
+                        tr = f["extensions"]["time_reference"]
+                        if "run" in tr or "windows" in tr:
+                            has_time_reference_count += 1
+                    except Exception:
+                        pass
+
         except Exception:
             bad_files.append(str(p))
 
@@ -386,6 +408,8 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
         "raw_features_path": "/features_raw",
         "robust_z_features": bool(has_robust_z_features_count > 0),
         "robust_z_features_path": "/features_robust_z",
+        "time_reference": bool(has_time_reference_count > 0),
+        "time_reference_path": "/extensions/time_reference",
         "labels_stage": bool(has_stage_count > 0),
         "v2_like_artifacts": bool(has_v2_like_count > 0),
         "counts": {
@@ -393,6 +417,7 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
             "h5_with_raw_region_signals": int(has_raw_region_signals_count),
             "h5_with_raw_features": int(has_raw_features_count),
             "h5_with_robust_z_features": int(has_robust_z_features_count),
+            "h5_with_time_reference": int(has_time_reference_count),
             "h5_with_stage": int(has_stage_count),
             "h5_with_v2_like": int(has_v2_like_count),
         },

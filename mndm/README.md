@@ -33,6 +33,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
   - Generic event annotation tables, event-window alignment, matched controls, and event-locked sidecar exports for downstream analyses
   - Within-run state labeling for datasets where labels change inside one run, with support for boundary tables, interval tables, and feature-derived stage columns
   - Window start/end (seconds) per MNPS point in HDF5 for clearer time alignment
+  - Time Reference v1 for WFDB datasets (clock provenance + anchor-aligned windows under `/extensions/time_reference/*`)
 
 ---
 
@@ -145,6 +146,51 @@ mndm/
 ## Configuration
 
 Edit `config/config_ingest.yaml` or a dataset overlay such as `config/config_ingest_ds004511.yaml` to customize the pipeline.
+
+For new datasets, start from:
+
+- `mndm/config/config_template.yaml` (generic template with optional blocks)
+- one common base import:
+  - EEG: `mndm/config/config_ingest_common_eeg.yaml`
+  - NWB: `mndm/config/config_ingest_common_nwb.yaml`
+  - NWB rodent: `mndm/config/config_ingest_common_nwb_rodent.yaml`
+  - NWB mouse EEG: `mndm/config/config_ingest_common_nwb_mouse_eeg.yaml`
+
+Example workflow:
+
+```powershell
+# 1) Copy template
+copy mndm/config/config_template.yaml mndm/config/config_ingest_my_dataset.yaml
+
+# 2) Edit dataset id/path/source + needed overrides
+# 3) Run
+python -m mndm.cli features --dataset my_dataset --config mndm/config/config_ingest_my_dataset.yaml --n-jobs 1
+python -m mndm.cli summarize --dataset my_dataset --config mndm/config/config_ingest_my_dataset.yaml --n-jobs 1
+```
+
+### Time Reference v1 (WFDB clocks)
+
+For WFDB datasets (for example PhysioNet I-CARE), enable:
+
+```yaml
+time_reference:
+  enabled: true
+  schema_version: "time_reference.v1"
+  parser: "wfdb_header"
+  anchor: "first_recording"
+  bins_hours: [0, 24, 48, 72]
+  datasets:
+    my_dataset:
+      enabled: true
+      parser: "wfdb_header"
+      anchor: "first_recording"
+      bins_hours: [0, 24, 48, 72]
+```
+
+This keeps canonical `/time`, `/window_start`, `/window_end` unchanged and adds:
+
+- `/extensions/time_reference/run/*`
+- `/extensions/time_reference/windows/*`
 
 ### Key Sections
 
@@ -337,6 +383,8 @@ The `/regions/*` group is optional supporting input data, mainly for raw fMRI re
 | Path | Shape | Description |
 |------|-------|-------------|
 | `/time` | (T,) | Time index (seconds) |
+| `/window_start` | (T,) | Window start times (seconds) |
+| `/window_end` | (T,) | Window end times (seconds) |
 | `/mnps_3d` | (T, 3) | MNPS coordinates [m, d, e] |
 | `/mnps_3d_dot` | (T, 3) | MNPS time derivatives |
 | `/features_raw/values` | (T, K) | Raw feature matrix in original scale |
@@ -355,6 +403,8 @@ The `/regions/*` group is optional supporting input data, mainly for raw fMRI re
 | `/events/*` | varies | Optional event annotation columns when event tables are attached to a payload |
 | `/regional_mnps/<network>/mnps` | (Tr, 3) | Canonical regional MNPS output for any modality |
 | `/regions/bold` | (R, T') | Optional raw regional fMRI time series |
+| `/extensions/time_reference/run/*` | varies | Run-level clock provenance (parser, status, start/end clocks, elapsed offsets, anchor mode) |
+| `/extensions/time_reference/windows/*` | (T,) arrays | Window-level references aligned to run and subject anchor, including optional time-bin IDs/labels |
 | `/extensions/e_kappa/*` | varies | Energetic curvature |
 | `/extensions/rfm/*` | varies | Resonant frequency modes |
 | `/extensions/o_koh/*` | varies | Organizational coherence |

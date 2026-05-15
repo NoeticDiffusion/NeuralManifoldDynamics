@@ -406,6 +406,122 @@ class TestLoadParticipantTable:
         assert df.attrs["source_path"].endswith("participants.txt")
         assert df.attrs["source_format"] == "txt"
 
+    def test_load_participant_table_from_sidecar_key_value_metadata(self, tmp_path: Path):
+        """Load sidecar key:value metadata when no participants table exists."""
+        dataset_root = tmp_path / "icare_training"
+        sidecar_dir = dataset_root / "0332"
+        sidecar_dir.mkdir(parents=True)
+        (sidecar_dir / "0332.txt").write_text(
+            "\n".join(
+                [
+                    "Patient: 0332",
+                    "Hospital: D",
+                    "Age: 68",
+                    "Sex: Female",
+                    "ROSC: 60",
+                    "OHCA: False",
+                    "Shockable Rhythm: False",
+                    "TTM: 33",
+                    "Outcome: Good",
+                    "CPC: 1",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        config = {
+            "paths": {
+                "dataset_received_dirs": {
+                    "physionet_icare_2_1": str(dataset_root),
+                }
+            },
+            "metadata_extraction": {
+                "datasets": {
+                    "physionet_icare_2_1": {
+                        "participants": {
+                            "sidecar_files": {
+                                "enabled": True,
+                                "parser": "key_value",
+                                "file_globs": ["*/[0-9][0-9][0-9][0-9].txt"],
+                                "key_value_separator": ":",
+                                "key_normalization": "snake_case",
+                                "value_cast": "auto",
+                                "subject_id": {
+                                    "from_key": "Patient",
+                                    "regex": "(?P<subject>\\d{3,8})",
+                                    "pad": 4,
+                                    "prefix": "sub-",
+                                },
+                            }
+                        }
+                    }
+                }
+            },
+        }
+
+        df = load_participant_table(tmp_path / "received_unused", "physionet_icare_2_1", config)
+        assert df is not None
+        assert list(df["participant_id"]) == ["sub-0332"]
+        row = df.iloc[0].to_dict()
+        assert row["hospital"] == "D"
+        assert row["age"] == 68
+        assert row["sex"] == "Female"
+        assert row["rosc"] == 60
+        assert row["ohca"] is False
+        assert row["shockable_rhythm"] is False
+        assert row["ttm"] == 33
+        assert row["outcome"] == "Good"
+        assert row["cpc"] == 1
+        assert df.attrs["source_format"] == "sidecar_key_value"
+
+    def test_load_participant_table_merges_table_and_sidecar_metadata(self, tmp_path: Path):
+        """Merge sidecar metadata into participants table rows by participant_id."""
+        dataset_root = tmp_path / "dsMerge"
+        dataset_root.mkdir()
+        (dataset_root / "participants.tsv").write_text(
+            "participant_id\tgroup\nsub-0332\tICARE\n",
+            encoding="utf-8",
+        )
+        sidecar_dir = dataset_root / "0332"
+        sidecar_dir.mkdir()
+        (sidecar_dir / "0332.txt").write_text(
+            "Patient: 0332\nAge: 68\nOutcome: Good\n",
+            encoding="utf-8",
+        )
+
+        config = {
+            "metadata_extraction": {
+                "datasets": {
+                    "dsMerge": {
+                        "participants": {
+                            "sidecar_files": {
+                                "enabled": True,
+                                "file_globs": ["*/[0-9][0-9][0-9][0-9].txt"],
+                                "key_value_separator": ":",
+                                "key_normalization": "snake_case",
+                                "value_cast": "auto",
+                                "subject_id": {
+                                    "from_key": "Patient",
+                                    "regex": "(?P<subject>\\d{3,8})",
+                                    "pad": 4,
+                                    "prefix": "sub-",
+                                },
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        df = load_participant_table(tmp_path, "dsMerge", config)
+        assert df is not None
+        row = df.iloc[0].to_dict()
+        assert row["participant_id"] == "sub-0332"
+        assert row["group"] == "ICARE"
+        assert row["age"] == 68
+        assert row["outcome"] == "Good"
+        assert df.attrs["source_format"] == "merged_participants_and_sidecar"
+
 
 class TestBuildDatasetLabel:
     """Test build_dataset_label for various input combinations."""
