@@ -224,3 +224,4 @@ mndm/config/config_ingest_apollo_sedation_restingstate.yaml
 mndm/config/config_ingest_apollo_sedation_restingstate.yaml
 .python2txt/
 data/dandi/*
+project/articles/*

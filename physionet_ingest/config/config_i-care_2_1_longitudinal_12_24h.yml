@@ -13,8 +13,9 @@ subset:
   max_total_gb: 300
   enforce_budget: true
   min_patient_count: 30
-  # Keep only the earliest cumulative EEG hours per selected patient.
-  max_eeg_hours_per_patient: 12
+  # Keep EEG that overlaps patient-relative 12-24h.
+  min_eeg_hours_per_patient: 12
+  max_eeg_hours_per_patient: 24
   include_file_globs:
     - "*_EEG.hea"
     - "*_EEG.mat"
@@ -25,6 +26,6 @@ subset:
     - "SHA256SUMS.txt"
 
 download:
-  output_subdir: "i-care_2_1_random100_longitudinal"
+  output_subdir: "i-care_2_1_random100_longitudinal_12_24h"
   max_parallel_downloads: 6
   dry_run: true

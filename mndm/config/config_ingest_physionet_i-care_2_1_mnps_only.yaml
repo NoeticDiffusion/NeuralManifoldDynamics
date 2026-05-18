@@ -1,0 +1,13 @@
+# PhysioNet I-CARE base overlay for stable MNPS summarize runs.
+#
+# Keeps the standard base pipeline but disables stratified 9D projection
+# (known to fail for a small subset with duplicate subcoordinate columns),
+# while retaining canonical 3D MNPS from direct features.
+imports:
+  - "./config_ingest_physionet_i-care_2_1.yaml"
+
+mnps_9d:
+  enabled: false
+
+mnps_3d:
+  mode: "direct_features"

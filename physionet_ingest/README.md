@@ -14,20 +14,25 @@ General settings:
 
 Dataset-specific settings (I-CARE v2.1):
 - `physionet_ingest/config/config_i-care_2_1.yml`
-- `physionet_ingest/config/config_i-care_2_1_longitudinal.yml` (100 random patients, 300 GB cap)
+- `physionet_ingest/config/config_i-care_2_1_longitudinal.yml` (100 random patients, 300 GB cap, first 0-12h EEG window)
+- `physionet_ingest/config/config_i-care_2_1_longitudinal_12_24h.yml` (100 random patients, 300 GB cap, 12-24h EEG window)
 
 Key knobs:
-- `subset.strategy`: supports `first_n_patients` and `random_n_patients`
+- `subset.strategy`: supports `first_n_patients`, `random_n_patients`, and `explicit_patient_ids`
 - `subset.patient_count`: number of patients to include
+- `subset.patient_ids`: explicit patient list used when `subset.strategy: explicit_patient_ids`
 - `subset.random_seed`: deterministic sampling for random strategy
 - `subset.max_total_gb`: optional cap with global-size-based estimation
 - `subset.enforce_budget`: reduce selected cohort size if estimated size exceeds cap
 - `subset.min_patient_count`: lower bound when budget enforcement is active
 - `subset.max_files_per_patient`: optional cap per selected patient directory
+- `subset.max_eeg_hours_per_patient`: optional WFDB upper duration bound per patient (hours from patient start)
+- `subset.min_eeg_hours_per_patient`: optional WFDB lower duration bound per patient (requires `max_eeg_hours_per_patient`, enables windows such as 12-24h)
 - `subset.include_file_globs`: glob filters for files discovered in checksums
 - `subset.expand_record_extensions`: extensions appended to extension-less `RECORDS` entries
 - `download.dry_run`: plan only, no bytes downloaded
 - `download.verify_checksum`: verify SHA256 when checksums are available
+- `download.verify_existing_size`: when checksum verification is disabled, validate existing files using remote `Content-Length` vs local file size
 - `download.max_parallel_downloads`: number of files to download concurrently
 
 ## Credentials (optional)
@@ -59,6 +64,12 @@ Force real download (override YAML):
 
 ```bash
 python -m physionet_ingest.script.download_physionet --no-dry-run
+```
+
+Plan a targeted top-up cohort (for example CPC/outcome balancing) and generate an explicit-patient config:
+
+```bash
+python -m physionet_ingest.script.plan_icare_targeted_topup --config-dataset physionet_ingest/config/config_i-care_2_1_longitudinal.yml --target-cpc1 60 --target-cpc5 66
 ```
 
 ## Outputs

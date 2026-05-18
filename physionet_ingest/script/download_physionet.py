@@ -19,6 +19,10 @@ from urllib import parse as urllib_parse
 from urllib import request as urllib_request
 
 LOGGER = logging.getLogger("physionet_ingest")
+_ICARE_EEG_RECORD_RE = re.compile(
+    r"^(?P<patient>\d{3,8})_(?P<run>\d+)_(?P<acq>\d+)_EEG\.(?P<ext>hea|mat|dat)$",
+    re.IGNORECASE,
+)
 
 
 def load_yaml_config(path: Path) -> dict[str, Any]:
@@ -151,6 +155,219 @@ def expand_selected_records_to_files(
     return dedupe_keep_order(expanded)
 
 
+def parse_icare_eeg_file_identity(relative_path: str) -> tuple[str, int, int, str] | None:
+    normalized = normalize_relative_path(relative_path)
+    name = PurePosixPath(normalized).name
+    match = _ICARE_EEG_RECORD_RE.match(name)
+    if not match:
+        return None
+    patient = match.group("patient")
+    run_idx = int(match.group("run"))
+    acq_idx = int(match.group("acq"))
+    extension = match.group("ext").lower()
+    return patient, run_idx, acq_idx, extension
+
+
+def parse_wfdb_duration_seconds(header_text: str) -> float | None:
+    for line in header_text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        parts = stripped.split()
+        if len(parts) < 4:
+            return None
+        fs_token = parts[2].split("/")[0]
+        fs_match = re.match(r"^([0-9]+(?:\.[0-9]+)?)", fs_token)
+        siglen_match = re.match(r"^([0-9]+)", parts[3])
+        if not fs_match or not siglen_match:
+            return None
+        fs_hz = float(fs_match.group(1))
+        siglen = float(siglen_match.group(1))
+        if fs_hz <= 0 or siglen <= 0:
+            return None
+        return siglen / fs_hz
+    return None
+
+
+def _read_or_fetch_wfdb_header_text(
+    *,
+    relative_header_path: str,
+    output_dir: Path,
+    dataset_root_url: str,
+    timeout_seconds: float,
+    retries: int,
+    retry_backoff_seconds: float,
+    user_agent: str,
+) -> str:
+    normalized = normalize_relative_path(relative_header_path)
+    local_path = output_dir.joinpath(*PurePosixPath(normalized).parts)
+    if local_path.exists():
+        try:
+            return local_path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            return local_path.read_text(encoding="latin-1", errors="ignore")
+
+    remote_url = build_remote_file_url(dataset_root_url, normalized, with_download_query=True)
+    return fetch_text_with_retries(
+        url=remote_url,
+        timeout_seconds=timeout_seconds,
+        retries=retries,
+        retry_backoff_seconds=retry_backoff_seconds,
+        user_agent=user_agent,
+    )
+
+
+def limit_icare_eeg_files_to_first_hours(
+    *,
+    selected_paths: list[str],
+    max_hours_per_patient: float,
+    min_hours_per_patient: float = 0.0,
+    output_dir: Path,
+    dataset_root_url: str,
+    timeout_seconds: float,
+    retries: int,
+    retry_backoff_seconds: float,
+    user_agent: str,
+) -> tuple[list[str], dict[str, Any]]:
+    if max_hours_per_patient <= 0:
+        raise ValueError("subset.max_eeg_hours_per_patient must be > 0")
+    if min_hours_per_patient < 0:
+        raise ValueError("subset.min_eeg_hours_per_patient must be >= 0")
+    if min_hours_per_patient >= max_hours_per_patient:
+        raise ValueError("subset.min_eeg_hours_per_patient must be < subset.max_eeg_hours_per_patient")
+
+    start_seconds = min_hours_per_patient * 3600.0
+    end_seconds = max_hours_per_patient * 3600.0
+    normalized_paths = [normalize_relative_path(path) for path in selected_paths]
+    headers_by_patient: dict[str, list[tuple[int, int, str]]] = {}
+
+    for path in normalized_paths:
+        identity = parse_icare_eeg_file_identity(path)
+        if identity is None:
+            continue
+        patient_id, run_idx, acq_idx, extension = identity
+        if extension != "hea":
+            continue
+        headers_by_patient.setdefault(patient_id, []).append((run_idx, acq_idx, path))
+
+    if not headers_by_patient:
+        return dedupe_keep_order(normalized_paths), {
+            "enabled": False,
+            "reason": "no_icare_eeg_headers_found",
+            "min_hours_per_patient": min_hours_per_patient,
+            "max_hours_per_patient": max_hours_per_patient,
+        }
+
+    selected_stems: set[str] = set()
+    per_patient_summary: list[dict[str, Any]] = []
+    duration_parse_failures = 0
+    header_fetches = 0
+
+    for patient_id in sorted(headers_by_patient):
+        ordered_headers = sorted(headers_by_patient[patient_id], key=lambda row: (row[0], row[1], row[2]))
+        cumulative_seconds = 0.0
+        selected_header_records = 0
+        selected_window_seconds = 0.0
+        total_header_records = len(ordered_headers)
+
+        for _, _, header_path in ordered_headers:
+            stem = header_path.rsplit(".", 1)[0]
+            try:
+                header_text = _read_or_fetch_wfdb_header_text(
+                    relative_header_path=header_path,
+                    output_dir=output_dir,
+                    dataset_root_url=dataset_root_url,
+                    timeout_seconds=timeout_seconds,
+                    retries=retries,
+                    retry_backoff_seconds=retry_backoff_seconds,
+                    user_agent=user_agent,
+                )
+                header_fetches += 1
+                duration_seconds = parse_wfdb_duration_seconds(header_text)
+            except Exception as exc:  # noqa: BLE001
+                LOGGER.warning(
+                    "Could not inspect WFDB header for %s: %s. Keeping record to avoid accidental data loss.",
+                    header_path,
+                    exc,
+                )
+                selected_stems.add(stem)
+                selected_header_records += 1
+                continue
+
+            if duration_seconds is None:
+                duration_parse_failures += 1
+                LOGGER.warning(
+                    "Could not parse WFDB duration for %s. Keeping record to avoid accidental data loss.",
+                    header_path,
+                )
+                selected_stems.add(stem)
+                selected_header_records += 1
+                continue
+
+            record_start = cumulative_seconds
+            record_end = cumulative_seconds + duration_seconds
+            cumulative_seconds = record_end
+
+            if record_end <= start_seconds + 1e-6:
+                continue
+            if record_start >= end_seconds - 1e-6:
+                break
+
+            overlap_seconds = max(
+                0.0,
+                min(record_end, end_seconds) - max(record_start, start_seconds),
+            )
+            if overlap_seconds > 0.0:
+                selected_stems.add(stem)
+                selected_header_records += 1
+                selected_window_seconds += overlap_seconds
+                continue
+
+        per_patient_summary.append(
+            {
+                "patient_id": patient_id,
+                "header_records_total": total_header_records,
+                "header_records_selected": selected_header_records,
+                "selected_hours_approx": round(selected_window_seconds / 3600.0, 3),
+            }
+        )
+
+    filtered_paths: list[str] = []
+    eeg_files_before = 0
+    eeg_files_kept = 0
+    eeg_files_dropped = 0
+
+    for path in normalized_paths:
+        identity = parse_icare_eeg_file_identity(path)
+        if identity is None:
+            filtered_paths.append(path)
+            continue
+
+        eeg_files_before += 1
+        stem = path.rsplit(".", 1)[0]
+        if stem in selected_stems:
+            filtered_paths.append(path)
+            eeg_files_kept += 1
+        else:
+            eeg_files_dropped += 1
+
+    filtered_deduped = dedupe_keep_order(filtered_paths)
+    summary: dict[str, Any] = {
+        "enabled": True,
+        "min_hours_per_patient": min_hours_per_patient,
+        "max_hours_per_patient": max_hours_per_patient,
+        "window_seconds_per_patient": [start_seconds, end_seconds],
+        "patients_seen": len(headers_by_patient),
+        "header_fetches": header_fetches,
+        "duration_parse_failures": duration_parse_failures,
+        "eeg_files_before": eeg_files_before,
+        "eeg_files_kept": eeg_files_kept,
+        "eeg_files_dropped": eeg_files_dropped,
+        "patient_examples": per_patient_summary[:10],
+    }
+    return filtered_deduped, summary
+
+
 def extract_patient_id(record_path: str) -> str | None:
     normalized = normalize_relative_path(record_path)
     basename = PurePosixPath(normalized).name
@@ -212,8 +429,82 @@ def select_random_n_patients(record_paths: list[str], patient_count: int, random
     return selected_patients, selected_records
 
 
+def _extract_patient_token(value: Any) -> str | None:
+    token = str(value).strip()
+    if not token:
+        return None
+    if token.isdigit() and 1 <= len(token) <= 12:
+        return token
+    match = re.search(r"(\d{3,8})", token)
+    if match:
+        return match.group(1)
+    return None
+
+
+def _coerce_explicit_patient_ids(raw_value: Any) -> list[str]:
+    if raw_value is None:
+        return []
+    if isinstance(raw_value, str):
+        values = [part.strip() for part in raw_value.split(",")]
+    elif isinstance(raw_value, (list, tuple, set)):
+        values = list(raw_value)
+    else:
+        raise ValueError("subset.patient_ids must be a list/tuple/set or comma-separated string")
+
+    coerced: list[str] = []
+    for item in values:
+        token = _extract_patient_token(item)
+        if token is not None:
+            coerced.append(token)
+    return dedupe_keep_order(coerced)
+
+
+def select_explicit_patient_ids(record_paths: list[str], requested_patient_ids: list[str]) -> tuple[list[str], list[str]]:
+    if not requested_patient_ids:
+        raise ValueError("subset.patient_ids is empty for strategy=explicit_patient_ids")
+
+    patient_order = collect_patients_in_order(record_paths)
+    if not patient_order:
+        return [], []
+
+    by_exact = {patient_id: patient_id for patient_id in patient_order}
+    by_int: dict[int, str] = {}
+    for patient_id in patient_order:
+        if patient_id.isdigit():
+            by_int[int(patient_id)] = patient_id
+
+    selected_patients: list[str] = []
+    missing_requested: list[str] = []
+
+    for requested in requested_patient_ids:
+        normalized_request = _extract_patient_token(requested) or requested
+        resolved = by_exact.get(normalized_request)
+        if resolved is None and normalized_request.isdigit():
+            resolved = by_int.get(int(normalized_request))
+        if resolved is None:
+            missing_requested.append(str(requested))
+            continue
+        if resolved not in selected_patients:
+            selected_patients.append(resolved)
+
+    if missing_requested:
+        preview = ", ".join(missing_requested[:10])
+        suffix = "..." if len(missing_requested) > 10 else ""
+        raise ValueError(
+            "Requested explicit patient IDs not found in RECORDS/checksum pool: "
+            f"{preview}{suffix}"
+        )
+
+    selected_records = collect_records_for_patients(record_paths, selected_patients)
+    return selected_patients, selected_records
+
+
 def select_patients_by_strategy(
-    record_paths: list[str], strategy: str, patient_count: int, random_seed: int
+    record_paths: list[str],
+    strategy: str,
+    patient_count: int,
+    random_seed: int,
+    explicit_patient_ids: list[str] | None = None,
 ) -> tuple[list[str], list[str]]:
     if strategy == "first_n_patients":
         return select_first_n_patients(record_paths, patient_count=patient_count)
@@ -223,6 +514,8 @@ def select_patients_by_strategy(
             patient_count=patient_count,
             random_seed=random_seed,
         )
+    if strategy == "explicit_patient_ids":
+        return select_explicit_patient_ids(record_paths, requested_patient_ids=explicit_patient_ids or [])
     raise ValueError(f"Unsupported subset.strategy: {strategy}")
 
 
@@ -285,6 +578,33 @@ def fetch_text_with_retries(
         retry_backoff_seconds=retry_backoff_seconds,
         user_agent=user_agent,
     ).decode("utf-8")
+
+
+def fetch_remote_content_length_with_retries(
+    url: str,
+    timeout_seconds: float,
+    retries: int,
+    retry_backoff_seconds: float,
+    user_agent: str,
+) -> int | None:
+    last_error: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            req = urllib_request.Request(url, method="HEAD", headers={"User-Agent": user_agent})
+            with urllib_request.urlopen(req, timeout=timeout_seconds) as response:
+                header = response.headers.get("Content-Length")
+                if header is None:
+                    return None
+                return int(header)
+        except (urllib_error.HTTPError, urllib_error.URLError, TimeoutError, OSError, ValueError) as exc:
+            last_error = exc
+            if attempt >= retries:
+                break
+            sleep_time = retry_backoff_seconds * attempt
+            LOGGER.warning("HEAD request failed (%s/%s) for %s: %s", attempt, retries, url, exc)
+            time.sleep(sleep_time)
+    LOGGER.warning("Could not fetch remote content length for %s (%s)", url, last_error)
+    return None
 
 
 def download_file_with_retries(
@@ -367,6 +687,7 @@ def download_or_skip_relative_path(
     checksums: dict[str, str],
     overwrite: bool,
     verify_checksum: bool,
+    verify_existing_size: bool,
     timeout_seconds: float,
     retries: int,
     retry_backoff_seconds: float,
@@ -399,6 +720,24 @@ def download_or_skip_relative_path(
                     should_download = False
                 else:
                     row["status"] = "checksum_mismatch_redownload"
+            elif verify_existing_size:
+                remote_url = build_remote_file_url(dataset_root_url, normalized_path, with_download_query=True)
+                remote_size = fetch_remote_content_length_with_retries(
+                    url=remote_url,
+                    timeout_seconds=timeout_seconds,
+                    retries=retries,
+                    retry_backoff_seconds=retry_backoff_seconds,
+                    user_agent=user_agent,
+                )
+                local_size = local_path.stat().st_size
+                if remote_size is None:
+                    row["status"] = "skipped_exists_size_unverified"
+                    should_download = False
+                elif local_size == remote_size:
+                    row["status"] = "skipped_exists_size_match"
+                    should_download = False
+                else:
+                    row["status"] = "size_mismatch_redownload"
             else:
                 row["status"] = "skipped_exists"
                 should_download = False
@@ -522,12 +861,21 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
     subset_cfg = config.get("subset", {})
 
     strategy = str(subset_cfg.get("strategy", "first_n_patients"))
-    if strategy not in {"first_n_patients", "random_n_patients"}:
-        raise ValueError("Supported subset.strategy values: first_n_patients, random_n_patients")
-    patient_count = int(subset_cfg.get("patient_count", 1))
-    if patient_count <= 0:
-        raise ValueError("subset.patient_count must be positive")
-    requested_patient_count = patient_count
+    if strategy not in {"first_n_patients", "random_n_patients", "explicit_patient_ids"}:
+        raise ValueError(
+            "Supported subset.strategy values: first_n_patients, random_n_patients, explicit_patient_ids"
+        )
+    explicit_patient_ids = _coerce_explicit_patient_ids(subset_cfg.get("patient_ids"))
+    if strategy == "explicit_patient_ids":
+        if not explicit_patient_ids:
+            raise ValueError("subset.patient_ids must contain at least one patient for explicit_patient_ids strategy")
+        patient_count = len(explicit_patient_ids)
+        requested_patient_count = patient_count
+    else:
+        patient_count = int(subset_cfg.get("patient_count", 1))
+        if patient_count <= 0:
+            raise ValueError("subset.patient_count must be positive")
+        requested_patient_count = patient_count
     random_seed = int(subset_cfg.get("random_seed", 42))
     max_total_gb_raw = subset_cfg.get("max_total_gb")
     max_total_gb = float(max_total_gb_raw) if max_total_gb_raw is not None else None
@@ -541,6 +889,23 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
     max_files_per_patient = int(max_files_per_patient_raw) if max_files_per_patient_raw is not None else None
     if max_files_per_patient is not None and max_files_per_patient <= 0:
         raise ValueError("subset.max_files_per_patient must be positive when set")
+    min_eeg_hours_raw = subset_cfg.get("min_eeg_hours_per_patient")
+    min_eeg_hours_per_patient = float(min_eeg_hours_raw) if min_eeg_hours_raw is not None else 0.0
+    if min_eeg_hours_per_patient < 0:
+        raise ValueError("subset.min_eeg_hours_per_patient must be >= 0 when set")
+    max_eeg_hours_raw = subset_cfg.get("max_eeg_hours_per_patient")
+    max_eeg_hours_per_patient = float(max_eeg_hours_raw) if max_eeg_hours_raw is not None else None
+    if max_eeg_hours_per_patient is not None and max_eeg_hours_per_patient <= 0:
+        raise ValueError("subset.max_eeg_hours_per_patient must be > 0 when set")
+    if max_eeg_hours_per_patient is None and min_eeg_hours_per_patient > 0:
+        raise ValueError(
+            "subset.min_eeg_hours_per_patient requires subset.max_eeg_hours_per_patient to also be set"
+        )
+    if (
+        max_eeg_hours_per_patient is not None
+        and min_eeg_hours_per_patient >= max_eeg_hours_per_patient
+    ):
+        raise ValueError("subset.min_eeg_hours_per_patient must be < subset.max_eeg_hours_per_patient when set")
 
     timeout_seconds = float(network_cfg.get("timeout_seconds", 60))
     retries = int(network_cfg.get("retries", 3))
@@ -565,6 +930,7 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
 
     overwrite = bool(download_cfg.get("overwrite", False))
     verify_checksum = bool(download_cfg.get("verify_checksum", True))
+    verify_existing_size = bool(download_cfg.get("verify_existing_size", False))
     write_manifest_csv_flag = bool(download_cfg.get("write_manifest_csv", True))
     write_manifest_jsonl_flag = bool(download_cfg.get("write_manifest_jsonl", True))
     max_parallel_downloads_raw = download_cfg.get("max_parallel_downloads", 1)
@@ -581,6 +947,17 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
     LOGGER.info("Subset strategy: %s, patient_count=%s", strategy, patient_count)
     if strategy == "random_n_patients":
         LOGGER.info("Random seed: %s", random_seed)
+    if strategy == "explicit_patient_ids":
+        LOGGER.info("Explicit patient IDs requested: %s", len(explicit_patient_ids))
+    LOGGER.info(
+        "Existing-file verification mode: checksum=%s, size_check=%s",
+        verify_checksum,
+        verify_existing_size,
+    )
+    if verify_checksum and verify_existing_size:
+        LOGGER.info(
+            "download.verify_checksum=true takes precedence over download.verify_existing_size for existing files."
+        )
     LOGGER.info("Dry run: %s", dry_run)
 
     project_details: Any | None = None
@@ -612,6 +989,7 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
         strategy=strategy,
         patient_count=patient_count,
         random_seed=random_seed,
+        explicit_patient_ids=explicit_patient_ids,
     )
     if not selected_patients:
         raise RuntimeError("Could not select any patients from RECORDS")
@@ -694,6 +1072,27 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
         fallback_extensions=fallback_extensions,
         max_files_per_patient=max_files_per_patient,
     )
+    eeg_hours_filter_summary: dict[str, Any] = {}
+    if max_eeg_hours_per_patient is not None:
+        selected_before = len(selected_patient_files)
+        selected_patient_files, eeg_hours_filter_summary = limit_icare_eeg_files_to_first_hours(
+            selected_paths=selected_patient_files,
+            max_hours_per_patient=max_eeg_hours_per_patient,
+            min_hours_per_patient=min_eeg_hours_per_patient,
+            output_dir=output_dir,
+            dataset_root_url=dataset_root_url,
+            timeout_seconds=timeout_seconds,
+            retries=retries,
+            retry_backoff_seconds=retry_backoff_seconds,
+            user_agent=user_agent,
+        )
+        LOGGER.info(
+            "Applied EEG hour window [%.2f, %.2f]; candidate patient files %s -> %s.",
+            min_eeg_hours_per_patient,
+            max_eeg_hours_per_patient,
+            selected_before,
+            len(selected_patient_files),
+        )
     download_paths = dedupe_keep_order(selected_patient_files + top_level_files)
     LOGGER.info(
         "Selected %s patient(s), %s candidate file(s) after filters.",
@@ -737,6 +1136,7 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
                 checksums=checksums,
                 overwrite=overwrite,
                 verify_checksum=verify_checksum,
+                verify_existing_size=verify_existing_size,
                 timeout_seconds=timeout_seconds,
                 retries=retries,
                 retry_backoff_seconds=retry_backoff_seconds,
@@ -759,6 +1159,7 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
                     checksums=checksums,
                     overwrite=overwrite,
                     verify_checksum=verify_checksum,
+                    verify_existing_size=verify_existing_size,
                     timeout_seconds=timeout_seconds,
                     retries=retries,
                     retry_backoff_seconds=retry_backoff_seconds,
@@ -797,14 +1198,25 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
             "records_selected": len(selected_record_paths),
             "files_planned": len(download_paths),
             "random_seed": random_seed if strategy == "random_n_patients" else None,
+            "explicit_patient_ids_requested_count": (
+                len(explicit_patient_ids) if strategy == "explicit_patient_ids" else None
+            ),
+            "explicit_patient_ids_requested_preview": (
+                explicit_patient_ids[:20] if strategy == "explicit_patient_ids" else None
+            ),
             "max_total_gb": max_total_gb,
             "enforce_budget": enforce_budget,
             "min_patient_count": min_patient_count,
+            "min_eeg_hours_per_patient": min_eeg_hours_per_patient,
+            "max_eeg_hours_per_patient": max_eeg_hours_per_patient,
+            "eeg_hours_filter": eeg_hours_filter_summary,
             "budget_estimation": budget_estimation,
         },
         "execution": {
             "dry_run": dry_run,
             "max_parallel_downloads": max_parallel_downloads,
+            "verify_checksum": verify_checksum,
+            "verify_existing_size": verify_existing_size,
             "output_dir": str(output_dir),
             "metadata_dir": str(metadata_dir),
             "errors": error_count,

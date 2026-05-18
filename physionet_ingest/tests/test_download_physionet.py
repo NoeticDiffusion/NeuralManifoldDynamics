@@ -61,6 +61,29 @@ def test_select_random_n_patients_is_deterministic() -> None:
     assert patients_a != patients_c
 
 
+def test_select_explicit_patient_ids_supports_normalization() -> None:
+    records = [
+        "training/0284/0284_001_004_EEG",
+        "training/0300/0300_001_001_EEG",
+        "training/0400/0400_001_001_EEG",
+    ]
+    selected_patients, selected_records = mod.select_explicit_patient_ids(
+        records,
+        requested_patient_ids=["284", "sub-300", "0400"],
+    )
+    assert selected_patients == ["0284", "0300", "0400"]
+    assert len(selected_records) == 3
+
+
+def test_select_explicit_patient_ids_raises_on_missing() -> None:
+    records = [
+        "training/0284/0284_001_004_EEG",
+        "training/0300/0300_001_001_EEG",
+    ]
+    with pytest.raises(ValueError, match="not found"):
+        mod.select_explicit_patient_ids(records, requested_patient_ids=["9999"])
+
+
 def test_expand_record_paths_for_wfdb_files() -> None:
     expanded = mod.expand_record_paths(
         record_paths=["training/0284/0284_001_004_EEG"],
@@ -83,6 +106,18 @@ def test_parse_sha256sums_text() -> None:
 
     assert parsed["training/0284/0284_001_004_EEG.hea"] == "a" * 64
     assert parsed["training/0284/0284_001_004_EEG.mat"] == "b" * 64
+
+
+def test_parse_wfdb_duration_seconds() -> None:
+    header_text = "\n".join(
+        [
+            "0332_002_023_EEG 20 200 720000",
+            "#Start time: 23:00:00",
+            "#End time: 23:59:59",
+        ]
+    )
+    duration = mod.parse_wfdb_duration_seconds(header_text)
+    assert duration == pytest.approx(3600.0)
 
 
 def test_build_checksum_lookup_strips_dataset_prefix() -> None:
@@ -127,6 +162,156 @@ def test_expand_selected_records_from_checksum_prefix_with_globs_and_cap() -> No
         "training/0284/0284_001_004_EEG.hea",
         "training/0284/0284_001_004_EEG.mat",
     ]
+
+
+def test_limit_icare_eeg_files_to_first_hours_keeps_matching_pairs(monkeypatch, tmp_path: Path) -> None:
+    selected_paths = [
+        "training/0001/0001_001_001_EEG.hea",
+        "training/0001/0001_001_001_EEG.mat",
+        "training/0001/0001_002_002_EEG.hea",
+        "training/0001/0001_002_002_EEG.mat",
+        "training/0001/0001_003_003_EEG.hea",
+        "training/0001/0001_003_003_EEG.mat",
+        "training/0001/0001.txt",
+    ]
+
+    def fake_fetch_text_with_retries(url: str, **_: object) -> str:
+        if "0001_001_001_EEG.hea" in url:
+            return "0001_001_001_EEG 20 200 360000\n"
+        if "0001_002_002_EEG.hea" in url:
+            return "0001_002_002_EEG 20 200 720000\n"
+        if "0001_003_003_EEG.hea" in url:
+            return "0001_003_003_EEG 20 200 720000\n"
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(mod, "fetch_text_with_retries", fake_fetch_text_with_retries)
+
+    filtered, summary = mod.limit_icare_eeg_files_to_first_hours(
+        selected_paths=selected_paths,
+        max_hours_per_patient=1.5,
+        output_dir=tmp_path / "received",
+        dataset_root_url="https://physionet.org/files/i-care/2.1",
+        timeout_seconds=5.0,
+        retries=1,
+        retry_backoff_seconds=0.0,
+        user_agent="test-agent",
+    )
+
+    assert "training/0001/0001_001_001_EEG.hea" in filtered
+    assert "training/0001/0001_001_001_EEG.mat" in filtered
+    assert "training/0001/0001_002_002_EEG.hea" in filtered
+    assert "training/0001/0001_002_002_EEG.mat" in filtered
+    assert "training/0001/0001_003_003_EEG.hea" not in filtered
+    assert "training/0001/0001_003_003_EEG.mat" not in filtered
+    assert "training/0001/0001.txt" in filtered
+    assert summary["eeg_files_dropped"] == 2
+
+
+def test_limit_icare_eeg_files_to_hour_window_supports_12_24(monkeypatch, tmp_path: Path) -> None:
+    selected_paths = [
+        "training/0001/0001_001_001_EEG.hea",
+        "training/0001/0001_001_001_EEG.mat",
+        "training/0001/0001_002_002_EEG.hea",
+        "training/0001/0001_002_002_EEG.mat",
+        "training/0001/0001_003_003_EEG.hea",
+        "training/0001/0001_003_003_EEG.mat",
+        "training/0001/0001_004_004_EEG.hea",
+        "training/0001/0001_004_004_EEG.mat",
+    ]
+
+    def fake_fetch_text_with_retries(url: str, **_: object) -> str:
+        # Four sequential 8-hour runs.
+        if "0001_001_001_EEG.hea" in url:
+            return "0001_001_001_EEG 20 200 5760000\n"
+        if "0001_002_002_EEG.hea" in url:
+            return "0001_002_002_EEG 20 200 5760000\n"
+        if "0001_003_003_EEG.hea" in url:
+            return "0001_003_003_EEG 20 200 5760000\n"
+        if "0001_004_004_EEG.hea" in url:
+            return "0001_004_004_EEG 20 200 5760000\n"
+        raise AssertionError(f"Unexpected URL: {url}")
+
+    monkeypatch.setattr(mod, "fetch_text_with_retries", fake_fetch_text_with_retries)
+
+    filtered, summary = mod.limit_icare_eeg_files_to_first_hours(
+        selected_paths=selected_paths,
+        min_hours_per_patient=12.0,
+        max_hours_per_patient=24.0,
+        output_dir=tmp_path / "received",
+        dataset_root_url="https://physionet.org/files/i-care/2.1",
+        timeout_seconds=5.0,
+        retries=1,
+        retry_backoff_seconds=0.0,
+        user_agent="test-agent",
+    )
+
+    # Keep runs that overlap [12, 24] hours: run2 and run3.
+    assert "training/0001/0001_001_001_EEG.hea" not in filtered
+    assert "training/0001/0001_001_001_EEG.mat" not in filtered
+    assert "training/0001/0001_002_002_EEG.hea" in filtered
+    assert "training/0001/0001_002_002_EEG.mat" in filtered
+    assert "training/0001/0001_003_003_EEG.hea" in filtered
+    assert "training/0001/0001_003_003_EEG.mat" in filtered
+    assert "training/0001/0001_004_004_EEG.hea" not in filtered
+    assert "training/0001/0001_004_004_EEG.mat" not in filtered
+
+    assert summary["min_hours_per_patient"] == pytest.approx(12.0)
+    assert summary["max_hours_per_patient"] == pytest.approx(24.0)
+    assert summary["eeg_files_kept"] == 4
+
+
+def test_download_or_skip_uses_size_check_when_checksum_disabled(tmp_path: Path, monkeypatch) -> None:
+    output_dir = tmp_path / "received"
+    local_path = output_dir / "training" / "0284" / "0284_001_004_EEG.mat"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(b"abcdef")
+
+    monkeypatch.setattr(mod, "fetch_remote_content_length_with_retries", lambda **_: 6)
+
+    row = mod.download_or_skip_relative_path(
+        relative_path="training/0284/0284_001_004_EEG.mat",
+        output_dir=output_dir,
+        dataset_root_url="https://physionet.org/files/i-care/2.1",
+        checksums={},
+        overwrite=False,
+        verify_checksum=False,
+        verify_existing_size=True,
+        timeout_seconds=5.0,
+        retries=1,
+        retry_backoff_seconds=0.0,
+        chunk_size_bytes=1024,
+        user_agent="test-agent",
+    )
+
+    assert row["status"] == "skipped_exists_size_match"
+    assert row["bytes"] == 0
+
+
+def test_download_or_skip_size_check_skips_when_length_unknown(tmp_path: Path, monkeypatch) -> None:
+    output_dir = tmp_path / "received"
+    local_path = output_dir / "training" / "0284" / "0284_001_004_EEG.mat"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(b"abcdef")
+
+    monkeypatch.setattr(mod, "fetch_remote_content_length_with_retries", lambda **_: None)
+
+    row = mod.download_or_skip_relative_path(
+        relative_path="training/0284/0284_001_004_EEG.mat",
+        output_dir=output_dir,
+        dataset_root_url="https://physionet.org/files/i-care/2.1",
+        checksums={},
+        overwrite=False,
+        verify_checksum=False,
+        verify_existing_size=True,
+        timeout_seconds=5.0,
+        retries=1,
+        retry_backoff_seconds=0.0,
+        chunk_size_bytes=1024,
+        user_agent="test-agent",
+    )
+
+    assert row["status"] == "skipped_exists_size_unverified"
+    assert row["bytes"] == 0
 
 
 def test_run_download_dry_run_writes_manifests(tmp_path: Path, monkeypatch) -> None:
@@ -261,4 +446,128 @@ def test_run_download_rejects_non_positive_parallel_workers(tmp_path: Path) -> N
     )
 
     with pytest.raises(ValueError, match="download.max_parallel_downloads must be >= 1"):
+        mod.run_download(general_cfg, dataset_cfg)
+
+
+def test_run_download_rejects_non_positive_max_eeg_hours(tmp_path: Path) -> None:
+    general_cfg = tmp_path / "config_ingest.yml"
+    dataset_cfg = tmp_path / "config_i-care_2_1.yml"
+
+    general_cfg.write_text(
+        "\n".join(
+            [
+                "paths:",
+                f"  download_root: {tmp_path.as_posix()}/received",
+                f"  metadata_root: {tmp_path.as_posix()}/metadata",
+                "network:",
+                "  timeout_seconds: 5",
+                "  retries: 1",
+                "  retry_backoff_seconds: 0.0",
+                "  chunk_size_bytes: 1024",
+                "  user_agent: test-agent",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    dataset_cfg.write_text(
+        "\n".join(
+            [
+                "dataset:",
+                "  slug: i-care",
+                "  version: '2.1'",
+                "subset:",
+                "  strategy: first_n_patients",
+                "  patient_count: 1",
+                "  max_eeg_hours_per_patient: 0",
+                "download:",
+                "  output_subdir: smoke",
+                "  dry_run: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="subset.max_eeg_hours_per_patient must be > 0 when set"):
+        mod.run_download(general_cfg, dataset_cfg)
+
+
+def test_run_download_requires_max_when_min_eeg_hours_is_set(tmp_path: Path) -> None:
+    general_cfg = tmp_path / "config_ingest.yml"
+    dataset_cfg = tmp_path / "config_i-care_2_1.yml"
+
+    general_cfg.write_text(
+        "\n".join(
+            [
+                "paths:",
+                f"  download_root: {tmp_path.as_posix()}/received",
+                f"  metadata_root: {tmp_path.as_posix()}/metadata",
+                "network:",
+                "  timeout_seconds: 5",
+                "  retries: 1",
+                "  retry_backoff_seconds: 0.0",
+                "  chunk_size_bytes: 1024",
+                "  user_agent: test-agent",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    dataset_cfg.write_text(
+        "\n".join(
+            [
+                "dataset:",
+                "  slug: i-care",
+                "  version: '2.1'",
+                "subset:",
+                "  strategy: first_n_patients",
+                "  patient_count: 1",
+                "  min_eeg_hours_per_patient: 12",
+                "download:",
+                "  output_subdir: smoke",
+                "  dry_run: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="requires subset.max_eeg_hours_per_patient"):
+        mod.run_download(general_cfg, dataset_cfg)
+
+
+def test_run_download_explicit_strategy_requires_patient_ids(tmp_path: Path) -> None:
+    general_cfg = tmp_path / "config_ingest.yml"
+    dataset_cfg = tmp_path / "config_i-care_2_1.yml"
+
+    general_cfg.write_text(
+        "\n".join(
+            [
+                "paths:",
+                f"  download_root: {tmp_path.as_posix()}/received",
+                f"  metadata_root: {tmp_path.as_posix()}/metadata",
+                "network:",
+                "  timeout_seconds: 5",
+                "  retries: 1",
+                "  retry_backoff_seconds: 0.0",
+                "  chunk_size_bytes: 1024",
+                "  user_agent: test-agent",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    dataset_cfg.write_text(
+        "\n".join(
+            [
+                "dataset:",
+                "  slug: i-care",
+                "  version: '2.1'",
+                "subset:",
+                "  strategy: explicit_patient_ids",
+                "download:",
+                "  output_subdir: smoke",
+                "  dry_run: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="subset.patient_ids must contain at least one patient"):
         mod.run_download(general_cfg, dataset_cfg)

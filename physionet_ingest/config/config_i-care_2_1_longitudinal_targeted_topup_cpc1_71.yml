@@ -1,0 +1,58 @@
+dataset:
+  slug: i-care
+  version: '2.1'
+  base_url: https://physionet.org
+  remote_root: files/i-care/2.1
+  records_file: RECORDS
+  checksums_file: SHA256SUMS.txt
+subset:
+  strategy: explicit_patient_ids
+  patient_ids:
+  - '0355'
+  - '0357'
+  - '0362'
+  - '0367'
+  - '0373'
+  - 0384
+  - 0390
+  - 0395
+  - 0397
+  - '0412'
+  - '0413'
+  - '0414'
+  - '0416'
+  - '0427'
+  - '0433'
+  - 0438
+  - '0443'
+  - '0356'
+  - 0448
+  - 0358
+  - '0451'
+  - 0359
+  - '0455'
+  - '0360'
+  - '0456'
+  - '0361'
+  - '0461'
+  - '0364'
+  - '0462'
+  - '0366'
+  - '0467'
+  - 0368
+  - '0470'
+  include_file_globs:
+  - '*_EEG.hea'
+  - '*_EEG.mat'
+  - '*.txt'
+  include_top_level_files:
+  - LICENSE.txt
+  - RECORDS
+  - SHA256SUMS.txt
+  max_eeg_hours_per_patient: 12
+download:
+  output_subdir: i-care_2_1_random100_longitudinal
+  max_parallel_downloads: 6
+  dry_run: false
+  verify_checksum: false
+  verify_existing_size: true
