@@ -1,0 +1,23 @@
+version: 1.2
+modality: eeg
+
+# ds003478 run config for M: drive + one-shot cohort anchor usage.
+imports:
+  - "./config_ingest_ds003478.yaml"
+
+paths:
+  dataset_received_dirs:
+    ds003478: "M:/datasets/received/openneuro/ds003478"
+
+metadata_extraction:
+  datasets:
+    ds003478:
+      participants:
+        # Keep participant metadata explicit for this run.
+        path: "participants.tsv"
+      group:
+        candidates: ["Group", "BDI", "BDI_group", "bdi_group", "Diagnosis", "diagnosis"]
+      condition:
+        default: "rest"
+      task:
+        from_filename: true

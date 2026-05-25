@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -107,5 +108,85 @@ def test_compute_eeg_features_permutation_entropy_metadata():
         out["eeg_permutation_entropy"].to_numpy(dtype=float),
         equal_nan=True,
     )
+
+
+def test_compute_eeg_features_suppresses_multitaper_nonconvergence_warning(monkeypatch):
+    """The known multitaper non-convergence warning is suppressed for EEG/iEEG."""
+    from mndm.features import eeg as eeg_mod
+
+    def _fake_psd(data, **kwargs):
+        warnings.warn(
+            "Iterative multi-taper PSD computation did not converge.",
+            RuntimeWarning,
+            stacklevel=1,
+        )
+        arr = np.asarray(data)
+        freqs = np.linspace(1.0, 45.0, 8)
+        if arr.ndim == 3:
+            return np.ones((arr.shape[0], arr.shape[1], freqs.size), dtype=float), freqs
+        if arr.ndim == 2:
+            return np.ones((arr.shape[0], freqs.size), dtype=float), freqs
+        raise AssertionError("Unexpected PSD input rank")
+
+    monkeypatch.setattr(eeg_mod, "psd_array_multitaper", _fake_psd)
+
+    rng = np.random.default_rng(7)
+    eeg_data = rng.normal(size=(8, 250 * 8)).astype(np.float32)
+    signals = {"signals": {"eeg": eeg_data}, "sfreq": 250}
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 4.0},
+        "features": {
+            "eeg_psd": {"method": "multitaper", "fmin": 1.0, "fmax": 45.0},
+            "eeg_bands": {"delta": [1, 4], "theta": [4, 8], "alpha": [8, 12], "beta": [13, 30], "gamma": [30, 45]},
+        },
+    }
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = eeg_mod.compute_eeg_features(signals, config)
+
+    assert not out.empty
+    mt_warnings = [
+        rec
+        for rec in caught
+        if "Iterative multi-taper PSD computation did not converge" in str(rec.message)
+    ]
+    assert mt_warnings == []
+
+
+def test_compute_eeg_features_keeps_other_runtime_warnings(monkeypatch):
+    """Only the known non-convergence warning is suppressed."""
+    from mndm.features import eeg as eeg_mod
+
+    def _fake_psd(data, **kwargs):
+        warnings.warn("Synthetic multitaper runtime warning", RuntimeWarning, stacklevel=1)
+        arr = np.asarray(data)
+        freqs = np.linspace(1.0, 45.0, 8)
+        if arr.ndim == 3:
+            return np.ones((arr.shape[0], arr.shape[1], freqs.size), dtype=float), freqs
+        if arr.ndim == 2:
+            return np.ones((arr.shape[0], freqs.size), dtype=float), freqs
+        raise AssertionError("Unexpected PSD input rank")
+
+    monkeypatch.setattr(eeg_mod, "psd_array_multitaper", _fake_psd)
+
+    rng = np.random.default_rng(11)
+    eeg_data = rng.normal(size=(6, 250 * 8)).astype(np.float32)
+    signals = {"signals": {"eeg": eeg_data}, "sfreq": 250}
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 4.0},
+        "features": {
+            "eeg_psd": {"method": "multitaper", "fmin": 1.0, "fmax": 45.0},
+            "eeg_bands": {"delta": [1, 4], "theta": [4, 8], "alpha": [8, 12], "beta": [13, 30], "gamma": [30, 45]},
+        },
+    }
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        out = eeg_mod.compute_eeg_features(signals, config)
+
+    assert not out.empty
+    synthetic = [rec for rec in caught if "Synthetic multitaper runtime warning" in str(rec.message)]
+    assert synthetic, "Expected non-target RuntimeWarning to remain visible"
 
 

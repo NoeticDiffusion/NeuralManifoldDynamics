@@ -339,6 +339,39 @@ def test_project_features_with_coverage_preserves_direct_feature_baselines():
     assert baselines["eeg_alpha"]["transformation_applied"] == "log10 -> robust_z -> clip_6.0"
 
 
+def test_project_features_accepts_external_anchor_after_pretransforms():
+    """External anchors should replace local robust-z center/scale."""
+    from mndm.projection import project_features
+
+    features_df = pd.DataFrame(
+        {
+            "epoch_id": [0, 1, 2],
+            "eeg_alpha": [10.0, 100.0, 1000.0],
+        }
+    )
+    weights = {"m": {"eeg_alpha": 1.0}, "d": {}, "e": {}}
+
+    x, baselines = project_features(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization={"eeg_alpha": ["log10", "robust_z", "clip"]},
+        clip_threshold=6.0,
+        external_anchor={
+            "eeg_alpha": {
+                "center": 1.0,
+                "scale": 1.0,
+                "anchor_id": "unit-test",
+                "anchor_hash": "abc",
+            }
+        },
+    )
+
+    assert np.allclose(x[:, 0], [0.0, 1.0, 2.0], atol=1e-6)
+    assert baselines["eeg_alpha"]["anchor_applied"] == "external"
+    assert baselines["eeg_alpha"]["anchor_id"] == "unit-test"
+
+
 def test_build_feature_export_bundle_exports_all_numeric_features_with_usage_metadata():
     """Test build feature export bundle exports all numeric features with usage metadata."""
     from mndm.projection import build_feature_export_bundle

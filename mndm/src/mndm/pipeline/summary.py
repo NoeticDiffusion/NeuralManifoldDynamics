@@ -5,6 +5,7 @@ Dataset- and subject-level MNPS summarization runners.
 
 from __future__ import annotations
 
+import copy
 import multiprocessing
 import hashlib
 import json
@@ -12,6 +13,7 @@ import logging
 import platform
 import subprocess
 import sys
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -85,11 +87,22 @@ from .robustness_helpers import (
 )
 from .. import nwb_intervals, preprocess
 from core.io import json_writer
-from .. import jacobian, projection, robustness, schema
+from .. import anchors, jacobian, projection, robustness, schema
 from .run_manifest import write_run_manifest
 from ..reproducibility import resolve_reproducibility_policy
 
 logger = logging.getLogger(__name__)
+
+
+class _RunnerContextProxy:
+    """Per-dataset context wrapper with an overrideable config mapping."""
+
+    def __init__(self, base: Any, config: Mapping[str, Any]):
+        self._base = base
+        self.config = config
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base, name)
 
 
 def _stable_hash_mapping(value: Mapping[str, Any]) -> str:
@@ -105,6 +118,24 @@ def _stable_hash_array(value: np.ndarray) -> str:
     """Hash an ndarray deterministically for provenance checks."""
     arr = np.ascontiguousarray(value)
     return hashlib.sha256(arr.view(np.uint8)).hexdigest()
+
+
+def _resolve_anchor_path(path_raw: Any, *, config: Mapping[str, Any]) -> Optional[Path]:
+    """Resolve a configured feature-anchor path."""
+    if path_raw is None:
+        return None
+    text = str(path_raw).strip()
+    if not text:
+        return None
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    base = config.get("config_dir") if isinstance(config, Mapping) else None
+    if base:
+        candidate = Path(str(base)) / path
+        if candidate.exists():
+            return candidate
+    return Path.cwd() / path
 
 
 def _rows_to_columnar_table(rows: list[Mapping[str, Any]]) -> Dict[str, np.ndarray]:
@@ -456,20 +487,84 @@ def _load_mnps_9d_policy(policy_dir: str, dataset_id: str) -> Dict[str, Any]:
     return payload
 
 
+def _resolve_mnps_9d_runtime_config(
+    v2_cfg: Mapping[str, Any],
+    dataset_id: str,
+) -> tuple[bool, str, Dict[str, Any], Dict[str, Any]]:
+    """Resolve versioned and dataset-specific MNPS 9D config for one dataset."""
+    cfg_map: Dict[str, Any] = dict(v2_cfg) if isinstance(v2_cfg, Mapping) else {}
+    v2_enabled = bool(cfg_map.get("enabled", False))
+    v2_definition_version = str(cfg_map.get("definition_version", cfg_map.get("mnps_9d_definition_version", "2.2")))
+
+    selected_v2_cfg: Dict[str, Any] = dict(cfg_map)
+    v2_versions = cfg_map.get("versions", {}) if isinstance(cfg_map, Mapping) else {}
+    if isinstance(v2_versions, Mapping):
+        candidate = v2_versions.get(v2_definition_version)
+        if isinstance(candidate, Mapping):
+            selected_v2_cfg = _deep_merge_dict(cfg_map, candidate)
+            # Versioned subcoords replace the legacy/root map instead of merging into it.
+            if isinstance(candidate.get("subcoords"), Mapping):
+                selected_v2_cfg["subcoords"] = dict(candidate.get("subcoords") or {})
+            if isinstance(candidate.get("metric_policies"), Mapping):
+                selected_v2_cfg["metric_policies"] = _deep_merge_dict(
+                    cfg_map.get("metric_policies", {}) if isinstance(cfg_map.get("metric_policies", {}), Mapping) else {},
+                    candidate.get("metric_policies", {}) if isinstance(candidate.get("metric_policies", {}), Mapping) else {},
+                )
+
+    subcoords_spec: Dict[str, Any] = (
+        dict(selected_v2_cfg.get("subcoords", {}) or {})
+        if isinstance(selected_v2_cfg.get("subcoords", {}), Mapping)
+        else {}
+    )
+    ds_overrides: Dict[str, Any] = {}
+    inline = (cfg_map.get("datasets", {}) or {}).get(dataset_id, {})
+    if isinstance(inline, Mapping):
+        ds_overrides = dict(inline)
+    policy_dir = cfg_map.get("policy_dir")
+    if isinstance(policy_dir, (str, Path)):
+        policy_cfg = _load_mnps_9d_policy(str(policy_dir), dataset_id)
+        if policy_cfg:
+            ds_overrides = _deep_merge_dict(ds_overrides, policy_cfg)
+    if isinstance(ds_overrides, Mapping):
+        if "enabled" in ds_overrides:
+            v2_enabled = bool(ds_overrides.get("enabled", v2_enabled))
+        if "subcoords" in ds_overrides and isinstance(ds_overrides["subcoords"], Mapping):
+            merged = dict(subcoords_spec)
+            merged.update(ds_overrides["subcoords"])
+            subcoords_spec = merged
+            selected_v2_cfg["subcoords"] = merged
+        if "metric_policies" in ds_overrides and isinstance(ds_overrides["metric_policies"], Mapping):
+            selected_v2_cfg = _deep_merge_dict(
+                selected_v2_cfg,
+                {"metric_policies": ds_overrides["metric_policies"]},
+            )
+
+    return v2_enabled, v2_definition_version, selected_v2_cfg, subcoords_spec
+
+
 class DatasetSummaryRunner:
     """Encapsulate dataset-level summarization logic."""
 
     def __init__(self, ctx: SummarizeContext, ds_id: str, subject_filter: Optional[str], h5_mode: str, n_jobs: int = 1):
         """Initialize the instance."""
-        self.ctx = ctx
+        config_copy = copy.deepcopy(ctx.config) if isinstance(ctx.config, Mapping) else ctx.config
+        self.ctx = _RunnerContextProxy(ctx, config_copy)
         self.ds_id = ds_id
         self.subject_filter = self._normalize_subject(subject_filter) if subject_filter else None
         self.h5_mode = h5_mode
         self.n_jobs = max(1, int(n_jobs or 1))
-        self.config = ctx.config
+        self.config = self.ctx.config
+        config_path_raw = getattr(ctx, "config_path", None)
+        self.config_path: Optional[Path] = (
+            Path(str(config_path_raw)).expanduser()
+            if isinstance(config_path_raw, (str, Path))
+            else None
+        )
         self.received_dir = ctx.received_dir
         self.processed_dir = ctx.processed_dir
         self._dataset_csv_lock = Lock()
+        self._run_errors_lock = Lock()
+        self._run_errors: List[Dict[str, Any]] = []
         # Global coverage defaults, with optional dataset-specific overrides
         self.min_seconds = self.ctx.coverage.min_seconds
         self.min_epochs = self.ctx.coverage.min_epochs
@@ -678,47 +773,89 @@ class DatasetSummaryRunner:
             return
 
         mnps_dir = self._create_output_dir(ds_path)
-        self._write_features_snapshot(mnps_dir, features_df)
-        max_workers = min(max(1, self.n_jobs), len(grouping_items), multiprocessing.cpu_count())
-        if max_workers > 1:
-            logger.info(
-                "Using %d summarize workers for %s (%d grouped recordings)",
-                max_workers,
-                self.ds_id,
-                len(grouping_items),
-            )
-            with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                futures = [
-                    ex.submit(self._process_grouping_item, ds_path, mnps_dir, grouping_key, sub_frame)
-                    for grouping_key, sub_frame in grouping_items
-                ]
-                for fut in futures:
-                    fut.result()
-        else:
-            for grouping_key, sub_frame in grouping_items:
-                self._process_grouping_item(ds_path, mnps_dir, grouping_key, sub_frame)
-
-        # Write a run-level manifest for quick inspection (humans + LLMs).
+        run_fatal_error: Optional[Exception] = None
         try:
-            write_run_manifest(
-                mnps_dir=mnps_dir,
-                config=self.ctx.config,
-                ds_id=self.ds_id,
-                received_dir=self.received_dir,
-                processed_dir=self.processed_dir,
-                h5_mode=self.h5_mode,
-                extra={
-                    "summarize_policy": {
-                        "allow_group_collisions": bool(self.allow_group_collisions),
-                        "qc_policy": self.qc_policy,
-                        "n_jobs": int(self.n_jobs),
-                    },
-                    "reproducibility": self.ctx.reproducibility,
-                    "grouping_collisions": self.grouping_collision_info,
-                },
+            self._prepare_one_shot_anchor(features_df, mnps_dir)
+            self._write_features_snapshot(mnps_dir, features_df)
+            max_workers = min(max(1, self.n_jobs), len(grouping_items), multiprocessing.cpu_count())
+            if max_workers > 1:
+                logger.info(
+                    "Using %d summarize workers for %s (%d grouped recordings)",
+                    max_workers,
+                    self.ds_id,
+                    len(grouping_items),
+                )
+                with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = [
+                        ex.submit(self._process_grouping_item, ds_path, mnps_dir, grouping_key, sub_frame)
+                        for grouping_key, sub_frame in grouping_items
+                    ]
+                    for fut in futures:
+                        fut.result()
+            else:
+                for grouping_key, sub_frame in grouping_items:
+                    self._process_grouping_item(ds_path, mnps_dir, grouping_key, sub_frame)
+        except Exception as exc:
+            run_fatal_error = exc
+            self._record_run_error(
+                {
+                    "stage": "dataset_run",
+                    "dataset_id": self.ds_id,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
             )
-        except Exception:
-            logger.exception("Failed to write run_manifest.json for %s (%s)", self.ds_id, mnps_dir)
+            logger.exception("Summarize run failed for %s", self.ds_id)
+        finally:
+            run_errors_info = self._write_run_errors_file(
+                mnps_dir,
+                total_groupings=len(grouping_items),
+            )
+            run_status = "completed"
+            if run_fatal_error is not None:
+                run_status = "failed"
+            elif int(run_errors_info.get("count", 0) or 0) > 0:
+                run_status = "completed_with_errors"
+            fatal_error_summary = (
+                {
+                    "type": type(run_fatal_error).__name__,
+                    "message": str(run_fatal_error),
+                }
+                if run_fatal_error is not None
+                else None
+            )
+
+            # Write a run-level manifest for quick inspection (humans + LLMs).
+            try:
+                write_run_manifest(
+                    mnps_dir=mnps_dir,
+                    config=self.config,
+                    ds_id=self.ds_id,
+                    received_dir=self.received_dir,
+                    processed_dir=self.processed_dir,
+                    h5_mode=self.h5_mode,
+                    config_path=self.config_path,
+                    extra={
+                        "summarize_policy": {
+                            "allow_group_collisions": bool(self.allow_group_collisions),
+                            "qc_policy": self.qc_policy,
+                            "n_jobs": int(self.n_jobs),
+                            "fit_anchor": bool(self._anchor_auto_fit_enabled()),
+                        },
+                        "reproducibility": self.ctx.reproducibility,
+                        "grouping_collisions": self.grouping_collision_info,
+                        "run_status": run_status,
+                        "run_errors": run_errors_info,
+                        "fatal_error": fatal_error_summary,
+                    },
+                )
+            except Exception:
+                logger.exception("Failed to write run_manifest.json for %s (%s)", self.ds_id, mnps_dir)
+
+        if run_fatal_error is not None:
+            raise run_fatal_error
 
     def _normalize_grouping_key(
         self,
@@ -746,20 +883,103 @@ class DatasetSummaryRunner:
     ) -> None:
         """Internal helper: process grouping item."""
         sub_id, ses_id, raw_task, run_id, acq_id = self._normalize_grouping_key(grouping_key)
-        runner = SubjectSummaryRunner(
-            dataset_runner=self,
-            ds_path=ds_path,
-            mnps_dir=mnps_dir,
-            index_df=self.index_df,
-        )
-        runner.run(
-            sub_id=sub_id,
-            ses_id=ses_id,
-            raw_task=raw_task,
-            run_id=run_id,
-            acq_id=acq_id,
-            sub_frame=sub_frame,
-        )
+        try:
+            runner = SubjectSummaryRunner(
+                dataset_runner=self,
+                ds_path=ds_path,
+                mnps_dir=mnps_dir,
+                index_df=self.index_df,
+            )
+            runner.run(
+                sub_id=sub_id,
+                ses_id=ses_id,
+                raw_task=raw_task,
+                run_id=run_id,
+                acq_id=acq_id,
+                sub_frame=sub_frame,
+            )
+        except Exception as exc:
+            representative_file = None
+            if "file" in sub_frame.columns and len(sub_frame) > 0:
+                representative_file = str(sub_frame["file"].iloc[0])
+            self._record_run_error(
+                {
+                    "stage": "grouping",
+                    "dataset_id": self.ds_id,
+                    "subject": sub_id,
+                    "session": ses_id,
+                    "task": raw_task,
+                    "run": run_id,
+                    "acq": acq_id,
+                    "rows": int(len(sub_frame)),
+                    "representative_file": representative_file,
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                    "traceback": traceback.format_exc(),
+                    "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
+            )
+            logger.exception(
+                "Summarize failed for %s",
+                build_dataset_label(
+                    ds_id=self.ds_id,
+                    sub_id=sub_id,
+                    ses_id=ses_id,
+                    condition=None,
+                    task=raw_task,
+                    run=run_id,
+                    acq=acq_id,
+                ),
+            )
+
+    def _record_run_error(self, error_entry: Mapping[str, Any]) -> None:
+        """Store one run error entry in a thread-safe way."""
+        with self._run_errors_lock:
+            self._run_errors.append(dict(error_entry))
+
+    def _write_run_errors_file(self, mnps_dir: Path, *, total_groupings: int) -> Dict[str, Any]:
+        """Write run_errors.json when subject-level failures were captured."""
+        with self._run_errors_lock:
+            errors = [dict(entry) for entry in self._run_errors]
+
+        summary: Dict[str, Any] = {
+            "schema": "mndm.run_errors.v1",
+            "status": "none",
+            "path": None,
+            "count": int(len(errors)),
+            "groupings_total": int(total_groupings),
+        }
+        if not errors:
+            return summary
+
+        stage_counts: Dict[str, int] = {}
+        for entry in errors:
+            stage = str(entry.get("stage", "unknown"))
+            stage_counts[stage] = stage_counts.get(stage, 0) + 1
+
+        payload = {
+            "schema": "mndm.run_errors.v1",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "dataset_id": self.ds_id,
+            "run_dir": str(mnps_dir),
+            "counts": {
+                "errors_total": int(len(errors)),
+                "groupings_total": int(total_groupings),
+                "errors_by_stage": stage_counts,
+            },
+            "errors": errors,
+        }
+
+        out_path = mnps_dir / "run_errors.json"
+        try:
+            json_writer.write_json_summary(payload, out_path)
+            summary["status"] = "written"
+            summary["path"] = out_path.name
+        except Exception as exc:
+            summary["status"] = "write_failed"
+            summary["error"] = str(exc)
+            logger.exception("Failed to write run_errors.json for %s (%s)", self.ds_id, out_path)
+        return summary
 
     def write_regional_csv_outputs_threadsafe(
         self,
@@ -828,6 +1048,119 @@ class DatasetSummaryRunner:
             snapshot["column_stats"][col] = col_info
         snapshot["features_snapshot_hash"] = _stable_hash_mapping(snapshot)
         return snapshot
+
+    def _anchor_auto_fit_enabled(self) -> bool:
+        """Return whether one-shot anchor fitting is enabled for this dataset run."""
+        proj_cfg = self.config.get("mnps_projection", {}) if isinstance(self.config, Mapping) else {}
+        auto_cfg = proj_cfg.get("anchor_auto_fit", {}) if isinstance(proj_cfg, Mapping) else {}
+        return bool(auto_cfg.get("enabled", False)) if isinstance(auto_cfg, Mapping) else False
+
+    def _anchor_auto_fit_config(self) -> dict[str, Any]:
+        """Return the normalized one-shot anchor-fit config block."""
+        proj_cfg = self.config.get("mnps_projection", {}) if isinstance(self.config, Mapping) else {}
+        auto_cfg = proj_cfg.get("anchor_auto_fit", {}) if isinstance(proj_cfg, Mapping) else {}
+        return dict(auto_cfg) if isinstance(auto_cfg, Mapping) else {}
+
+    def _anchor_subject_ids(self, features_df: pd.DataFrame) -> list[str]:
+        """Resolve per-row subject ids for one-shot anchor fitting."""
+        if "subject" in features_df.columns:
+            return [self._normalize_subject(v) or "sub-unknown" for v in features_df["subject"].tolist()]
+        if "subject_id" in features_df.columns:
+            return [self._normalize_subject(v) or "sub-unknown" for v in features_df["subject_id"].tolist()]
+        if "file" in features_df.columns:
+            subject_ids: list[str] = []
+            for raw in features_df["file"].tolist():
+                subject, _, _, _, _ = self._parse_file_entities(str(raw or ""))
+                subject_ids.append(subject if subject and subject != "sub-unknown" else "sub-unknown")
+            return subject_ids
+        return ["sub-unknown"] * len(features_df)
+
+    def _anchor_group_by_subject(
+        self,
+        features_df: pd.DataFrame,
+        subject_ids: list[str],
+    ) -> dict[str, str]:
+        """Resolve subject->group provenance for one-shot anchor fitting."""
+        out: dict[str, str] = {}
+        if len(subject_ids) != len(features_df):
+            return out
+        file_values = features_df["file"].tolist() if "file" in features_df.columns else [None] * len(features_df)
+        first_file_by_subject: dict[str, str] = {}
+        first_session_by_subject: dict[str, Optional[str]] = {}
+        for subject, raw_file in zip(subject_ids, file_values):
+            if not subject or subject in first_file_by_subject:
+                continue
+            file_text = str(raw_file or "")
+            first_file_by_subject[subject] = file_text
+            _, ses_id, _, _, _ = self._parse_file_entities(file_text)
+            first_session_by_subject[subject] = ses_id
+        for subject in sorted(set(subject_ids)):
+            if not subject or subject == "sub-unknown":
+                continue
+            participant_meta = self.participant_meta_for(subject)
+            file_text = first_file_by_subject.get(subject)
+            mapped = extract_mapped_metadata(
+                participant_meta,
+                self.config,
+                self.ds_id,
+                first_session_by_subject.get(subject),
+                filename=file_text,
+            )
+            group = str(mapped.get("group") or "").strip()
+            if group:
+                out[subject] = group
+        return out
+
+    def _prepare_one_shot_anchor(self, features_df: pd.DataFrame, mnps_dir: Path) -> Optional[Path]:
+        """Fit, freeze, and inject a one-shot cohort anchor before worker launch."""
+        if not self._anchor_auto_fit_enabled():
+            return None
+        proj_cfg = self.config.setdefault("mnps_projection", {})
+        if not isinstance(proj_cfg, Mapping):
+            raise ValueError("mnps_projection must be a mapping for one-shot anchor fitting")
+        proj_cfg = dict(proj_cfg)
+        self.config["mnps_projection"] = proj_cfg
+        existing_anchor_cfg = proj_cfg.get("anchor", {})
+        existing_enabled = bool(existing_anchor_cfg.get("enabled", False)) if isinstance(existing_anchor_cfg, Mapping) else False
+        if existing_enabled:
+            raise ValueError("Cannot combine mnps_projection.anchor.enabled with mnps_projection.anchor_auto_fit.enabled")
+
+        auto_cfg = self._anchor_auto_fit_config()
+        scale_method = str(auto_cfg.get("scale_method", "iqr") or "iqr").strip().lower()
+        min_subjects = int(auto_cfg.get("min_subjects", 3) or 3)
+        anchor_id = str(auto_cfg.get("anchor_id") or f"{self.ds_id}_all_subjects_{scale_method}_v2_1").strip()
+        anchor_source = str(auto_cfg.get("anchor_source") or "all_subjects_features_table").strip()
+        cohort_filter = str(auto_cfg.get("cohort_filter") or "all usable rows after summarize QC filters").strip()
+        file_ids = [str(v or "") for v in features_df["file"].tolist()] if "file" in features_df.columns else None
+        subject_ids = self._anchor_subject_ids(features_df)
+        group_by_subject = self._anchor_group_by_subject(features_df, subject_ids)
+
+        anchor_artifact = anchors.fit_feature_anchors_from_features_df(
+            features_df,
+            anchor_id=anchor_id,
+            anchor_source=anchor_source,
+            cohort_filter=cohort_filter,
+            feature_standardization=proj_cfg.get("feature_standardization") if isinstance(proj_cfg, Mapping) else None,
+            min_subjects=min_subjects,
+            scale_method=scale_method,
+            subject_ids=subject_ids,
+            file_ids=file_ids,
+            group_by_subject=group_by_subject,
+        )
+        anchors_dir = mnps_dir / "anchors"
+        anchor_path = anchors.save_anchor_file(anchor_artifact, anchors_dir / f"{anchor_id}.json")
+        anchor_cfg = dict(existing_anchor_cfg) if isinstance(existing_anchor_cfg, Mapping) else {}
+        anchor_cfg.update(
+            {
+                "enabled": True,
+                "path": str(anchor_path),
+                "scale_method": scale_method,
+                "min_subjects": min_subjects,
+            }
+        )
+        proj_cfg["anchor"] = anchor_cfg
+        logger.info("Fitted one-shot feature anchor for %s: %s", self.ds_id, anchor_path)
+        return anchor_path
 
     def _write_features_snapshot(self, mnps_dir: Path, features_df: pd.DataFrame) -> None:
         """Write features_snapshot.json under the current run directory."""
@@ -1375,37 +1708,10 @@ class SubjectSummaryRunner:
 
         # Stratified MNPS v2 config
         v2_cfg = config.get("mnps_9d", {}) if isinstance(config, Mapping) else {}
-        v2_enabled = bool(v2_cfg.get("enabled", False))
-        v2_definition_version = str(v2_cfg.get("definition_version", v2_cfg.get("mnps_9d_definition_version", "2.2")))
-        v2_versions = v2_cfg.get("versions", {}) if isinstance(v2_cfg, Mapping) else {}
-        selected_v2_cfg: Mapping[str, Any] = v2_cfg if isinstance(v2_cfg, Mapping) else {}
-        if isinstance(v2_versions, Mapping):
-            candidate = v2_versions.get(v2_definition_version)
-            if isinstance(candidate, Mapping):
-                selected_v2_cfg = _deep_merge_dict(v2_cfg, candidate)
-        subcoords_spec = selected_v2_cfg.get("subcoords", {}) if isinstance(selected_v2_cfg, Mapping) else {}
-        ds_overrides: Dict[str, Any] = {}
-        if isinstance(v2_cfg, Mapping):
-            inline = (v2_cfg.get("datasets", {}) or {}).get(self.dataset.ds_id, {})
-            if isinstance(inline, Mapping):
-                ds_overrides = dict(inline)
-            policy_dir = v2_cfg.get("policy_dir")
-            if isinstance(policy_dir, (str, Path)):
-                policy_cfg = _load_mnps_9d_policy(str(policy_dir), self.dataset.ds_id)
-                if policy_cfg:
-                    ds_overrides = _deep_merge_dict(ds_overrides, policy_cfg)
-        if isinstance(ds_overrides, Mapping):
-            if "enabled" in ds_overrides:
-                v2_enabled = bool(ds_overrides.get("enabled", v2_enabled))
-            if "subcoords" in ds_overrides and isinstance(ds_overrides["subcoords"], Mapping):
-                merged = dict(subcoords_spec)
-                merged.update(ds_overrides["subcoords"])
-                subcoords_spec = merged
-            if "metric_policies" in ds_overrides and isinstance(ds_overrides["metric_policies"], Mapping):
-                selected_v2_cfg = _deep_merge_dict(
-                    selected_v2_cfg if isinstance(selected_v2_cfg, Mapping) else {},
-                    {"metric_policies": ds_overrides["metric_policies"]},
-                )
+        v2_enabled, v2_definition_version, selected_v2_cfg, subcoords_spec = _resolve_mnps_9d_runtime_config(
+            v2_cfg if isinstance(v2_cfg, Mapping) else {},
+            self.dataset.ds_id,
+        )
         _validate_e_e_subcoord_construct(subcoords_spec if isinstance(subcoords_spec, Mapping) else {})
         entropy_meta = _resolve_entropy_provenance(sub_frame)
         features_cfg = config.get("features", {}) if isinstance(config, Mapping) else {}
@@ -1470,6 +1776,22 @@ class SubjectSummaryRunner:
         proj_cfg = config.get("mnps_projection", {}) if isinstance(config, Mapping) else {}
         clip_threshold = float(proj_cfg.get("clip_threshold", 6.0)) if isinstance(proj_cfg, Mapping) else 6.0
         feature_standardization = proj_cfg.get("feature_standardization", {}) if isinstance(proj_cfg, Mapping) else {}
+        anchor_cfg = proj_cfg.get("anchor", {}) if isinstance(proj_cfg, Mapping) else {}
+        anchor_artifact: Optional[dict[str, Any]] = None
+        external_anchor: Optional[dict[str, Any]] = None
+        anchor_enabled = bool(anchor_cfg.get("enabled", False)) if isinstance(anchor_cfg, Mapping) else False
+        if anchor_enabled:
+            anchor_path = _resolve_anchor_path(anchor_cfg.get("path"), config=config) if isinstance(anchor_cfg, Mapping) else None
+            if anchor_path is None or not anchor_path.exists():
+                raise FileNotFoundError(f"mnps_projection.anchor.enabled=true but anchor path is missing: {anchor_path}")
+            anchor_artifact = anchors.load_anchor_file(anchor_path)
+            external_anchor = anchors.anchor_mapping(
+                anchor_artifact,
+                scale_method=str(anchor_cfg.get("scale_method", "iqr")) if isinstance(anchor_cfg, Mapping) else "iqr",
+                min_subjects=int(anchor_cfg.get("min_subjects", 1)) if isinstance(anchor_cfg, Mapping) else 1,
+            )
+            if not external_anchor:
+                raise ValueError(f"Feature anchor file produced no usable anchors: {anchor_path}")
 
         # Project direct MNPS coordinates first (always available as fallback/provenance).
         x_direct, x_direct_coverage, feature_baselines_v1 = projection.project_features_with_coverage(
@@ -1489,6 +1811,8 @@ class SubjectSummaryRunner:
         v2_missing_policy = "renorm"
         v2_all_non_finite_names: list[str] = []
         v2_all_non_finite_count = 0
+        v2_duplicate_constant_pairs: dict[str, str] = {}
+        v2_duplicate_constant_count = 0
         if v2_enabled and subcoords_spec:
             v2_missing_policy = (
                 str(selected_v2_cfg.get("missing_policy", "renorm")).strip().lower()
@@ -1513,10 +1837,13 @@ class SubjectSummaryRunner:
                         coords_9d,
                         coords_9d_names,
                         allow_all_non_finite_columns=True,
+                        allow_duplicate_constant_columns=True,
                         return_diagnostics=True,
                     )
                     v2_all_non_finite_names = list(coords_9d_diag.get("all_non_finite_names", []) or [])
                     v2_all_non_finite_count = int(coords_9d_diag.get("all_non_finite_count", 0) or 0)
+                    v2_duplicate_constant_pairs = dict(coords_9d_diag.get("duplicate_constant_pairs", {}) or {})
+                    v2_duplicate_constant_count = int(coords_9d_diag.get("duplicate_constant_count", 0) or 0)
                     if v2_all_non_finite_count > 0:
                         logger.warning(
                             "Stratified MNPS coords_9d has %d all-non-finite subcoordinate(s) for %s: %s. "
@@ -1524,6 +1851,15 @@ class SubjectSummaryRunner:
                             v2_all_non_finite_count,
                             dataset_label,
                             ", ".join(v2_all_non_finite_names),
+                        )
+                    if v2_duplicate_constant_count > 0:
+                        dup_desc = ", ".join(f"{dst}->{src}" for dst, src in sorted(v2_duplicate_constant_pairs.items()))
+                        logger.warning(
+                            "Stratified MNPS coords_9d has %d duplicate constant subcoordinate(s) for %s: %s. "
+                            "Proceeding in degraded mode and flagging provenance.",
+                            v2_duplicate_constant_count,
+                            dataset_label,
+                            dup_desc,
                         )
                 except Exception as e:
                     logger.error("Failed to normalize Stratified MNPS coords_9d for %s. Explicit failure enforced to prevent silent degradation.", dataset_label)
@@ -1582,6 +1918,81 @@ class SubjectSummaryRunner:
                     dataset_label,
                 )
 
+        x_subject_anchored = np.asarray(x, dtype=np.float32).copy()
+        x_subject_coverage = np.asarray(x_coverage, dtype=np.float32).copy()
+        coords_9d_subject_anchored = (
+            np.asarray(coords_9d, dtype=np.float32).copy()
+            if coords_9d is not None and coords_9d_names
+            else None
+        )
+        coords_9d_subject_names = list(coords_9d_names) if coords_9d_names else []
+        x_cohort_anchored = None
+        x_cohort_coverage = None
+        coords_9d_cohort_anchored = None
+        coords_9d_cohort_names: list[str] = []
+        feature_baselines_anchor: dict[str, dict] = {}
+        primary_coordinate_layer = "subject_anchored"
+
+        if external_anchor:
+            x_direct_anchor, x_direct_anchor_coverage, feature_baselines_anchor_v1 = projection.project_features_with_coverage(
+                sub_frame,
+                self.ctx.weights,
+                normalize=normalize_mode,
+                feature_standardization=feature_standardization,
+                clip_threshold=clip_threshold,
+                external_anchor=external_anchor,
+            )
+            x_anchor = x_direct_anchor
+            x_anchor_coverage = x_direct_anchor_coverage
+            if v2_enabled and subcoords_spec:
+                coords_9d_anchor, coords_9d_anchor_names, feature_baselines_anchor_v2 = projection.project_features_v2(
+                    sub_frame,
+                    subcoords_spec,
+                    normalize=normalize_mode,
+                    missing_policy=v2_missing_policy,
+                    feature_standardization=feature_standardization,
+                    clip_threshold=clip_threshold,
+                    external_anchor=external_anchor,
+                )
+                feature_baselines_anchor.update(feature_baselines_anchor_v2)
+                if coords_9d_anchor.size and coords_9d_anchor_names:
+                    coords_9d_anchor, coords_9d_anchor_names, _ = schema._normalize_coords_9d(
+                        coords_9d_anchor,
+                        coords_9d_anchor_names,
+                        allow_all_non_finite_columns=True,
+                        allow_duplicate_constant_columns=True,
+                        return_diagnostics=True,
+                    )
+                    if mde_mode_requested == "from_v2":
+                        aggregation_effective = str(m3d_cfg.get("aggregation", "fixed_weighted_projection"))
+                        if aggregation_effective == "fixed_weighted_projection":
+                            axis_map_anchor = _coerce_v1_mapping_to_v2_subcoords(
+                                m3d_cfg.get("v1_mapping", {}),
+                                subcoords_spec if isinstance(subcoords_spec, Mapping) else {},
+                            )
+                        else:
+                            axis_map_anchor = m3d_cfg.get("map", {})
+                        x_anchor, x_anchor_coverage = projection.derive_mde_from_v2(
+                            coords_9d_anchor,
+                            coords_9d_anchor_names,
+                            axis_map_anchor,
+                            pooling=str(m3d_cfg.get("legacy_pooling", "mean")),
+                            normalize_columns_l2=True,
+                            enforce_block_selective=False,
+                        )
+                    coords_9d_cohort_anchored = np.asarray(coords_9d_anchor, dtype=np.float32)
+                    coords_9d_cohort_names = list(coords_9d_anchor_names)
+                    coords_9d = coords_9d_cohort_anchored
+                    coords_9d_names = coords_9d_cohort_names
+            feature_baselines_anchor.update(feature_baselines_anchor_v1)
+            x_cohort_anchored = np.asarray(x_anchor, dtype=np.float32)
+            x_cohort_coverage = np.asarray(x_anchor_coverage, dtype=np.float32)
+            x = x_cohort_anchored
+            x_coverage = x_cohort_coverage
+            x_definition = f"{x_definition}_cohort_anchored"
+            primary_coordinate_layer = "cohort_anchored"
+            merged_baselines.update({f"{k}__cohort_anchor": v for k, v in feature_baselines_anchor.items()})
+
         axis_cov_labels = ["m", "d", "e"]
         axis_cov_stats = {
             f"{lbl}_mean": (
@@ -1607,9 +2018,20 @@ class SubjectSummaryRunner:
                 )
                 x = x[mask]
                 x_coverage = x_coverage[mask]
+                if len(x_subject_anchored) == len(mask):
+                    x_subject_anchored = x_subject_anchored[mask]
+                    x_subject_coverage = x_subject_coverage[mask]
+                if x_cohort_anchored is not None and len(x_cohort_anchored) == len(mask):
+                    x_cohort_anchored = x_cohort_anchored[mask]
+                if x_cohort_coverage is not None and len(x_cohort_coverage) == len(mask):
+                    x_cohort_coverage = x_cohort_coverage[mask]
                 sub_frame = sub_frame.loc[mask].reset_index(drop=True)
                 if coords_9d is not None and len(coords_9d) == len(mask):
                     coords_9d = coords_9d[mask]
+                if coords_9d_subject_anchored is not None and len(coords_9d_subject_anchored) == len(mask):
+                    coords_9d_subject_anchored = coords_9d_subject_anchored[mask]
+                if coords_9d_cohort_anchored is not None and len(coords_9d_cohort_anchored) == len(mask):
+                    coords_9d_cohort_anchored = coords_9d_cohort_anchored[mask]
             coverage_seconds_measured_post, coverage_method_post = self._estimate_coverage_seconds(sub_frame, dt)
             coverage_seconds_assumed_post = float(len(sub_frame) * dt)
             coverage_seconds_effective_post = (
@@ -2161,6 +2583,53 @@ class SubjectSummaryRunner:
         features_robust_z_hash_saved = (
             _stable_hash_array(features_robust_z_values) if features_robust_z_values.size else None
         )
+        coordinate_layers: Dict[str, Any] = {
+            "coords_3d_subject_anchored": {
+                "values": x_subject_anchored,
+                "names": ["m", "d", "e"],
+                "attrs": {
+                    "coordinate_contract": "subject_anchored",
+                    "normalize_mode": normalize_mode,
+                    "role": "within_subject_geometry",
+                },
+            }
+        }
+        if coords_9d_subject_anchored is not None and coords_9d_subject_names:
+            coordinate_layers["coords_9d_subject_anchored"] = {
+                "values": coords_9d_subject_anchored,
+                "names": coords_9d_subject_names,
+                "attrs": {
+                    "coordinate_contract": "subject_anchored",
+                    "normalize_mode": normalize_mode,
+                    "role": "within_subject_stratified_geometry",
+                },
+            }
+        if x_cohort_anchored is not None:
+            anchor_spec = anchor_artifact.get("spec", {}) if isinstance(anchor_artifact, Mapping) else {}
+            coordinate_layers["coords_3d_cohort_anchored"] = {
+                "values": x_cohort_anchored,
+                "names": ["m", "d", "e"],
+                "attrs": {
+                    "coordinate_contract": "cohort_anchored",
+                    "anchor_id": anchor_spec.get("anchor_id"),
+                    "anchor_hash": anchor_spec.get("anchor_hash"),
+                    "anchor_source": anchor_spec.get("anchor_source"),
+                    "role": "clinical_group_comparison",
+                },
+            }
+        if coords_9d_cohort_anchored is not None and coords_9d_cohort_names:
+            anchor_spec = anchor_artifact.get("spec", {}) if isinstance(anchor_artifact, Mapping) else {}
+            coordinate_layers["coords_9d_cohort_anchored"] = {
+                "values": coords_9d_cohort_anchored,
+                "names": coords_9d_cohort_names,
+                "attrs": {
+                    "coordinate_contract": "cohort_anchored",
+                    "anchor_id": anchor_spec.get("anchor_id"),
+                    "anchor_hash": anchor_spec.get("anchor_hash"),
+                    "anchor_source": anchor_spec.get("anchor_source"),
+                    "role": "clinical_group_comparison_stratified",
+                },
+            }
 
         # Build payload
         payload = schema.MNPSPayload(
@@ -2185,6 +2654,8 @@ class SubjectSummaryRunner:
             features_robust_z_values=features_robust_z_values,
             features_robust_z_names=features_robust_z_names,
             feature_metadata=feature_metadata,
+            coordinate_layers=coordinate_layers,
+            feature_anchors=anchor_artifact or {},
             attrs={
                 # Stable identity fields (used downstream for grouping/contrasts).
                 "dataset": self.dataset.ds_id,
@@ -2223,6 +2694,21 @@ class SubjectSummaryRunner:
                 "epochs_raw": n_before_any,
                 "epochs_after_qc": n_after_qc,
                 "epochs_after_nan_mask": int(len(sub_frame)),
+                "mndm_version": "2.1",
+                "primary_coordinate_layer": (
+                    "coords_3d_cohort_anchored" if primary_coordinate_layer == "cohort_anchored" else "coords_3d_subject_anchored"
+                ),
+                "primary_coordinate_contract": primary_coordinate_layer,
+                "anchor_id": (
+                    (anchor_artifact.get("spec", {}) or {}).get("anchor_id")
+                    if isinstance(anchor_artifact, Mapping)
+                    else None
+                ),
+                "anchor_hash": (
+                    (anchor_artifact.get("spec", {}) or {}).get("anchor_hash")
+                    if isinstance(anchor_artifact, Mapping)
+                    else None
+                ),
                 "x_definition": x_definition,
                 "mde_mode_requested": mde_mode_requested,
                 "mde_mode_effective": mde_mode_effective,
@@ -2257,9 +2743,11 @@ class SubjectSummaryRunner:
                 "min_axis_coverage": float(min_axis_coverage),
                 "v2_missing_policy": v2_missing_policy if v2_enabled and subcoords_spec else None,
                 "coords_9d_allow_all_non_finite_columns": True if v2_enabled and subcoords_spec else False,
-                "coords_9d_degraded_mode": bool(v2_all_non_finite_count > 0),
+                "coords_9d_degraded_mode": bool(v2_all_non_finite_count > 0 or v2_duplicate_constant_count > 0),
                 "coords_9d_all_non_finite_count": int(v2_all_non_finite_count),
                 "coords_9d_all_non_finite_names": v2_all_non_finite_names if v2_all_non_finite_names else None,
+                "coords_9d_duplicate_constant_count": int(v2_duplicate_constant_count),
+                "coords_9d_duplicate_constant_pairs": v2_duplicate_constant_pairs if v2_duplicate_constant_pairs else None,
                 "e_e_construct": entropy_meta.get("construct"),
                 "e_e_metric": entropy_meta.get("metric"),
                 "e_e_backend": entropy_meta.get("backend"),

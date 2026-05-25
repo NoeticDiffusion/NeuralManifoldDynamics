@@ -123,6 +123,14 @@ For WFDB overlays with `time_reference.enabled: true`, H5 outputs also include:
 
 and `run_manifest.json` reports capability flags for time-reference presence.
 
+MNDM 2.1 outputs can also expose explicit coordinate contracts:
+
+- `/coords_3d_subject_anchored` and `/coords_9d_subject_anchored` for within-subject geometry
+- `/coords_3d_cohort_anchored` and `/coords_9d_cohort_anchored` for cohort/external-anchored clinical group comparisons
+- `/feature_anchors` for the frozen anchor provenance and per-feature center/scale statistics
+
+`run_manifest.json` reports these as capability flags so downstream analyses can choose the declared `primary_coordinate_layer`.
+
 Some datasets also carry labels that vary within a single run instead of staying constant for the whole recording. MNDM now supports these as time-aligned labels on the MNPS axis, for example:
 
 - `ds006623`: keeps run identity such as `task=imagery` but writes within-run anesthesia state as `pre_lor`, `unresponsive`, `post_ror`

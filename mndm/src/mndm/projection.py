@@ -315,7 +315,8 @@ def _normalize_used_columns(
     used_cols: Sequence[str], 
     normalize: Optional[str],
     pipeline_map: Optional[Mapping[str, Sequence[str]]] = None,
-    clip_thresh: float = 6.0
+    clip_thresh: float = 6.0,
+    external_anchor: Optional[Mapping[str, Any]] = None,
 ) -> tuple[pd.DataFrame, dict]:
     """Normalize selected columns in a DataFrame copy.
     
@@ -333,6 +334,32 @@ def _normalize_used_columns(
     out = df.copy()
     baselines = {}
     
+    def _external_center_scale(feature_name: str) -> tuple[Optional[float], Optional[float], str, str]:
+        if not external_anchor:
+            return None, None, "", ""
+        raw = external_anchor.get(feature_name)
+        if raw is None:
+            return None, None, "", ""
+        anchor_id = ""
+        anchor_hash = ""
+        if isinstance(raw, Mapping):
+            center_raw = raw.get("center", raw.get("q50"))
+            scale_raw = raw.get("scale", raw.get("iqr_sigma", raw.get("mad_sigma")))
+            anchor_id = str(raw.get("anchor_id", "") or "")
+            anchor_hash = str(raw.get("anchor_hash", "") or "")
+        elif isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)) and len(raw) >= 2:
+            center_raw, scale_raw = raw[0], raw[1]
+        else:
+            return None, None, "", ""
+        try:
+            center = float(center_raw)
+            scale = float(scale_raw)
+        except Exception:
+            return None, None, "", ""
+        if not (np.isfinite(center) and np.isfinite(scale) and scale > 0):
+            return None, None, "", ""
+        return center, scale, anchor_id, anchor_hash
+
     for col in used_cols:
         col_data = out[col].astype(np.float32).values
         mask = np.isfinite(col_data)
@@ -368,14 +395,36 @@ def _normalize_used_columns(
                 applied_steps.append("log10")
             elif step_str in ("robust_z", "robust"):
                 t_finite = transformed[mask]
-                t_median = np.nanmedian(t_finite)
-                t_mad = np.nanmedian(np.abs(t_finite - t_median)) * 1.4826
+                anchor_center, anchor_scale, anchor_id, anchor_hash = _external_center_scale(str(col))
+                if anchor_center is not None and anchor_scale is not None:
+                    t_median = anchor_center
+                    t_mad = anchor_scale
+                    baseline_info["anchor_id"] = anchor_id
+                    baseline_info["anchor_hash"] = anchor_hash
+                    baseline_info["anchor_applied"] = "external"
+                else:
+                    t_median = np.nanmedian(t_finite)
+                    t_mad = np.nanmedian(np.abs(t_finite - t_median)) * 1.4826
+                    baseline_info["anchor_applied"] = "local"
+                baseline_info["standardization_center"] = float(t_median)
+                baseline_info["standardization_scale"] = float(t_mad)
                 transformed[mask] = (t_finite - t_median) / (t_mad + 1e-9)
                 applied_steps.append("robust_z")
             elif step_str == "z":
                 t_finite = transformed[mask]
-                mu = np.nanmean(t_finite)
-                sigma = np.nanstd(t_finite)
+                anchor_center, anchor_scale, anchor_id, anchor_hash = _external_center_scale(str(col))
+                if anchor_center is not None and anchor_scale is not None:
+                    mu = anchor_center
+                    sigma = anchor_scale
+                    baseline_info["anchor_id"] = anchor_id
+                    baseline_info["anchor_hash"] = anchor_hash
+                    baseline_info["anchor_applied"] = "external"
+                else:
+                    mu = np.nanmean(t_finite)
+                    sigma = np.nanstd(t_finite)
+                    baseline_info["anchor_applied"] = "local"
+                baseline_info["standardization_center"] = float(mu)
+                baseline_info["standardization_scale"] = float(sigma)
                 transformed[mask] = (t_finite - mu) / (sigma + 1e-9)
                 applied_steps.append("z")
             elif step_str == "clip":
@@ -398,7 +447,8 @@ def project_features(
     weights: Mapping[str, Mapping[str, float]], 
     normalize: Optional[str] = None,
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
-    clip_threshold: float = 6.0
+    clip_threshold: float = 6.0,
+    external_anchor: Optional[Mapping[str, Any]] = None,
 ) -> tuple[np.ndarray, dict[str, dict]]:
     """Return MNPS coordinates ``x=[m,d,e]`` and per-column baseline metadata.
 
@@ -440,7 +490,8 @@ def project_features(
             used_cols, 
             normalize,
             pipeline_map=feature_standardization,
-            clip_thresh=clip_threshold
+        clip_thresh=clip_threshold,
+        external_anchor=external_anchor,
         )
 
     # Keep missing values as NaN here; per-axis aggregation below renormalizes
@@ -480,6 +531,7 @@ def project_features_with_coverage(
     normalize: Optional[str] = None,
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
     clip_threshold: float = 6.0,
+    external_anchor: Optional[Mapping[str, Any]] = None,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, dict]]:
     """Project direct MNPS coordinates and return per-epoch axis coverage.
 
@@ -493,7 +545,8 @@ def project_features_with_coverage(
         weights, 
         normalize=normalize,
         feature_standardization=feature_standardization,
-        clip_threshold=clip_threshold
+        clip_threshold=clip_threshold,
+        external_anchor=external_anchor,
     )
     coverage = np.full_like(x, np.nan, dtype=np.float32)
     if len(features_df) == 0:
@@ -516,7 +569,8 @@ def project_features_with_coverage(
             used_cols, 
             normalize,
             pipeline_map=feature_standardization,
-            clip_thresh=clip_threshold
+            clip_thresh=clip_threshold,
+            external_anchor=external_anchor,
         )
     else:
         features_df_norm = features_df
@@ -561,6 +615,7 @@ def project_features_v2(
     missing_policy: str = "renorm",
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
     clip_threshold: float = 6.0,
+    external_anchor: Optional[Mapping[str, Any]] = None,
 ) -> tuple[np.ndarray, list[str], dict[str, dict]]:
     """Return MNPS v2 subcoordinates, their names, and feature baselines.
 
@@ -598,6 +653,7 @@ def project_features_v2(
             normalize,
             pipeline_map=feature_standardization,
             clip_thresh=clip_threshold,
+            external_anchor=external_anchor,
         )
 
     X = features_df.loc[:, used_cols].to_numpy(dtype=np.float32, copy=True)

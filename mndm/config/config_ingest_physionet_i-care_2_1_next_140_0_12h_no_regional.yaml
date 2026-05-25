@@ -1,0 +1,38 @@
+version: 2.0
+modality: eeg
+
+# I-CARE next_140 cohort (0-12h) without regional / block-Jacobian computations.
+imports:
+  - "./config_ingest_physionet_i-care_2_1_mnps_only.yaml"
+
+paths:
+  dataset_received_dirs:
+    physionet_icare_2_1: "E:/Science_Datasets/physionet/received/i-care_2_1_next_140_longitudinal_0_12h/training"
+
+# v2.2 normalization pilot (ComBat).
+# Keep disabled until runtime normalization step is introduced.
+normalization:
+  enabled: false
+  method: "combat"
+  scope: "post_features"
+  batch_key: "hospital"
+  covariates: ["group", "age", "sex"]
+  reference_policy: "within_dataset"
+
+# No regional calculations for this run.
+robustness:
+  ensembles:
+    enabled: false
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+# Enable MNPS 9D, but keep block Jacobians disabled.
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: false

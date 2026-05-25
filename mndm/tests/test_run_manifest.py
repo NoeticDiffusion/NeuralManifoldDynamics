@@ -183,3 +183,32 @@ def test_run_manifest_detects_time_reference_capability(tmp_path: Path):
     h5_paths = manifest["field_guide"]["h5_paths"]
     assert "extensions/time_reference/run/*" in h5_paths
     assert "extensions/time_reference/windows/*" in h5_paths
+
+
+def test_run_manifest_copies_yaml_and_records_filename(tmp_path: Path):
+    """Copy active YAML into run dir and record copied filename."""
+    mnps_dir = tmp_path / "mnps_dsX_20260101_000004"
+    rec_dir = mnps_dir / "sub-001_cond_task_run-01"
+    rec_dir.mkdir(parents=True)
+    _write_min_summary_json(rec_dir / "summary.json")
+
+    config_path = tmp_path / "config_ingest_dsX.yaml"
+    config_path.write_text("datasets:\n  - dsX\n", encoding="utf-8")
+
+    out_path = write_run_manifest(
+        mnps_dir=mnps_dir,
+        config=_base_config(),
+        ds_id="dsX",
+        received_dir=tmp_path / "received",
+        processed_dir=tmp_path / "processed",
+        h5_mode="subject",
+        config_path=config_path,
+    )
+
+    manifest = json.loads(out_path.read_text(encoding="utf-8"))
+    yaml_info = manifest["config"]["yaml_source"]
+    assert yaml_info["copied_filename"] == config_path.name
+    assert yaml_info["status"] in {"copied", "already_in_run_dir", "already_present"}
+    copied_path = mnps_dir / config_path.name
+    assert copied_path.exists()
+    assert copied_path.read_text(encoding="utf-8") == config_path.read_text(encoding="utf-8")

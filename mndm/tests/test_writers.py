@@ -94,6 +94,28 @@ def test_write_h5(require_real_h5py):
             "group_label": np.array(["", "frontal"], dtype=object),
             "used_by_mnps_3d": np.array([1, 0], dtype=np.int8),
         },
+        coordinate_layers={
+            "coords_3d_subject_anchored": {
+                "values": np.random.rand(5, 3).astype(np.float32),
+                "names": ["m", "d", "e"],
+                "attrs": {"coordinate_contract": "subject_anchored"},
+            },
+            "coords_3d_cohort_anchored": {
+                "values": np.random.rand(5, 3).astype(np.float32),
+                "names": ["m", "d", "e"],
+                "attrs": {"coordinate_contract": "cohort_anchored", "anchor_id": "unit-test"},
+            },
+        },
+        feature_anchors={
+            "spec": {
+                "anchor_id": "unit-test",
+                "anchor_hash": "hash",
+                "schema_version": "mndm.feature_anchors.v2.1",
+            },
+            "features": [
+                {"feature_name": "eeg_alpha", "center": 0.0, "scale": 1.0, "n_subjects": 3},
+            ],
+        },
         attrs={
             "fs_out": 4.0,
             "window_sec": 8.0,
@@ -153,6 +175,14 @@ def test_write_h5(require_real_h5py):
             assert "jacobian" in f
             assert "features_raw" in f
             assert "features_robust_z" in f
+            assert "feature_anchors" in f
+            assert "spec" in f["feature_anchors"]
+            assert "per_feature" in f["feature_anchors"]
+            assert f["feature_anchors"]["spec"].attrs["anchor_id"] == "unit-test"
+            assert "coords_3d_subject_anchored" in f
+            assert "coords_3d_cohort_anchored" in f
+            assert "values" in f["coords_3d_cohort_anchored"]
+            assert f["coords_3d_cohort_anchored"].attrs["coordinate_contract"] == "cohort_anchored"
             assert "values" in f["features_raw"]
             assert "names" in f["features_raw"]
             assert "metadata" in f["features_raw"]

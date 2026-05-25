@@ -24,6 +24,11 @@ Payload attributes (`payload.attrs`) are also copied into `h5.attrs` when not `N
 - **`stage_codebook`** *(obj)*: codebook for stage labels (often serialized)
 - **`stage_source`** *(str|None)*, **`stage_column`** *(str|None)*
 - **`coords_v2_names`** *(list[str]|None)*: v2 coordinate names (if v2 exists)
+- **`schema_version`** *(str)*: `mnps_tensor_spec_v2_1` when MNDM 2.1 coordinate layers or embedded feature anchors are present.
+- **`mndm_version`** *(str)*: `2.1` for anchored-coordinate contract outputs.
+- **`primary_coordinate_layer`** *(str)*: usually `coords_3d_cohort_anchored` when a cohort/external anchor is configured, otherwise `coords_3d_subject_anchored`.
+- **`primary_coordinate_contract`** *(str)*: `cohort_anchored` or `subject_anchored`.
+- **`anchor_id`**, **`anchor_hash`** *(str|None)*: identity and hash of the feature-anchor artifact used for cohort-anchored coordinates.
 
 Derived convenience attrs (best-effort; may be absent):
 - **`meta_<field>`** *(str/int/float)*: flattens scalar fields from `participant_meta` (participants.tsv) into top-level attrs.
@@ -125,6 +130,61 @@ Created when summarize exports the strict robust-z feature surface.
 Important:
 - this surface is **strict robust-z only**
 - projection-only steps such as `log10` and `clip` remain represented in provenance metadata and `feature_baselines`, not baked into `features_robust_z`
+
+---
+
+### Groups: MNDM 2.1 coordinate layers
+
+MNDM 2.1 makes coordinate anchoring explicit. The legacy `/mnps_3d` and
+`/coords_9d` paths may still exist, but new analyses should consult
+`h5.attrs["primary_coordinate_layer"]` and the layer attrs.
+
+- **`/coords_3d_subject_anchored/values`** *(float32, shape `[T,3]`)*:
+  subject/session-relative 3D coordinates. This is the right layer for
+  within-subject geometry, local Jacobians, trajectory shape, and reachability
+  diagnostics.
+- **`/coords_3d_subject_anchored/names`** *(utf-8 strings, shape `[3]`)*:
+  coordinate names, usually `[m,d,e]`.
+- **`/coords_9d_subject_anchored/values`** *(float32, shape `[T,K]`)*:
+  subject/session-relative stratified coordinates when `mnps_9d` is enabled.
+- **`/coords_9d_subject_anchored/names`** *(utf-8 strings, shape `[K]`)*.
+- **`/coords_3d_cohort_anchored/values`** *(float32, shape `[T,3]`)*:
+  cohort/external-anchored 3D coordinates when `mnps_projection.anchor.enabled`
+  is active. This is the preferred layer for clinical group comparisons.
+- **`/coords_3d_cohort_anchored/names`** *(utf-8 strings, shape `[3]`)*.
+- **`/coords_9d_cohort_anchored/values`** *(float32, shape `[T,K]`)*:
+  cohort/external-anchored stratified coordinates when both `mnps_9d` and an
+  anchor are available.
+- **`/coords_9d_cohort_anchored/names`** *(utf-8 strings, shape `[K]`)*.
+
+Coordinate-layer group attrs include:
+
+- **`schema_version`** = `mndm.coordinate_layer.v2.1`
+- **`coordinate_contract`** = `subject_anchored` or `cohort_anchored`
+- **`anchor_id`**, **`anchor_hash`**, **`anchor_source`** for cohort-anchored layers
+- **`role`**: human-readable intended use, e.g. `within_subject_geometry` or `clinical_group_comparison`
+
+---
+
+### Group: `/feature_anchors`
+
+Created when a cohort/external anchor artifact is embedded.
+
+- **`/feature_anchors/spec`** *(attrs)*:
+  - `schema_version = "mndm.feature_anchors.v2.1"`
+  - `anchor_id`
+  - `anchor_hash`
+  - `anchor_source`
+  - `cohort_filter`
+  - `scale_method`
+  - `subject_balanced`
+  - `n_subjects`, `n_files`, `min_subjects`
+- **`/feature_anchors/per_feature/feature_name`** *(str[K])*: feature names.
+- **`/feature_anchors/per_feature/center`**, **`scale`**, **`q25`**, **`q50`**, **`q75`**, **`iqr_sigma`**, **`mad_sigma`**, **`qn_sigma`** *(float32[K])*: anchor statistics.
+- **`/feature_anchors/per_feature/n_subjects`**, **`n_epochs`** *(float/int-like arrays)*: support counts.
+
+Anchor fitting is subject-balanced: each subject contributes one summary value
+per feature, preventing long recordings from dominating the anchor.
 
 ---
 

@@ -164,6 +164,64 @@ def _write_feature_surface_group(
         group.attrs["n_features"] = int(len(names))
 
 
+def _write_coordinate_layers_group(h5: h5py.File, coordinate_layers: Mapping[str, Any]) -> None:
+    """Write MNDM 2.1 coordinate layers as first-class H5 groups."""
+    if not isinstance(coordinate_layers, Mapping) or not coordinate_layers:
+        return
+    str_dtype = h5py.string_dtype(encoding="utf-8")
+    for layer_name, layer in coordinate_layers.items():
+        if not isinstance(layer, Mapping):
+            continue
+        values = layer.get("values")
+        if values is None or np.size(values) == 0:
+            continue
+        safe_name = _sanitize_h5_key(str(layer_name))
+        group = h5.require_group(safe_name)
+        _create_dataset(group, "values", np.asarray(values, dtype=np.float32))
+        names = layer.get("names")
+        if names:
+            names_utf8 = np.asarray([str(v) for v in names], dtype=object)
+            group.create_dataset("names", data=names_utf8, dtype=str_dtype)
+        attrs = layer.get("attrs", {})
+        if isinstance(attrs, Mapping):
+            for key, value in attrs.items():
+                if value is None:
+                    continue
+                group.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
+        group.attrs.setdefault("schema_version", "mndm.coordinate_layer.v2.1")
+        group.attrs.setdefault("alignment", "per_timepoint")
+
+
+def _write_feature_anchors_group(h5: h5py.File, feature_anchors: Mapping[str, Any]) -> None:
+    """Write an embedded MNDM 2.1 feature-anchor artifact."""
+    if not isinstance(feature_anchors, Mapping) or not feature_anchors:
+        return
+    root = h5.require_group("feature_anchors")
+    spec = feature_anchors.get("spec", {})
+    if isinstance(spec, Mapping):
+        spec_grp = root.require_group("spec")
+        for key, value in spec.items():
+            if value is None:
+                continue
+            spec_grp.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
+    features = feature_anchors.get("features", [])
+    if isinstance(features, (list, tuple)) and features:
+        rows = [dict(row) for row in features if isinstance(row, Mapping)]
+        if rows:
+            per_feature = root.require_group("per_feature")
+            keys = sorted({str(k) for row in rows for k in row.keys()})
+            str_dtype = h5py.string_dtype(encoding="utf-8")
+            for key in keys:
+                vals = [row.get(key, "") for row in rows]
+                if all(isinstance(v, (int, float, bool, np.integer, np.floating, np.bool_)) for v in vals if v != ""):
+                    arr = np.asarray([np.nan if v == "" else v for v in vals], dtype=np.float32)
+                    _create_dataset(per_feature, key, arr)
+                else:
+                    arr = np.asarray(["" if v is None else str(v) for v in vals], dtype=object)
+                    per_feature.create_dataset(key, data=arr, dtype=str_dtype)
+    root.attrs["schema_version"] = "mndm.feature_anchors.v2.1"
+
+
 def write_h5(
     out_path: Path,
     dataset_id: str,
@@ -345,6 +403,16 @@ def write_h5(
             names=getattr(payload, "features_robust_z_names", None),
             feature_metadata=getattr(payload, "feature_metadata", None),
             export_transform="strict_robust_z",
+        )
+
+        _write_feature_anchors_group(
+            h5,
+            getattr(payload, "feature_anchors", None),
+        )
+
+        _write_coordinate_layers_group(
+            h5,
+            getattr(payload, "coordinate_layers", None),
         )
 
         if payload.z is not None and payload.z.size:

@@ -39,11 +39,32 @@ preprocess:
     method: "none"
 
 robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      # Confirmed in current I-CARE headers:
+      # C3, C4, O1, O2, Cz, F3, F4, F7, F8, Fz, Fp1, Fp2, Fpz, P3, P4, Pz, T3, T4, T5, T6
+      frontal: ["Fp1", "Fp2", "Fpz", "F3", "F4", "F7", "F8", "Fz"]
+      central: ["C3", "C4", "Cz"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2"]
+      temporal: ["T3", "T4", "T5", "T6"]
+      midline: ["Fpz", "Fz", "Cz", "Pz"]
+      left_hemisphere: ["Fp1", "F3", "F7", "C3", "P3", "O1", "T3", "T5"]
+      right_hemisphere: ["Fp2", "F4", "F8", "C4", "P4", "O2", "T4", "T6"]
+  review_qc:
+    baseline_comparisons:
+      enabled: true
+      smoothing_window_epochs: 5
+      max_series_per_family: 6
+    null_sanity_tests:
+      enabled: true
+      seed: 42
   coverage:
     datasets:
       physionet_icare_2_1:
-        min_seconds: 120
-        min_epochs: 10
+        min_seconds: 30
+        min_epochs: 20
 
 time_reference:
   enabled: true
@@ -88,3 +109,32 @@ metadata_extraction:
         default: "post_cardiac_arrest_coma"
       task:
         default: "continuous_eeg"
+
+# v2.2 normalization pilot settings for i-care (ComBat).
+# Note: kept disabled until runtime integration is explicitly enabled.
+normalization:
+  enabled: false
+  method: "combat"
+  scope: "post_features"
+  batch_key: "hospital"
+  covariates: ["group", "age", "sex"]
+  reference_policy: "within_dataset"
+  datasets:
+    physionet_icare_2_1:
+      enabled: false
+      batch_key: "hospital"
+      covariates: ["group", "age", "sex"]
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: false
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"

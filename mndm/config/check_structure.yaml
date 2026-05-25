@@ -13,6 +13,10 @@
 #   regardless of modality.
 # - For fMRI outputs, optionally enforce that raw regional BOLD is embedded under:
 #     /regions/bold, /regions/names, and regions.attrs["sfreq"].
+# - MNDM 2.1 outputs make coordinate anchoring explicit. Subject-anchored 3D
+#   layers are required; cohort-anchored layers can be enforced with
+#   common.require_anchor_outputs=true for runs where mnps_projection.anchor is
+#   enabled.
 #
 # Modality detection (heuristic):
 # - A recording is treated as "fmri" when summary.json contains any key that
@@ -51,6 +55,15 @@ common:
   regional_outputs:
     required_paths:
       - "/regional_mnps"
+  require_anchor_outputs: false
+  anchor_outputs:
+    required_paths:
+      - "/feature_anchors"
+      - "/feature_anchors/spec"
+      - "/feature_anchors/per_feature"
+      - "/coords_3d_cohort_anchored"
+      - "/coords_3d_cohort_anchored/values"
+      - "/coords_3d_cohort_anchored/names"
 
 eeg:
   enabled: true
@@ -65,6 +78,9 @@ eeg:
     - "/features_robust_z"
     - "/features_robust_z/values"
     - "/features_robust_z/names"
+    - "/coords_3d_subject_anchored"
+    - "/coords_3d_subject_anchored/values"
+    - "/coords_3d_subject_anchored/names"
 
 fmri:
   enabled: true
@@ -79,6 +95,9 @@ fmri:
     - "/features_robust_z"
     - "/features_robust_z/values"
     - "/features_robust_z/names"
+    - "/coords_3d_subject_anchored"
+    - "/coords_3d_subject_anchored/values"
+    - "/coords_3d_subject_anchored/names"
   # Enforce raw fMRI regional signal embedding in H5.
   require_regions: true
   regions:

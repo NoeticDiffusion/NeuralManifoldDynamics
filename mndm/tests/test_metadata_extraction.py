@@ -522,6 +522,44 @@ class TestLoadParticipantTable:
         assert row["outcome"] == "Good"
         assert df.attrs["source_format"] == "merged_participants_and_sidecar"
 
+    def test_load_participant_table_merges_extra_tabular_metadata(self, tmp_path: Path):
+        """Merge phenotype-like extra tables into the base participants rows."""
+        dataset_root = tmp_path / "dsP"
+        phenotype_dir = dataset_root / "phenotype"
+        phenotype_dir.mkdir(parents=True)
+        (dataset_root / "participants.tsv").write_text(
+            "participant_id\ttype\nsub-001\tControl\nsub-002\tPsychosis\n",
+            encoding="utf-8",
+        )
+        (phenotype_dir / "medication.tsv").write_text(
+            "participant_id\tCPZ_at_scan\nsub-001\tn/a\nsub-002\t311.5\n",
+            encoding="utf-8",
+        )
+
+        config = {
+            "metadata_extraction": {
+                "datasets": {
+                    "dsP": {
+                        "participants": {
+                            "extra_tables": [
+                                {
+                                    "path": "phenotype/medication.tsv",
+                                    "include_columns": ["CPZ_at_scan"],
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+        df = load_participant_table(tmp_path, "dsP", config)
+        assert df is not None
+        assert list(df["participant_id"]) == ["sub-001", "sub-002"]
+        assert "CPZ_at_scan" in df.columns
+        assert df.loc[df["participant_id"] == "sub-002", "CPZ_at_scan"].iloc[0] == pytest.approx(311.5)
+        assert df.attrs["source_format"] == "merged_participants_and_extra_tables"
+
 
 class TestBuildDatasetLabel:
     """Test build_dataset_label for various input combinations."""

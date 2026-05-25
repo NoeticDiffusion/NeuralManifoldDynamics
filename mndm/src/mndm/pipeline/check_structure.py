@@ -131,6 +131,10 @@ def check_run_dir(
     regional_outputs_spec = _as_dict(scan_common.get("regional_outputs", {}))
     regional_outputs_required_paths = list(regional_outputs_spec.get("required_paths", []) or [])
     regional_outputs_required_attrs = _as_dict(regional_outputs_spec.get("required_attrs", {}))
+    require_anchor_outputs = bool(scan_common.get("require_anchor_outputs", False))
+    anchor_outputs_spec = _as_dict(scan_common.get("anchor_outputs", {}))
+    anchor_outputs_required_paths = list(anchor_outputs_spec.get("required_paths", []) or [])
+    anchor_outputs_required_attrs = _as_dict(anchor_outputs_spec.get("required_attrs", {}))
 
     eeg_spec = _as_dict(spec_d.get("eeg", {}))
     fmri_spec = _as_dict(spec_d.get("fmri", {}))
@@ -178,6 +182,10 @@ def check_run_dir(
                     if require_regional_outputs:
                         issues.extend(_check_h5_paths(h5, regional_outputs_required_paths))
                         for grp, attrs in regional_outputs_required_attrs.items():
+                            issues.extend(_check_h5_group_attrs(h5, str(grp), list(attrs or [])))
+                    if require_anchor_outputs:
+                        issues.extend(_check_h5_paths(h5, anchor_outputs_required_paths))
+                        for grp, attrs in anchor_outputs_required_attrs.items():
                             issues.extend(_check_h5_group_attrs(h5, str(grp), list(attrs or [])))
 
                     if modality == "eeg":

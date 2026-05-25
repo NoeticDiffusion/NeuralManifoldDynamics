@@ -1,5 +1,6 @@
 """Tests for DatasetSummaryRunner and SubjectSummaryRunner."""
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import sys
@@ -116,6 +117,50 @@ def test_dataset_runner_groupings_from_file_column(dummy_ctx):
     assert subjects.count("sub-002") == 1
 
 
+def test_resolve_mnps_9d_runtime_config_replaces_versioned_subcoords():
+    """Versioned subcoords should replace, not blend with, legacy root subcoords."""
+    enabled, version, selected, subcoords = summary_mod._resolve_mnps_9d_runtime_config(
+        {
+            "enabled": True,
+            "definition_version": "2.0",
+            "subcoords": {
+                "m_a": {"legacy_theta": 1.0},
+                "e_s": {"legacy_alpha_theta": 0.5, "legacy_gamma": 0.5},
+            },
+            "metric_policies": {"e_e": {"preferred": "legacy_entropy"}},
+            "versions": {
+                "2.0": {
+                    "subcoords": {
+                        "m_a": {"modern_delta": -0.5, "modern_theta": -0.5},
+                        "m_e": {"modern_alpha": -1.0},
+                        "d_s": {"modern_alpha_theta": 1.0},
+                        "e_s": {"modern_hjorth_complexity": 1.0},
+                    },
+                    "metric_policies": {"e_e": {"preferred": "permutation_entropy"}},
+                }
+            },
+            "datasets": {
+                "dsX": {
+                    "subcoords": {
+                        "e_s": {"dataset_hjorth_complexity": 1.0},
+                    }
+                }
+            },
+        },
+        "dsX",
+    )
+
+    assert enabled is True
+    assert version == "2.0"
+    assert selected["subcoords"]["m_a"] == {"modern_delta": -0.5, "modern_theta": -0.5}
+    assert selected["subcoords"]["m_e"] == {"modern_alpha": -1.0}
+    assert selected["subcoords"]["e_s"] == {"dataset_hjorth_complexity": 1.0}
+    assert "legacy_theta" not in selected["subcoords"]["m_a"]
+    assert "legacy_alpha_theta" not in selected["subcoords"]["e_s"]
+    assert subcoords["e_s"] == {"dataset_hjorth_complexity": 1.0}
+    assert selected["metric_policies"]["e_e"]["preferred"] == "permutation_entropy"
+
+
 def test_tig_extension_computation(dummy_ctx, tmp_path):
     """Test TIG extension computation via compute_extensions."""
     extensions_cfg = {"tig": {"enabled": True, "max_lag_sec": 8.0, "n_lags": 4}}
@@ -206,6 +251,55 @@ def test_dataset_runner_uses_requested_worker_count(dummy_ctx, monkeypatch, tmp_
     assert executor_calls["max_workers"] == 3
     assert executor_calls["submitted"] == 3
     assert processed == [("sub-001", 1), ("sub-002", 1), ("sub-003", 1)]
+
+
+def test_dataset_runner_writes_manifest_and_run_errors_on_group_failure(dummy_ctx, monkeypatch, tmp_path):
+    """Dataset runner should still emit run manifest + run_errors on subject failures."""
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
+    ds_path = tmp_path / "ds001"
+    mnps_dir = ds_path / "MNPS"
+    ds_path.mkdir(parents=True, exist_ok=True)
+    mnps_dir.mkdir(parents=True, exist_ok=True)
+
+    grouping_items = [
+        (("sub-001", "ses-01", "rest", "run-01", None), pd.DataFrame({"file": ["sub-001_task-rest_eeg.set"]})),
+        (("sub-002", "ses-01", "rest", "run-01", None), pd.DataFrame({"file": ["sub-002_task-rest_eeg.set"]})),
+    ]
+
+    monkeypatch.setattr(summary_mod, "load_participant_table", lambda *_args, **_kwargs: pd.DataFrame())
+    monkeypatch.setattr(runner, "_read_index", lambda _ds_path: pd.DataFrame())
+    monkeypatch.setattr(runner, "_read_features", lambda _ds_path: pd.DataFrame({"file": ["ignored"]}))
+    monkeypatch.setattr(runner, "_apply_subject_filter", lambda frame: frame)
+    monkeypatch.setattr(runner, "_apply_qc_filters", lambda frame: frame)
+    monkeypatch.setattr(runner, "_build_groupings", lambda frame: grouping_items)
+    monkeypatch.setattr(runner, "_create_output_dir", lambda _ds_path: mnps_dir)
+    monkeypatch.setattr(runner, "_prepare_one_shot_anchor", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_write_features_snapshot", lambda *_args, **_kwargs: None)
+
+    def _fake_subject_run(self, sub_id, ses_id, raw_task, run_id, acq_id, sub_frame):
+        """Internal helper: fake subject run with one forced failure."""
+        if sub_id == "sub-002":
+            raise RuntimeError("intentional failure for smoke test")
+
+    monkeypatch.setattr(summary_mod.SubjectSummaryRunner, "run", _fake_subject_run)
+
+    runner.run()
+
+    manifest_path = mnps_dir / "run_manifest.json"
+    errors_path = mnps_dir / "run_errors.json"
+    assert manifest_path.exists()
+    assert errors_path.exists()
+
+    run_errors = json.loads(errors_path.read_text(encoding="utf-8"))
+    assert run_errors["counts"]["errors_total"] == 1
+    assert run_errors["counts"]["groupings_total"] == 2
+    assert run_errors["errors"][0]["subject"] == "sub-002"
+    assert run_errors["errors"][0]["stage"] == "grouping"
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["extra"]["run_status"] == "completed_with_errors"
+    assert manifest["extra"]["run_errors"]["count"] == 1
+    assert manifest["extra"]["run_errors"]["path"] == "run_errors.json"
 
 
 def test_dataset_runner_keeps_jacobian_hashes_stable_across_n_jobs(dummy_ctx, monkeypatch, tmp_path):

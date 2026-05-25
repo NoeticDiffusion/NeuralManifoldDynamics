@@ -25,6 +25,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - **Jacobian estimation**: Local linear approximations of MNPS dynamics with meta-indices (trace, rotation, anisotropy)
 - **MNPS extensions**: E-Kappa (energetic curvature), RFM (resonant frequency modes), O-Koh (organizational coherence), TIG (temporal integrity grade)
 - **Robustness**: Ensemble variance, split-half reliability, PSD multiverse stability, entropy sanity checks
+- **MNDM 2.1 anchored coordinates**: explicit subject/session-anchored and cohort-anchored coordinate layers, with versioned feature anchors for clinical group comparisons
 - **Resume-friendly**: Interrupted runs can continue from existing artifacts
 - **Optional extras (recent)**:
   - FD censoring of high-motion epochs (framewise_displacement > 0.5 mm, ±1 neighbour)
@@ -98,6 +99,9 @@ python -m mndm.cli summarize --dataset ds003490
 # (Optional) Pack a completed MNPS run (many small H5) into one container H5
 # Output: <processed>/<dataset>/<latest mnps_*>/packed.h5
 python -m mndm.cli pack --dataset ds003490
+
+# (Optional, MNDM 2.1) Smoke-test cohort anchoring on hard-to-separate EEG cohorts
+python -m mndm.cli anchor-smoke --dataset ds003478 ds003944 ds004504 --data-dir M:/datasets/received/openneuro --h5-root <processed_dir>
 ```
 
 See [Command_cheat_sheet.md](Command_cheat_sheet.md) for complete CLI reference.
@@ -192,6 +196,65 @@ This keeps canonical `/time`, `/window_start`, `/window_end` unchanged and adds:
 - `/extensions/time_reference/run/*`
 - `/extensions/time_reference/windows/*`
 
+### MNDM 2.1 Anchored Coordinates
+
+MNDM 2.1 separates the coordinate measurement contract from the feature export
+contract. The raw feature surface remains the long-lived reanalysis source:
+
+- `/features_raw/*`: empirical feature values in original scale
+- `/features_robust_z/*`: strict per-file/session robust-z diagnostic surface
+
+Coordinate layers are now explicit:
+
+- `/coords_3d_subject_anchored/*`: current subject/session-relative 3D geometry; use for within-subject dynamics, local Jacobians, reachability-style summaries, and trajectory shape.
+- `/coords_9d_subject_anchored/*`: subject/session-relative stratified coordinates when `mnps_9d` is enabled.
+- `/coords_3d_cohort_anchored/*`: externally or cohort-anchored 3D coordinates; use for clinical group comparisons when `mnps_projection.anchor.enabled=true`.
+- `/coords_9d_cohort_anchored/*`: cohort-anchored stratified coordinates when both an anchor and `mnps_9d` are available.
+- `/feature_anchors/*`: embedded anchor provenance, including `anchor_id`, `anchor_hash`, source policy, and per-feature center/scale statistics.
+
+Example anchor configuration:
+
+```yaml
+mnps_projection:
+  normalize: "robust_z"
+  anchor:
+    enabled: true
+    path: "anchors/ds003944_fep_control_v2_1.json"
+    scale_method: "iqr"   # iqr | mad | qn
+    min_subjects: 3
+```
+
+Fit and inspect anchors post-hoc from summarized H5 outputs:
+
+```powershell
+python -m mndm.cli anchors-fit --h5-root <processed_dir> --dataset ds003944 --config mndm/config/config_ingest_ds003944.yaml --anchor-id ds003944_fep_control_v2_1 --out anchors/ds003944_fep_control_v2_1.json
+python -m mndm.cli anchor-smoke --dataset ds003478 ds003944 ds004504 --data-dir M:/datasets/received/openneuro --h5-root <processed_dir> --out anchor_smoke_report.json
+python -m mndm.cli anchor-sensitivity --h5-root <processed_dir> --dataset ds003944 --config mndm/config/config_ingest_ds003944.yaml --out anchor_sensitivity_ds003944.json
+```
+
+One-shot cohort anchoring is also available directly from merged feature tables,
+without a prior subject-anchored summarize pass:
+
+```powershell
+python -m mndm.cli summarize --dataset ds003944 --fit-anchor
+python -m mndm.cli all --dataset ds003944 --fit-anchor
+```
+
+In one-shot mode, summarize:
+
+1. reads `features.parquet` / `features.csv`
+2. fits a **subject-balanced frozen anchor artifact**
+3. saves it under the run directory (for example `run_dir/anchors/*.json`)
+4. applies that frozen anchor during the same summarize pass
+
+This is still a **fit -> freeze -> apply** contract. The anchor is not recomputed
+on-the-fly per downstream group comparison.
+
+`run_manifest.json` reports capability flags for these layers, including
+`feature_anchors`, `coords_3d_subject_anchored`,
+`coords_3d_cohort_anchored`, `coords_9d_subject_anchored`, and
+`coords_9d_cohort_anchored`.
+
 ### Key Sections
 
 ```yaml
@@ -276,7 +339,7 @@ MNDM now includes generic helpers for event-locked analyses:
 - `mndm.pipeline.control_matching`: select matched non-event control windows
 - `mndm.pipeline.event_locked_export`: write flat analysis tables with provenance
 
-These helpers are designed as a derived analysis layer. The canonical HDF5 output remains the measurement surface (`/mnps_3d`, `/coords_9d`, `/jacobian`, `/labels`, feature surfaces, and provenance). Event annotations, event-window mappings, matched controls, and baseline-corrected summaries should be kept as sidecars or clearly marked derived groups unless a future release promotes a stable derived-event schema.
+These helpers are designed as a derived analysis layer. The canonical HDF5 output remains the measurement surface (`/mnps_3d`, `/coords_9d`, explicit MNDM 2.1 coordinate layers, `/jacobian`, `/labels`, feature surfaces, and provenance). Event annotations, event-window mappings, matched controls, and baseline-corrected summaries should be kept as sidecars or clearly marked derived groups unless a future release promotes a stable derived-event schema.
 
 For the sleep-spindle profile, use the event-locked overlay rather than replacing the standard sleep-stage configuration:
 
@@ -394,6 +457,13 @@ The `/regions/*` group is optional supporting input data, mainly for raw fMRI re
 | `/features_robust_z/names` | (K,) | Feature names aligned to strict robust-z values |
 | `/features_robust_z/metadata/*` | (K,) per field | Same feature metadata layout as `/features_raw/metadata/*` |
 | `/coords_9d/values` | (T, 9) | Stratified subcoordinates |
+| `/coords_3d_subject_anchored/values` | (T, 3) | MNDM 2.1 subject/session-anchored 3D coordinates |
+| `/coords_3d_subject_anchored/names` | (3,) | Coordinate names `[m, d, e]` |
+| `/coords_9d_subject_anchored/values` | (T, 9) | Subject/session-anchored stratified coordinates |
+| `/coords_3d_cohort_anchored/values` | (T, 3) | Cohort/external-anchored 3D coordinates when an anchor is configured |
+| `/coords_9d_cohort_anchored/values` | (T, 9) | Cohort/external-anchored stratified coordinates when available |
+| `/feature_anchors/spec` | attrs | Anchor identity, source policy, scale method, and hash |
+| `/feature_anchors/per_feature/*` | (K,) per field | Per-feature anchor center, scale, quantiles, MAD/IQR/Qn, and support counts |
 | `/jacobian/J_hat` | (W, 3, 3) | Local Jacobian matrices |
 | `/jacobian/J_dot` | (W, 3, 3) | Jacobian time derivatives |
 | `/jacobian/centers` | (W,) | Window center indices |

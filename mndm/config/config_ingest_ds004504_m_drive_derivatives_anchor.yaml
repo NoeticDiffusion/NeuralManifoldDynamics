@@ -1,0 +1,18 @@
+version: 1.2
+modality: eeg
+
+# ds004504 run config: use derivatives as dataset root on M: and one-shot cohort anchor.
+imports:
+  - "./config_ingest_ds004504.yaml"
+
+paths:
+  dataset_received_dirs:
+    ds004504: "M:/datasets/received/openneuro/ds004504/derivatives"
+
+metadata_extraction:
+  datasets:
+    ds004504:
+      participants:
+        # Dataset root is ".../ds004504/derivatives" for this run, so participants.tsv
+        # is resolved one directory up.
+        path: "../participants.tsv"

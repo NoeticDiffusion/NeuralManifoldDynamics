@@ -273,6 +273,17 @@ metadata_extraction:
     task: {from_filename: true}
   datasets: {}
 
+# v2.2 normalization pilot (ComBat first).
+# Keep disabled by default until the processing step is explicitly wired in runtime code.
+normalization:
+  enabled: false
+  method: "combat"              # supported now: combat
+  scope: "post_features"        # pre_features | post_features
+  batch_key: "site_or_hospital"
+  covariates: ["group", "age", "sex"]
+  reference_policy: "within_dataset"   # within_dataset | frozen_external
+  datasets: {}
+
 sleep_annotations:
   enabled: false
   search_parent_levels: 1

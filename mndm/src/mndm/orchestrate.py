@@ -8,6 +8,7 @@ thin and focused on argument parsing only.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -36,6 +37,18 @@ from .pipeline.check_structure import run_structure_check
 from .prerequisite_check import format_prerequisite_report, report_to_json, run_prerequisite_check
 
 logger = logging.getLogger(__name__)
+
+
+class _SummarizeContextWithConfigPath:
+    """Proxy context carrying the source config path for run provenance."""
+
+    def __init__(self, base: SummarizeContext, config_path: Path):
+        self._base = base
+        self.config_path = Path(config_path).expanduser()
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._base, name)
+
 
 try:
     import psutil
@@ -719,19 +732,36 @@ def cmd_summarize(
     dataset_ids: list[str],
     out_dir: Path | None,
     data_dir: Path | None = None,
+    config_path: Path | None = None,
     subject: str | None = None,
     h5_mode: str = "subject",
     n_jobs: int = 1,
     mnps_overrides: Optional[Dict[str, Any]] = None,
+    anchor_fit_options: Optional[Dict[str, Any]] = None,
 ) -> int:
     """Project features to MNPS tensors and write HDF5/JSON outputs."""
     try:
-        resolved = ResolvedConfig.from_mapping(config, out_dir, data_dir, mnps_overrides)
+        config_for_run = copy.deepcopy(config)
+        if anchor_fit_options:
+            proj_cfg = config_for_run.setdefault("mnps_projection", {})
+            if not isinstance(proj_cfg, dict):
+                raise ValueError("mnps_projection must be a mapping to enable --fit-anchor")
+            auto_cfg = proj_cfg.get("anchor_auto_fit", {})
+            if not isinstance(auto_cfg, dict):
+                auto_cfg = {}
+            auto_cfg.update({"enabled": True})
+            auto_cfg.update({k: v for k, v in anchor_fit_options.items() if v is not None})
+            proj_cfg["anchor_auto_fit"] = auto_cfg
+        resolved = ResolvedConfig.from_mapping(config_for_run, out_dir, data_dir, mnps_overrides)
         ctx = SummarizeContext.from_resolved(resolved)
     except Exception as exc:
         logger.error(f"Summarization failed: {exc}")
         return 1
-    return _summarize_with_context(ctx, dataset_ids, subject, h5_mode, n_jobs=n_jobs)
+
+    ctx_for_run: Any = ctx
+    if config_path is not None:
+        ctx_for_run = _SummarizeContextWithConfigPath(ctx, config_path)
+    return _summarize_with_context(ctx_for_run, dataset_ids, subject, h5_mode, n_jobs=n_jobs)
 
 
 def cmd_check_structure(

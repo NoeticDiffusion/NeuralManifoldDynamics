@@ -3,6 +3,9 @@
 Subcommands:
   - features: Compute per-epoch features from indexed files.
   - summarize: Project features to MNPS and compute robust summaries.
+  - anchors-fit: Fit MNDM 2.1 feature anchors from existing H5 outputs.
+  - anchor-smoke: Smoke-test cohort anchoring on selected datasets.
+  - anchor-sensitivity: Run anchor scale/clip sensitivity sweeps.
   - pack: Pack a run directory into a single H5.
   - check-structure: Validate summarized outputs.
   - prerequisite-check: Validate dataset/config prerequisites before a run.
@@ -59,6 +62,14 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_anchor_fit_args(p: argparse.ArgumentParser) -> None:
+    """Add one-shot cohort-anchor fit args to summarize-like commands."""
+    p.add_argument("--fit-anchor", action="store_true", help="Fit a frozen cohort anchor from features.parquet/features.csv before summarize.")
+    p.add_argument("--anchor-id", type=str, default=None, help="Optional stable anchor identifier for one-shot anchor fitting.")
+    p.add_argument("--anchor-scale-method", choices=["iqr", "mad", "qn"], default="iqr", help="Robust scale method for one-shot anchor fitting.")
+    p.add_argument("--anchor-min-subjects", type=int, default=3, help="Minimum subjects required for a feature to remain usable in the one-shot anchor.")
+
+
 def _mnps_overrides_from_args(args) -> dict:
     """Internal helper: mnps overrides from args."""
     overrides = {}
@@ -73,6 +84,17 @@ def _mnps_overrides_from_args(args) -> dict:
     if args.mnps_derivative_poly is not None:
         overrides.setdefault("derivative", {})["polyorder"] = args.mnps_derivative_poly
     return overrides
+
+
+def _anchor_fit_options_from_args(args) -> dict | None:
+    """Internal helper: one-shot anchor-fit options from args."""
+    if not bool(getattr(args, "fit_anchor", False)):
+        return None
+    return {
+        "anchor_id": getattr(args, "anchor_id", None),
+        "scale_method": getattr(args, "anchor_scale_method", "iqr"),
+        "min_subjects": int(getattr(args, "anchor_min_subjects", 3) or 3),
+    }
 
 
 def _apply_cli_feature_overrides(config: dict, args) -> None:
@@ -98,14 +120,46 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
 
     p_sum = sub.add_parser("summarize", help="Project to MNPS and summarize")
     _add_common_args(p_sum)
+    _add_anchor_fit_args(p_sum)
 
     p_resum = sub.add_parser("resummarize", help="Re-run summarize only (alias of summarize)")
     _add_common_args(p_resum)
+    _add_anchor_fit_args(p_resum)
 
     p_pack = sub.add_parser("pack", help="Pack a summarized run (many small H5) into a single H5 container")
     _add_common_args(p_pack)
     p_pack.add_argument("--run-dir", type=Path, default=None, help="Path to a specific run directory. If omitted, pack the latest summarized run under processed/<dataset>/.")
     p_pack.add_argument("--overwrite", action="store_true", help="Overwrite packed.h5 if it exists")
+
+    p_anchor_fit = sub.add_parser("anchors-fit", help="Fit MNDM 2.1 feature anchors from /features_raw H5 surfaces")
+    p_anchor_fit.add_argument("--h5-root", type=Path, required=True, help="H5 file, run directory, processed root, or dataset directory")
+    p_anchor_fit.add_argument("--out", type=Path, required=True, help="Output anchor JSON path")
+    p_anchor_fit.add_argument("--dataset", type=str, default=None, help="Optional dataset id when h5-root is a processed root")
+    p_anchor_fit.add_argument("--config", type=Path, default=None, help="Config used to resolve feature_standardization")
+    p_anchor_fit.add_argument("--anchor-id", type=str, required=True, help="Stable anchor identifier")
+    p_anchor_fit.add_argument("--anchor-source", type=str, default="all_subjects", help="Human-readable source policy")
+    p_anchor_fit.add_argument("--cohort-filter", type=str, default="", help="Human-readable cohort filter/provenance")
+    p_anchor_fit.add_argument("--scale-method", choices=["iqr", "mad", "qn"], default="iqr")
+    p_anchor_fit.add_argument("--min-subjects", type=int, default=3)
+
+    p_anchor_smoke = sub.add_parser("anchor-smoke", help="Smoke-test MNDM 2.1 cohort anchoring on summarized H5 outputs")
+    p_anchor_smoke.add_argument("--dataset", nargs="*", default=["ds003478", "ds003944", "ds004504"])
+    p_anchor_smoke.add_argument("--data-dir", type=Path, default=Path("M:/datasets/received/openneuro"))
+    p_anchor_smoke.add_argument("--h5-root", type=Path, default=None, help="Processed root or run directory containing H5 files")
+    p_anchor_smoke.add_argument("--config", type=Path, default=None, help="Optional single config path; normally inferred per dataset")
+    p_anchor_smoke.add_argument("--out", type=Path, default=None, help="Optional JSON report path")
+    p_anchor_smoke.add_argument("--min-subjects", type=int, default=3)
+    p_anchor_smoke.add_argument("--max-files", type=int, default=500)
+
+    p_anchor_sens = sub.add_parser("anchor-sensitivity", help="Run MNDM 2.1 anchor scale/clip sensitivity sweeps")
+    p_anchor_sens.add_argument("--h5-root", type=Path, required=True)
+    p_anchor_sens.add_argument("--dataset", type=str, required=True)
+    p_anchor_sens.add_argument("--config", type=Path, required=True)
+    p_anchor_sens.add_argument("--scale-methods", type=str, default="iqr,mad,qn")
+    p_anchor_sens.add_argument("--clip-thresholds", type=str, default="4,6,9")
+    p_anchor_sens.add_argument("--min-subjects", type=int, default=3)
+    p_anchor_sens.add_argument("--max-files", type=int, default=500)
+    p_anchor_sens.add_argument("--out", type=Path, default=None)
 
     p_check = sub.add_parser("check-structure", help="Validate summarized outputs (run folders) against a structure spec")
     _add_common_args(p_check)
@@ -119,6 +173,7 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
 
     p_all = sub.add_parser("all", help="Run features → summarize")
     _add_common_args(p_all)
+    _add_anchor_fit_args(p_all)
 
     return parser
 
@@ -133,23 +188,29 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = build_parser(argv)
     args = parser.parse_args(argv)
     
-    # Load config
-    config = config_loader.load_config(args.config)
-    if isinstance(config, dict):
-        _apply_cli_feature_overrides(config, args)
+    # Load config for pipeline commands. Anchor post-processing commands either
+    # infer per-dataset configs internally or accept their own optional config.
+    if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity"}:
+        config = {}
+    else:
+        config = config_loader.load_config(args.config)
+        if isinstance(config, dict):
+            _apply_cli_feature_overrides(config, args)
     
     # Get dataset IDs
-    if args.dataset:
+    if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity"}:
+        dataset_ids = []
+    elif args.dataset:
         dataset_ids = args.dataset
     else:
         dataset_ids = datasets.list_datasets(config, include_pca_results=args.include_pca_results)
     
-    if not dataset_ids:
+    if not dataset_ids and args.command not in {"anchors-fit", "anchor-smoke", "anchor-sensitivity"}:
         logger.error("No datasets specified")
         return 1
     
     # Determine n_jobs if not specified
-    n_jobs = args.n_jobs
+    n_jobs = getattr(args, "n_jobs", None)
     if n_jobs is None:
         n_jobs = min(multiprocessing.cpu_count(), 6)
 
@@ -167,10 +228,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             dataset_ids,
             args.out_dir,
             args.data_dir,
+            config_path=args.config,
             subject=args.subject,
             h5_mode=args.h5_mode,
             n_jobs=n_jobs,
             mnps_overrides=_mnps_overrides_from_args(args),
+            anchor_fit_options=_anchor_fit_options_from_args(args),
         )
     elif args.command == "resummarize":
         from . import orchestrate
@@ -179,10 +242,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             dataset_ids,
             args.out_dir,
             args.data_dir,
+            config_path=args.config,
             subject=args.subject,
             h5_mode=args.h5_mode,
             n_jobs=n_jobs,
             mnps_overrides=_mnps_overrides_from_args(args),
+            anchor_fit_options=_anchor_fit_options_from_args(args),
         )
     elif args.command == "pack":
         _, processed_base = resolve_paths(config, args.out_dir, args.data_dir)
@@ -211,6 +276,60 @@ def main(argv: Sequence[str] | None = None) -> int:
                 logger.error("Pack failed for %s (%s): %s", ds_id, run_dir, exc)
                 ok = False
         return 0 if ok else 1
+    elif args.command == "anchors-fit":
+        from .tools.anchors_fit import fit_anchors_command
+        fit_anchors_command(
+            h5_root=args.h5_root,
+            out=args.out,
+            dataset_id=args.dataset,
+            config=args.config,
+            anchor_id=args.anchor_id,
+            anchor_source=args.anchor_source,
+            cohort_filter=args.cohort_filter,
+            scale_method=args.scale_method,
+            min_subjects=args.min_subjects,
+        )
+        logger.info("Wrote feature anchors: %s", args.out)
+        return 0
+    elif args.command == "anchor-smoke":
+        from .tools.anchor_smoke import smoke_datasets
+        report = smoke_datasets(
+            datasets=args.dataset,
+            data_dir=args.data_dir,
+            h5_root=args.h5_root,
+            config=args.config,
+            min_subjects=args.min_subjects,
+            max_files=args.max_files,
+        )
+        import json
+        text = json.dumps(report, indent=2, ensure_ascii=False)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text, encoding="utf-8")
+            logger.info("Wrote anchor smoke report: %s", args.out)
+        else:
+            print(text)
+        return 0
+    elif args.command == "anchor-sensitivity":
+        from .tools.anchor_sensitivity import run_anchor_sensitivity
+        report = run_anchor_sensitivity(
+            h5_root=args.h5_root,
+            dataset_id=args.dataset,
+            config=args.config,
+            scale_methods=[x.strip() for x in args.scale_methods.split(",") if x.strip()],
+            clip_thresholds=[float(x.strip()) for x in args.clip_thresholds.split(",") if x.strip()],
+            min_subjects=args.min_subjects,
+            max_files=args.max_files,
+        )
+        import json
+        text = json.dumps(report, indent=2, ensure_ascii=False)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text, encoding="utf-8")
+            logger.info("Wrote anchor sensitivity report: %s", args.out)
+        else:
+            print(text)
+        return 0
     elif args.command == "check-structure":
         from . import orchestrate
         return orchestrate.cmd_check_structure(
@@ -240,7 +359,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         return orchestrate.cmd_summarize(
             config, dataset_ids, args.out_dir, args.data_dir,
-            subject=args.subject, h5_mode=args.h5_mode, n_jobs=n_jobs, mnps_overrides=_mnps_overrides_from_args(args)
+            config_path=args.config,
+            subject=args.subject,
+            h5_mode=args.h5_mode,
+            n_jobs=n_jobs,
+            mnps_overrides=_mnps_overrides_from_args(args),
+            anchor_fit_options=_anchor_fit_options_from_args(args),
         )
     else:
         parser.error("Unknown command")

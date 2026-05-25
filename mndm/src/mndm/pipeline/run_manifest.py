@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import platform
+import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -144,6 +145,12 @@ def _field_guide() -> Dict[str, Any]:
             "jacobian_9D/cross_partials/*": "Named cross-partial timeseries extracted from jacobian_9D.",
             "coords_9d/values": "Stratified MNPS trajectory matrix [T,K] (often K=9).",
             "coords_9d/names": "Column names for coords_9d/values.",
+            "coords_3d_subject_anchored/values": "MNDM 2.1 subject/session-anchored 3D coordinates [T,3].",
+            "coords_3d_cohort_anchored/values": "MNDM 2.1 cohort/external-anchored 3D coordinates [T,3].",
+            "coords_9d_subject_anchored/values": "MNDM 2.1 subject/session-anchored stratified coordinates [T,K].",
+            "coords_9d_cohort_anchored/values": "MNDM 2.1 cohort/external-anchored stratified coordinates [T,K].",
+            "feature_anchors/spec attrs": "MNDM 2.1 feature-anchor identity, source policy, and hash.",
+            "feature_anchors/per_feature/*": "Per-feature anchor center/scale statistics aligned by feature_name.",
             "features_raw/values": "Per-epoch raw feature matrix [T,K] in original scale.",
             "features_raw/names": "Column names for features_raw/values.",
             "features_raw/metadata/*": "Machine-readable per-feature metadata aligned to features_raw/names.",
@@ -171,6 +178,8 @@ def _field_guide() -> Dict[str, Any]:
         "naming_notes": {
             "jacobian": "MNJ estimate from primary 3D MNPS.",
             "coords_9d": "Stratified MNPS coordinate group (often 9D).",
+            "coordinate_layers": "MNDM 2.1 explicit coordinate contracts; subject-anchored is for within-subject dynamics, cohort-anchored is for clinical group contrasts.",
+            "feature_anchors": "Frozen feature-scaling reference used to construct cohort/external-anchored coordinate layers.",
             "mnps_9d": "Configuration/runtime term for stratified MNPS coordinate system.",
             "capabilities.regional_outputs": "True when H5 files embed derived `/regional_mnps/*` network-level outputs.",
             "capabilities.raw_region_signals": "True when H5 files embed raw `/regions/*` signals (typically fMRI ROI x time).",
@@ -201,6 +210,62 @@ def _resolve_source_info(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any
         src["url"] = f"https://openneuro.org/datasets/{ds_id}"
 
     return src
+
+
+def _copy_config_yaml_to_run_dir(mnps_dir: Path, config_path: Optional[Path]) -> Dict[str, Any]:
+    """Best-effort copy of the active YAML config into the run directory."""
+    info: Dict[str, Any] = {
+        "provided_path": str(config_path) if config_path is not None else None,
+        "copied_filename": None,
+        "copied_path": None,
+        "status": "not_provided",
+    }
+    if config_path is None:
+        return info
+
+    src = Path(config_path).expanduser()
+    info["provided_path"] = str(src)
+    if not src.exists() or not src.is_file():
+        info["status"] = "missing"
+        return info
+
+    target = mnps_dir / src.name
+    try:
+        if target.exists():
+            try:
+                if src.resolve() == target.resolve():
+                    info["status"] = "already_in_run_dir"
+                    info["copied_filename"] = target.name
+                    info["copied_path"] = str(target)
+                    return info
+            except Exception:
+                pass
+
+            # If the same file is already present, re-use it.
+            if target.read_bytes() == src.read_bytes():
+                info["status"] = "already_present"
+                info["copied_filename"] = target.name
+                info["copied_path"] = str(target)
+                return info
+
+            stem = src.stem
+            suffix = src.suffix
+            candidate = mnps_dir / f"{stem}__copied{suffix}"
+            copy_idx = 2
+            while candidate.exists():
+                candidate = mnps_dir / f"{stem}__copied_{copy_idx}{suffix}"
+                copy_idx += 1
+            target = candidate
+
+        shutil.copy2(src, target)
+        info["status"] = "copied"
+        info["copied_filename"] = target.name
+        info["copied_path"] = str(target)
+    except Exception as exc:
+        logger.warning("Failed to copy config YAML %s to %s: %s", src, mnps_dir, exc)
+        info["status"] = "copy_failed"
+        info["error"] = str(exc)
+    return info
 
 
 def _merge_summary_meta(d: Mapping[str, Any]) -> Dict[str, Any]:
@@ -295,6 +360,11 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
     has_v2_like_count = 0
     has_raw_features_count = 0
     has_robust_z_features_count = 0
+    has_feature_anchors_count = 0
+    has_coords_3d_subject_count = 0
+    has_coords_3d_cohort_count = 0
+    has_coords_9d_subject_count = 0
+    has_coords_9d_cohort_count = 0
     has_time_reference_count = 0
     bad_files: list[str] = []
 
@@ -341,6 +411,17 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
                             has_robust_z_features_count += 1
                     except Exception:
                         pass
+
+                if "feature_anchors" in f:
+                    has_feature_anchors_count += 1
+                if "coords_3d_subject_anchored" in f and "values" in f["coords_3d_subject_anchored"]:
+                    has_coords_3d_subject_count += 1
+                if "coords_3d_cohort_anchored" in f and "values" in f["coords_3d_cohort_anchored"]:
+                    has_coords_3d_cohort_count += 1
+                if "coords_9d_subject_anchored" in f and "values" in f["coords_9d_subject_anchored"]:
+                    has_coords_9d_subject_count += 1
+                if "coords_9d_cohort_anchored" in f and "values" in f["coords_9d_cohort_anchored"]:
+                    has_coords_9d_cohort_count += 1
 
                 # Optional Stratified Jacobian computed on v2 coordinates
                 if "jacobian_9D" in f and "J_hat" in f["jacobian_9D"]:
@@ -408,6 +489,12 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
         "raw_features_path": "/features_raw",
         "robust_z_features": bool(has_robust_z_features_count > 0),
         "robust_z_features_path": "/features_robust_z",
+        "feature_anchors": bool(has_feature_anchors_count > 0),
+        "feature_anchors_path": "/feature_anchors",
+        "coords_3d_subject_anchored": bool(has_coords_3d_subject_count > 0),
+        "coords_3d_cohort_anchored": bool(has_coords_3d_cohort_count > 0),
+        "coords_9d_subject_anchored": bool(has_coords_9d_subject_count > 0),
+        "coords_9d_cohort_anchored": bool(has_coords_9d_cohort_count > 0),
         "time_reference": bool(has_time_reference_count > 0),
         "time_reference_path": "/extensions/time_reference",
         "labels_stage": bool(has_stage_count > 0),
@@ -417,6 +504,11 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
             "h5_with_raw_region_signals": int(has_raw_region_signals_count),
             "h5_with_raw_features": int(has_raw_features_count),
             "h5_with_robust_z_features": int(has_robust_z_features_count),
+            "h5_with_feature_anchors": int(has_feature_anchors_count),
+            "h5_with_coords_3d_subject_anchored": int(has_coords_3d_subject_count),
+            "h5_with_coords_3d_cohort_anchored": int(has_coords_3d_cohort_count),
+            "h5_with_coords_9d_subject_anchored": int(has_coords_9d_subject_count),
+            "h5_with_coords_9d_cohort_anchored": int(has_coords_9d_cohort_count),
             "h5_with_time_reference": int(has_time_reference_count),
             "h5_with_stage": int(has_stage_count),
             "h5_with_v2_like": int(has_v2_like_count),
@@ -432,6 +524,7 @@ def write_run_manifest(
     received_dir: Path,
     processed_dir: Path,
     h5_mode: str,
+    config_path: Optional[Path] = None,
     extra: Optional[Mapping[str, Any]] = None,
 ) -> Path:
     """Handle write run manifest."""
@@ -454,6 +547,7 @@ def write_run_manifest(
     excerpt = _config_excerpt(config, ds_id)
     config_digest = _sha256_text(_safe_json_dumps(config))
     excerpt_digest = _sha256_text(_safe_json_dumps(excerpt))
+    config_yaml_info = _copy_config_yaml_to_run_dir(mnps_dir, config_path)
     source_info = _resolve_source_info(config, ds_id)
     reproducibility = resolve_reproducibility_policy(config, ds_id)
 
@@ -529,6 +623,7 @@ def write_run_manifest(
             "excerpt_digest_sha256": excerpt_digest,
             "excerpt": excerpt,
             "top_level_keys": sorted(list(config.keys())) if isinstance(config, Mapping) else [],
+            "yaml_source": config_yaml_info,
         },
         "source": source_info,
         "doi": source_info.get("doi"),

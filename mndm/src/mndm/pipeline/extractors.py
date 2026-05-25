@@ -918,7 +918,7 @@ def _merge_participant_tables(
     *,
     merge_strategy: str,
 ) -> pd.DataFrame:
-    """Merge participants table with sidecar-derived metadata."""
+    """Merge a base participants table with an additional participant table."""
     left = base_df.copy()
     right = sidecar_df.copy()
     left["participant_id"] = left["participant_id"].astype(str)
@@ -949,6 +949,68 @@ def _merge_participant_tables(
     return out
 
 
+def _load_additional_participant_tables(
+    dataset_root: Path,
+    participants_cfg: Mapping[str, Any],
+) -> list[pd.DataFrame]:
+    """Load optional extra participant tables such as phenotype TSV files."""
+    extra_raw = participants_cfg.get("extra_tables", [])
+    if not isinstance(extra_raw, Sequence) or isinstance(extra_raw, (str, bytes)):
+        return []
+    tables: list[pd.DataFrame] = []
+    for item in extra_raw:
+        if not isinstance(item, Mapping):
+            continue
+        path_value = item.get("path")
+        if not isinstance(path_value, (str, Path)) or not str(path_value).strip():
+            continue
+        raw_path = Path(str(path_value).strip())
+        candidate_path = raw_path if raw_path.is_absolute() else dataset_root / raw_path
+        if not candidate_path.exists():
+            logger.warning("Configured extra participants table not found: %s", candidate_path)
+            continue
+
+        sep = item.get("sep", item.get("delimiter"))
+        if not isinstance(sep, str) or not sep:
+            suffix = candidate_path.suffix.lower()
+            if suffix == ".tsv":
+                sep = "\t"
+            elif suffix == ".csv":
+                sep = ","
+            else:
+                sep = None
+        read_kwargs: Dict[str, Any] = {}
+        if sep is None:
+            read_kwargs.update({"sep": None, "engine": "python"})
+        else:
+            read_kwargs["sep"] = sep
+        try:
+            loaded = pd.read_csv(candidate_path, **read_kwargs)
+        except Exception as exc:
+            logger.warning("Failed to load extra participants table %s: %s", candidate_path, exc)
+            continue
+
+        normalized = _normalize_participant_id_column(
+            loaded,
+            item,
+            source_path=candidate_path,
+        )
+        if normalized is None:
+            continue
+
+        include_raw = item.get("include_columns", [])
+        if isinstance(include_raw, Sequence) and not isinstance(include_raw, (str, bytes)):
+            include_cols = [str(v).strip() for v in include_raw if str(v).strip()]
+            keep = ["participant_id", *[c for c in include_cols if c in normalized.columns and c != "participant_id"]]
+            normalized = normalized[[c for c in keep if c in normalized.columns]]
+
+        normalized.attrs["source_path"] = str(candidate_path)
+        normalized.attrs["source_format"] = candidate_path.suffix.lower().lstrip(".") or "text"
+        normalized.attrs["subject_id_column"] = "participant_id"
+        tables.append(normalized)
+    return tables
+
+
 def load_participant_table(
     received_dir: Path,
     dataset_id: str,
@@ -960,6 +1022,7 @@ def load_participant_table(
     - default dataset-root discovery: `participants.tsv`, `participants.csv`, `participants.txt`
     - YAML override via `metadata_extraction.[default|datasets.<id>].participants.path`
     - optional sidecar key/value metadata via `participants.sidecar_files`
+    - optional tabular phenotype merges via `participants.extra_tables`
     """
     metadata_spec = (config.get("metadata_extraction", {}) if isinstance(config, Mapping) else {}) or {}
     default_cfg = metadata_spec.get("default", {}) if isinstance(metadata_spec, Mapping) else {}
@@ -1020,16 +1083,37 @@ def load_participant_table(
             table_df = None
 
     sidecar_df = _load_sidecar_participant_table(dataset_root, participants_cfg)
+    extra_tables = _load_additional_participant_tables(dataset_root, participants_cfg)
 
-    if table_df is None and sidecar_df is None:
+    if table_df is None and sidecar_df is None and not extra_tables:
         logger.warning("No participants table found for %s under %s", dataset_id, dataset_root)
         return None
-    if table_df is None:
-        return sidecar_df
-    if sidecar_df is None:
-        return table_df
+    merged = table_df
+    if merged is None:
+        merged = sidecar_df
+        sidecar_df = None
+    elif sidecar_df is not None:
+        merge_strategy = str(participants_cfg.get("sidecar_merge", "prefer_sidecar")).strip().lower()
+        if merge_strategy not in {"prefer_sidecar", "prefer_existing"}:
+            merge_strategy = "prefer_sidecar"
+        merged = _merge_participant_tables(merged, sidecar_df, merge_strategy=merge_strategy)
 
-    merge_strategy = str(participants_cfg.get("sidecar_merge", "prefer_sidecar")).strip().lower()
-    if merge_strategy not in {"prefer_sidecar", "prefer_existing"}:
-        merge_strategy = "prefer_sidecar"
-    return _merge_participant_tables(table_df, sidecar_df, merge_strategy=merge_strategy)
+    if merged is None and extra_tables:
+        merged = extra_tables[0]
+        extra_tables = extra_tables[1:]
+
+    extra_merge_strategy = str(participants_cfg.get("extra_tables_merge", "prefer_sidecar")).strip().lower()
+    if extra_merge_strategy not in {"prefer_sidecar", "prefer_existing"}:
+        extra_merge_strategy = "prefer_sidecar"
+    for extra_df in extra_tables:
+        if merged is None:
+            merged = extra_df
+        else:
+            merged = _merge_participant_tables(merged, extra_df, merge_strategy=extra_merge_strategy)
+            source_paths = [str(merged.attrs.get("source_path", "")).strip(), str(extra_df.attrs.get("source_path", "")).strip()]
+            source_paths = [p for p in source_paths if p]
+            if source_paths:
+                merged.attrs["source_path"] = ";".join(dict.fromkeys(source_paths))
+            merged.attrs["source_format"] = "merged_participants_and_extra_tables"
+
+    return merged

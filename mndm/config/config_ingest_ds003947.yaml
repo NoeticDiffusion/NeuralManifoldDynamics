@@ -44,6 +44,10 @@ mnps_9d:
 metadata_extraction:
   datasets:
     ds003947:
+      participants:
+        extra_tables:
+          - path: "phenotype/medication.tsv"
+            include_columns: ["CPZ_at_scan"]
       group:
         candidates: ["Group", "Diagnosis", "group", "diagnosis", "type"]
         normalize:

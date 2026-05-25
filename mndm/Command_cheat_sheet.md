@@ -66,8 +66,14 @@ python -m mndm.cli features --dataset ds003490
 # Summarize (MNPS + Jacobians)
 python -m mndm.cli summarize --dataset ds003490
 
+# Summarize with one-shot cohort anchor fitting
+python -m mndm.cli summarize --dataset ds003944 --fit-anchor
+
 # Run features -> summarize in one command
 python -m mndm.cli all --dataset ds003490
+
+# Run features -> one-shot cohort-anchored summarize
+python -m mndm.cli all --dataset ds003944 --fit-anchor
 
 # Re-run summarize only
 python -m mndm.cli resummarize --dataset ds003490
@@ -77,6 +83,15 @@ python -m mndm.cli pack --dataset ds003490
 
 # Validate run structure
 python -m mndm.cli check-structure --dataset ds003490
+
+# MNDM 2.1: fit a cohort feature anchor from summarized H5 outputs
+python -m mndm.cli anchors-fit --h5-root <processed_dir> --dataset ds003944 --config mndm/config/config_ingest_ds003944.yaml --anchor-id ds003944_fep_control_v2_1 --out anchors/ds003944_fep_control_v2_1.json
+
+# MNDM 2.1: smoke-test hard-to-separate OpenNeuro EEG cohorts
+python -m mndm.cli anchor-smoke --dataset ds003478 ds003944 ds004504 --data-dir M:/datasets/received/openneuro --h5-root <processed_dir> --out anchor_smoke_report.json
+
+# MNDM 2.1: sensitivity sweep over scale and clipping policies
+python -m mndm.cli anchor-sensitivity --h5-root <processed_dir> --dataset ds003944 --config mndm/config/config_ingest_ds003944.yaml --out anchor_sensitivity_ds003944.json
 ```
 
 ### Common Options
@@ -90,7 +105,58 @@ python -m mndm.cli check-structure --dataset ds003490
 --h5-mode {dataset,subject}       HDF5 output granularity (default: subject)
 --n-jobs N                        Parallel workers (default: min(cores, 6))
 --mem-budget-gb N                 Memory budget in GB for worker scaling
+--fit-anchor                      Fit and freeze a cohort anchor from features before summarize
+--anchor-id ID                    Optional stable id for one-shot anchor fitting
+--anchor-scale-method {iqr,mad,qn}
+--anchor-min-subjects N
 ```
+
+### MNDM 2.1 Anchor Commands
+
+`anchors-fit` builds a subject-balanced feature-anchor JSON artifact from
+existing H5 `/features_raw` exports. The artifact stores center/scale,
+quantiles, MAD/IQR/Qn scale estimates, subject/epoch support counts, and a
+stable `anchor_hash`.
+
+Common options:
+
+```text
+--h5-root PATH                    H5 file, run directory, processed root, or dataset directory
+--dataset DATASET                 Optional dataset id when h5-root is a processed root
+--config PATH                     Config used to replay feature_standardization pre-transforms
+--anchor-id ID                    Stable anchor identifier
+--scale-method {iqr,mad,qn}       Default scale method for downstream projection
+--min-subjects N                  Minimum subject support per feature
+```
+
+`anchor-smoke` is a lightweight post-hoc report. By default it targets
+`ds003478`, `ds003944`, and `ds004504`, checks raw dataset presence under
+`M:/datasets/received/openneuro`, and, when `--h5-root` points to summarized H5
+outputs, compares subject-anchored vs cohort-anchored separation summaries.
+
+`anchor-sensitivity` runs the standard MNDM 2.1 sensitivity harness:
+subject/cohort anchor comparison, scale-method sweep (`iqr,mad,qn`), and
+clip-threshold sweep (`4,6,9` by default).
+
+### One-shot frozen-anchor summarize
+
+`summarize --fit-anchor` and `all --fit-anchor` fit a **frozen subject-balanced
+anchor artifact from `features.parquet` / `features.csv` at summarize startup**,
+save that anchor under the run directory, and then use it during the same
+summarize pass.
+
+This removes the old need to:
+
+1. summarize once without anchor
+2. run `anchors-fit`
+3. summarize again with `mnps_projection.anchor.enabled=true`
+
+Important:
+
+- the one-shot path is still **fit -> freeze -> apply**
+- it is **not** a dynamic on-the-fly anchor recomputed per downstream comparison
+- resulting H5 outputs still declare `primary_coordinate_contract` and embed
+  `/feature_anchors` when cohort anchoring is active
 
 ### MNPS Overrides
 
@@ -143,6 +209,19 @@ python -m mndm.cli pack --dataset ds003490
             ├── qc_summary.json           # Coverage + QC flags
             └── <subject_run_dir>.h5      # MNPS tensors
 ```
+
+MNDM 2.1 runs may also include explicit coordinate-contract groups in each H5:
+
+```text
+/feature_anchors/...
+/coords_3d_subject_anchored/{values,names}
+/coords_9d_subject_anchored/{values,names}
+/coords_3d_cohort_anchored/{values,names}
+/coords_9d_cohort_anchored/{values,names}
+```
+
+`run_manifest.json` reports capability flags for these paths so downstream
+analysis can select the intended primary coordinate layer without guessing.
 
 ---
 

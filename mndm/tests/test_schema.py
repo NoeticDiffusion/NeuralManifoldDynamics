@@ -77,6 +77,28 @@ def test_normalize_coords_9d_can_allow_all_non_finite_columns():
     assert diag["all_non_finite_count"] == 1
 
 
+def test_normalize_coords_9d_can_allow_duplicate_constant_columns():
+    """Duplicate constant subcoordinates can proceed in degraded mode."""
+    from mndm.schema import mnps_9d_CANONICAL_ORDER, _normalize_coords_9d
+
+    names = list(mnps_9d_CANONICAL_ORDER)
+    values = np.arange(6 * len(names), dtype=np.float32).reshape(6, len(names))
+    for name in ("m_a", "m_e", "d_n"):
+        values[:, names.index(name)] = 0.0
+
+    out_values, out_names, diag = _normalize_coords_9d(
+        values,
+        names,
+        allow_duplicate_constant_columns=True,
+        return_diagnostics=True,
+    )
+
+    assert out_names == names
+    assert out_values.shape == values.shape
+    assert diag["duplicate_constant_pairs"] == {"m_e": "m_a", "d_n": "m_a"}
+    assert diag["duplicate_constant_count"] == 2
+
+
 def test_normalize_payload_validates_feature_surfaces_and_metadata():
     """Test normalize payload validates feature surfaces and metadata."""
     from mndm.schema import normalize_payload
@@ -99,4 +121,26 @@ def test_normalize_payload_validates_feature_surfaces_and_metadata():
     assert out.features_robust_z_values.shape == (4, 2)
     assert out.features_raw_names == ["eeg_alpha", "eeg_alpha__g_frontal"]
     assert set(out.feature_metadata.keys()) == {"feature_name", "group_label", "used_by_mnps_3d"}
+
+
+def test_normalize_payload_validates_coordinate_layers_and_sets_2_1_schema():
+    """MNDM 2.1 coordinate layers are time-aligned and versioned."""
+    from mndm.schema import normalize_payload
+
+    payload = _base_payload()
+    payload.coordinate_layers = {
+        "coords_3d_cohort_anchored": {
+            "values": np.ones((4, 3), dtype=np.float32),
+            "names": ["m", "d", "e"],
+            "attrs": {"coordinate_contract": "cohort_anchored"},
+        }
+    }
+    payload.feature_anchors = {"spec": {"anchor_id": "unit-test"}}
+
+    out = normalize_payload(payload)
+
+    assert out.attrs["schema_version"] == "mnps_tensor_spec_v2_1"
+    assert out.attrs["mndm_version"] == "2.1"
+    assert "coords_3d_cohort_anchored" in out.coordinate_layers
+    assert out.coordinate_layers["coords_3d_cohort_anchored"]["names"] == ["m", "d", "e"]
 

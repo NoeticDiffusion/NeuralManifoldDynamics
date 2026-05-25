@@ -16,6 +16,10 @@ Top-level attributes:
   - **group**: normalized diagnostic group (e.g. `AD`, `Parkinson`, `Control`)
   - **condition**: condition / medication status (e.g. `ON`, `OFF`)
   - **meta_*:** flattened scalar entries from `participant_meta`
+- **schema_version / mndm_version**: `mnps_tensor_spec_v2_1` / `2.1` when explicit anchored coordinate layers or embedded feature anchors are present.
+- **primary_coordinate_layer**: H5 group to use as the primary 3D coordinate layer, e.g. `coords_3d_cohort_anchored`.
+- **primary_coordinate_contract**: `subject_anchored` or `cohort_anchored`.
+- **anchor_id / anchor_hash**: set when cohort/external anchoring is active.
 
 Datasets and groups:
 
@@ -37,6 +41,20 @@ Datasets and groups:
   - Feature names aligned to `/features_robust_z/values`.
 - `/features_robust_z/metadata/*` – arrays of length `K`  
   - Same per-feature metadata layout as `/features_raw/metadata/*`.
+- `/coords_3d_subject_anchored/values` – `float32[T, 3]`
+  - Subject/session-anchored 3D coordinates for within-subject geometry.
+- `/coords_3d_subject_anchored/names` – `str[3]`
+  - Coordinate names, usually `[m,d,e]`.
+- `/coords_9d_subject_anchored/values` – `float32[T, K]`
+  - Subject/session-anchored stratified coordinates when available.
+- `/coords_3d_cohort_anchored/values` – `float32[T, 3]`
+  - Cohort/external-anchored 3D coordinates for group comparisons when an anchor is configured.
+- `/coords_9d_cohort_anchored/values` – `float32[T, K]`
+  - Cohort/external-anchored stratified coordinates when available.
+- `/feature_anchors/spec` – attrs
+  - Anchor identity/source/hash and scale policy.
+- `/feature_anchors/per_feature/*` – arrays of length `K`
+  - Per-feature center/scale/quantile/support statistics used by cohort-anchored coordinates.
 - `/z` (optional) – `float32[T, K]`  
   - Embodied signals (e.g. HRV, respiratory phase) aligned to `/time`.
 - `/labels/stage` (optional) – `int8[T]`  
@@ -64,6 +82,13 @@ Stratified MNPS v2 (optional):
   - Names of the subcoordinates (always in canonical order after normalization).
 - `/coords_9d` group attrs:
   - `version = "9d"`
+
+MNDM 2.1 coordinate contract:
+
+- `subject_anchored` layers preserve the current within-subject/session geometry and are the appropriate input for local trajectory-shape interpretation.
+- `cohort_anchored` layers are computed with a frozen feature anchor and are the preferred layer for clinical group contrasts.
+- The root `primary_coordinate_layer` attr tells downstream code which layer the run declares as primary.
+- `run_manifest.json` exposes capability flags for `feature_anchors`, `coords_3d_subject_anchored`, `coords_3d_cohort_anchored`, `coords_9d_subject_anchored`, and `coords_9d_cohort_anchored`.
 
 Stratified (v2) Jacobians (optional):
 

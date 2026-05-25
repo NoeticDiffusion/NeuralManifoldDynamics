@@ -314,6 +314,36 @@ def test_download_or_skip_size_check_skips_when_length_unknown(tmp_path: Path, m
     assert row["bytes"] == 0
 
 
+def test_download_or_skip_existing_name_only_skips_without_remote_size_check(tmp_path: Path, monkeypatch) -> None:
+    output_dir = tmp_path / "received"
+    local_path = output_dir / "training" / "0284" / "0284_001_004_EEG.mat"
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(b"abcdef")
+
+    def _unexpected_remote_size_call(**_: object) -> int:
+        raise AssertionError("Remote size check should not be called in name-only mode")
+
+    monkeypatch.setattr(mod, "fetch_remote_content_length_with_retries", _unexpected_remote_size_call)
+
+    row = mod.download_or_skip_relative_path(
+        relative_path="training/0284/0284_001_004_EEG.mat",
+        output_dir=output_dir,
+        dataset_root_url="https://physionet.org/files/i-care/2.1",
+        checksums={},
+        overwrite=False,
+        verify_checksum=False,
+        verify_existing_size=False,
+        timeout_seconds=5.0,
+        retries=1,
+        retry_backoff_seconds=0.0,
+        chunk_size_bytes=1024,
+        user_agent="test-agent",
+    )
+
+    assert row["status"] == "skipped_exists"
+    assert row["bytes"] == 0
+
+
 def test_run_download_dry_run_writes_manifests(tmp_path: Path, monkeypatch) -> None:
     general_cfg = tmp_path / "config_ingest.yml"
     dataset_cfg = tmp_path / "config_i-care_2_1.yml"
@@ -404,6 +434,102 @@ def test_run_download_dry_run_writes_manifests(tmp_path: Path, monkeypatch) -> N
 
     csv_manifest = (metadata_dir / "download_manifest.csv").read_text(encoding="utf-8")
     assert "planned" in csv_manifest
+
+
+def test_run_download_name_only_override_disables_existing_size_checks(tmp_path: Path, monkeypatch) -> None:
+    general_cfg = tmp_path / "config_ingest.yml"
+    dataset_cfg = tmp_path / "config_i-care_2_1.yml"
+
+    general_cfg.write_text(
+        "\n".join(
+            [
+                "paths:",
+                f"  download_root: {tmp_path.as_posix()}/received",
+                f"  metadata_root: {tmp_path.as_posix()}/metadata",
+                "network:",
+                "  timeout_seconds: 5",
+                "  retries: 1",
+                "  retry_backoff_seconds: 0.0",
+                "  chunk_size_bytes: 1024",
+                "  user_agent: test-agent",
+                "download:",
+                "  overwrite: false",
+                "  verify_checksum: false",
+                "  verify_existing_size: true",
+                "  write_manifest_csv: true",
+                "  write_manifest_jsonl: true",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    dataset_cfg.write_text(
+        "\n".join(
+            [
+                "dataset:",
+                "  slug: i-care",
+                "  version: '2.1'",
+                "  base_url: https://physionet.org",
+                "  remote_root: files/i-care/2.1",
+                "  records_file: RECORDS",
+                "  checksums_file: SHA256SUMS.txt",
+                "subset:",
+                "  strategy: first_n_patients",
+                "  patient_count: 1",
+                "  expand_record_extensions: ['.hea', '.mat']",
+                "download:",
+                "  output_subdir: smoke",
+                "  dry_run: false",
+                "  max_parallel_downloads: 1",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    records_text = "training/0284/0284_001_004_EEG\n"
+    checksums_text = "\n".join(
+        [
+            f"{'a' * 64}  training/0284/0284_001_004_EEG.hea",
+            f"{'b' * 64}  training/0284/0284_001_004_EEG.mat",
+        ]
+    )
+
+    def fake_fetch_text_with_retries(url: str, **_: object) -> str:
+        if "RECORDS" in url:
+            return records_text
+        return checksums_text
+
+    def fake_download_file_with_retries(url: str, output_path: Path, **_: object) -> int:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"x")
+        return 1
+
+    def _unexpected_remote_size_call(**_: object) -> int:
+        raise AssertionError("Remote size check should not be called with name-only override")
+
+    local_existing = tmp_path / "received" / "smoke" / "training" / "0284" / "0284_001_004_EEG.mat"
+    local_existing.parent.mkdir(parents=True, exist_ok=True)
+    local_existing.write_bytes(b"already-here")
+
+    monkeypatch.setattr(mod, "fetch_text_with_retries", fake_fetch_text_with_retries)
+    monkeypatch.setattr(mod, "fetch_checksums_text", lambda **_: checksums_text)
+    monkeypatch.setattr(mod, "maybe_create_physionet_client", lambda *_, **__: None)
+    monkeypatch.setattr(mod, "download_file_with_retries", fake_download_file_with_retries)
+    monkeypatch.setattr(mod, "fetch_remote_content_length_with_retries", _unexpected_remote_size_call)
+
+    exit_code = mod.run_download(
+        general_cfg,
+        dataset_cfg,
+        name_only_existing_check_override=True,
+    )
+    assert exit_code == 0
+
+    metadata_dir = tmp_path / "metadata" / "smoke"
+    csv_manifest = (metadata_dir / "download_manifest.csv").read_text(encoding="utf-8")
+    run_summary = json.loads((metadata_dir / "run_summary.json").read_text(encoding="utf-8"))
+
+    assert "skipped_exists" in csv_manifest
+    assert run_summary["execution"]["existing_file_check_mode"] == "name_only"
+    assert run_summary["execution"]["verify_existing_size"] is False
 
 
 def test_run_download_rejects_non_positive_parallel_workers(tmp_path: Path) -> None:

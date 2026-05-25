@@ -260,3 +260,71 @@ def test_check_structure_passes_with_regional_outputs_independent_of_modality(tm
     assert report.ok is True
 
 
+def test_check_structure_can_require_anchor_outputs(tmp_path: Path):
+    """MNDM 2.1 anchor outputs can be enforced for anchored runs."""
+    run_dir = tmp_path / "mnps_dsX_20260101_000004"
+    rec = run_dir / "sub-001_cond_task_run-01"
+    rec.mkdir(parents=True)
+
+    _write_min_summary(rec / "summary.json", fmri=False)
+    _write_required_qc_files(rec)
+
+    h5_path = rec / "sub-001_cond_task_run-01.h5"
+    with h5py.File(h5_path, "w") as h:
+        h.create_dataset("time", data=[0.0, 1.0])
+        h.create_dataset("mnps_3d", data=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+        h.create_dataset("mnps_3d_dot", data=[[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]])
+        h.require_group("jacobian")
+        fr = h.require_group("features_raw")
+        fr.create_dataset("values", data=[[1.0], [2.0]])
+        fr.create_dataset("names", data=[b"feat_a"])
+        fz = h.require_group("features_robust_z")
+        fz.create_dataset("values", data=[[0.0], [1.0]])
+        fz.create_dataset("names", data=[b"feat_a"])
+        subj = h.require_group("coords_3d_subject_anchored")
+        subj.create_dataset("values", data=[[0.0, 0.0, 0.0], [1.0, 1.0, 1.0]])
+        subj.create_dataset("names", data=[b"m", b"d", b"e"])
+        cohort = h.require_group("coords_3d_cohort_anchored")
+        cohort.create_dataset("values", data=[[0.0, 0.0, 0.0], [2.0, 2.0, 2.0]])
+        cohort.create_dataset("names", data=[b"m", b"d", b"e"])
+        anchors = h.require_group("feature_anchors")
+        anchors.require_group("spec")
+        anchors.require_group("per_feature")
+
+    spec = {
+        "common": {
+            "required_files": ["summary.json", "qc_summary.json", "qc_reliability.json"],
+            "require_single_h5": True,
+            "require_anchor_outputs": True,
+            "anchor_outputs": {
+                "required_paths": [
+                    "/feature_anchors",
+                    "/feature_anchors/spec",
+                    "/feature_anchors/per_feature",
+                    "/coords_3d_cohort_anchored/values",
+                    "/coords_3d_cohort_anchored/names",
+                ]
+            },
+        },
+        "fmri": {"enabled": True, "require_regions": False},
+        "eeg": {
+            "enabled": True,
+            "h5_required_paths": [
+                "/time",
+                "/mnps_3d",
+                "/mnps_3d_dot",
+                "/jacobian",
+                "/features_raw/values",
+                "/features_raw/names",
+                "/features_robust_z/values",
+                "/features_robust_z/names",
+                "/coords_3d_subject_anchored/values",
+                "/coords_3d_subject_anchored/names",
+            ],
+        },
+    }
+
+    report = check_run_dir("dsX", run_dir, spec)
+    assert report.ok is True
+
+

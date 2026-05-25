@@ -89,6 +89,14 @@ class MNPSPayload:
     # Optional stratified MNPS coordinates (typically 9D)
     coords_9d: Optional[np.ndarray] = None
     coords_9d_names: Optional[list[str]] = None
+    # MNDM 2.1 coordinate layers. Each entry maps a H5 group name such as
+    # ``coords_3d_subject_anchored`` to ``{"values": array, "names": [...],
+    # "attrs": {...}}``. These layers make the coordinate measurement contract
+    # explicit instead of overloading `/mnps_3d` and `/coords_9d`.
+    coordinate_layers: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional feature-anchor artifact/spec embedded into H5 under
+    # `/feature_anchors` when cohort/external anchoring is active.
+    feature_anchors: MutableMapping[str, Any] = field(default_factory=dict)
     # Optional raw regional signals (e.g. fMRI ROI×time). These are supporting
     # inputs for some regional analyses, but are not the canonical regional
     # output contract exposed to downstream readers.
@@ -135,6 +143,8 @@ class MNPSPayload:
             "attrs": dict(self.attrs),
             "coords_9d": self.coords_9d,
             "coords_9d_names": list(self.coords_9d_names) if self.coords_9d_names is not None else None,
+            "coordinate_layers": dict(self.coordinate_layers),
+            "feature_anchors": dict(self.feature_anchors),
             "regions_bold": self.regions_bold,
             "regions_names": list(self.regions_names) if self.regions_names is not None else None,
             "regions_sfreq": self.regions_sfreq,
@@ -223,6 +233,41 @@ def _normalize_feature_metadata(
     return normalized
 
 
+def _normalize_coordinate_layers(
+    coordinate_layers: MutableMapping[str, Any],
+    *,
+    t_len: int,
+) -> MutableMapping[str, Any]:
+    """Validate optional MNDM 2.1 coordinate layers."""
+    normalized: Dict[str, Any] = {}
+    for raw_name, raw_layer in coordinate_layers.items():
+        name = str(raw_name).strip().replace("/", "_").replace("\\", "_")
+        if not name:
+            raise ValueError("coordinate layer name must be non-empty")
+        if not isinstance(raw_layer, Mapping):
+            raise ValueError(f"coordinate_layers['{name}'] must be a mapping")
+        if "values" not in raw_layer:
+            raise ValueError(f"coordinate_layers['{name}'] requires 'values'")
+        values = np.asarray(raw_layer.get("values"), dtype=np.float32)
+        if values.ndim != 2 or values.shape[0] != t_len:
+            raise ValueError(f"coordinate_layers['{name}'].values must be 2-D and align with time")
+        names_raw = raw_layer.get("names")
+        if names_raw is None:
+            names = [f"dim_{idx}" for idx in range(values.shape[1])]
+        else:
+            names = [str(v) for v in names_raw]
+            if len(names) != values.shape[1]:
+                raise ValueError(f"coordinate_layers['{name}'].names length must match values columns")
+        attrs_raw = raw_layer.get("attrs", {})
+        attrs = dict(attrs_raw) if isinstance(attrs_raw, Mapping) else {}
+        normalized[name] = {
+            "values": np.ascontiguousarray(values, dtype=np.float32),
+            "names": names,
+            "attrs": attrs,
+        }
+    return normalized
+
+
 def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
     """Coerce arrays to canonical dtypes and validate shapes (mutates ``payload`` in place).
 
@@ -285,6 +330,12 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
         payload.feature_metadata = _normalize_feature_metadata(
             payload.feature_metadata,
             n_features=len(feature_names),
+        )
+
+    if payload.coordinate_layers:
+        payload.coordinate_layers = _normalize_coordinate_layers(
+            payload.coordinate_layers,
+            t_len=t.shape[0],
         )
 
     payload.jacobian = _validate_optional_array("jacobian", payload.jacobian, 3)
@@ -408,7 +459,11 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             raise ValueError(f"regions_sfreq must be convertible to float, got {payload.regions_sfreq!r}") from exc
 
     # Explicit schema marker helps downstream readers avoid silent shape/contract drift.
-    payload.attrs.setdefault("schema_version", "mnps_tensor_spec_v2")
+    if payload.coordinate_layers or payload.feature_anchors:
+        payload.attrs.setdefault("schema_version", "mnps_tensor_spec_v2_1")
+        payload.attrs.setdefault("mndm_version", "2.1")
+    else:
+        payload.attrs.setdefault("schema_version", "mnps_tensor_spec_v2")
 
     return payload
 
@@ -418,6 +473,7 @@ def _normalize_coords_9d(
     names: Sequence[str],
     *,
     allow_all_non_finite_columns: bool = False,
+    allow_duplicate_constant_columns: bool = False,
     return_diagnostics: bool = False,
 ) -> tuple[np.ndarray, list[str]] | tuple[np.ndarray, list[str], Dict[str, Any]]:
     """Internal helper: normalize coords 9d."""
@@ -456,6 +512,15 @@ def _normalize_coords_9d(
     sentinel = np.float32(9.999e9)
     seen: Dict[str, int] = {}
     duplicates: Dict[str, str] = {}
+    duplicate_constant_pairs: Dict[str, str] = {}
+
+    def _is_effectively_constant(col_idx: int) -> bool:
+        finite_vals = ordered_values[finite_mask[:, col_idx], col_idx]
+        if finite_vals.size == 0:
+            return False
+        span = float(np.max(finite_vals) - np.min(finite_vals))
+        return span <= 1e-8
+
     for idx in range(ordered_values.shape[1]):
         # Degraded all-NaN columns are allowed in tolerant mode and must not
         # trigger false duplicate collisions via sentinel hashing.
@@ -466,7 +531,11 @@ def _normalize_coords_9d(
         col = np.nan_to_num(ordered_values[:, idx], nan=sentinel).astype(np.float32, copy=False)
         sig = hashlib.sha256(np.ascontiguousarray(col).view(np.uint8)).hexdigest()
         if sig in seen:
-            duplicates[mnps_9d_CANONICAL_ORDER[idx]] = mnps_9d_CANONICAL_ORDER[seen[sig]]
+            prev_idx = seen[sig]
+            if allow_duplicate_constant_columns and _is_effectively_constant(idx) and _is_effectively_constant(prev_idx):
+                duplicate_constant_pairs[mnps_9d_CANONICAL_ORDER[idx]] = mnps_9d_CANONICAL_ORDER[prev_idx]
+            else:
+                duplicates[mnps_9d_CANONICAL_ORDER[idx]] = mnps_9d_CANONICAL_ORDER[prev_idx]
         else:
             seen[sig] = idx
     if duplicates:
@@ -478,6 +547,8 @@ def _normalize_coords_9d(
         diagnostics: Dict[str, Any] = {
             "all_non_finite_names": all_non_finite_names,
             "all_non_finite_count": int(len(all_non_finite_names)),
+            "duplicate_constant_pairs": duplicate_constant_pairs,
+            "duplicate_constant_count": int(len(duplicate_constant_pairs)),
             "finite_count_by_name": {
                 out_names[idx]: int(finite_counts[idx]) for idx in range(len(out_names))
             },

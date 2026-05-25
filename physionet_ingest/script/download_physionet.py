@@ -845,7 +845,12 @@ def estimate_subset_size_from_global_total(
     }
 
 
-def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_override: bool | None = None) -> int:
+def run_download(
+    config_general_path: Path,
+    config_dataset_path: Path,
+    dry_run_override: bool | None = None,
+    name_only_existing_check_override: bool | None = None,
+) -> int:
     config_general = load_yaml_config(config_general_path)
     config_dataset = load_yaml_config(config_dataset_path)
     config = deep_merge_dict(config_general, config_dataset)
@@ -931,6 +936,9 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
     overwrite = bool(download_cfg.get("overwrite", False))
     verify_checksum = bool(download_cfg.get("verify_checksum", True))
     verify_existing_size = bool(download_cfg.get("verify_existing_size", False))
+    if name_only_existing_check_override is True:
+        verify_checksum = False
+        verify_existing_size = False
     write_manifest_csv_flag = bool(download_cfg.get("write_manifest_csv", True))
     write_manifest_jsonl_flag = bool(download_cfg.get("write_manifest_jsonl", True))
     max_parallel_downloads_raw = download_cfg.get("max_parallel_downloads", 1)
@@ -943,6 +951,12 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
     if not dry_run:
         output_dir.mkdir(parents=True, exist_ok=True)
 
+    existing_file_check_mode = "name_only"
+    if verify_checksum:
+        existing_file_check_mode = "checksum"
+    elif verify_existing_size:
+        existing_file_check_mode = "size"
+
     LOGGER.info("Dataset: %s v%s", slug, version)
     LOGGER.info("Subset strategy: %s, patient_count=%s", strategy, patient_count)
     if strategy == "random_n_patients":
@@ -950,7 +964,8 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
     if strategy == "explicit_patient_ids":
         LOGGER.info("Explicit patient IDs requested: %s", len(explicit_patient_ids))
     LOGGER.info(
-        "Existing-file verification mode: checksum=%s, size_check=%s",
+        "Existing-file verification mode: %s (checksum=%s, size_check=%s)",
+        existing_file_check_mode,
         verify_checksum,
         verify_existing_size,
     )
@@ -1217,6 +1232,7 @@ def run_download(config_general_path: Path, config_dataset_path: Path, dry_run_o
             "max_parallel_downloads": max_parallel_downloads,
             "verify_checksum": verify_checksum,
             "verify_existing_size": verify_existing_size,
+            "existing_file_check_mode": existing_file_check_mode,
             "output_dir": str(output_dir),
             "metadata_dir": str(metadata_dir),
             "errors": error_count,
@@ -1256,6 +1272,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Force real download regardless of YAML setting.",
     )
+    parser.add_argument(
+        "--name-only-existing-check",
+        action="store_true",
+        help=(
+            "Skip existing files based on filename/path only (no size/checksum verification for existing files)."
+        ),
+    )
     return parser
 
 
@@ -1271,10 +1294,13 @@ def main() -> int:
     elif args.no_dry_run:
         dry_run_override = False
 
+    name_only_existing_check_override: bool | None = True if args.name_only_existing_check else None
+
     return run_download(
         config_general_path=args.config_general,
         config_dataset_path=args.config_dataset,
         dry_run_override=dry_run_override,
+        name_only_existing_check_override=name_only_existing_check_override,
     )
 
 

@@ -11,6 +11,7 @@ import math
 import logging
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Tuple
+import warnings
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,27 @@ except Exception:  # pragma: no cover
 
 logger = logging.getLogger(__name__)
 _ENTROPY_FALLBACK_WARNED = False
+_MULTITAPER_NONCONVERGENCE_WARNING_RE = r"Iterative multi-taper PSD computation did not converge.*"
+
+
+def _run_multitaper_psd_safely(data: np.ndarray, **kwargs: Any) -> Tuple[np.ndarray, np.ndarray]:
+    """Run multitaper PSD while suppressing known non-convergence noise for EEG/iEEG.
+
+    This warning can be frequent for clinical EEG/iEEG and does not always indicate
+    a hard failure. Keep the behavior scoped to EEG feature extraction only so that
+    non-EEG pipelines (e.g., fMRI) retain their own warning visibility.
+    """
+
+    if psd_array_multitaper is None:  # pragma: no cover - guarded by caller
+        raise RuntimeError("psd_array_multitaper is unavailable")
+
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message=_MULTITAPER_NONCONVERGENCE_WARNING_RE,
+            category=RuntimeWarning,
+        )
+        return psd_array_multitaper(data, **kwargs)
 
 
 def _integrated_bandpower(psd_1d: np.ndarray, freqs_1d: np.ndarray, f_lo: float, f_hi: float) -> float:
@@ -697,7 +719,7 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     t_psd0 = time.perf_counter()
     if psd_method == "multitaper" and psd_array_multitaper is not None:
         # psd: [E, 1 + G, F]
-        psd, freqs = psd_array_multitaper(
+        psd, freqs = _run_multitaper_psd_safely(
             epochs_agg_arr,
             sfreq=sfreq,
             fmin=psd_fmin,
@@ -746,7 +768,7 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         epochs_global = epochs_agg_arr[:, 0, :]  # [E, T]
         if psd_secondary_method == "multitaper" and psd_array_multitaper is not None:
             try:
-                psd_alt, freqs_alt = psd_array_multitaper(
+                psd_alt, freqs_alt = _run_multitaper_psd_safely(
                     epochs_global,
                     sfreq=sfreq,
                     fmin=psd_fmin,
