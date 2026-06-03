@@ -6,18 +6,47 @@ imports:
   - "./config_ingest_physionet_i-care_2_1_mnps_only.yaml"
 
 paths:
+  # Dedicated processed root for next_140 to avoid mixing part1/part2 feature tables.
+  processed_dir: "E:/Science_Datasets/physionet/processed_next140_0_12h_no_regional_combat"
   dataset_received_dirs:
     physionet_icare_2_1: "E:/Science_Datasets/physionet/received/i-care_2_1_next_140_longitudinal_0_12h/training"
 
-# v2.2 normalization pilot (ComBat).
-# Keep disabled until runtime normalization step is introduced.
+# v2.2 normalization pilot (ComBat), enabled for next_140 summarize.
 normalization:
-  enabled: false
+  enabled: true
   method: "combat"
   scope: "post_features"
   batch_key: "hospital"
   covariates: ["group", "age", "sex"]
   reference_policy: "within_dataset"
+  combat:
+    chunk_size: 24
+    min_batch_size: 2
+    min_feature_observations: 16
+    winsorize_quantiles: [0.005, 0.995]
+    family_wise:
+      enabled: true
+      strategy: "prefix"
+      delimiter: "_"
+      min_family_columns: 2
+      regex_map: {}
+  validation:
+    enabled: true
+    max_rows: 150000
+    max_features: 256
+    min_group_size: 20
+    max_levels: 24
+    batch_key: "auto"
+    target_keys: ["group", "cpc"]
+    metrics:
+      batch_eta2: true
+      target_eta2: true
+      perturbation: true
+  datasets:
+    physionet_icare_2_1:
+      enabled: true
+      batch_key: "hospital"
+      covariates: ["group", "age", "sex"]
 
 # No regional calculations for this run.
 robustness:

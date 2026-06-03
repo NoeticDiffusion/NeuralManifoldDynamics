@@ -111,7 +111,6 @@ metadata_extraction:
         default: "continuous_eeg"
 
 # v2.2 normalization pilot settings for i-care (ComBat).
-# Note: kept disabled until runtime integration is explicitly enabled.
 normalization:
   enabled: false
   method: "combat"
@@ -119,6 +118,29 @@ normalization:
   batch_key: "hospital"
   covariates: ["group", "age", "sex"]
   reference_policy: "within_dataset"
+  combat:
+    chunk_size: 24
+    min_batch_size: 2
+    min_feature_observations: 16
+    winsorize_quantiles: [0.005, 0.995]
+    family_wise:
+      enabled: false
+      strategy: "prefix"
+      delimiter: "_"
+      min_family_columns: 2
+      regex_map: {}
+  validation:
+    enabled: false
+    max_rows: 150000
+    max_features: 256
+    min_group_size: 20
+    max_levels: 24
+    batch_key: "auto"
+    target_keys: []
+    metrics:
+      batch_eta2: true
+      target_eta2: true
+      perturbation: true
   datasets:
     physionet_icare_2_1:
       enabled: false

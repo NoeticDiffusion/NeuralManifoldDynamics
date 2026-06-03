@@ -1,0 +1,43 @@
+version: 2.0
+modality: eeg
+
+# I-CARE next_140 (part2-style) baseline run:
+# - no ComBat
+# - no regional MNPS
+# - MNPS 9D + block Jacobians enabled
+# - subject-anchored projection
+imports:
+  - "./config_ingest_physionet_i-care_2_1_next_140_0_12h_no_regional.yaml"
+
+paths:
+  # Keep a dedicated processed root for this baseline.
+  processed_dir: "E:/Science_Datasets/physionet/processed_next140_0_12h_no_regional_subject_anchor"
+
+normalization:
+  enabled: false
+  validation:
+    enabled: false
+  combat:
+    family_wise:
+      enabled: false
+  datasets:
+    physionet_icare_2_1:
+      enabled: false
+      batch_key: "hospital"
+      covariates: ["group", "age", "sex"]
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: true
+
+mnps_projection:
+  anchor:
+    enabled: false

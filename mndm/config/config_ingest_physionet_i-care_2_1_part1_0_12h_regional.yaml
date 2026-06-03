@@ -1,0 +1,63 @@
+version: 2.0
+modality: eeg
+
+# I-CARE part1 (random100) first-12h regional MNPS export.
+# Input folder is produced by physionet_ingest config with:
+#   subset.max_eeg_hours_per_patient: 12
+imports:
+  - "./config_ingest_physionet_i-care_2_1.yaml"
+
+paths:
+  # Reuse existing part1 features from the shared processed dataset folder.
+  processed_dir: "E:/Science_Datasets/physionet/processed"
+  dataset_received_dirs:
+    physionet_icare_2_1: "E:/Science_Datasets/physionet/received/i-care_2_1_random100_longitudinal/training"
+
+# Regional outputs enabled for both canonical 3D MNPS and stratified 9D trajectories.
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: false
+
+normalization:
+  enabled: true
+  method: "combat"
+  scope: "post_features"
+  batch_key: "hospital"
+  covariates: ["group", "age", "sex"]
+  reference_policy: "within_dataset"
+  combat:
+    chunk_size: 24
+    min_batch_size: 2
+    min_feature_observations: 16
+    winsorize_quantiles: [0.005, 0.995]
+    family_wise:
+      enabled: true
+      strategy: "prefix"
+      delimiter: "_"
+      min_family_columns: 2
+      regex_map: {}
+  validation:
+    enabled: true
+    max_rows: 150000
+    max_features: 256
+    min_group_size: 20
+    max_levels: 24
+    batch_key: "auto"
+    target_keys: ["group", "cpc"]
+    metrics:
+      batch_eta2: true
+      target_eta2: true
+      perturbation: true
+  datasets:
+    physionet_icare_2_1:
+      enabled: true
+      batch_key: "hospital"
+      covariates: ["group", "age", "sex"]

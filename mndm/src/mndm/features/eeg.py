@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import warnings
 
 import numpy as np
@@ -67,6 +67,279 @@ def _integrated_bandpower(psd_1d: np.ndarray, freqs_1d: np.ndarray, f_lo: float,
         return float(np.trapezoid(psd_1d[mask], freqs_1d[mask]))
     except AttributeError:
         return float(np.trapz(psd_1d[mask], freqs_1d[mask]))
+
+
+def _deep_merge_mapping(base: Mapping[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
+    """Recursively merge two config mappings."""
+    merged: Dict[str, Any] = dict(base)
+    for key, value in override.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            merged[key] = _deep_merge_mapping(
+                dict(merged.get(key, {})),
+                dict(value),
+            )
+        else:
+            merged[key] = value
+    return merged
+
+
+def _resolve_conventional_eeg_cfg(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
+    """Resolve conventional EEG config with optional dataset overrides."""
+    root = config.get("conventional_eeg", {}) if isinstance(config, Mapping) else {}
+    if not isinstance(root, Mapping):
+        return {}
+    merged: Dict[str, Any] = {k: root[k] for k in root if k != "datasets"}
+    ds_map = root.get("datasets", {})
+    if dataset_id and isinstance(ds_map, Mapping):
+        ds_cfg = ds_map.get(dataset_id)
+        if isinstance(ds_cfg, Mapping):
+            merged = _deep_merge_mapping(merged, dict(ds_cfg))
+    return merged
+
+
+def _resolve_conventional_packs(conventional_cfg: Mapping[str, Any]) -> set[str]:
+    """Return normalized conventional EEG pack names."""
+    packs_raw = conventional_cfg.get("packs", ["tier1"]) if isinstance(conventional_cfg, Mapping) else ["tier1"]
+    if isinstance(packs_raw, (str, bytes)):
+        return {str(packs_raw).strip().lower()}
+    if isinstance(packs_raw, list):
+        return {str(v).strip().lower() for v in packs_raw if str(v).strip()}
+    return {"tier1"}
+
+
+def _safe_ratio(numerator: float, denominator: float) -> float:
+    """Return a finite ratio or NaN when the denominator is not usable."""
+    try:
+        num = float(numerator)
+        den = float(denominator)
+    except Exception:
+        return np.nan
+    if not np.isfinite(num) or not np.isfinite(den) or den <= 0:
+        return np.nan
+    return float(num / den)
+
+
+def _cumulative_power_edge_frequency(psd_1d: np.ndarray, freqs_1d: np.ndarray, fraction: float) -> float:
+    """Return the frequency where cumulative PSD reaches the requested fraction."""
+    psd = np.asarray(psd_1d, dtype=float)
+    freqs = np.asarray(freqs_1d, dtype=float)
+    if psd.size == 0 or freqs.size == 0 or psd.size != freqs.size:
+        return np.nan
+    finite = np.isfinite(psd) & np.isfinite(freqs)
+    psd = psd[finite]
+    freqs = freqs[finite]
+    if psd.size == 0 or freqs.size == 0:
+        return np.nan
+    if psd.size == 1:
+        return float(freqs[0])
+    psd = np.clip(psd, a_min=0.0, a_max=None)
+    increments = 0.5 * (psd[1:] + psd[:-1]) * np.diff(freqs)
+    cumulative = np.concatenate([[0.0], np.cumsum(increments)])
+    total = float(cumulative[-1]) if cumulative.size else float("nan")
+    if not np.isfinite(total) or total <= 0:
+        return np.nan
+    target = float(np.clip(fraction, 0.0, 1.0)) * total
+    return float(np.interp(target, cumulative, freqs))
+
+
+def _peak_frequency_in_band(
+    psd_1d: np.ndarray,
+    freqs_1d: np.ndarray,
+    low_hz: float,
+    high_hz: float,
+) -> float:
+    """Return the dominant frequency within a target band."""
+    psd = np.asarray(psd_1d, dtype=float)
+    freqs = np.asarray(freqs_1d, dtype=float)
+    if psd.size == 0 or freqs.size == 0 or psd.size != freqs.size:
+        return np.nan
+    mask = (
+        np.isfinite(psd)
+        & np.isfinite(freqs)
+        & (freqs >= float(low_hz))
+        & (freqs <= float(high_hz))
+    )
+    if not np.any(mask):
+        return np.nan
+    band_psd = psd[mask]
+    band_freqs = freqs[mask]
+    if band_psd.size == 0:
+        return np.nan
+    idx = int(np.argmax(band_psd))
+    return float(band_freqs[idx])
+
+
+def _compute_conventional_tier1_features(
+    *,
+    psd_1d: np.ndarray,
+    freqs_1d: np.ndarray,
+    bandpowers: Mapping[str, float],
+    eeg_bands: Mapping[str, Any],
+    conventional_cfg: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Compute config-driven Tier 1 conventional EEG comparator features."""
+    export_cfg = conventional_cfg.get("export", {}) if isinstance(conventional_cfg, Mapping) else {}
+    per_epoch_columns = bool(export_cfg.get("per_epoch_columns", True))
+    summaries = bool(export_cfg.get("summaries", True))
+    if not (per_epoch_columns or summaries):
+        return {}
+
+    enabled = bool(conventional_cfg.get("enabled", False))
+    packs = _resolve_conventional_packs(conventional_cfg)
+    if not enabled or "tier1" not in packs:
+        return {}
+
+    tier1_cfg = conventional_cfg.get("tier1", {}) if isinstance(conventional_cfg, Mapping) else {}
+    if not isinstance(tier1_cfg, Mapping):
+        tier1_cfg = {}
+
+    out: Dict[str, Any] = {}
+
+    if bool(tier1_cfg.get("relative_bandpower", False)):
+        finite_bandpowers = [
+            float(value)
+            for value in bandpowers.values()
+            if np.isfinite(float(value))
+        ]
+        total_bandpower = float(np.sum(finite_bandpowers)) if finite_bandpowers else float("nan")
+        for band_name, bandpower in bandpowers.items():
+            out[f"eeg_conventional_relative_{band_name}"] = _safe_ratio(
+                float(bandpower),
+                total_bandpower,
+            )
+
+    ratio_specs: Dict[str, Tuple[Tuple[str, ...], Tuple[str, ...]]] = {
+        "theta_alpha": (("theta",), ("alpha",)),
+        "delta_alpha": (("delta",), ("alpha",)),
+        "alpha_theta": (("alpha",), ("theta",)),
+        "beta_alpha": (("beta",), ("alpha",)),
+        "slowing_index": (("delta", "theta"), ("alpha", "beta")),
+    }
+    ratios_raw = tier1_cfg.get("ratios", [])
+    ratio_names = [str(v).strip().lower() for v in ratios_raw] if isinstance(ratios_raw, list) else []
+    for ratio_name in ratio_names:
+        spec = ratio_specs.get(ratio_name)
+        if spec is None:
+            continue
+        numerator = float(np.sum([float(bandpowers.get(name, np.nan)) for name in spec[0]]))
+        denominator = float(np.sum([float(bandpowers.get(name, np.nan)) for name in spec[1]]))
+        out[f"eeg_conventional_ratio_{ratio_name}"] = _safe_ratio(numerator, denominator)
+
+    peak_cfg = tier1_cfg.get("peak_frequency", {})
+    if not isinstance(peak_cfg, Mapping):
+        peak_cfg = {}
+    alpha_band = eeg_bands.get("alpha", [8, 12]) if isinstance(eeg_bands, Mapping) else [8, 12]
+    alpha_low = float(alpha_band[0]) if isinstance(alpha_band, (list, tuple)) and len(alpha_band) >= 2 else 8.0
+    alpha_high = float(alpha_band[1]) if isinstance(alpha_band, (list, tuple)) and len(alpha_band) >= 2 else 12.0
+
+    if bool(peak_cfg.get("alpha_peak_frequency", False)):
+        out["eeg_conventional_peak_alpha_frequency"] = _peak_frequency_in_band(
+            psd_1d,
+            freqs_1d,
+            alpha_low,
+            alpha_high,
+        )
+    if bool(peak_cfg.get("median_frequency", False)):
+        out["eeg_conventional_peak_median_frequency"] = _cumulative_power_edge_frequency(
+            psd_1d,
+            freqs_1d,
+            0.50,
+        )
+    if bool(peak_cfg.get("spectral_edge_95", False)):
+        out["eeg_conventional_peak_spectral_edge_95"] = _cumulative_power_edge_frequency(
+            psd_1d,
+            freqs_1d,
+            0.95,
+        )
+    return out
+
+
+def _compute_conventional_complexity_features(
+    *,
+    epoch_signal: np.ndarray,
+    sfreq: float,
+    order: int,
+    delay: int,
+    normalize: bool,
+    conventional_cfg: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Compute config-driven conventional EEG complexity comparator features."""
+    export_cfg = conventional_cfg.get("export", {}) if isinstance(conventional_cfg, Mapping) else {}
+    per_epoch_columns = bool(export_cfg.get("per_epoch_columns", True))
+    summaries = bool(export_cfg.get("summaries", True))
+    if not (per_epoch_columns or summaries):
+        return {}
+
+    enabled = bool(conventional_cfg.get("enabled", False))
+    packs = _resolve_conventional_packs(conventional_cfg)
+    if not enabled or "complexity" not in packs:
+        return {}
+
+    complexity_cfg = conventional_cfg.get("complexity", {}) if isinstance(conventional_cfg, Mapping) else {}
+    if not isinstance(complexity_cfg, Mapping):
+        complexity_cfg = {}
+
+    out: Dict[str, Any] = {}
+    if bool(complexity_cfg.get("spectral_entropy", False)):
+        out["eeg_conventional_complexity_spectral_entropy"] = _compute_spectral_entropy(
+            epoch_signal,
+            sfreq=float(sfreq),
+        )
+    if bool(complexity_cfg.get("permutation_entropy", False)):
+        out["eeg_conventional_complexity_permutation_entropy"] = _compute_permutation_entropy(
+            epoch_signal,
+            order=int(order),
+            delay=int(delay),
+            normalize=bool(normalize),
+        )
+    hjorth_mobility, hjorth_complexity = _compute_hjorth_metrics(epoch_signal)
+    if bool(complexity_cfg.get("hjorth_complexity", False)):
+        out["eeg_conventional_complexity_hjorth_complexity"] = hjorth_complexity
+    if bool(complexity_cfg.get("hjorth_mobility", False)):
+        out["eeg_conventional_complexity_hjorth_mobility"] = hjorth_mobility
+    return out
+
+
+def _compute_conventional_connectivity_features(
+    *,
+    eeg_data: np.ndarray,
+    sfreq: float,
+    eeg_channels: Optional[Sequence[str]],
+    conventional_cfg: Mapping[str, Any],
+) -> Dict[str, float]:
+    """Compute config-driven conventional EEG connectivity comparator features."""
+    export_cfg = conventional_cfg.get("export", {}) if isinstance(conventional_cfg, Mapping) else {}
+    per_epoch_columns = bool(export_cfg.get("per_epoch_columns", True))
+    summaries = bool(export_cfg.get("summaries", True))
+    if not (per_epoch_columns or summaries):
+        return {}
+
+    enabled = bool(conventional_cfg.get("enabled", False))
+    packs = _resolve_conventional_packs(conventional_cfg)
+    if not enabled or "connectivity" not in packs:
+        return {}
+    if eeg_channels is None:
+        return {}
+
+    connectivity_cfg = conventional_cfg.get("connectivity", {}) if isinstance(conventional_cfg, Mapping) else {}
+    if not isinstance(connectivity_cfg, Mapping):
+        return {}
+
+    sync_features = eeg_sync.compute_eeg_synchrony_features(
+        eeg_data,
+        sfreq=float(sfreq),
+        channel_names=eeg_channels,
+        config=connectivity_cfg,
+    )
+    out: Dict[str, float] = {}
+    for key, value in sync_features.items():
+        raw_key = str(key)
+        if raw_key.startswith("eeg_sync_"):
+            suffix = raw_key[len("eeg_sync_") :]
+        else:
+            suffix = raw_key
+        out[f"eeg_conventional_connectivity_{suffix}"] = float(value)
+    return out
 
 
 def _compute_hjorth_metrics(data: np.ndarray) -> Tuple[float, float]:
@@ -477,6 +750,7 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         "eeg_bands",
         {"delta": [1, 4], "theta": [4, 8], "alpha": [8, 12], "beta": [13, 30], "gamma": [30, 45]},
     )
+    conventional_cfg = _resolve_conventional_eeg_cfg(config, dataset_id)
 
     # PSD method config
     psd_cfg = features_cfg.get("eeg_psd", {}) if isinstance(features_cfg, dict) else {}
@@ -564,6 +838,7 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                     onset_column=str(sampling_cfg.get("onset_column", "onset")),
                     duration_column=str(sampling_cfg.get("duration_column", "duration")),
                     stage_map=stage_map,
+                    sampling_cfg=sampling_cfg if isinstance(sampling_cfg, Mapping) else None,
                 )
 
             # Fallback for non-BIDS sleep datasets (e.g. ANPHY text annotations).
@@ -633,6 +908,7 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                     onset_column=str(sampling_cfg.get("onset_column", "onset")) if isinstance(sampling_cfg, Mapping) else "onset",
                     duration_column=str(sampling_cfg.get("duration_column", "duration")) if isinstance(sampling_cfg, Mapping) else "duration",
                     stage_map=stage_map,
+                    sampling_cfg=sampling_cfg if isinstance(sampling_cfg, Mapping) else None,
                 )
 
             # 2) External text annotations
@@ -837,11 +1113,13 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                 features_dict[label_name] = value
 
         # --- Global montage (index 0) ---
+        global_bandpowers: Dict[str, float] = {}
         for band_name, (low, high) in eeg_bands.items():
             lo = max(float(low), float(psd_fmin))
             hi = min(float(high), float(psd_fmax))
             bandpower = _integrated_bandpower(psd[i, 0, :], freqs, lo, hi)
             features_dict[f"eeg_{band_name}"] = bandpower
+            global_bandpowers[str(band_name)] = bandpower
         # Explicit high-frequency power proxy used by embodied fallback policy.
         features_dict["eeg_highfreq_power_30_45"] = _integrated_bandpower(
             psd[i, 0, :], freqs, max(30.0, float(psd_fmin)), min(45.0, float(psd_fmax))
@@ -880,6 +1158,26 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         features_dict["eeg_entropy_backend"] = str(entropy_meta.get("backend", "numpy"))
         features_dict["eeg_entropy_degraded_mode"] = bool(entropy_meta.get("degraded_mode", False))
         features_dict["eeg_entropy_reason"] = entropy_meta.get("reason")
+
+        conventional_features = _compute_conventional_tier1_features(
+            psd_1d=psd[i, 0, :],
+            freqs_1d=freqs,
+            bandpowers=global_bandpowers,
+            eeg_bands=eeg_bands if isinstance(eeg_bands, Mapping) else {},
+            conventional_cfg=conventional_cfg,
+        )
+        conventional_features.update(
+            _compute_conventional_complexity_features(
+                epoch_signal=epochs_agg_arr[i, 0],
+                sfreq=float(sfreq),
+                order=pe_order,
+                delay=pe_delay,
+                normalize=pe_normalize,
+                conventional_cfg=conventional_cfg,
+            )
+        )
+        if conventional_features:
+            features_dict.update(conventional_features)
 
         # QC flag for EEG epoch (no NaNs in core EEG bands)
         core_cols = ["eeg_delta", "eeg_theta", "eeg_alpha", "eeg_beta", "eeg_gamma"]
@@ -1050,6 +1348,18 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                 logger.info("EEG graph_metrics time: %.2fs", time.perf_counter() - t0)
         except Exception:
             logger.exception("EEG graph metrics computation failed; continuing without graph features")
+
+    try:
+        conventional_connectivity = _compute_conventional_connectivity_features(
+            eeg_data=eeg_data,
+            sfreq=float(sfreq),
+            eeg_channels=eeg_channels,
+            conventional_cfg=conventional_cfg,
+        )
+        if conventional_connectivity:
+            advanced_features.update(conventional_connectivity)
+    except Exception:
+        logger.exception("Conventional EEG connectivity computation failed; continuing without connectivity features")
 
     if advanced_features and not df.empty:
         adv_cols = {

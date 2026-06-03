@@ -65,6 +65,23 @@ preprocess:
 epoching:
   length_s: 8.0
   step_s: 4.0
+  # Optional global sampling/event inference defaults.
+  sampling:
+    # If true, summarize prefers stage inferred from raw BIDS events over
+    # existing stage columns in features.csv (useful for summarize-only reruns).
+    prefer_events_stage_in_summary: false
+    # Generic stage-block inference policy (disabled by default).
+    stage_blocking:
+      enabled: false
+      stage_event_regex: ""
+      bridge_marker_labels: []
+      use_bridge_markers: true
+      hv_tail_sec: 0.5
+      hv_tail_cap_sec: 1.0
+      min_block_sec: 2.0
+      max_block_sec: 20.0
+      preserve_block_assignments: true
+      expected_stage_frequencies_hz: []
   datasets: {}
 
 features:
@@ -76,9 +93,84 @@ features:
     delay: 1
     normalize: true
 
+# Optional conventional qEEG comparator layer.
+# This adds extra EEG-only features beside MNPS weights, without changing the
+# MNPS projection contract itself.
+conventional_eeg:
+  enabled: false
+  # Select one or more comparator packs:
+  # - "tier1": relative bandpower, slowing ratios, alpha peak, median frequency, spectral edge
+  # - "complexity": spectral entropy, permutation entropy, Hjorth complexity/mobility
+  # - "connectivity": summary synchrony features (coherence/PLV/PLI/wPLI/dPLI) broadcast to the feature table
+  packs: ["tier1", "complexity", "connectivity"]
+  export:
+    # Conventional comparator summaries are computed from the feature table, so
+    # keep this true when summaries are enabled.
+    per_epoch_columns: true
+    summaries: true
+  tier1:
+    # Emits columns such as:
+    # - eeg_conventional_relative_alpha
+    # - eeg_conventional_ratio_slowing_index
+    # - eeg_conventional_peak_alpha_frequency
+    relative_bandpower: true
+    ratios: ["theta_alpha", "delta_alpha", "alpha_theta", "beta_alpha", "slowing_index"]
+    peak_frequency:
+      alpha_peak_frequency: true
+      median_frequency: true
+      spectral_edge_95: true
+  complexity:
+    # Emits columns such as:
+    # - eeg_conventional_complexity_spectral_entropy
+    # - eeg_conventional_complexity_permutation_entropy
+    # - eeg_conventional_complexity_hjorth_complexity
+    spectral_entropy: true
+    permutation_entropy: true
+    hjorth_complexity: true
+    hjorth_mobility: false
+  connectivity:
+    # Reuses the existing synchrony machinery in `features/eeg_sync.py`.
+    # Outputs are recording-level summaries broadcast to all epochs, e.g.:
+    # - eeg_conventional_connectivity_alpha_FP_plv_mean
+    # - eeg_conventional_connectivity_alpha_FB_coh_mean
+    bands:
+      - {name: delta, f_low: 1.0, f_high: 4.0}
+      - {name: theta, f_low: 4.0, f_high: 8.0}
+      - {name: alpha, f_low: 8.0, f_high: 12.0}
+      - {name: beta,  f_low: 13.0, f_high: 30.0}
+      - {name: gamma, f_low: 30.0, f_high: 45.0}
+    windows: {length_sec: 2.0, step_sec: 0.25}
+    roi_pairs:
+      - {name: FP, channels: ["F3", "P3"]}
+      - {name: FB, channels: ["Fz", "POz"]}
+      - {name: LR_occipital, channels: ["O1", "O2"]}
+    metrics:
+      coherence: true
+      plv: true
+      pli: true
+      wpli: true
+      dpli: false
+      ppc: false
+    outputs:
+      summary_stats: ["mean", "std"]
+  # Optional per-dataset override surface, merged onto the block above.
+  # Example:
+  # datasets:
+  #   ds003490:
+  #     enabled: true
+  #     packs: ["tier1"]
+  datasets: {}
+
 mnps_projection:
   normalize: "robust_z"
   clip_threshold: 6.0
+  # Optional export surface selection for anchored H5 bundles.
+  # If omitted:
+  # - subject_anchored defaults to true
+  # - cohort_anchored defaults to true when an external/fit anchor is active
+  # export_contracts:
+  #   subject_anchored: true
+  #   cohort_anchored: true
   # Fixed linear projection P: V2(9D) -> V1(3D), block-selective and reproducible.
   # Columns are L2-normalized at runtime and logged with hash in provenance.
 
@@ -274,7 +366,6 @@ metadata_extraction:
   datasets: {}
 
 # v2.2 normalization pilot (ComBat first).
-# Keep disabled by default until the processing step is explicitly wired in runtime code.
 normalization:
   enabled: false
   method: "combat"              # supported now: combat
@@ -282,6 +373,31 @@ normalization:
   batch_key: "site_or_hospital"
   covariates: ["group", "age", "sex"]
   reference_policy: "within_dataset"   # within_dataset | frozen_external
+  combat:
+    # Chunked runtime keeps memory bounded on multi-million epoch tables.
+    chunk_size: 24
+    min_batch_size: 2
+    min_feature_observations: 16
+    # Layer-0 outlier damping before ComBat fit (set null to disable).
+    winsorize_quantiles: [0.005, 0.995]
+    family_wise:
+      enabled: false
+      strategy: "prefix"        # prefix | regex_map
+      delimiter: "_"
+      min_family_columns: 2
+      regex_map: {}
+  validation:
+    enabled: false
+    max_rows: 150000
+    max_features: 256
+    min_group_size: 20
+    max_levels: 24
+    batch_key: "auto"           # auto -> use normalization.batch_key
+    target_keys: []             # optional dataset-specific targets, e.g. [outcome, cpc]
+    metrics:
+      batch_eta2: true
+      target_eta2: true
+      perturbation: true
   datasets: {}
 
 sleep_annotations:

@@ -1,29 +1,104 @@
-version: 1.2
+version: 2.0
 modality: eeg
 
-# ds003490 dataset overlay config.
-# Imports common EEG defaults, then applies only dataset-specific overrides.
+# ds003490 overlay refreshed to current EEG config structure.
+# Keep the coarse EO/EC state on the canonical stage axis and expose the
+# oddball tones as raw auditable events plus optional binary event labels.
 imports:
   - "./config_ingest_common_eeg.yaml"
 
 datasets:
   - ds003490
 
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds003490"
+  dataset_name: "EEG: 3-Stim Auditory Oddball and Rest in Parkinson's"
+  dataset_version: "1.1.0"
+  doi: "10.18112/openneuro.ds003490.v1.1.0"
+  url: "https://openneuro.org/datasets/ds003490"
+
+paths:
+  received_dir: "M:/datasets/received/openneuro"
+  processed_dir: "M:/datasets/processed/openneuro"
+  dataset_received_dirs:
+    ds003490: "M:/datasets/received/openneuro/ds003490"
+
 preprocess:
+  channel_typing:
+    datasets:
+      ds003490:
+        rules:
+          - {regex: "^(X|Y|Z)$", type: "misc"}
   eeg_csd:
-    enabled: true
+    enabled: false
     lambda2: 1.0e-5
     stiffness: 4.0
     n_legendre_terms: 50
     min_eeg_channels: 16
     on_error: "warn"
   artifacts:
-    method: "none"
-    ica_n_components: 20
-    ica_method: "fastica"
     datasets:
       ds003490:
         method: "eog_reg"
+
+epoching:
+  datasets:
+    ds003490:
+      sampling:
+        onset_column: "onset"
+        duration_column: "duration"
+        # Prefer the semantic label column from BIDS events.tsv.
+        # Only the long eyes-open/eyes-closed block markers are promoted to the
+        # canonical per-window stage surface. The faster oddball tones remain as
+        # auditable raw events and can be consumed via event_mapping labels.
+        stage_columns: ["trial_type"]
+        prefer_events_stage_in_summary: true
+        stage_map:
+          "Eyes Closed: Every 1000 ms": 10
+          "Eyes Open: Every 1000 ms": 11
+
+event_mapping:
+  datasets:
+    ds003490:
+      enabled: true
+
+conventional_eeg:
+  datasets:
+    ds003490:
+      enabled: true
+      # Parkinson-facing qEEG sidecars: prioritize spectral slowing,
+      # alpha peak / edge measures, and common complexity markers.
+      # Leave connectivity off for now; it is less standard for the
+      # primary manuscript analysis and materially increases runtime.
+      packs: ["tier1", "complexity"]
+      export:
+        per_epoch_columns: true
+        summaries: true
+      tier1:
+        relative_bandpower: true
+        ratios: ["theta_alpha", "delta_alpha", "beta_alpha", "slowing_index"]
+        peak_frequency:
+          alpha_peak_frequency: true
+          median_frequency: true
+          spectral_edge_95: true
+      complexity:
+        spectral_entropy: true
+        permutation_entropy: true
+        hjorth_complexity: true
+        hjorth_mobility: true
+
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+
+mnps:
+  stage_codebook:
+    "Eyes Closed: Every 1000 ms": 10
+    "Eyes Open: Every 1000 ms": 11
 
 robustness:
   ensembles:
@@ -53,7 +128,23 @@ metadata_extraction:
     ds003490:
       group:
         candidates: ["Group"]
+        normalize:
+          pd: "Parkinson"
+          ctl: "Control"
       condition:
         session_candidates:
           ses-01: ["sess1_Med"]
           ses-02: ["sess2_Med"]
+        normalize:
+          on: "ON"
+          off: "OFF"
+          "n/a": "not_applicable"
+          "no s2": "not_applicable"
+          nan: "not_applicable"
+          none: "not_applicable"
+          null: "not_applicable"
+      task:
+        from_filename: true
+        default: "rest"
+        normalize:
+          rest: "rest"

@@ -97,6 +97,45 @@ def _write_json_string_dataset(parent: Any, name: str, value: Mapping[str, Any])
     parent.create_dataset(name, data=text, dtype=str_dtype)
 
 
+def _write_json_value_dataset(parent: Any, name: str, value: Any) -> None:
+    """Write an arbitrary JSON-serializable payload as a UTF-8 dataset."""
+    text = json.dumps(value, ensure_ascii=False)
+    str_dtype = h5py.string_dtype(encoding="utf-8")
+    parent.create_dataset(name, data=text, dtype=str_dtype)
+
+
+def _write_nested_mapping_group(
+    parent: Any,
+    group_name: str,
+    mapping: Mapping[str, Any],
+    *,
+    schema_version: Optional[str] = None,
+) -> None:
+    """Write a nested mapping as H5 groups/datasets."""
+    if not isinstance(mapping, Mapping) or not mapping:
+        return
+    root = parent.require_group(group_name)
+    if schema_version:
+        root.attrs["_schema_version"] = schema_version
+
+    def _write_value(group: Any, key: str, value: Any) -> None:
+        safe_key = _sanitize_h5_key(str(key))
+        if value is None:
+            return
+        if isinstance(value, Mapping):
+            sub = group.require_group(safe_key)
+            for k2, v2 in value.items():
+                _write_value(sub, str(k2), v2)
+            return
+        if isinstance(value, (list, tuple)) and value and any(isinstance(v, Mapping) for v in value):
+            _write_json_value_dataset(group, f"{safe_key}_json", list(value))
+            return
+        _create_dataset(group, safe_key, value)
+
+    for key, value in mapping.items():
+        _write_value(root, str(key), value)
+
+
 def _write_extensions_group(h5: h5py.File, extensions: Mapping[str, Any]) -> None:
     """Write nested extension outputs under an ``extensions`` group.
 
@@ -220,6 +259,123 @@ def _write_feature_anchors_group(h5: h5py.File, feature_anchors: Mapping[str, An
                     arr = np.asarray(["" if v is None else str(v) for v in vals], dtype=object)
                     per_feature.create_dataset(key, data=arr, dtype=str_dtype)
     root.attrs["schema_version"] = "mndm.feature_anchors.v2.1"
+
+
+def _write_jacobian_layers_group(h5: h5py.File, jacobian_layers: Mapping[str, Any]) -> None:
+    """Write add-on Jacobian layers for explicit anchor contracts."""
+    if not isinstance(jacobian_layers, Mapping) or not jacobian_layers:
+        return
+    for layer_name, layer_data in jacobian_layers.items():
+        if not isinstance(layer_data, Mapping):
+            continue
+        group = h5.require_group(_sanitize_h5_key(str(layer_name)))
+        j_hat = layer_data.get("J_hat")
+        if j_hat is not None and np.size(j_hat) > 0:
+            _create_dataset(group, "J_hat", np.asarray(j_hat, dtype=np.float32))
+        j_dot = layer_data.get("J_dot")
+        if j_dot is not None and np.size(j_dot) > 0:
+            _create_dataset(group, "J_dot", np.asarray(j_dot, dtype=np.float32))
+        centers = layer_data.get("centers")
+        if centers is not None and np.size(centers) > 0:
+            _create_dataset(group, "centers", np.asarray(centers, dtype=np.int32))
+        attrs = layer_data.get("attrs", {})
+        if isinstance(attrs, Mapping):
+            for key, value in attrs.items():
+                if value is None:
+                    continue
+                group.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
+        group.attrs.setdefault("schema_version", "mndm.jacobian_layer.v2.1")
+
+
+def _write_regional_contract_payload(group: Any, payload: Mapping[str, Any]) -> None:
+    """Write one regional MNPS payload into the provided group."""
+    mnps = payload.get("mnps")
+    if mnps is not None and np.size(mnps) > 0:
+        _create_dataset(group, "mnps", np.asarray(mnps, dtype=np.float32))
+    mnps_dot = payload.get("mnps_dot")
+    if mnps_dot is not None and np.size(mnps_dot) > 0:
+        _create_dataset(group, "mnps_dot", np.asarray(mnps_dot, dtype=np.float32))
+    jacobian = payload.get("jacobian")
+    if jacobian is not None and np.size(jacobian) > 0:
+        _create_dataset(group, "jacobian", np.asarray(jacobian, dtype=np.float32))
+    stratified = payload.get("stratified")
+    if stratified is not None and np.size(stratified) > 0:
+        _create_dataset(group, "stratified", np.asarray(stratified, dtype=np.float32))
+    metrics = payload.get("metrics")
+    if isinstance(metrics, Mapping):
+        for metric_name, metric_val in metrics.items():
+            if metric_val is None:
+                continue
+            try:
+                metric_float = float(metric_val)
+                if np.isnan(metric_float):
+                    group.attrs[metric_name] = np.nan
+                elif not np.isfinite(metric_float):
+                    group.attrs[metric_name] = metric_float
+                else:
+                    group.attrs[metric_name] = metric_float
+            except Exception:
+                group.attrs[metric_name] = _prepare_attr_value(metric_val)
+    n_tp = payload.get("n_timepoints")
+    if n_tp is not None:
+        group.attrs["n_timepoints"] = int(n_tp)
+    attrs = payload.get("attrs", {})
+    if isinstance(attrs, Mapping):
+        for key, value in attrs.items():
+            if value is None:
+                continue
+            group.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
+
+
+def _write_codebooks_group(h5: h5py.File, codebooks: Mapping[str, Any]) -> None:
+    """Write first-class codebooks under `/codebooks/*`."""
+    if not isinstance(codebooks, Mapping) or not codebooks:
+        return
+    root = h5.require_group("codebooks")
+    root.attrs["_schema_version"] = "mndm.codebooks.v1"
+    str_dtype = h5py.string_dtype(encoding="utf-8")
+    for codebook_name, spec in codebooks.items():
+        if not isinstance(spec, Mapping):
+            continue
+        group = root.require_group(_sanitize_h5_key(str(codebook_name)))
+        codes = spec.get("codes")
+        labels = spec.get("labels")
+        if codes is None or labels is None:
+            continue
+        _create_dataset(group, "codes", np.asarray(codes, dtype=np.int32))
+        labels_utf8 = np.asarray([str(v) for v in labels], dtype=object)
+        group.create_dataset("labels", data=labels_utf8, dtype=str_dtype)
+        label_keys = spec.get("label_keys")
+        if label_keys:
+            keys_utf8 = np.asarray([str(v) for v in label_keys], dtype=object)
+            group.create_dataset("label_keys", data=keys_utf8, dtype=str_dtype)
+        attrs = spec.get("attrs", {})
+        if isinstance(attrs, Mapping):
+            for key, value in attrs.items():
+                if value is None:
+                    continue
+                group.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
+        group.attrs["_schema_version"] = "mndm.codebook.v1"
+
+
+def _write_event_windows_group(
+    h5: h5py.File,
+    event_windows: Mapping[str, Any],
+    event_windows_attrs: Optional[Mapping[str, Any]] = None,
+) -> None:
+    """Write the explicit event->window alignment table."""
+    if not isinstance(event_windows, Mapping) or not event_windows:
+        return
+    group = h5.require_group("event_windows")
+    for key, value in event_windows.items():
+        _create_dataset(group, _sanitize_h5_key(str(key)), value)
+    attrs = event_windows_attrs if isinstance(event_windows_attrs, Mapping) else {}
+    for key, value in attrs.items():
+        if value is None:
+            continue
+        group.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
+    group.attrs.setdefault("_schema_version", "mndm.event_windows.v1")
+    group.attrs.setdefault("alignment", "event_to_window")
 
 
 def write_h5(
@@ -374,6 +530,14 @@ def write_h5(
             # Do not fail writing if convenience attrs derivation fails
             pass
 
+        participant_clinical = getattr(payload, "participant_clinical_meta", None)
+        if isinstance(participant_clinical, Mapping) and participant_clinical:
+            participant_grp = h5.require_group("participant")
+            for key, value in participant_clinical.items():
+                if isinstance(value, (str, int, float, bool, np.integer, np.floating, np.bool_)):
+                    participant_grp.attrs[f"clinical_{_sanitize_h5_key(str(key))}"] = _prepare_attr_value(value)
+            _write_json_string_dataset(participant_grp, "clinical_json", participant_clinical)
+
         # Ensure a stable subject_id attr exists (downstream often expects it).
         # Prefer explicit payload attr; fall back to parsing dataset_id "dsXXXX:sub-YYY:..."
         if "subject_id" not in h5.attrs:
@@ -410,6 +574,11 @@ def write_h5(
             getattr(payload, "feature_anchors", None),
         )
 
+        _write_jacobian_layers_group(
+            h5,
+            getattr(payload, "jacobian_layers", None),
+        )
+
         _write_coordinate_layers_group(
             h5,
             getattr(payload, "coordinate_layers", None),
@@ -435,6 +604,8 @@ def write_h5(
             for name, arr in payload.labels.items():
                 _create_dataset(labels_grp, name, arr)
 
+        _write_codebooks_group(h5, getattr(payload, "codebooks", None))
+
         if payload.window_start is not None:
             _create_dataset(h5, "window_start", payload.window_start)
         if payload.window_end is not None:
@@ -459,6 +630,37 @@ def write_h5(
                 else:
                     _create_dataset(events_grp, safe, col_data)
             events_grp.attrs["_has_event_table"] = True
+
+        _write_event_windows_group(
+            h5,
+            getattr(payload, "event_windows", None),
+            getattr(payload, "event_windows_attrs", None),
+        )
+
+        _write_nested_mapping_group(
+            h5,
+            "coverage",
+            getattr(payload, "coverage", None),
+            schema_version="mndm.coverage.v1",
+        )
+
+        _write_nested_mapping_group(
+            h5,
+            "provenance",
+            getattr(payload, "provenance", None),
+            schema_version="mndm.provenance.v1",
+        )
+
+        qc_windows = getattr(payload, "qc_windows", None)
+        if isinstance(qc_windows, Mapping) and qc_windows:
+            qc_root = h5.require_group("qc")
+            qc_root.attrs["_schema_version"] = "mndm.qc.v1"
+            _write_nested_mapping_group(
+                qc_root,
+                "windows",
+                qc_windows,
+                schema_version="mndm.qc.windows.v1",
+            )
 
         if payload.nn_indices is not None and payload.nn_indices.size:
             nn_grp = h5.require_group("nn")
@@ -554,50 +756,19 @@ def write_h5(
             for network_label, network_data in regional_mnps.items():
                 net_grp = reg_mnps_grp.require_group(network_label)
                 if isinstance(network_data, Mapping):
-                    # Write MNPS coordinates
-                    mnps = network_data.get("mnps")
-                    if mnps is not None and np.size(mnps) > 0:
-                        _create_dataset(net_grp, "mnps", np.asarray(mnps, dtype=np.float32))
-                    # Write MNPS derivatives
-                    mnps_dot = network_data.get("mnps_dot")
-                    if mnps_dot is not None and np.size(mnps_dot) > 0:
-                        _create_dataset(net_grp, "mnps_dot", np.asarray(mnps_dot, dtype=np.float32))
-                    # Write Jacobian
-                    jacobian = network_data.get("jacobian")
-                    if jacobian is not None and np.size(jacobian) > 0:
-                        _create_dataset(net_grp, "jacobian", np.asarray(jacobian, dtype=np.float32))
-                    # Write metrics as attributes
-                    metrics = network_data.get("metrics")
-                    if isinstance(metrics, Mapping):
-                        for metric_name, metric_val in metrics.items():
-                            if metric_val is not None:
-                                try:
-                                    metric_float = float(metric_val)
-                                    # Preserve inf (e.g. strat9_condition_number) as
-                                    # a very large sentinel so the physics signal is
-                                    # not silently destroyed.  NaN stays NaN.
-                                    if np.isnan(metric_float):
-                                        net_grp.attrs[metric_name] = np.nan
-                                    elif not np.isfinite(metric_float):
-                                        # HDF5 h5py supports float inf natively.
-                                        net_grp.attrs[metric_name] = metric_float
-                                    else:
-                                        net_grp.attrs[metric_name] = metric_float
-                                except Exception:
-                                    net_grp.attrs[metric_name] = _prepare_attr_value(metric_val)
-                    # Write n_timepoints
-                    n_tp = network_data.get("n_timepoints")
-                    if n_tp is not None:
-                        net_grp.attrs["n_timepoints"] = int(n_tp)
-                    # Write 9-D stratified trajectory as a proper dataset when
-                    # present (enables downstream trajectory analysis).
-                    stratified = network_data.get("stratified")
-                    if stratified is not None and np.size(stratified) > 0:
-                        _create_dataset(
-                            net_grp,
-                            "stratified",
-                            np.asarray(stratified, dtype=np.float32),
-                        )
+                    _write_regional_contract_payload(net_grp, network_data)
+                    anchor_layers = network_data.get("anchor_layers")
+                    if isinstance(anchor_layers, Mapping) and anchor_layers:
+                        contracts = sorted([str(k) for k in anchor_layers.keys()])
+                        net_grp.attrs["available_coordinate_contracts"] = _prepare_attr_value(contracts)
+                        primary_contract = network_data.get("primary_coordinate_contract")
+                        if primary_contract is not None:
+                            net_grp.attrs["primary_coordinate_contract"] = _prepare_attr_value(primary_contract)
+                        for contract_name, contract_payload in anchor_layers.items():
+                            if not isinstance(contract_payload, Mapping):
+                                continue
+                            contract_grp = net_grp.require_group(_sanitize_h5_key(str(contract_name)))
+                            _write_regional_contract_payload(contract_grp, contract_payload)
 
     logger.info("Wrote MNPS HDF5: %s", out_path)
     return out_path

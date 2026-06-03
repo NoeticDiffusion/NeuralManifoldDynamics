@@ -1,0 +1,23 @@
+version: 2.0
+modality: eeg
+
+# I-CARE next_140 (part2-style) ComBat run:
+# - ComBat enabled (inherits from no_regional combat config)
+# - no regional MNPS
+# - MNPS 9D + block Jacobians enabled
+# - subject-anchored projection
+imports:
+  - "./config_ingest_physionet_i-care_2_1_next_140_0_12h_no_regional.yaml"
+
+paths:
+  # Dedicated processed root on G: (E: is capacity-constrained).
+  processed_dir: "G:/Science_Datasets_longtime_storage/processed/physionet_next140_0_12h_no_regional_subject_anchor_combat"
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: true
+
+mnps_projection:
+  anchor:
+    enabled: false

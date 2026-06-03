@@ -55,6 +55,7 @@ def build_precomputed_eeg_group_trajectories(
     normalize_mode: Optional[str],
     subcoords_spec: Mapping[str, Any],
     v2_enabled: bool,
+    external_anchor: Optional[Mapping[str, Any]] = None,
     *,
     resolve_mnps_3d_cfg: Callable[[Mapping[str, Any]], Dict[str, Any]],
     coerce_v1_mapping_to_v2_subcoords: Callable[[Mapping[str, Any], Mapping[str, Any]], Dict[str, Dict[str, float]]],
@@ -85,6 +86,7 @@ def build_precomputed_eeg_group_trajectories(
             normalize=normalize_mode,
             feature_standardization=feature_standardization,
             clip_threshold=clip_threshold,
+            external_anchor=external_anchor,
         )
         if x_net.ndim == 2 and x_net.shape[0] > 0 and x_net.shape[1] >= 3:
             network_mnps[group_label] = np.asarray(x_net[:, :3], dtype=np.float32)
@@ -96,6 +98,7 @@ def build_precomputed_eeg_group_trajectories(
                 normalize=normalize_mode,
                 feature_standardization=feature_standardization,
                 clip_threshold=clip_threshold,
+                external_anchor=external_anchor,
             )
             if coords_9d_net.ndim == 2 and coords_9d_net.shape[0] > 0 and names_v2:
                 network_stratified[group_label] = align_v2_subcoords(
@@ -144,6 +147,7 @@ def build_precomputed_network_trajectories(
     normalize_mode: Optional[str],
     subcoords_spec: Mapping[str, Any],
     v2_enabled: bool,
+    external_anchor: Optional[Mapping[str, Any]] = None,
     *,
     resolve_mnps_3d_cfg: Callable[[Mapping[str, Any]], Dict[str, Any]],
     coerce_v1_mapping_to_v2_subcoords: Callable[[Mapping[str, Any], Mapping[str, Any]], Dict[str, Dict[str, float]]],
@@ -212,6 +216,7 @@ def build_precomputed_network_trajectories(
             normalize=normalize_mode,
             feature_standardization=feature_standardization,
             clip_threshold=clip_threshold,
+            external_anchor=external_anchor,
         )
         if x_net.ndim == 2 and x_net.shape[0] > 0 and x_net.shape[1] >= 3:
             network_mnps[network_label] = np.asarray(x_net[:, :3], dtype=np.float32)
@@ -223,6 +228,7 @@ def build_precomputed_network_trajectories(
                 normalize=normalize_mode,
                 feature_standardization=feature_standardization,
                 clip_threshold=clip_threshold,
+                external_anchor=external_anchor,
             )
             if coords_9d_net.ndim == 2 and coords_9d_net.shape[0] > 0 and names_v2:
                 network_stratified[network_label] = align_v2_subcoords(
@@ -272,6 +278,7 @@ def compute_regional_context(
     dataset_label: str,
     proj_cfg: Mapping[str, Any],
     normalize_mode: Optional[str],
+    external_anchor: Optional[Mapping[str, Any]],
     subject: str,
     session: Optional[str],
     condition: Optional[str],
@@ -338,6 +345,7 @@ def compute_regional_context(
             normalize_mode=normalize_mode,
             subcoords_spec=strat_subcoords_for_regions if isinstance(strat_subcoords_for_regions, Mapping) else {},
             v2_enabled=bool(strat_subcoords_for_regions),
+            external_anchor=external_anchor,
             resolve_mnps_3d_cfg=resolve_mnps_3d_cfg,
             coerce_v1_mapping_to_v2_subcoords=coerce_v1_mapping_to_v2_subcoords,
             align_v2_subcoords=align_v2_subcoords,
@@ -355,6 +363,7 @@ def compute_regional_context(
                 normalize_mode=normalize_mode,
                 subcoords_spec=(strat_subcoords_for_regions if isinstance(strat_subcoords_for_regions, Mapping) else {}),
                 v2_enabled=bool(strat_subcoords_for_regions),
+                external_anchor=external_anchor,
                 resolve_mnps_3d_cfg=resolve_mnps_3d_cfg,
                 coerce_v1_mapping_to_v2_subcoords=coerce_v1_mapping_to_v2_subcoords,
                 align_v2_subcoords=align_v2_subcoords,

@@ -9,6 +9,7 @@ shapes and dtypes follow the reference specification in
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
 
@@ -86,6 +87,13 @@ class MNPSPayload:
     # per column and a _schema_version attribute.  The legacy 1-D ``events`` dict
     # is preserved for backward compatibility.
     event_table_columns: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional row-per-pair event->window alignment table written under
+    # `/event_windows`. This makes event-locked analyses possible without
+    # reconstructing nearest-neighbour mappings from `/events` and `/time`.
+    event_windows: MutableMapping[str, Any] = field(default_factory=dict)
+    event_windows_attrs: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional explicit codebooks written under `/codebooks/*`.
+    codebooks: MutableMapping[str, Any] = field(default_factory=dict)
     # Optional stratified MNPS coordinates (typically 9D)
     coords_9d: Optional[np.ndarray] = None
     coords_9d_names: Optional[list[str]] = None
@@ -97,6 +105,11 @@ class MNPSPayload:
     # Optional feature-anchor artifact/spec embedded into H5 under
     # `/feature_anchors` when cohort/external anchoring is active.
     feature_anchors: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional explicit Jacobian layers keyed by H5 group name, e.g.
+    # `jacobian_subject_anchored` or `jacobian_9D_cohort_anchored`.
+    # Each layer is a mapping like:
+    # {"J_hat": array, "J_dot": array, "centers": array, "attrs": {...}}.
+    jacobian_layers: MutableMapping[str, Any] = field(default_factory=dict)
     # Optional raw regional signals (e.g. fMRI ROI×time). These are supporting
     # inputs for some regional analyses, but are not the canonical regional
     # output contract exposed to downstream readers.
@@ -107,6 +120,12 @@ class MNPSPayload:
     # The structure is a free-form nested mapping that writers interpret
     # when creating HDF5 groups under ``/extensions``.
     extensions: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional richer participant/session metadata exported under `/participant`.
+    participant_clinical_meta: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional structured provenance, coverage and QC groups.
+    provenance: MutableMapping[str, Any] = field(default_factory=dict)
+    coverage: MutableMapping[str, Any] = field(default_factory=dict)
+    qc_windows: MutableMapping[str, Any] = field(default_factory=dict)
     # Canonical modality-agnostic regional output. Each entry maps network
     # label to a dict containing 'mnps' [T,3], 'jacobian' [W,3,3], and
     # optional supporting fields such as 'stratified' and 'metrics'.
@@ -126,6 +145,9 @@ class MNPSPayload:
             "events": dict(self.events),
             "labels": dict(self.labels),
             "event_table_columns": dict(self.event_table_columns),
+            "event_windows": dict(self.event_windows),
+            "event_windows_attrs": dict(self.event_windows_attrs),
+            "codebooks": dict(self.codebooks),
             "nn_indices": self.nn_indices,
             "jacobian": self.jacobian,
             "jacobian_dot": self.jacobian_dot,
@@ -145,10 +167,15 @@ class MNPSPayload:
             "coords_9d_names": list(self.coords_9d_names) if self.coords_9d_names is not None else None,
             "coordinate_layers": dict(self.coordinate_layers),
             "feature_anchors": dict(self.feature_anchors),
+            "jacobian_layers": dict(self.jacobian_layers),
             "regions_bold": self.regions_bold,
             "regions_names": list(self.regions_names) if self.regions_names is not None else None,
             "regions_sfreq": self.regions_sfreq,
             "extensions": dict(self.extensions),
+            "participant_clinical_meta": dict(self.participant_clinical_meta),
+            "provenance": dict(self.provenance),
+            "coverage": dict(self.coverage),
+            "qc_windows": dict(self.qc_windows),
             "regional_mnps": dict(self.regional_mnps),
         }
 
@@ -230,6 +257,92 @@ def _normalize_feature_metadata(
         elif np.issubdtype(arr.dtype, np.floating):
             arr = arr.astype(np.float32, copy=False)
         normalized[str(key)] = arr
+    return normalized
+
+
+def _normalize_columnar_mapping(
+    columns: MutableMapping[str, Any],
+    *,
+    label: str,
+    expected_len: Optional[int] = None,
+    int_dtype: np.dtype = np.int32,
+) -> MutableMapping[str, np.ndarray]:
+    """Normalize a columnar mapping to 1-D contiguous NumPy arrays."""
+    normalized: Dict[str, np.ndarray] = {}
+    row_count = int(expected_len) if expected_len is not None else None
+    for raw_key, raw_value in columns.items():
+        key = str(raw_key).strip().replace("/", "_").replace("\\", "_")
+        if not key:
+            raise ValueError(f"{label} column name must be non-empty")
+        arr = np.asarray(raw_value)
+        if arr.ndim != 1:
+            raise ValueError(f"{label}['{key}'] must be 1-D")
+        if row_count is None:
+            row_count = int(arr.shape[0])
+        elif int(arr.shape[0]) != int(row_count):
+            raise ValueError(f"{label}['{key}'] length must match {row_count}")
+        if arr.dtype.kind in {"U", "O", "S"}:
+            arr = arr.astype(str, copy=False)
+        elif np.issubdtype(arr.dtype, np.bool_):
+            arr = arr.astype(np.int8, copy=False)
+        elif np.issubdtype(arr.dtype, np.integer):
+            arr = arr.astype(int_dtype, copy=False)
+        elif np.issubdtype(arr.dtype, np.floating):
+            arr = arr.astype(np.float32, copy=False)
+        else:
+            raise TypeError(f"{label}['{key}'] has unsupported dtype {arr.dtype}")
+        normalized[key] = np.ascontiguousarray(arr)
+    return normalized
+
+
+def _normalize_codebooks(codebooks: MutableMapping[str, Any]) -> MutableMapping[str, Any]:
+    """Normalize codebook mappings for `/codebooks/*` export."""
+    normalized: Dict[str, Any] = {}
+    for raw_name, raw_spec in codebooks.items():
+        name = str(raw_name).strip().replace("/", "_").replace("\\", "_")
+        if not name:
+            raise ValueError("codebook name must be non-empty")
+        attrs: Dict[str, Any] = {}
+        labels: list[str]
+        label_keys: Optional[list[str]] = None
+        codes_arr: np.ndarray
+        if isinstance(raw_spec, Mapping) and "codes" in raw_spec and "labels" in raw_spec:
+            codes_arr = np.asarray(raw_spec.get("codes"), dtype=np.int32)
+            labels = [str(v) for v in (raw_spec.get("labels") or [])]
+            raw_label_keys = raw_spec.get("label_keys")
+            if raw_label_keys is not None:
+                label_keys = [str(v) for v in raw_label_keys]
+            attrs_raw = raw_spec.get("attrs", {})
+            attrs = dict(attrs_raw) if isinstance(attrs_raw, Mapping) else {}
+        elif isinstance(raw_spec, Mapping):
+            pairs: list[tuple[int, str]] = []
+            for raw_label, raw_code in raw_spec.items():
+                try:
+                    pairs.append((int(raw_code), str(raw_label)))
+                except Exception as exc:
+                    raise ValueError(f"codebooks['{name}'] values must be integer-like") from exc
+            pairs.sort(key=lambda item: (item[0], item[1]))
+            codes_arr = np.asarray([code for code, _ in pairs], dtype=np.int32)
+            labels = [label for _, label in pairs]
+        else:
+            raise ValueError(f"codebooks['{name}'] must be a mapping")
+        if codes_arr.ndim != 1:
+            raise ValueError(f"codebooks['{name}'].codes must be 1-D")
+        if len(labels) != int(codes_arr.shape[0]):
+            raise ValueError(f"codebooks['{name}'].labels length must match codes")
+        if label_keys is not None and len(label_keys) != int(codes_arr.shape[0]):
+            raise ValueError(f"codebooks['{name}'].label_keys length must match codes")
+        if label_keys is None:
+            label_keys = [
+                re.sub(r"[^a-z0-9]+", "_", str(label).strip().lower()).strip("_") or f"code_{int(code)}"
+                for code, label in zip(codes_arr.tolist(), labels)
+            ]
+        normalized[name] = {
+            "codes": np.ascontiguousarray(codes_arr, dtype=np.int32),
+            "labels": list(labels),
+            "label_keys": list(label_keys),
+            "attrs": attrs,
+        }
     return normalized
 
 
@@ -337,6 +450,30 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             payload.coordinate_layers,
             t_len=t.shape[0],
         )
+    if payload.event_windows:
+        payload.event_windows = _normalize_columnar_mapping(
+            payload.event_windows,
+            label="event_windows",
+        )
+    if payload.qc_windows:
+        payload.qc_windows = _normalize_columnar_mapping(
+            payload.qc_windows,
+            label="qc_windows",
+            expected_len=t.shape[0],
+            int_dtype=np.int8,
+        )
+    if payload.codebooks:
+        payload.codebooks = _normalize_codebooks(payload.codebooks)
+    if not isinstance(payload.event_windows_attrs, Mapping):
+        raise ValueError("event_windows_attrs must be a mapping")
+    payload.event_windows_attrs = dict(payload.event_windows_attrs)
+    payload.participant_clinical_meta = (
+        dict(payload.participant_clinical_meta)
+        if isinstance(payload.participant_clinical_meta, Mapping)
+        else {}
+    )
+    payload.provenance = dict(payload.provenance) if isinstance(payload.provenance, Mapping) else {}
+    payload.coverage = dict(payload.coverage) if isinstance(payload.coverage, Mapping) else {}
 
     payload.jacobian = _validate_optional_array("jacobian", payload.jacobian, 3)
     payload.jacobian_dot = _validate_optional_array("jacobian_dot", payload.jacobian_dot, 3)

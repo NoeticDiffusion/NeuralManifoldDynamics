@@ -117,6 +117,201 @@ def test_dataset_runner_groupings_from_file_column(dummy_ctx):
     assert subjects.count("sub-002") == 1
 
 
+def test_dataset_runner_applies_combat_normalization(dummy_ctx):
+    """ComBat should reduce simple site offsets when metadata is present."""
+    pytest.importorskip("neuroCombat")
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "normalization": {
+            "enabled": True,
+            "method": "combat",
+            "scope": "post_features",
+            "batch_key": "hospital",
+            "covariates": [],
+            "combat": {
+                "chunk_size": 2,
+                "min_batch_size": 2,
+                "min_feature_observations": 4,
+                "winsorize_quantiles": [0.0, 1.0],
+                "family_wise": {
+                    "enabled": True,
+                    "strategy": "prefix",
+                    "delimiter": "_",
+                    "min_family_columns": 1,
+                },
+            },
+            "validation": {
+                "enabled": True,
+                "max_rows": 200,
+                "max_features": 8,
+                "min_group_size": 2,
+                "max_levels": 8,
+                "batch_key": "auto",
+                "target_keys": ["outcome"],
+                "metrics": {
+                    "batch_eta2": True,
+                    "target_eta2": True,
+                    "perturbation": True,
+                },
+            },
+        },
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "physionet_icare_2_1", None, "subject")
+    runner.participants_df = pd.DataFrame(
+        {
+            "participant_id": ["sub-0001", "sub-0002", "sub-0003", "sub-0004"],
+            "hospital": ["A", "A", "B", "B"],
+            "age": [55, 61, 58, 63],
+            "sex": ["F", "M", "F", "M"],
+            "outcome": ["good", "good", "poor", "poor"],
+        }
+    )
+    runner._build_participant_meta_map()
+    hospital_by_subject = dict(
+        zip(
+            runner.participants_df["participant_id"].astype(str),
+            runner.participants_df["hospital"].astype(str),
+        )
+    )
+
+    rows = []
+    for subject, subject_shift in [("sub-0001", 0.10), ("sub-0002", -0.05), ("sub-0003", 0.20), ("sub-0004", -0.12)]:
+        site_shift = 0.0 if hospital_by_subject[subject] == "A" else 6.0
+        for epoch in range(10):
+            rows.append(
+                {
+                    "file": f"{subject}_task-rest_eeg.set",
+                    "subject": subject,
+                    "epoch_id": len(rows),
+                    "eeg_alpha": site_shift + subject_shift + 0.02 * epoch,
+                        "eeg_beta": 0.5 * site_shift + subject_shift + 0.03 * epoch,
+                    "ecg_rmssd": 2.0 * site_shift + subject_shift + 0.05 * epoch,
+                }
+            )
+    features_df = pd.DataFrame(rows)
+
+    hosp_series = features_df["subject"].map(hospital_by_subject)
+    before_gap = float(
+        abs(
+            features_df.loc[hosp_series == "A", "eeg_alpha"].mean()
+            - features_df.loc[hosp_series == "B", "eeg_alpha"].mean()
+        )
+    )
+
+    out_df = runner._apply_feature_normalization(features_df.copy())
+    after_gap = float(
+        abs(
+            out_df.loc[hosp_series == "A", "eeg_alpha"].mean()
+            - out_df.loc[hosp_series == "B", "eeg_alpha"].mean()
+        )
+    )
+
+    assert runner._normalization_report["status"] == "applied"
+    assert runner._normalization_report["feature_columns_harmonized"] >= 2
+    assert runner._normalization_report["family_wise"]["enabled"] is True
+    assert runner._normalization_report["family_wise"]["family_count"] >= 2
+    assert runner._normalization_report["validation"]["status"] == "computed"
+    assert "batch_eta2" in runner._normalization_report["validation"]["probes"]
+    assert "target_eta2" in runner._normalization_report["validation"]["probes"]
+    assert after_gap < before_gap
+
+
+def test_dataset_runner_combat_preserves_single_feature_family(dummy_ctx):
+    """Single-feature family chunks should be left unchanged (not NaN-harmonized)."""
+    pytest.importorskip("neuroCombat")
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "normalization": {
+            "enabled": True,
+            "method": "combat",
+            "scope": "post_features",
+            "batch_key": "hospital",
+            "covariates": ["age", "sex"],
+            "combat": {
+                "chunk_size": 24,
+                "min_batch_size": 2,
+                "min_feature_observations": 4,
+                "winsorize_quantiles": [0.005, 0.995],
+                "family_wise": {
+                    "enabled": True,
+                    "strategy": "prefix",
+                    "delimiter": "_",
+                    "min_family_columns": 1,
+                },
+            },
+            "validation": {"enabled": False},
+        },
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "physionet_icare_2_1", None, "subject")
+    runner.participants_df = pd.DataFrame(
+        {
+            "participant_id": ["sub-0001", "sub-0002", "sub-0003", "sub-0004"],
+            "hospital": ["A", "A", "B", "B"],
+            "age": [55, 61, 58, 63],
+            "sex": ["F", "M", "F", "M"],
+        }
+    )
+    runner._build_participant_meta_map()
+    hospital_by_subject = dict(
+        zip(
+            runner.participants_df["participant_id"].astype(str),
+            runner.participants_df["hospital"].astype(str),
+        )
+    )
+
+    rows = []
+    for subject, subject_shift in [("sub-0001", 0.10), ("sub-0002", -0.05), ("sub-0003", 0.20), ("sub-0004", -0.12)]:
+        site_shift = 0.0 if hospital_by_subject[subject] == "A" else 6.0
+        for epoch in range(10):
+            rows.append(
+                {
+                    "file": f"{subject}_task-rest_eeg.set",
+                    "subject": subject,
+                    "epoch_id": len(rows),
+                    "eeg_alpha": site_shift + subject_shift + 0.02 * epoch,
+                        "eeg_beta": 0.5 * site_shift + subject_shift + 0.03 * epoch,
+                    # This lands in __other__ and is a single-feature family chunk.
+                    "embodied_arousal_proxy": (site_shift * 20.0) + (0.5 * epoch) + subject_shift,
+                }
+            )
+    features_df = pd.DataFrame(rows)
+    embodied_before = features_df["embodied_arousal_proxy"].to_numpy(dtype=float)
+
+    out_df = runner._apply_feature_normalization(features_df.copy())
+    embodied_after = out_df["embodied_arousal_proxy"].to_numpy(dtype=float)
+
+    assert np.isfinite(embodied_after).all()
+    assert np.allclose(embodied_after, embodied_before, equal_nan=False)
+    assert runner._normalization_report["status"] == "applied"
+    assert runner._normalization_report["skipped_columns"].get("single_feature_family", 0) >= 1
+    families = runner._normalization_report["family_wise"]["families"]
+    assert any(
+        int(stats.get("feature_columns_total", 0)) == 1
+        and int(stats.get("feature_columns_harmonized", 0)) == 0
+        and int(stats.get("chunks_skipped", 0)) >= 1
+        for stats in families.values()
+    )
+
+
+def test_dataset_runner_writes_normalization_report_file(dummy_ctx, tmp_path):
+    """Normalization report sidecar should always be writable."""
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject")
+    runner._normalization_report = {
+        "enabled": False,
+        "status": "disabled",
+        "method": "combat",
+        "scope": "post_features",
+    }
+    info = runner._write_normalization_report_file(tmp_path)
+    assert info["status"] == "written"
+    assert info["path"] == "normalization_report.json"
+    report_path = tmp_path / "normalization_report.json"
+    assert report_path.exists()
+    payload = json.loads(report_path.read_text(encoding="utf-8"))
+    assert payload["schema"] == "mndm.normalization_report.v1"
+    assert payload["normalization"]["status"] == "disabled"
+
+
 def test_resolve_mnps_9d_runtime_config_replaces_versioned_subcoords():
     """Versioned subcoords should replace, not blend with, legacy root subcoords."""
     enabled, version, selected, subcoords = summary_mod._resolve_mnps_9d_runtime_config(
@@ -287,8 +482,10 @@ def test_dataset_runner_writes_manifest_and_run_errors_on_group_failure(dummy_ct
 
     manifest_path = mnps_dir / "run_manifest.json"
     errors_path = mnps_dir / "run_errors.json"
+    normalization_path = mnps_dir / "normalization_report.json"
     assert manifest_path.exists()
     assert errors_path.exists()
+    assert normalization_path.exists()
 
     run_errors = json.loads(errors_path.read_text(encoding="utf-8"))
     assert run_errors["counts"]["errors_total"] == 1
@@ -300,6 +497,7 @@ def test_dataset_runner_writes_manifest_and_run_errors_on_group_failure(dummy_ct
     assert manifest["extra"]["run_status"] == "completed_with_errors"
     assert manifest["extra"]["run_errors"]["count"] == 1
     assert manifest["extra"]["run_errors"]["path"] == "run_errors.json"
+    assert manifest["extra"]["normalization_report"]["path"] == "normalization_report.json"
 
 
 def test_dataset_runner_keeps_jacobian_hashes_stable_across_n_jobs(dummy_ctx, monkeypatch, tmp_path):
@@ -616,4 +814,609 @@ def test_subject_runner_exports_time_reference_extension(dummy_ctx, monkeypatch,
     assert payload.attrs["time_reference_status"] == "ok"
     assert "time_reference" in manifest
     assert manifest["time_reference"]["status"] == "ok"
+
+
+def test_subject_runner_exports_conventional_eeg_summary(dummy_ctx, monkeypatch, tmp_path):
+    """Conventional EEG summaries should be exported separately from MNPS geometry."""
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "conventional_eeg": {
+            "enabled": True,
+            "packs": ["tier1"],
+            "export": {"per_epoch_columns": True, "summaries": True},
+            "tier1": {
+                "relative_bandpower": True,
+                "ratios": ["theta_alpha", "slowing_index"],
+                "peak_frequency": {
+                    "alpha_peak_frequency": True,
+                    "median_frequency": True,
+                    "spectral_edge_95": True,
+                },
+            },
+        },
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
+    runner.participants_df = pd.DataFrame()
+    monkeypatch.setattr(runner, "participant_meta_for", lambda _sub_id: {})
+    monkeypatch.setattr(runner, "participant_meta_source_info", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "resolve_coverage_policy",
+        lambda **_kwargs: {"min_epochs": 0, "min_seconds": 0.0, "tag": "default"},
+    )
+    monkeypatch.setattr(runner, "write_regional_csv_outputs_threadsafe", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "write_stratified_blocks_csv_output_threadsafe", lambda **_kwargs: None)
+
+    subject_runner = SubjectSummaryRunner(
+        dataset_runner=runner,
+        ds_path=tmp_path,
+        mnps_dir=tmp_path / "mnps",
+        index_df=None,
+    )
+    subject_runner.mnps_dir.mkdir(parents=True, exist_ok=True)
+
+    sub_frame = pd.DataFrame(
+        {
+            "file": ["sub-001_task-rest_eeg.set"] * 6,
+            "epoch_id": np.arange(6, dtype=int),
+            "t_start": np.arange(6, dtype=float),
+            "t_end": np.arange(1, 7, dtype=float),
+            "eeg_conventional_relative_alpha": np.linspace(0.20, 0.45, 6),
+            "eeg_conventional_relative_theta": np.linspace(0.30, 0.10, 6),
+            "eeg_conventional_ratio_theta_alpha": np.linspace(1.5, 0.4, 6),
+            "eeg_conventional_ratio_slowing_index": np.linspace(1.2, 0.5, 6),
+            "eeg_conventional_peak_alpha_frequency": np.linspace(9.0, 10.0, 6),
+            "eeg_conventional_peak_median_frequency": np.linspace(11.0, 13.0, 6),
+            "eeg_conventional_peak_spectral_edge_95": np.linspace(24.0, 28.0, 6),
+        }
+    )
+    x = np.array(
+        [
+            [0.0, 0.1, 0.2],
+            [0.2, 0.0, 0.1],
+            [0.4, -0.1, 0.0],
+            [0.6, -0.2, -0.1],
+            [0.8, -0.1, -0.2],
+            [1.0, 0.0, -0.3],
+        ],
+        dtype=np.float32,
+    )
+    captures: dict[str, object] = {}
+
+    monkeypatch.setattr(summary_mod, "extract_mapped_metadata", lambda *_args, **_kwargs: {"group": None, "condition": "rest", "task": "rest"})
+    monkeypatch.setattr(summary_mod, "build_dataset_label", lambda **_kwargs: "ds001:sub-001:rest_rest")
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "project_features_with_coverage",
+        lambda *args, **kwargs: (x, np.ones_like(x, dtype=np.float32), {}),
+    )
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "build_feature_export_bundle",
+        lambda *args, **kwargs: {
+            "raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "raw_names": [],
+            "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "robust_z_names": [],
+            "metadata": {},
+        },
+    )
+    monkeypatch.setattr(summary_mod, "extract_stage_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subject_runner, "_infer_stage_from_bids_events", lambda *_args, **_kwargs: (None, None, None, None))
+    monkeypatch.setattr(summary_mod, "extract_embodied_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "extract_events", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(subject_runner, "_load_regional_fmri", lambda **_kwargs: (None, None, None))
+    monkeypatch.setattr(summary_mod, "compute_regional_context", lambda **_kwargs: ({}, None, [], {}, None))
+    monkeypatch.setattr(summary_mod, "compute_extensions", lambda **_kwargs: ({}, {}))
+    monkeypatch.setattr(summary_mod, "compute_ensemble_summary_for_subject", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_robust_and_reliability_summaries", lambda **_kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_dist_summary", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_feature_baseline_comparisons", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_tau_summary", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_tier2_jacobian_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_emmi_metrics", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_null_sanity_tests", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_psd_multiverse_stability", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod.robustness, "entropy_sanity_checks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "_get_env_provenance", lambda: {})
+    monkeypatch.setattr(subject_runner, "_write_qc_files", lambda **_kwargs: None)
+
+    def _capture_write(*, target_dir, dataset_label, manifest, payload, **kwargs):
+        """Capture summary write arguments for assertions."""
+        captures["manifest"] = manifest
+        captures["payload"] = payload
+
+    monkeypatch.setattr(summary_mod, "write_summary_manifest_and_h5", _capture_write)
+
+    subject_runner.run(
+        sub_id="sub-001",
+        ses_id="ses-01",
+        raw_task="rest",
+        run_id="run-01",
+        acq_id=None,
+        sub_frame=sub_frame,
+    )
+
+    payload = captures["payload"]
+    manifest = captures["manifest"]
+    assert "conventional_eeg" in payload.extensions
+    assert payload.extensions["conventional_eeg"]["schema_version"] == "mndm.conventional_eeg.v1"
+    assert "relative" in payload.extensions["conventional_eeg"]["families"]
+    assert "ratio" in payload.extensions["conventional_eeg"]["families"]
+    assert "peak" in payload.extensions["conventional_eeg"]["families"]
+    assert "conventional_eeg" in manifest
+    assert manifest["conventional_eeg"]["column_count"] == 7
+    assert "alpha" in manifest["conventional_eeg"]["families"]["relative"]
+    assert manifest["conventional_eeg"]["families"]["peak"]["alpha_frequency"]["column"] == "eeg_conventional_peak_alpha_frequency"
+
+
+def test_subject_runner_exports_conventional_eeg_complexity_summary(dummy_ctx, monkeypatch, tmp_path):
+    """Complexity-only conventional packs should still be summarized."""
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "conventional_eeg": {
+            "enabled": True,
+            "packs": ["complexity"],
+            "export": {"per_epoch_columns": True, "summaries": True},
+            "complexity": {
+                "spectral_entropy": True,
+                "permutation_entropy": True,
+                "hjorth_complexity": True,
+                "hjorth_mobility": True,
+            },
+        },
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
+    runner.participants_df = pd.DataFrame()
+    monkeypatch.setattr(runner, "participant_meta_for", lambda _sub_id: {})
+    monkeypatch.setattr(runner, "participant_meta_source_info", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "resolve_coverage_policy",
+        lambda **_kwargs: {"min_epochs": 0, "min_seconds": 0.0, "tag": "default"},
+    )
+    monkeypatch.setattr(runner, "write_regional_csv_outputs_threadsafe", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "write_stratified_blocks_csv_output_threadsafe", lambda **_kwargs: None)
+
+    subject_runner = SubjectSummaryRunner(
+        dataset_runner=runner,
+        ds_path=tmp_path,
+        mnps_dir=tmp_path / "mnps",
+        index_df=None,
+    )
+    subject_runner.mnps_dir.mkdir(parents=True, exist_ok=True)
+
+    sub_frame = pd.DataFrame(
+        {
+            "file": ["sub-001_task-rest_eeg.set"] * 6,
+            "epoch_id": np.arange(6, dtype=int),
+            "t_start": np.arange(6, dtype=float),
+            "t_end": np.arange(1, 7, dtype=float),
+            "eeg_conventional_complexity_spectral_entropy": np.linspace(2.1, 2.6, 6),
+            "eeg_conventional_complexity_permutation_entropy": np.linspace(0.6, 0.8, 6),
+            "eeg_conventional_complexity_hjorth_complexity": np.linspace(1.3, 1.7, 6),
+            "eeg_conventional_complexity_hjorth_mobility": np.linspace(0.8, 1.1, 6),
+        }
+    )
+    x = np.array(
+        [
+            [0.0, 0.1, 0.2],
+            [0.2, 0.0, 0.1],
+            [0.4, -0.1, 0.0],
+            [0.6, -0.2, -0.1],
+            [0.8, -0.1, -0.2],
+            [1.0, 0.0, -0.3],
+        ],
+        dtype=np.float32,
+    )
+    captures: dict[str, object] = {}
+
+    monkeypatch.setattr(summary_mod, "extract_mapped_metadata", lambda *_args, **_kwargs: {"group": None, "condition": "rest", "task": "rest"})
+    monkeypatch.setattr(summary_mod, "build_dataset_label", lambda **_kwargs: "ds001:sub-001:rest_rest")
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "project_features_with_coverage",
+        lambda *args, **kwargs: (x, np.ones_like(x, dtype=np.float32), {}),
+    )
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "build_feature_export_bundle",
+        lambda *args, **kwargs: {
+            "raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "raw_names": [],
+            "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "robust_z_names": [],
+            "metadata": {},
+        },
+    )
+    monkeypatch.setattr(summary_mod, "extract_stage_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subject_runner, "_infer_stage_from_bids_events", lambda *_args, **_kwargs: (None, None, None, None))
+    monkeypatch.setattr(summary_mod, "extract_embodied_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "extract_events", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(subject_runner, "_load_regional_fmri", lambda **_kwargs: (None, None, None))
+    monkeypatch.setattr(summary_mod, "compute_regional_context", lambda **_kwargs: ({}, None, [], {}, None))
+    monkeypatch.setattr(summary_mod, "compute_extensions", lambda **_kwargs: ({}, {}))
+    monkeypatch.setattr(summary_mod, "compute_ensemble_summary_for_subject", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_robust_and_reliability_summaries", lambda **_kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_dist_summary", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_feature_baseline_comparisons", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_tau_summary", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_tier2_jacobian_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_emmi_metrics", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_null_sanity_tests", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_psd_multiverse_stability", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod.robustness, "entropy_sanity_checks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "_get_env_provenance", lambda: {})
+    monkeypatch.setattr(subject_runner, "_write_qc_files", lambda **_kwargs: None)
+
+    def _capture_write(*, target_dir, dataset_label, manifest, payload, **kwargs):
+        """Capture summary write arguments for assertions."""
+        captures["manifest"] = manifest
+        captures["payload"] = payload
+
+    monkeypatch.setattr(summary_mod, "write_summary_manifest_and_h5", _capture_write)
+
+    subject_runner.run(
+        sub_id="sub-001",
+        ses_id="ses-01",
+        raw_task="rest",
+        run_id="run-01",
+        acq_id=None,
+        sub_frame=sub_frame,
+    )
+
+    payload = captures["payload"]
+    manifest = captures["manifest"]
+    assert "conventional_eeg" in payload.extensions
+    assert payload.extensions["conventional_eeg"]["schema_version"] == "mndm.conventional_eeg.v1"
+    assert payload.extensions["conventional_eeg"]["packs"] == ["complexity"]
+    assert "complexity" in payload.extensions["conventional_eeg"]["families"]
+    assert "conventional_eeg" in manifest
+    assert manifest["conventional_eeg"]["column_count"] == 4
+    assert "spectral_entropy" in manifest["conventional_eeg"]["families"]["complexity"]
+    assert (
+        manifest["conventional_eeg"]["families"]["complexity"]["hjorth_complexity"]["column"]
+        == "eeg_conventional_complexity_hjorth_complexity"
+    )
+
+
+def test_subject_runner_exports_conventional_eeg_connectivity_summary(dummy_ctx, monkeypatch, tmp_path):
+    """Connectivity-only conventional packs should be summarized."""
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "conventional_eeg": {
+            "enabled": True,
+            "packs": ["connectivity"],
+            "export": {"per_epoch_columns": True, "summaries": True},
+            "connectivity": {
+                "roi_pairs": [
+                    {"name": "FP", "channels": ["F3", "P3"]},
+                    {"name": "FB", "channels": ["Fz", "POz"]},
+                ],
+                "metrics": {"plv": True, "coherence": True},
+                "outputs": {"summary_stats": ["mean", "std"]},
+            },
+        },
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
+    runner.participants_df = pd.DataFrame()
+    monkeypatch.setattr(runner, "participant_meta_for", lambda _sub_id: {})
+    monkeypatch.setattr(runner, "participant_meta_source_info", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "resolve_coverage_policy",
+        lambda **_kwargs: {"min_epochs": 0, "min_seconds": 0.0, "tag": "default"},
+    )
+    monkeypatch.setattr(runner, "write_regional_csv_outputs_threadsafe", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "write_stratified_blocks_csv_output_threadsafe", lambda **_kwargs: None)
+
+    subject_runner = SubjectSummaryRunner(
+        dataset_runner=runner,
+        ds_path=tmp_path,
+        mnps_dir=tmp_path / "mnps",
+        index_df=None,
+    )
+    subject_runner.mnps_dir.mkdir(parents=True, exist_ok=True)
+
+    sub_frame = pd.DataFrame(
+        {
+            "file": ["sub-001_task-rest_eeg.set"] * 6,
+            "epoch_id": np.arange(6, dtype=int),
+            "t_start": np.arange(6, dtype=float),
+            "t_end": np.arange(1, 7, dtype=float),
+            "eeg_conventional_connectivity_alpha_FP_plv_mean": np.linspace(0.45, 0.60, 6),
+            "eeg_conventional_connectivity_alpha_FB_coh_mean": np.linspace(0.20, 0.35, 6),
+        }
+    )
+    x = np.array(
+        [
+            [0.0, 0.1, 0.2],
+            [0.2, 0.0, 0.1],
+            [0.4, -0.1, 0.0],
+            [0.6, -0.2, -0.1],
+            [0.8, -0.1, -0.2],
+            [1.0, 0.0, -0.3],
+        ],
+        dtype=np.float32,
+    )
+    captures: dict[str, object] = {}
+
+    monkeypatch.setattr(summary_mod, "extract_mapped_metadata", lambda *_args, **_kwargs: {"group": None, "condition": "rest", "task": "rest"})
+    monkeypatch.setattr(summary_mod, "build_dataset_label", lambda **_kwargs: "ds001:sub-001:rest_rest")
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "project_features_with_coverage",
+        lambda *args, **kwargs: (x, np.ones_like(x, dtype=np.float32), {}),
+    )
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "build_feature_export_bundle",
+        lambda *args, **kwargs: {
+            "raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "raw_names": [],
+            "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "robust_z_names": [],
+            "metadata": {},
+        },
+    )
+    monkeypatch.setattr(summary_mod, "extract_stage_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subject_runner, "_infer_stage_from_bids_events", lambda *_args, **_kwargs: (None, None, None, None))
+    monkeypatch.setattr(summary_mod, "extract_embodied_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "extract_events", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(subject_runner, "_load_regional_fmri", lambda **_kwargs: (None, None, None))
+    monkeypatch.setattr(summary_mod, "compute_regional_context", lambda **_kwargs: ({}, None, [], {}, None))
+    monkeypatch.setattr(summary_mod, "compute_extensions", lambda **_kwargs: ({}, {}))
+    monkeypatch.setattr(summary_mod, "compute_ensemble_summary_for_subject", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_robust_and_reliability_summaries", lambda **_kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_dist_summary", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_feature_baseline_comparisons", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_tau_summary", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_tier2_jacobian_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_emmi_metrics", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_null_sanity_tests", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_psd_multiverse_stability", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod.robustness, "entropy_sanity_checks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "_get_env_provenance", lambda: {})
+    monkeypatch.setattr(subject_runner, "_write_qc_files", lambda **_kwargs: None)
+
+    def _capture_write(*, target_dir, dataset_label, manifest, payload, **kwargs):
+        """Capture summary write arguments for assertions."""
+        captures["manifest"] = manifest
+        captures["payload"] = payload
+
+    monkeypatch.setattr(summary_mod, "write_summary_manifest_and_h5", _capture_write)
+
+    subject_runner.run(
+        sub_id="sub-001",
+        ses_id="ses-01",
+        raw_task="rest",
+        run_id="run-01",
+        acq_id=None,
+        sub_frame=sub_frame,
+    )
+
+    payload = captures["payload"]
+    manifest = captures["manifest"]
+    assert "conventional_eeg" in payload.extensions
+    assert payload.extensions["conventional_eeg"]["packs"] == ["connectivity"]
+    assert "connectivity" in payload.extensions["conventional_eeg"]["families"]
+    assert "conventional_eeg" in manifest
+    assert manifest["conventional_eeg"]["column_count"] == 2
+    assert "alpha_FP_plv_mean" in manifest["conventional_eeg"]["families"]["connectivity"]
+    assert (
+        manifest["conventional_eeg"]["families"]["connectivity"]["alpha_FB_coh_mean"]["column"]
+        == "eeg_conventional_connectivity_alpha_FB_coh_mean"
+    )
+
+
+def test_subject_runner_exports_dual_anchor_jacobian_and_regional_layers(dummy_ctx, monkeypatch, tmp_path):
+    """Anchored runs should keep both subject/cohort Jacobian and regional layers."""
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "mnps_projection": {
+            "anchor": {
+                "enabled": True,
+                "path": str(tmp_path / "anchor.json"),
+                "scale_method": "iqr",
+                "min_subjects": 3,
+            }
+        },
+        "regional_mnps": {"enabled": True},
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
+    runner.participants_df = pd.DataFrame()
+    monkeypatch.setattr(runner, "participant_meta_for", lambda _sub_id: {})
+    monkeypatch.setattr(runner, "participant_meta_source_info", lambda: {})
+    monkeypatch.setattr(
+        runner,
+        "resolve_coverage_policy",
+        lambda **_kwargs: {"min_epochs": 0, "min_seconds": 0.0, "tag": "default"},
+    )
+    monkeypatch.setattr(runner, "write_regional_csv_outputs_threadsafe", lambda **_kwargs: None)
+    monkeypatch.setattr(runner, "write_stratified_blocks_csv_output_threadsafe", lambda **_kwargs: None)
+
+    subject_runner = SubjectSummaryRunner(
+        dataset_runner=runner,
+        ds_path=tmp_path,
+        mnps_dir=tmp_path / "mnps",
+        index_df=None,
+    )
+    subject_runner.mnps_dir.mkdir(parents=True, exist_ok=True)
+    anchor_path = tmp_path / "anchor.json"
+    anchor_path.write_text("{}", encoding="utf-8")
+
+    sub_frame = pd.DataFrame(
+        {
+            "file": ["sub-001_task-rest_eeg.set"] * 6,
+            "epoch_id": np.arange(6, dtype=int),
+            "t_start": np.arange(6, dtype=float),
+            "t_end": np.arange(1, 7, dtype=float),
+            "feat_m": np.linspace(0.1, 0.6, 6),
+            "feat_d": np.linspace(1.1, 1.6, 6),
+            "feat_e": np.linspace(2.1, 2.6, 6),
+        }
+    )
+    x_subject = np.array(
+        [
+            [0.0, 0.1, 0.2],
+            [0.1, 0.2, 0.3],
+            [0.2, 0.3, 0.4],
+            [0.3, 0.4, 0.5],
+            [0.4, 0.5, 0.6],
+            [0.5, 0.6, 0.7],
+        ],
+        dtype=np.float32,
+    )
+    x_cohort = x_subject + 10.0
+    coords_subject = np.arange(54, dtype=np.float32).reshape(6, 9)
+    coords_cohort = coords_subject + 100.0
+    captures: dict[str, object] = {}
+    ordered_names = ["m_a", "m_e", "m_o", "d_n", "d_l", "d_s", "e_e", "e_s", "e_m"]
+
+    monkeypatch.setattr(summary_mod, "extract_mapped_metadata", lambda *_args, **_kwargs: {"group": None, "condition": "rest", "task": "rest"})
+    monkeypatch.setattr(summary_mod, "build_dataset_label", lambda **_kwargs: "ds001:sub-001:rest_rest")
+    monkeypatch.setattr(
+        summary_mod.anchors,
+        "load_anchor_file",
+        lambda _path: {"spec": {"anchor_id": "unit-test", "anchor_hash": "hash", "anchor_source": "fixture"}},
+    )
+    monkeypatch.setattr(
+        summary_mod.anchors,
+        "anchor_mapping",
+        lambda *_args, **_kwargs: {"feat_m": {"center": 0.0, "scale": 1.0}},
+    )
+
+    def _fake_project_features_with_coverage(*_args, **kwargs):
+        external_anchor = kwargs.get("external_anchor")
+        data = x_cohort if external_anchor is not None else x_subject
+        return data, np.ones_like(data, dtype=np.float32), {}
+
+    def _fake_project_features_v2(*_args, **kwargs):
+        external_anchor = kwargs.get("external_anchor")
+        data = coords_cohort if external_anchor is not None else coords_subject
+        return data, list(ordered_names), {}
+
+    def _fake_estimate_local_jacobians(x, *_args, **_kwargs):
+        fill = float(np.asarray(x, dtype=np.float32)[0, 0])
+        dim = int(np.asarray(x).shape[1])
+        return SimpleNamespace(
+            j_hat=np.full((3, dim, dim), fill, dtype=np.float32),
+            j_dot=np.full((3, dim, dim), fill + 0.5, dtype=np.float32),
+            centers=np.array([1, 2, 3], dtype=np.int32),
+            diagnostics={},
+        )
+
+    def _fake_compute_regional_context(**kwargs):
+        contract = "cohort_anchored" if kwargs.get("external_anchor") is not None else "subject_anchored"
+        offset = 5.0 if contract == "cohort_anchored" else 0.0
+        result = SimpleNamespace(
+            mnps=np.full((6, 3), offset + 1.0, dtype=np.float32),
+            mnps_dot=np.full((6, 3), offset + 2.0, dtype=np.float32),
+            jacobian=np.full((3, 3, 3), offset + 3.0, dtype=np.float32),
+            stratified=np.full((6, 9), offset + 4.0, dtype=np.float32),
+            metrics={"m_mean": offset + 0.1},
+            n_timepoints=6,
+        )
+        summary = SimpleNamespace(results={"DMN": result}, n_networks=1, n_dropped=0)
+        return {}, None, [], {}, summary
+
+    monkeypatch.setattr(summary_mod.projection, "project_features_with_coverage", _fake_project_features_with_coverage)
+    monkeypatch.setattr(summary_mod.projection, "project_features_v2", _fake_project_features_v2)
+    monkeypatch.setattr(summary_mod.projection, "build_knn_indices", lambda arr, **_kwargs: np.zeros((len(arr), 2), dtype=np.int32))
+    monkeypatch.setattr(summary_mod.jacobian, "estimate_local_jacobians", _fake_estimate_local_jacobians)
+    monkeypatch.setattr(
+        summary_mod,
+        "_resolve_mnps_9d_runtime_config",
+        lambda *_args, **_kwargs: (
+            True,
+            "2.0",
+            {"jacobian": {"enabled": True}},
+            {
+                "m_a": {"feat_m": 1.0},
+                "m_e": {"feat_m": 1.0},
+                "m_o": {"feat_m": 1.0},
+                "d_n": {"feat_d": 1.0},
+                "d_l": {"feat_d": 1.0},
+                "d_s": {"feat_d": 1.0},
+                "e_e": {"eeg_permutation_entropy": 1.0},
+                "e_s": {"feat_e": 1.0},
+                "e_m": {"feat_e": 1.0},
+            },
+        ),
+    )
+    monkeypatch.setattr(summary_mod, "_validate_e_e_subcoord_construct", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "build_feature_export_bundle",
+        lambda *args, **kwargs: {
+            "raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "raw_names": [],
+            "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "robust_z_names": [],
+            "metadata": {},
+        },
+    )
+    monkeypatch.setattr(summary_mod, "extract_stage_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(subject_runner, "_infer_stage_from_bids_events", lambda *_args, **_kwargs: (None, None, None, None))
+    monkeypatch.setattr(summary_mod, "extract_embodied_array", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "extract_events", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(subject_runner, "_load_regional_fmri", lambda **_kwargs: (None, None, None))
+    monkeypatch.setattr(summary_mod, "compute_regional_context", _fake_compute_regional_context)
+    monkeypatch.setattr(summary_mod, "summary_to_dataframe_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(summary_mod, "compute_block_jacobian_rows", lambda *_args, **_kwargs: [])
+    monkeypatch.setattr(summary_mod, "compute_stratified_blocks_and_cross_partials", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_extensions", lambda **_kwargs: ({}, {}))
+    monkeypatch.setattr(summary_mod, "compute_ensemble_summary_for_subject", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_robust_and_reliability_summaries", lambda **_kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_dist_summary", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_feature_baseline_comparisons", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_tau_summary", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "compute_tier2_jacobian_metrics", lambda *args, **kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_emmi_metrics", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_null_sanity_tests", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod, "compute_psd_multiverse_stability", lambda **_kwargs: None)
+    monkeypatch.setattr(summary_mod.robustness, "entropy_sanity_checks", lambda *args, **kwargs: {})
+    monkeypatch.setattr(summary_mod, "_get_env_provenance", lambda: {})
+    monkeypatch.setattr(subject_runner, "_write_qc_files", lambda **_kwargs: None)
+
+    def _capture_write(*, target_dir, dataset_label, manifest, payload, **kwargs):
+        captures["manifest"] = manifest
+        captures["payload"] = payload
+
+    monkeypatch.setattr(summary_mod, "write_summary_manifest_and_h5", _capture_write)
+
+    subject_runner.run(
+        sub_id="sub-001",
+        ses_id="ses-01",
+        raw_task="rest",
+        run_id="run-01",
+        acq_id=None,
+        sub_frame=sub_frame,
+    )
+
+    payload = captures["payload"]
+    manifest = captures["manifest"]
+    assert "coords_3d_subject_anchored" in payload.coordinate_layers
+    assert "coords_3d_cohort_anchored" in payload.coordinate_layers
+    assert "jacobian_subject_anchored" in payload.jacobian_layers
+    assert "jacobian_cohort_anchored" in payload.jacobian_layers
+    assert "jacobian_9D_subject_anchored" in payload.jacobian_layers
+    assert "jacobian_9D_cohort_anchored" in payload.jacobian_layers
+    assert "DMN" in payload.regional_mnps
+    assert payload.regional_mnps["DMN"]["primary_coordinate_contract"] == "cohort_anchored"
+    assert "subject_anchored" in payload.regional_mnps["DMN"]["anchor_layers"]
+    assert "cohort_anchored" in payload.regional_mnps["DMN"]["anchor_layers"]
+    assert payload.provenance["anchoring"]["available_jacobian_layers"] == [
+        "jacobian_9D_cohort_anchored",
+        "jacobian_9D_subject_anchored",
+        "jacobian_cohort_anchored",
+        "jacobian_subject_anchored",
+    ]
+    assert manifest["regional_outputs_h5"]["primary_coordinate_contract"] == "cohort_anchored"
+    assert sorted(manifest["jacobian_h5"]["layer_paths"]) == [
+        "/jacobian_9D_cohort_anchored",
+        "/jacobian_9D_subject_anchored",
+        "/jacobian_cohort_anchored",
+        "/jacobian_subject_anchored",
+    ]
 

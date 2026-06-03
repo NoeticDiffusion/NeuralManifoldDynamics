@@ -1,0 +1,10 @@
+version: 2.0
+modality: eeg
+
+# I-CARE part1 0-12h regional + ComBat summarize rerun on G:
+# (E: became full during summarize run).
+imports:
+  - "./config_ingest_physionet_i-care_2_1_part1_0_12h_regional.yaml"
+
+paths:
+  processed_dir: "G:/Science_Datasets_longtime_storage/processed/physionet_part1_0_12h_regional_combat"

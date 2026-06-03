@@ -1,0 +1,64 @@
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - aszed_subset3
+
+source:
+  name: "ASZED"
+  platform: "Zenodo"
+  format: "BIDS-lite EDF staging"
+  dataset_id: "aszed_subset3"
+  dataset_name: "ASZED subset 3"
+  dataset_version: "1.1"
+  url: "https://zenodo.org/"
+  acknowledgement: "Staged from ASZED version_1.1 node_1 subset_3 without modifying MNDM ingest code."
+
+paths:
+  received_dir: "M:/datasets/received/Zenodo/ASZED_staged/version_1.1"
+  processed_dir: "M:/datasets/processed/Zenodo/aszed"
+  dataset_received_dirs:
+    aszed_subset3: "M:/datasets/received/Zenodo/ASZED_staged/version_1.1/aszed_subset3"
+
+preprocess:
+  channel_typing:
+    datasets:
+      aszed_subset3:
+        rules:
+          - {regex: "^EEG A2-LE$", type: "misc"}
+
+robustness:
+  coverage:
+    datasets:
+      aszed_subset3:
+        min_seconds: 20
+        min_epochs: 5
+        min_trials: 1
+  ensembles:
+    datasets:
+      aszed_subset3:
+        groups:
+          frontal: ["EEG Fp1-LE", "EEG Fp2-LE", "EEG F3-LE", "EEG F4-LE", "EEG F7-LE", "EEG F8-LE", "EEG Fz-LE"]
+          central: ["EEG C3-LE", "EEG C4-LE", "EEG Cz-LE"]
+          parietal_occipital: ["EEG P3-LE", "EEG P4-LE", "EEG Pz-LE", "EEG O1-LE", "EEG O2-LE"]
+          temporal: ["EEG T3-LE", "EEG T4-LE", "EEG T5-LE", "EEG T6-LE"]
+
+metadata_extraction:
+  datasets:
+    aszed_subset3:
+      group:
+        candidates: ["Group", "category"]
+        normalize:
+          patient: "Schizophrenia"
+          control: "Control"
+      task:
+        from_filename: true
+        normalize:
+          restpre: "rest_pre"
+          fixedauditory: "fixed_auditory"
+          arithmetic: "arithmetic"
+          restpost: "rest_post"
+          oddball: "oddball"

@@ -106,6 +106,25 @@ def test_write_h5(require_real_h5py):
                 "attrs": {"coordinate_contract": "cohort_anchored", "anchor_id": "unit-test"},
             },
         },
+        event_windows={
+            "event_id": np.array([0, 0, 1], dtype=np.int32),
+            "window_id": np.array([0, 1, 3], dtype=np.int32),
+            "bin_label": np.array(["event", "post_near", "event"], dtype=object),
+            "event_label": np.array(["Standard Tone", "Standard Tone", "Target Tone"], dtype=object),
+            "window_contains_event_onset": np.array([1, 0, 1], dtype=np.int8),
+        },
+        event_windows_attrs={
+            "_schema_version": "mndm.event_windows.v1",
+            "reference": "onset",
+        },
+        codebooks={
+            "stage": {
+                "codes": np.array([10, 11], dtype=np.int32),
+                "labels": ["Eyes Closed: Every 1000 ms", "Eyes Open: Every 1000 ms"],
+                "label_keys": ["eyes_closed", "eyes_open"],
+                "attrs": {"source": "consensus"},
+            }
+        },
         feature_anchors={
             "spec": {
                 "anchor_id": "unit-test",
@@ -115,6 +134,20 @@ def test_write_h5(require_real_h5py):
             "features": [
                 {"feature_name": "eeg_alpha", "center": 0.0, "scale": 1.0, "n_subjects": 3},
             ],
+        },
+        jacobian_layers={
+            "jacobian_subject_anchored": {
+                "J_hat": np.random.rand(3, 3, 3).astype(np.float32),
+                "J_dot": np.random.rand(3, 3, 3).astype(np.float32),
+                "centers": np.array([1, 2, 3], dtype=np.int32),
+                "attrs": {"coordinate_contract": "subject_anchored"},
+            },
+            "jacobian_cohort_anchored": {
+                "J_hat": np.random.rand(3, 3, 3).astype(np.float32),
+                "J_dot": np.random.rand(3, 3, 3).astype(np.float32),
+                "centers": np.array([1, 2, 3], dtype=np.int32),
+                "attrs": {"coordinate_contract": "cohort_anchored", "anchor_id": "unit-test"},
+            },
         },
         attrs={
             "fs_out": 4.0,
@@ -158,6 +191,65 @@ def test_write_h5(require_real_h5py):
                 },
             },
         },
+        participant_clinical_meta={
+            "age": 21,
+            "sex": "F",
+            "medication_status": "OFF",
+            "session_order": 1,
+        },
+        provenance={
+            "contract": {
+                "export_contract_version": "mndm.eeg_h5_contract.v1",
+                "run_manifest_ref": "../run_manifest.json",
+            },
+            "anchoring": {
+                "available_coordinate_contracts": ["subject_anchored", "cohort_anchored"],
+            },
+        },
+        coverage={
+            "axis_fraction": np.ones((5, 3), dtype=np.float32),
+            "axis_names": np.array(["m", "d", "e"], dtype=object),
+            "coordinate_layers_present": np.array(
+                ["coords_3d_subject_anchored", "coords_3d_cohort_anchored"],
+                dtype=object,
+            ),
+        },
+        qc_windows={
+            "retained_after_qc": np.ones(5, dtype=np.int8),
+            "coverage_ok": np.array([1, 1, 1, 1, 1], dtype=np.int8),
+            "stage_transition_flag": np.array([0, 1, 0, 0, 0], dtype=np.int8),
+        },
+        regional_mnps={
+            "DMN": {
+                "mnps": np.random.rand(5, 3).astype(np.float32),
+                "mnps_dot": np.random.rand(5, 3).astype(np.float32),
+                "jacobian": np.random.rand(3, 3, 3).astype(np.float32),
+                "stratified": np.random.rand(5, 9).astype(np.float32),
+                "metrics": {"m_mean": 0.1},
+                "n_timepoints": 5,
+                "anchor_layers": {
+                    "subject_anchored": {
+                        "mnps": np.random.rand(5, 3).astype(np.float32),
+                        "mnps_dot": np.random.rand(5, 3).astype(np.float32),
+                        "jacobian": np.random.rand(3, 3, 3).astype(np.float32),
+                        "stratified": np.random.rand(5, 9).astype(np.float32),
+                        "metrics": {"m_mean": 0.2},
+                        "n_timepoints": 5,
+                        "attrs": {"coordinate_contract": "subject_anchored"},
+                    },
+                    "cohort_anchored": {
+                        "mnps": np.random.rand(5, 3).astype(np.float32),
+                        "mnps_dot": np.random.rand(5, 3).astype(np.float32),
+                        "jacobian": np.random.rand(3, 3, 3).astype(np.float32),
+                        "stratified": np.random.rand(5, 9).astype(np.float32),
+                        "metrics": {"m_mean": 0.3},
+                        "n_timepoints": 5,
+                        "attrs": {"coordinate_contract": "cohort_anchored", "anchor_id": "unit-test"},
+                    },
+                },
+                "primary_coordinate_contract": "cohort_anchored",
+            }
+        },
     )
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -188,6 +280,25 @@ def test_write_h5(require_real_h5py):
             assert "metadata" in f["features_raw"]
             assert "feature_name" in f["features_raw"]["metadata"]
             assert "labels" in f
+            assert "codebooks" in f
+            assert "stage" in f["codebooks"]
+            assert "codes" in f["codebooks"]["stage"]
+            assert "labels" in f["codebooks"]["stage"]
+            assert "event_windows" in f
+            assert "window_id" in f["event_windows"]
+            assert "event_label" in f["event_windows"]
+            assert f["event_windows"].attrs["reference"] == "onset"
+            assert "coverage" in f
+            assert "axis_fraction" in f["coverage"]
+            assert "provenance" in f
+            assert "contract" in f["provenance"]
+            assert "jacobian_subject_anchored" in f
+            assert "J_hat" in f["jacobian_subject_anchored"]
+            assert "jacobian_cohort_anchored" in f
+            assert f["jacobian_cohort_anchored"].attrs["coordinate_contract"] == "cohort_anchored"
+            assert "qc" in f
+            assert "windows" in f["qc"]
+            assert "coverage_ok" in f["qc"]["windows"]
             # Extensions group should be present when extensions are provided
             assert "extensions" in f
             assert "e_kappa" in f["extensions"]
@@ -201,8 +312,16 @@ def test_write_h5(require_real_h5py):
             assert "row_json" in f["participant"]
             assert "mapped_json" in f["participant"]
             assert "source_json" in f["participant"]
+            assert "clinical_json" in f["participant"]
+            assert "regional_mnps" in f
+            assert "DMN" in f["regional_mnps"]
+            assert "subject_anchored" in f["regional_mnps"]["DMN"]
+            assert "cohort_anchored" in f["regional_mnps"]["DMN"]
+            assert "mnps" in f["regional_mnps"]["DMN"]["subject_anchored"]
+            assert f["regional_mnps"]["DMN"].attrs["primary_coordinate_contract"] == "cohort_anchored"
             assert f["participant"].attrs["field_participant_id"] == "sub-001"
             assert f["participant"].attrs["mapped_group"] == "Control"
+            assert f["participant"].attrs["clinical_medication_status"] == "OFF"
             assert f.attrs["meta_type"] == "Control"
             assert f.attrs["group"] == "Control"
             assert f.attrs["condition"] == "rest"

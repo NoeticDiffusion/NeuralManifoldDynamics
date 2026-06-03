@@ -1,0 +1,70 @@
+version: 2.0
+modality: eeg
+
+# ds004574 overlay for the Parkinson/control cross-modal oddball task.
+# The raw BIDS events.tsv files only expose generic marker roles (S 1 / S 2 / S 3),
+# so an external staging layer enriches each subject's events table with trial
+# subtype metadata joined from beh.tsv (standard / oddball_auditory /
+# oddball_visual). The staged root keeps the raw EEG files untouched and adds an
+# alignment audit manifest plus enriched event columns.
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds004574
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS (behavior-enriched staging)"
+  dataset_id: "ds004574"
+  dataset_name: "Cross-modal Oddball Task"
+  dataset_version: "1.0.0"
+  doi: "10.18112/openneuro.ds004574.v1.0.0"
+  url: "https://openneuro.org/datasets/ds004574"
+
+paths:
+  received_dir: "M:/datasets/received/openneuro"
+  processed_dir: "M:/datasets/processed/openneuro"
+  dataset_received_dirs:
+    ds004574: "M:/datasets/received/openneuro/ds004574_behavior_enriched"
+
+epoching:
+  datasets:
+    ds004574:
+      sampling:
+        onset_column: "onset"
+        duration_column: "duration"
+        stage_columns: ["event_subtype_role"]
+        # Use the behavior-enriched event subtype/role labels as an auditable raw
+        # event provenance surface so summarize can emit window-aligned binary
+        # labels such as raw_standard_precue_onset_sec and
+        # raw_oddball_auditory_precue_onset_sec.
+        #
+        # We still do not promote these point events to the canonical per-window
+        # stage axis: 8 s overlapping windows can contain multiple trials, so a
+        # single stage label would be misleading.
+        prefer_events_stage_in_summary: false
+
+event_mapping:
+  datasets:
+    ds004574:
+      enabled: true
+
+metadata_extraction:
+  datasets:
+    ds004574:
+      group:
+        candidates: ["GROUP", "Type", "TYPE"]
+        normalize:
+          pd: "Parkinson"
+          control: "Control"
+          "1": "Parkinson"
+          "0": "Control"
+      condition:
+        default: "not_applicable"
+      task:
+        from_filename: true
+        default: "oddball"
+        normalize:
+          oddball: "oddball"

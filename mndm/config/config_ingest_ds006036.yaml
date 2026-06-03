@@ -1,0 +1,135 @@
+version: 1.2
+modality: eeg
+
+# ds006036 dataset overlay config.
+# Template based on ds004504 (AD/FTD/Healthy EEG cohort), adjusted for ds006036.
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds006036
+
+mnps_9d:
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+preprocess:
+  eeg_csd:
+    enabled: true
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+
+epoching:
+  datasets:
+    ds006036:
+      sampling:
+        # ds006036 photomark events live in *_events.tsv column `value`.
+        # This enables per-epoch stage extraction from those events.
+        onset_column: "onset"
+        duration_column: "duration"
+        stage_columns: ["value"]
+        # Allow summarize-only reruns to use the inferred stage surface
+        # from raw BIDS events instead of stale stage columns in features.csv.
+        prefer_events_stage_in_summary: true
+        stage_map:
+          "PHOTO 3Hz": 57
+          "PHOTO 5Hz": 50
+          "PHOTO 7Hz": 58
+          "PHOTO 10Hz": 51
+          "PHOTO 15Hz": 52
+          "PHOTO 20Hz": 53
+          "Photo/HV mark": 54
+          "PHOTO 25Hz": 55
+          "PHOTO 30Hz": 56
+          "open eyes": 60
+          "closed eyes": 61
+          "eye movement": 62
+          "Swallowing": 63
+          "speech": 64
+          "head movement": 65
+          "muscle": 66
+          "CAL mode": 67
+          "RESET condition": 68
+          "PAT 2 CAL": 69
+          "PAT 2 EEG": 70
+          "PAT Mon-Cz EEG": 71
+          "PAT ComAv EEG": 72
+        stage_blocking:
+          enabled: true
+          # Generic stage-block inference from sparse event markers.
+          # Here configured for photic stimulation labels.
+          stage_event_regex: "(?i)^PHOTO\\s*(\\d+)\\s*Hz$"
+          bridge_marker_labels: ["Photo/HV mark"]
+          use_bridge_markers: true
+          hv_tail_sec: 0.5
+          min_block_sec: 2.0
+          max_block_sec: 20.0
+          preserve_block_assignments: true
+          # Explicit contract for downstream verification/QC.
+          expected_stage_frequencies_hz: [3, 5, 7, 10, 15, 20, 25, 30]
+
+mnps:
+  stage_codebook:
+    "PHOTO 3Hz": 57
+    "PHOTO 5Hz": 50
+    "PHOTO 7Hz": 58
+    "PHOTO 10Hz": 51
+    "PHOTO 15Hz": 52
+    "PHOTO 20Hz": 53
+    "Photo/HV mark": 54
+    "PHOTO 25Hz": 55
+    "PHOTO 30Hz": 56
+    "open eyes": 60
+    "closed eyes": 61
+    "eye movement": 62
+    "Swallowing": 63
+    "speech": 64
+    "head movement": 65
+    "muscle": 66
+    "CAL mode": 67
+    "RESET condition": 68
+    "PAT 2 CAL": 69
+    "PAT 2 EEG": 70
+    "PAT Mon-Cz EEG": 71
+    "PAT ComAv EEG": 72
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
+      temporal: ["T7", "T8", "TP7", "TP8", "T3", "T4", "T5", "T6"]
+  coverage:
+    datasets:
+      ds006036:
+        min_seconds: 30
+        min_epochs: 10
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: true
+
+metadata_extraction:
+  datasets:
+    ds006036:
+      group:
+        candidates: ["Group"]
+        normalize:
+          A: "AD"
+          F: "FTD"
+          C: "Healthy"
+      condition:
+        default: "eyes_open_photic"
+      task:
+        from_filename: true

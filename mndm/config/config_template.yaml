@@ -83,6 +83,39 @@ epoching:
       # Optional sampling control:
       # sampling:
       #   enabled: false
+      #   # Optional: let summarize override stale stage columns in features.csv
+      #   # by re-inferring stage from raw BIDS events.
+      #   prefer_events_stage_in_summary: false
+      #   # Optional generic stage-block inference (off by default).
+      #   # Use when event labels are sparse onset markers and you want
+      #   # continuous per-window labels across intended stimulation blocks.
+      #   #
+      #   # Quick recipe:
+      #   # 1) stage_columns -> source event label/value column
+      #   # 2) stage_map / mnps.stage_codebook -> label->int contract
+      #   # 3) stage_blocking.stage_event_regex -> block-start events
+      #   # 4) stage_blocking.bridge_marker_labels -> dense in-block markers
+      #   stage_blocking:
+      #     enabled: false
+      #     # Regex for block-start event labels (capture group can hold frequency/intensity).
+      #     stage_event_regex: ""
+      #     # Optional marker labels that densify the active block until next start event.
+      #     bridge_marker_labels: []
+      #     use_bridge_markers: true
+      #     hv_tail_sec: 0.5
+      #     hv_tail_cap_sec: 1.0
+      #     min_block_sec: 2.0
+      #     max_block_sec: 20.0
+      #     preserve_block_assignments: true
+      #     # Optional QC expectation list for explicit presence/absence reporting.
+      #     expected_stage_frequencies_hz: []
+      #
+      #   # Backward-compatible aliases still accepted:
+      #   # photic_regex -> stage_event_regex
+      #   # hv_mark_labels -> bridge_marker_labels
+      #   # use_hv_marks -> use_bridge_markers
+      #   # preserve_photic_blocks -> preserve_block_assignments
+      #   # expected_frequencies_hz -> expected_stage_frequencies_hz
 
 robustness:
   coverage:
@@ -101,6 +134,59 @@ robustness:
       #   groups:
       #     frontal: ["Fp1", "Fp2", "F3", "F4", "Fz"]
       #     central: ["C3", "C4", "Cz"]
+
+# Optional EEG-only conventional qEEG comparator layer.
+# This writes extra `eeg_conventional_*` feature columns and summarize-time
+# rollups beside the canonical MNPS outputs.
+conventional_eeg:
+  enabled: false
+  # Generic EEG comparator packs:
+  # - "tier1": relative power, slowing ratios, alpha peak, median frequency, spectral edge
+  # - "complexity": spectral entropy, permutation entropy, Hjorth complexity/mobility
+  # - "connectivity": summary synchrony features from configured EEG channel pairs
+  packs: ["tier1", "complexity", "connectivity"]
+  export:
+    per_epoch_columns: true
+    summaries: true
+  tier1:
+    relative_bandpower: true
+    ratios: ["theta_alpha", "delta_alpha", "alpha_theta", "beta_alpha", "slowing_index"]
+    peak_frequency:
+      alpha_peak_frequency: true
+      median_frequency: true
+      spectral_edge_95: true
+  complexity:
+    spectral_entropy: true
+    permutation_entropy: true
+    hjorth_complexity: true
+    hjorth_mobility: false
+  connectivity:
+    bands:
+      - {name: delta, f_low: 1.0, f_high: 4.0}
+      - {name: theta, f_low: 4.0, f_high: 8.0}
+      - {name: alpha, f_low: 8.0, f_high: 12.0}
+      - {name: beta,  f_low: 13.0, f_high: 30.0}
+      - {name: gamma, f_low: 30.0, f_high: 45.0}
+    windows: {length_sec: 2.0, step_sec: 0.25}
+    roi_pairs:
+      - {name: FP, channels: ["F3", "P3"]}
+      - {name: FB, channels: ["Fz", "POz"]}
+      - {name: LR_occipital, channels: ["O1", "O2"]}
+    metrics:
+      coherence: true
+      plv: true
+      pli: true
+      wpli: true
+      dpli: false
+      ppc: false
+    outputs:
+      summary_stats: ["mean", "std"]
+  # Optional per-dataset override surface.
+  # datasets:
+  #   example_dataset:
+  #     enabled: true
+  #     packs: ["tier1"]
+  datasets: {}
 
 # Optional run-clock enrichment for WFDB-based datasets.
 # Keeps /time, /window_start, /window_end unchanged and adds:
@@ -166,6 +252,29 @@ normalization:
   batch_key: "site_or_hospital"
   covariates: ["group", "age", "sex"]
   reference_policy: "within_dataset"   # within_dataset | frozen_external
+  combat:
+    chunk_size: 24
+    min_batch_size: 2
+    min_feature_observations: 16
+    winsorize_quantiles: [0.005, 0.995]
+    family_wise:
+      enabled: false
+      strategy: "prefix"        # prefix | regex_map
+      delimiter: "_"
+      min_family_columns: 2
+      regex_map: {}
+  validation:
+    enabled: false
+    max_rows: 150000
+    max_features: 256
+    min_group_size: 20
+    max_levels: 24
+    batch_key: "auto"
+    target_keys: []
+    metrics:
+      batch_eta2: true
+      target_eta2: true
+      perturbation: true
   datasets: {}
 
 # Optional event-locked workflow (sleep spindle style overlays).
@@ -215,6 +324,15 @@ mnps_9d:
     enabled: false
     preset: mde_families_v1
     csv_output: "stratified_block_jacobians_subjects.csv"
+
+# Optional anchored export-contract selection.
+# When omitted:
+# - subject_anchored defaults to true
+# - cohort_anchored defaults to true only when an external/fit anchor is active
+# mnps_projection:
+#   export_contracts:
+#     subject_anchored: true
+#     cohort_anchored: true
 
 # Optional NDT ingest toggles used in some overlays.
 ndt_ingest:

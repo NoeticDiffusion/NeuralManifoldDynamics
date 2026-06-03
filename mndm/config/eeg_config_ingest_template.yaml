@@ -43,7 +43,41 @@ preprocess:
 epoching:
   length_s: 8.0
   step_s: 4.0
+  # Optional global sampling/event defaults.
+  sampling:
+    # Set true if summarize-only reruns should prefer event-derived stage
+    # over potentially stale stage columns already present in features.csv.
+    prefer_events_stage_in_summary: false
+    stage_blocking:
+      enabled: false
+      # Regex that identifies block-start event labels in stage_columns
+      # (capture group may hold frequency/intensity identifiers).
+      stage_event_regex: ""
+      # Optional support markers that densify an active block.
+      bridge_marker_labels: []
+      use_bridge_markers: true
+      hv_tail_sec: 0.5
+      hv_tail_cap_sec: 1.0
+      min_block_sec: 2.0
+      max_block_sec: 20.0
+      preserve_block_assignments: true
+      # Optional expected frequencies/intensity ids for explicit QC reporting.
+      expected_stage_frequencies_hz: []
   datasets: {}
+    # YOUR_DATASET_ID:
+    #   sampling:
+    #     onset_column: "onset"
+    #     duration_column: "duration"
+    #     stage_columns: ["value"]
+    #     prefer_events_stage_in_summary: true
+    #     stage_map:
+    #       "PHOTO 5Hz": 50
+    #       "PHOTO 10Hz": 51
+    #     stage_blocking:
+    #       enabled: true
+    #       stage_event_regex: "(?i)^PHOTO\\s*(\\d+)\\s*Hz$"
+    #       bridge_marker_labels: ["Photo/HV mark"]
+    #       expected_stage_frequencies_hz: [5, 10]
 
 features:
   eeg_psd:
@@ -51,6 +85,61 @@ features:
     bandwidth: null
   eeg_bands: {delta: [1,4], theta: [4,8], alpha: [8,12], beta: [13,30], gamma: [30,45]}
   ratios: {alpha_theta: ["alpha","theta"], beta_alpha: ["beta","alpha"]}
+
+conventional_eeg:
+  enabled: false
+  # Choose one or both generic comparator packs:
+  # - "tier1"
+  # - "complexity"
+  # - "connectivity"
+  packs: ["tier1", "complexity", "connectivity"]
+  export:
+    # Conventional summaries are derived from the feature table, so keep this
+    # true if you want summarize-time comparator rollups.
+    per_epoch_columns: true
+    summaries: true
+  tier1:
+    # Relative power, slowing ratios, and peak/spectral-edge frequency.
+    relative_bandpower: true
+    ratios: ["theta_alpha", "delta_alpha", "alpha_theta", "beta_alpha", "slowing_index"]
+    peak_frequency:
+      alpha_peak_frequency: true
+      median_frequency: true
+      spectral_edge_95: true
+  complexity:
+    # Per-epoch complexity surface using existing helpers in `features/eeg.py`.
+    spectral_entropy: true
+    permutation_entropy: true
+    hjorth_complexity: true
+    hjorth_mobility: false
+  connectivity:
+    # Recording-level synchrony summaries broadcast to all epochs.
+    bands:
+      - {name: delta, f_low: 1.0, f_high: 4.0}
+      - {name: theta, f_low: 4.0, f_high: 8.0}
+      - {name: alpha, f_low: 8.0, f_high: 12.0}
+      - {name: beta,  f_low: 13.0, f_high: 30.0}
+      - {name: gamma, f_low: 30.0, f_high: 45.0}
+    windows: {length_sec: 2.0, step_sec: 0.25}
+    roi_pairs:
+      - {name: FP, channels: ["F3", "P3"]}
+      - {name: FB, channels: ["Fz", "POz"]}
+      - {name: LR_occipital, channels: ["O1", "O2"]}
+    metrics:
+      coherence: true
+      plv: true
+      pli: true
+      wpli: true
+      dpli: false
+      ppc: false
+    outputs:
+      summary_stats: ["mean", "std"]
+  # Optional dataset-specific override block:
+  # datasets:
+  #   YOUR_DATASET_ID:
+  #     enabled: true
+  #     packs: ["complexity"]
+  datasets: {}
 
 mnps_projection:
   normalize: "robust_z"
@@ -85,6 +174,13 @@ mnps_9d:
     e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
     e_m: {ecg_rmssd: 1.0}
   datasets: {}
+
+# Optional anchored export-contract selection.
+# Example:
+# mnps_projection:
+#   export_contracts:
+#     subject_anchored: true
+#     cohort_anchored: true
 
 robustness:
   bootstrap_n: 0
@@ -122,6 +218,29 @@ normalization:
   batch_key: "site_or_hospital"
   covariates: ["group", "age", "sex"]
   reference_policy: "within_dataset"   # within_dataset | frozen_external
+  combat:
+    chunk_size: 24
+    min_batch_size: 2
+    min_feature_observations: 16
+    winsorize_quantiles: [0.005, 0.995]
+    family_wise:
+      enabled: false
+      strategy: "prefix"        # prefix | regex_map
+      delimiter: "_"
+      min_family_columns: 2
+      regex_map: {}
+  validation:
+    enabled: false
+    max_rows: 150000
+    max_features: 256
+    min_group_size: 20
+    max_levels: 24
+    batch_key: "auto"
+    target_keys: []
+    metrics:
+      batch_eta2: true
+      target_eta2: true
+      perturbation: true
   datasets: {}
 
 sleep_annotations:

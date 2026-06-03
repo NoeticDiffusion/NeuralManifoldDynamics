@@ -1,0 +1,65 @@
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - aszed_subset1
+
+source:
+  name: "ASZED"
+  platform: "Zenodo"
+  format: "BIDS-lite EDF staging"
+  dataset_id: "aszed_subset1"
+  dataset_name: "ASZED subset 1"
+  dataset_version: "1.1"
+  url: "https://zenodo.org/"
+  acknowledgement: "Staged from ASZED version_1.1 node_1 subset_1 without modifying MNDM ingest code."
+
+paths:
+  received_dir: "M:/datasets/received/Zenodo/ASZED_staged/version_1.1"
+  processed_dir: "M:/datasets/processed/Zenodo/aszed"
+  dataset_received_dirs:
+    aszed_subset1: "M:/datasets/received/Zenodo/ASZED_staged/version_1.1/aszed_subset1"
+
+preprocess:
+  channel_typing:
+    datasets:
+      aszed_subset1:
+        rules:
+          - {prefix: "EOGR", type: "eog"}
+          - {prefix: "EOOGL", type: "eog"}
+          - {prefix: "EMG", type: "emg"}
+
+robustness:
+  coverage:
+    datasets:
+      aszed_subset1:
+        min_seconds: 20
+        min_epochs: 5
+        min_trials: 1
+  ensembles:
+    datasets:
+      aszed_subset1:
+        groups:
+          frontal: ["Fp1[1]", "Fp2[2]", "F3[3]", "F4[4]", "F7[11]", "F8[12]", "Fz[17]"]
+          central: ["C3[5]", "C4[6]", "Cz[19]"]
+          parietal_occipital: ["P3[7]", "P4[8]", "Pz[18]", "O1[9]", "O2[10]"]
+          temporal: ["T3[13]", "T4[14]", "T5[15]", "T6[16]"]
+
+metadata_extraction:
+  datasets:
+    aszed_subset1:
+      group:
+        candidates: ["Group", "category"]
+        normalize:
+          patient: "Schizophrenia"
+          control: "Control"
+      task:
+        from_filename: true
+        normalize:
+          restpre: "rest_pre"
+          arithmetic: "arithmetic"
+          restpost: "rest_post"
+          oddball: "oddball"

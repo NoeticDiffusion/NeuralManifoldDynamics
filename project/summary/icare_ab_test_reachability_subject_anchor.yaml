@@ -1,0 +1,29 @@
+dataset: icare_ab_test_small
+description: "Small A/B reachability test on selected i-care runs"
+
+input:
+  h5_root: null
+
+coordinate_contract: subject_anchored
+
+output:
+  directory: "ndt-analysis/outputs"
+  filename_pattern: "{dataset}_{analysisType}_{timestamp}.parquet"
+  timestamp_format: "%Y%m%d_%H%M%S"
+  parquet:
+    compression: snappy
+    index: false
+
+runtime:
+  fail_on_missing_input: true
+  skip_disabled_analyses: true
+  continue_on_analysis_error: false
+  workers: 1
+
+flags:
+  sleep_data_contrast: false
+
+modality_rules: {}
+
+analyses:
+  reachability_cones: true

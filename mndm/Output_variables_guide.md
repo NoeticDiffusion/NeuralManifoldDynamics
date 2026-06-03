@@ -10,6 +10,51 @@ Notation:
 
 ---
 
+### Run-level JSON provenance (run directory sidecars)
+
+Each summarize run directory also writes JSON sidecars outside HDF5, notably:
+
+- `run_manifest.json` (run capabilities + provenance + config digest)
+- `features_snapshot.json` (feature-table snapshot for the run)
+- `run_errors.json` (captured grouping/runtime failures, when present)
+- `normalization_report.json` (normalization runtime summary + pre/post probe results)
+- `stage_mapping_qc.json` (run-level aggregate + per-subject stage/event mapping QC, when available)
+
+Normalization-specific provenance (ComBat pilot) is recorded in:
+
+- `run_manifest.json` -> `extra.normalization`
+  - `status`, `method`, `scope`, `batch_key`
+  - `batch_counts`, `rows_harmonized`, `feature_columns_harmonized`
+  - `covariates_used`, `covariate_coverage`
+  - `family_wise` (family grouping strategy + per-family chunk/harmonization counts)
+  - `validation` (pre/post probes: `batch_eta2`, `target_eta2`, `perturbation`)
+- `run_manifest.json` -> `extra.normalization_report`
+  - sidecar write status/path for `normalization_report.json`
+- `features_snapshot.json` -> `normalization`
+
+This is the primary place to verify whether batch harmonization was applied for a run.
+
+Event/stage provenance additions:
+
+- `summary.json` -> `stage_mapping_qc`
+  - per-subject mapping QC (raw label counts, mapped/unmapped counts, stage-window counts)
+  - explicit expected vs detected stage-frequency coverage
+- `summary.json` -> `event_provenance`
+  - status + source events path + exported event table columns + row count
+- `run_manifest.json` -> `extra.stage_mapping_qc`
+  - sidecar write status/path for `stage_mapping_qc.json` and run-level aggregate coverage
+
+Relevant config knobs (dataset override under `epoching.datasets.<id>.sampling`):
+
+- `prefer_events_stage_in_summary` (bool): allows summarize-only reruns to re-infer stage
+  from raw events and override stale stage columns in `features.csv`.
+- `stage_blocking.enabled` (bool): enables continuous block inference from sparse event markers.
+- `stage_blocking.stage_event_regex`: regex for block-start event labels.
+- `stage_blocking.bridge_marker_labels`: optional dense in-block marker labels.
+- `stage_blocking.expected_stage_frequencies_hz`: optional expected frequency/intensity ids for explicit QC presence/absence reporting.
+
+---
+
 ### Root: HDF5 attributes (top-level `h5.attrs`)
 
 - **`dataset_id`** *(str)*: dataset label used throughout the pipeline (often `dsXXXX:sub-YYY:<condition>_<task>_<run>[_acq]`).
@@ -59,6 +104,27 @@ These are **analysis-agnostic descriptive blocks** embedded in the manifest JSON
 - **`tier2_emmi`** *(object)*: derived indices from MNPS + speed.
   - `speed_mean`, `speed_median`, `mv_median`, `emmi_e_over_m_median`, `mv_over_speed_median`
 
+- **`conventional_eeg`** *(object; EEG only, optional)*: config-driven conventional qEEG comparator summaries.
+  - `schema_version = "mndm.conventional_eeg.v1"`
+  - `packs`: enabled comparator packs, currently including `tier1`, `complexity`, and `connectivity`
+  - `columns`: emitted feature-table columns such as:
+    - `eeg_conventional_relative_<band>`
+    - `eeg_conventional_ratio_<name>`
+    - `eeg_conventional_peak_<name>`
+    - `eeg_conventional_complexity_<name>`
+    - `eeg_conventional_connectivity_<name>`
+  - `families.<family>.<feature>`: descriptives for each comparator feature, including
+    `column`, `n`, `nan_frac`, `mean`, `median`, `std`, `iqr`, `mad`
+  - current family mapping:
+    - `relative` -> relative bandpower outputs
+    - `ratio` -> slowing/ratio outputs
+    - `peak` -> alpha-peak / median-frequency / spectral-edge outputs
+    - `complexity` -> spectral-entropy / permutation-entropy / Hjorth outputs
+    - `connectivity` -> synchrony summaries such as `alpha_FP_plv_mean` or `alpha_FB_coh_mean`
+  - granularity note:
+    - `relative`, `ratio`, `peak`, and `complexity` are epoch-aligned comparator surfaces
+    - `connectivity` is currently a recording-level summary surface broadcast across epochs in the feature table
+
 ---
 
 ### Root datasets
@@ -85,9 +151,59 @@ Created if `stage` or other label arrays exist.
 
 ### Group: `/events`
 
-Created if `payload.events` exists.
+Created if `payload.events` and/or `payload.event_table_columns` exists.
 
-- **`/events/<name>`** *(int64 or float64, shape `[N]`)*: event series (either indices or timestamps; ingest treats them as 1D arrays).
+- Legacy arrays:
+  - **`/events/<name>`** *(int64 or float64, shape `[N]`)*: event series (either indices or timestamps; ingest treats them as 1D arrays).
+- Columnar event-provenance table (when available):
+  - **`/events/onset_sec`**, **`/events/duration_sec`** *(float64, shape `[N]`)*
+  - **`/events/raw_event_label`**, **`/events/normalized_event_label`** *(utf-8 strings, shape `[N]`)*
+  - **`/events/mapped_stage_code`** *(float64, shape `[N]`)*
+  - **`/events/mapping_mode`**, **`/events/mapping_rule`** *(utf-8 strings, shape `[N]`)*
+  - **`/events/source_event_column`** *(utf-8 strings, shape `[N]`)*
+  - **`/events/inferred_block_id`**, **`/events/window_assignment_count`** *(int32, shape `[N]`)*
+  - optional stage-block frequency helpers (e.g. `stage_block_frequency_hz`, `is_stage_block_event`)
+- Group attrs:
+  - **`_has_event_table`** *(bool-like)*: indicates columnar event table is present.
+  - **`_schema_version`** *(str)*: event-provenance schema tag when exported.
+
+---
+
+### Group: `/event_windows`
+
+Created when summarize emits the additive EEG event-window contract.
+
+- **`/event_windows/event_id`**, **`/event_windows/window_id`** *(int32, shape `[R]`)*
+- **`/event_windows/rel_time_sec`** *(float32, shape `[R]`)*
+- **`/event_windows/bin_label`** *(utf-8 strings, shape `[R]`)*
+- **`/event_windows/overlap_sec`**, **`/event_windows/overlap_frac`** *(float32, shape `[R]`)*
+- **`/event_windows/event_label`**, **`/event_windows/event_label_key`** *(utf-8 strings, shape `[R]`)*
+- **`/event_windows/event_onset_sec`**, **`/event_windows/event_duration_sec`** *(float32, shape `[R]`)*
+- **`/event_windows/window_start_sec`**, **`/event_windows/window_end_sec`** *(float32, shape `[R]`)*
+- **`/event_windows/window_contains_event_onset`** *(int8, shape `[R]`)*
+- **`/event_windows/event_start_window_index`**, **`/event_windows/event_stop_window_index`** *(int32, shape `[R]`)*
+- Group attrs:
+  - **`_schema_version`** = `mndm.event_windows.v1`
+  - **`reference`** *(str)*: event timestamp used as `t=0`
+  - **`bins_json`** *(str, JSON)*: exact alignment bins used to generate the rows
+  - **`source_events_path`** *(str|None)*: resolved BIDS `*_events.tsv` path when known
+
+This group is additive: `/events` remains the source event table, while
+`/event_windows` provides the exact join contract needed for event-locked
+downstream analysis.
+
+---
+
+### Group: `/codebooks`
+
+Created when summarize exports explicit codebooks.
+
+- **`/codebooks/stage/codes`** *(int32, shape `[C]`)*
+- **`/codebooks/stage/labels`** *(utf-8 strings, shape `[C]`)*
+- **`/codebooks/stage/label_keys`** *(utf-8 strings, shape `[C]`)*: concise helper keys such as `eyes_closed`
+- Group attrs:
+  - **`_schema_version`** = `mndm.codebook.v1`
+  - optional source metadata such as `source`, `column`, `events_path`
 
 ---
 
@@ -117,6 +233,12 @@ Created when summarize exports the per-epoch empirical feature surface.
 - **`/features_raw/names`** *(utf-8 strings, shape `[K]`)*: feature column names aligned to `values`.
 - **`/features_raw/metadata/*`** *(shape `[K]` per field)*: machine-readable per-feature metadata, including usage flags and provenance.
 
+When `conventional_eeg.enabled: true`, the exported feature surface may also
+contain Tier 1 qEEG comparator columns prefixed with `eeg_conventional_`.
+Current generic EEG comparator families are `relative`, `ratio`, `peak`, and
+`complexity`. When the connectivity pack is enabled, the feature surface may
+also include `eeg_conventional_connectivity_*` columns.
+
 ---
 
 ### Group: `/features_robust_z`
@@ -138,6 +260,10 @@ Important:
 MNDM 2.1 makes coordinate anchoring explicit. The legacy `/mnps_3d` and
 `/coords_9d` paths may still exist, but new analyses should consult
 `h5.attrs["primary_coordinate_layer"]` and the layer attrs.
+
+These anchored layer groups are additive and may be selectively omitted when
+`mnps_projection.export_contracts.subject_anchored` or
+`mnps_projection.export_contracts.cohort_anchored` is set to `false`.
 
 - **`/coords_3d_subject_anchored/values`** *(float32, shape `[T,3]`)*:
   subject/session-relative 3D coordinates. This is the right layer for
@@ -170,6 +296,9 @@ Coordinate-layer group attrs include:
 
 Created when a cohort/external anchor artifact is embedded.
 
+This group is typically present only when the `cohort_anchored` export contract
+is enabled for the run.
+
 - **`/feature_anchors/spec`** *(attrs)*:
   - `schema_version = "mndm.feature_anchors.v2.1"`
   - `anchor_id`
@@ -185,6 +314,67 @@ Created when a cohort/external anchor artifact is embedded.
 
 Anchor fitting is subject-balanced: each subject contributes one summary value
 per feature, preventing long recordings from dominating the anchor.
+
+---
+
+### Group: `/participant`
+
+Participant metadata remain embedded as JSON and attrs for low-friction joins.
+
+- **`/participant/row_json`** *(utf-8 JSON dataset)*: raw participant-table row
+- **`/participant/mapped_json`** *(utf-8 JSON dataset)*: canonical derived metadata such as `group`, `condition`, `task`
+- **`/participant/source_json`** *(utf-8 JSON dataset)*: lookup provenance for the participant table
+- **`/participant/clinical_json`** *(utf-8 JSON dataset, optional)*: richer additive participant/session metadata carried into H5 for analysis convenience
+- Attr families:
+  - **`field_*`**: scalar raw participant fields
+  - **`mapped_*`**: scalar derived metadata
+  - **`source_*`**: scalar participant-source provenance
+  - **`clinical_*`**: scalar convenience fields mirrored from `clinical_json`
+
+---
+
+### Group: `/coverage`
+
+Created when summarize exports explicit cross-layer coverage metadata.
+
+- **`/coverage/axis_fraction`** *(float32, shape `[T,3]`)*: direct-axis coverage per MNPS window for `[m,d,e]`
+- **`/coverage/axis_names`** *(utf-8 strings, shape `[3]`)*
+- **`/coverage/min_axis_coverage`** *(scalar float32)*
+- **`/coverage/coordinate_layers_present`** *(utf-8 strings, shape `[L]`)*
+- **`/coverage/coordinate_contracts_present`** *(utf-8 strings, shape `[Lc]`)*
+- **`/coverage/jacobian_centers`**, **`/coverage/jacobian_9d_centers`** *(int32, optional)*: explicit mappings back to the shared MNPS time index
+- Group attrs:
+  - **`_schema_version`** = `mndm.coverage.v1`
+
+---
+
+### Group: `/provenance`
+
+Created when summarize exports structured additive provenance blocks.
+
+- **`/provenance/contract/*`**: export-contract metadata such as `export_contract_version`, `config_digest_sha256`, `run_manifest_ref`
+- **`/provenance/anchoring/*`**: explicit coordinate contracts/layers available in this H5 plus primary contract/layer and optional anchor identity
+- **`/provenance/normalization/*`**: concise normalization status/method/scope and sidecar references
+- **`/provenance/event_stage_mapping/*`**: event/stage mapping versioning, source column/path, and codebook hash
+- Group attrs:
+  - **`_schema_version`** = `mndm.provenance.v1`
+
+---
+
+### Group: `/qc`
+
+Created when summarize exports additive per-window QC.
+
+- **`/qc/windows/retained_after_qc`** *(int8, shape `[T]`)*
+- **`/qc/windows/rejected_flag`** *(int8, shape `[T]`)*
+- **`/qc/windows/qc_ok_eeg`**, **`/qc/windows/qc_ok_ecg`**, **`/qc/windows/qc_ok_eog`** *(int8, optional)*
+- **`/qc/windows/coverage_ok`** *(int8, shape `[T]`, optional)*
+- **`/qc/windows/stage_transition_flag`** *(int8, shape `[T]`, optional)*
+- Group attrs:
+  - **`_schema_version`** = `mndm.qc.windows.v1`
+
+This group intentionally carries only the light-weight, per-window contract.
+Heavier QC summaries still live in `qc_summary.json` and `qc_reliability.json`.
 
 ---
 
@@ -217,6 +407,9 @@ Created if stratified coordinates exist.
 Created if extensions exist. The structure is **free-form** and mirrors nested dicts:
 
 - **`/extensions/<extension_name>/...`**: subgroups/datasets for extension payloads (e.g. `e_kappa`, `rfm`, `o_koh`, `tig`).
+- Conventional EEG comparator summaries are written under:
+  - **`/extensions/conventional_eeg/...`**
+  - families are currently grouped as `relative`, `ratio`, `peak`, `complexity`, and `connectivity`
 
 Rule:
 - dict → subgroup

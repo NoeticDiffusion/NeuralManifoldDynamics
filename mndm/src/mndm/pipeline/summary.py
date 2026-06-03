@@ -20,7 +20,7 @@ from functools import lru_cache
 from pathlib import Path
 import re
 from threading import Lock
-from typing import Any, Dict, List, Mapping, Optional
+from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -58,9 +58,12 @@ from .summary_selectors import (
 )
 from .summary_events import (
     infer_stage_from_bids_events,
+    build_bids_event_stage_provenance,
     estimate_coverage_seconds,
     map_events_to_labels,
 )
+from .event_alignment import AlignmentConfig, align_events_to_windows
+from .event_annotations import EventTable
 from .state_labels import (
     build_within_run_labels,
     summarize_within_run_manifest,
@@ -72,6 +75,7 @@ from .summary_utils import (
     extract_time_bounds,
 )
 from .time_reference import build_time_reference_for_run
+from .conventional_summary import compute_conventional_eeg_summary
 from .baseline_qc import (
     compute_feature_baseline_comparisons,
     compute_null_sanity_tests,
@@ -150,6 +154,434 @@ def _rows_to_columnar_table(rows: list[Mapping[str, Any]]) -> Dict[str, np.ndarr
             out[str(col)] = pd.to_numeric(series, errors="coerce").to_numpy(dtype=np.float32)
         else:
             out[str(col)] = series.fillna("").astype(str).to_numpy(dtype=str)
+    return out
+
+
+def _decode_text_scalar(value: Any) -> Optional[str]:
+    """Decode bytes/NumPy byte scalars into plain text."""
+    if value is None:
+        return None
+    if isinstance(value, np.bytes_):
+        return value.decode("utf-8")
+    if isinstance(value, bytes):
+        return value.decode("utf-8")
+    text = str(value)
+    return text if text else None
+
+
+def _columnar_records_to_arrays(records: Sequence[Mapping[str, Any]]) -> Dict[str, np.ndarray]:
+    """Convert flat row dicts into dtype-stable 1-D arrays."""
+    if not records:
+        return {}
+    keys: list[str] = []
+    seen: set[str] = set()
+    for row in records:
+        for key in row.keys():
+            skey = str(key)
+            if skey not in seen:
+                seen.add(skey)
+                keys.append(skey)
+    out: Dict[str, np.ndarray] = {}
+    for key in keys:
+        values = [row.get(key) for row in records]
+        non_null = [v for v in values if v is not None]
+        if non_null and all(isinstance(v, (bool, np.bool_)) for v in non_null):
+            out[key] = np.asarray(values, dtype=np.int8)
+        elif non_null and all(isinstance(v, (int, np.integer, bool, np.bool_)) for v in non_null):
+            out[key] = np.asarray(values, dtype=np.int32)
+        elif non_null and all(isinstance(v, (int, float, np.integer, np.floating, bool, np.bool_)) for v in non_null):
+            out[key] = np.asarray(values, dtype=np.float32)
+        else:
+            out[key] = np.asarray(["" if v is None else str(v) for v in values], dtype=object)
+    return out
+
+
+def _stage_label_to_bool_label_name(raw_label: Any) -> str:
+    """Return a concise per-window label name for a stage codebook entry."""
+    text = re.sub(r"\s+", " ", str(raw_label or "").strip().lower())
+    if not text:
+        return "unknown_stage"
+    if "eyes closed" in text:
+        return "eyes_closed"
+    if "eyes open" in text:
+        return "eyes_open"
+    if text in {"w", "wake"}:
+        return "wake"
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or "unknown_stage"
+
+
+def _build_stage_bool_labels(
+    stage: Optional[np.ndarray],
+    stage_codebook: Mapping[str, Any],
+) -> Dict[str, np.ndarray]:
+    """Export stage-codebook membership as explicit per-window bool labels."""
+    if stage is None or not isinstance(stage_codebook, Mapping) or not stage_codebook:
+        return {}
+    stage_arr = np.asarray(stage, dtype=np.int32)
+    out: Dict[str, np.ndarray] = {}
+    used_names: set[str] = set()
+    for raw_label, raw_code in stage_codebook.items():
+        try:
+            code = int(raw_code)
+        except Exception:
+            continue
+        label_name = _stage_label_to_bool_label_name(raw_label)
+        if label_name in used_names:
+            continue
+        mask = (stage_arr == code).astype(np.int8)
+        if int(mask.sum()) <= 0:
+            continue
+        out[label_name] = mask
+        used_names.add(label_name)
+    return out
+
+
+def _build_stage_codebook_export(
+    stage_codebook: Mapping[str, Any],
+    *,
+    stage_source: Optional[str],
+    stage_column: Optional[str],
+    stage_events_path: Optional[str],
+) -> Dict[str, Any]:
+    """Build the `/codebooks/stage` payload."""
+    if not isinstance(stage_codebook, Mapping) or not stage_codebook:
+        return {}
+    rows: list[tuple[int, str, str]] = []
+    for raw_label, raw_code in stage_codebook.items():
+        try:
+            code = int(raw_code)
+        except Exception:
+            continue
+        label = str(raw_label)
+        rows.append((code, label, _stage_label_to_bool_label_name(label)))
+    rows.sort(key=lambda item: (item[0], item[1]))
+    if not rows:
+        return {}
+    return {
+        "stage": {
+            "codes": np.asarray([code for code, _, _ in rows], dtype=np.int32),
+            "labels": [label for _, label, _ in rows],
+            "label_keys": [label_key for _, _, label_key in rows],
+            "attrs": {
+                "source": stage_source,
+                "column": stage_column,
+                "events_path": stage_events_path,
+            },
+        }
+    }
+
+
+def _build_event_windows_export(
+    *,
+    event_table_columns: Mapping[str, Any],
+    events_path: Optional[str],
+    time: np.ndarray,
+    window_start: np.ndarray,
+    window_end: np.ndarray,
+    stage: Optional[np.ndarray],
+    window_sec: float,
+    overlap: float,
+) -> tuple[Dict[str, np.ndarray], Dict[str, Any]]:
+    """Build an explicit event->window alignment table for H5 export."""
+    onset_col = event_table_columns.get("onset_sec")
+    if onset_col is None:
+        return {}, {}
+    onsets = np.asarray(onset_col, dtype=np.float64)
+    if onsets.ndim != 1 or onsets.size == 0:
+        return {}, {}
+    duration_col = event_table_columns.get("duration_sec")
+    durations = np.asarray(duration_col, dtype=np.float64) if duration_col is not None else None
+    raw_labels = (
+        np.asarray(event_table_columns.get("raw_event_label"), dtype=object)
+        if event_table_columns.get("raw_event_label") is not None
+        else np.asarray([""] * len(onsets), dtype=object)
+    )
+    normalized_labels = (
+        np.asarray(event_table_columns.get("normalized_event_label"), dtype=object)
+        if event_table_columns.get("normalized_event_label") is not None
+        else np.asarray([""] * len(onsets), dtype=object)
+    )
+    source_event_column = (
+        np.asarray(event_table_columns.get("source_event_column"), dtype=object)
+        if event_table_columns.get("source_event_column") is not None
+        else np.asarray([""] * len(onsets), dtype=object)
+    )
+    mapped_stage_code = (
+        np.asarray(event_table_columns.get("mapped_stage_code"), dtype=np.float64)
+        if event_table_columns.get("mapped_stage_code") is not None
+        else None
+    )
+    event_table = EventTable(
+        onset_sec=onsets,
+        duration_sec=durations,
+        event_type=raw_labels,
+        source=np.asarray(["bids_event_provenance"] * len(onsets), dtype=object),
+        source_path=str(events_path or "bids_event_provenance"),
+        n_events_loaded=int(len(onsets)),
+    )
+    align_cfg = AlignmentConfig(reference="onset", stage_transition_margin_sec=0.0)
+    alignment = align_events_to_windows(
+        event_table,
+        window_start=np.asarray(window_start, dtype=np.float64),
+        window_end=np.asarray(window_end, dtype=np.float64),
+        time=np.asarray(time, dtype=np.float64),
+        stage=np.asarray(stage, dtype=np.int32) if stage is not None else None,
+        config=align_cfg,
+    )
+    records = alignment.to_records()
+    if not records:
+        return {}, {
+            "_schema_version": "mndm.event_windows.v1",
+            "reference": align_cfg.reference,
+            "bins_json": json.dumps(
+                [{"label": b.label, "lo": b.lo, "hi": b.hi} for b in align_cfg.bins],
+                ensure_ascii=False,
+            ),
+            "source_events_path": events_path,
+            "source_event_table_schema": _decode_text_scalar(event_table_columns.get("_schema_version")),
+            "window_sec": float(window_sec),
+            "window_step_sec": float(window_sec * (1.0 - overlap)),
+            "n_rows": 0,
+        }
+    for row in records:
+        ev_idx = int(row["event_id"])
+        w_idx = int(row["window_id"])
+        event_onset = float(onsets[ev_idx]) if ev_idx < len(onsets) else np.nan
+        event_duration = float(durations[ev_idx]) if durations is not None and ev_idx < len(durations) else 0.0
+        event_stop = event_onset + event_duration if np.isfinite(event_duration) and event_duration > 0 else event_onset
+        containing_mask = (window_start <= event_onset) & (window_end > event_onset)
+        overlapping_mask = (window_end > event_onset) & (window_start < event_stop) if event_stop > event_onset else containing_mask
+        start_window_indices = np.where(containing_mask)[0]
+        stop_window_indices = np.where(overlapping_mask)[0]
+        row["event_label"] = str(raw_labels[ev_idx]) if ev_idx < len(raw_labels) else ""
+        row["event_label_key"] = str(normalized_labels[ev_idx]) if ev_idx < len(normalized_labels) else ""
+        row["event_onset_sec"] = event_onset
+        row["event_duration_sec"] = float(durations[ev_idx]) if durations is not None and ev_idx < len(durations) else np.nan
+        row["event_mapped_stage_code"] = (
+            float(mapped_stage_code[ev_idx]) if mapped_stage_code is not None and ev_idx < len(mapped_stage_code) else np.nan
+        )
+        row["source_event_column"] = str(source_event_column[ev_idx]) if ev_idx < len(source_event_column) else ""
+        row["window_start_sec"] = float(window_start[w_idx]) if w_idx < len(window_start) else np.nan
+        row["window_end_sec"] = float(window_end[w_idx]) if w_idx < len(window_end) else np.nan
+        row["window_contains_event_onset"] = int(bool(w_idx < len(containing_mask) and containing_mask[w_idx]))
+        row["event_start_window_index"] = int(start_window_indices[0]) if start_window_indices.size else -1
+        row["event_stop_window_index"] = int(stop_window_indices[-1]) if stop_window_indices.size else -1
+    return _columnar_records_to_arrays(records), {
+        "_schema_version": "mndm.event_windows.v1",
+        "reference": align_cfg.reference,
+        "bins_json": json.dumps(
+            [{"label": b.label, "lo": b.lo, "hi": b.hi} for b in align_cfg.bins],
+            ensure_ascii=False,
+        ),
+        "overlap_threshold": float(align_cfg.overlap_threshold),
+        "stage_transition_margin_sec": float(align_cfg.stage_transition_margin_sec),
+        "source_events_path": events_path,
+        "source_event_table_schema": _decode_text_scalar(event_table_columns.get("_schema_version")),
+        "window_sec": float(window_sec),
+        "window_step_sec": float(window_sec * (1.0 - overlap)),
+        "n_rows": int(len(records)),
+        "n_events_input": int(alignment.qc.get("n_events_input", len(onsets))),
+    }
+
+
+def _build_participant_clinical_meta(
+    *,
+    participant_meta: Mapping[str, Any],
+    participant_meta_source: Mapping[str, Any],
+    mapped_meta: Mapping[str, Any],
+    session: Optional[str],
+    condition: Optional[str],
+    task: Optional[str],
+    run_id: Optional[str],
+    acq_id: Optional[str],
+) -> Dict[str, Any]:
+    """Build a richer participant/session metadata payload for H5 export."""
+    out: Dict[str, Any] = {
+        "session": session,
+        "condition": condition,
+        "task": task,
+        "run": run_id,
+        "acq": acq_id,
+    }
+    if isinstance(participant_meta, Mapping) and participant_meta:
+        out["participant"] = dict(participant_meta)
+    if isinstance(mapped_meta, Mapping) and mapped_meta:
+        out["mapped"] = dict(mapped_meta)
+    if isinstance(participant_meta_source, Mapping) and participant_meta_source:
+        out["source"] = dict(participant_meta_source)
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _build_qc_windows_export(
+    *,
+    sub_frame: pd.DataFrame,
+    stage: Optional[np.ndarray],
+    x_coverage: np.ndarray,
+    min_axis_coverage: float,
+) -> Dict[str, np.ndarray]:
+    """Build a minimal per-window QC surface aligned to `/time`."""
+    n_time = int(len(sub_frame))
+    out: Dict[str, np.ndarray] = {
+        "retained_after_qc": np.ones(n_time, dtype=np.int8),
+        "rejected_flag": np.zeros(n_time, dtype=np.int8),
+    }
+    for key in ("qc_ok_eeg", "qc_ok_ecg", "qc_ok_eog"):
+        if key in sub_frame.columns:
+            arr = pd.to_numeric(sub_frame[key], errors="coerce").fillna(1).to_numpy()
+            out[key] = np.asarray(arr, dtype=np.int8)
+    if x_coverage.size:
+        coverage_ok = np.all(np.isfinite(x_coverage) & (x_coverage >= float(min_axis_coverage)), axis=1).astype(np.int8)
+        out["coverage_ok"] = coverage_ok
+    if stage is not None and len(stage) == n_time:
+        transitions = np.zeros(n_time, dtype=np.int8)
+        if n_time > 1:
+            transitions[1:] = (np.diff(np.asarray(stage, dtype=np.int32)) != 0).astype(np.int8)
+        out["stage_transition_flag"] = transitions
+    return out
+
+
+def _build_coverage_export(
+    *,
+    x_coverage: np.ndarray,
+    min_axis_coverage: float,
+    coordinate_layers: Mapping[str, Any],
+    jacobian_centers: Optional[np.ndarray],
+    jacobian_9d_centers: Optional[np.ndarray],
+) -> Dict[str, Any]:
+    """Build explicit cross-layer coverage metadata for H5 export."""
+    out: Dict[str, Any] = {
+        "axis_fraction": np.asarray(x_coverage, dtype=np.float32),
+        "axis_names": np.asarray(["m", "d", "e"], dtype=object),
+        "min_axis_coverage": np.asarray(float(min_axis_coverage), dtype=np.float32),
+        "coordinate_layers_present": np.asarray(sorted([str(k) for k in coordinate_layers.keys()]), dtype=object),
+        "coordinate_contracts_present": np.asarray(
+            sorted(
+                {
+                    str((layer.get("attrs", {}) or {}).get("coordinate_contract"))
+                    for layer in coordinate_layers.values()
+                    if isinstance(layer, Mapping) and isinstance(layer.get("attrs", {}), Mapping)
+                    and (layer.get("attrs", {}) or {}).get("coordinate_contract") is not None
+                }
+            ),
+            dtype=object,
+        ),
+        "shared_time_grid": np.asarray(1, dtype=np.int8),
+    }
+    if jacobian_centers is not None and np.size(jacobian_centers) > 0:
+        out["jacobian_centers"] = np.asarray(jacobian_centers, dtype=np.int32)
+    if jacobian_9d_centers is not None and np.size(jacobian_9d_centers) > 0:
+        out["jacobian_9d_centers"] = np.asarray(jacobian_9d_centers, dtype=np.int32)
+    return out
+
+
+def _resolve_export_contract_preferences(
+    proj_cfg: Mapping[str, Any],
+    *,
+    external_anchor_available: bool,
+) -> Dict[str, Any]:
+    """Resolve which anchor contracts should be exported for this run."""
+    export_cfg = proj_cfg.get("export_contracts", {}) if isinstance(proj_cfg, Mapping) else {}
+    export_cfg = export_cfg if isinstance(export_cfg, Mapping) else {}
+
+    subject_enabled = bool(export_cfg.get("subject_anchored", True))
+    cohort_requested = bool(export_cfg.get("cohort_anchored", external_anchor_available))
+    cohort_enabled = bool(cohort_requested and external_anchor_available)
+
+    if cohort_requested and not external_anchor_available:
+        logger.warning(
+            "mnps_projection.export_contracts.cohort_anchored=true requested but no external anchor is active; "
+            "skipping cohort_anchored export."
+        )
+
+    if not subject_enabled and not cohort_enabled:
+        raise ValueError(
+            "mnps_projection.export_contracts must enable at least one effective contract. "
+            "Set subject_anchored=true, or enable cohort_anchored together with an active anchor."
+        )
+
+    primary_coordinate_contract = "cohort_anchored" if cohort_enabled else "subject_anchored"
+    return {
+        "subject_anchored": subject_enabled,
+        "cohort_anchored": cohort_enabled,
+        "primary_coordinate_contract": primary_coordinate_contract,
+    }
+
+
+def _regional_result_to_h5_payload(
+    result: Any,
+    *,
+    coordinate_contract: str,
+    anchor_spec: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Convert a RegionalMNPSResult into H5-friendly mapping payload."""
+    payload: Dict[str, Any] = {
+        "mnps": getattr(result, "mnps", None),
+        "mnps_dot": getattr(result, "mnps_dot", None),
+        "jacobian": getattr(result, "jacobian", None),
+        "stratified": getattr(result, "stratified", None),
+        "metrics": dict(getattr(result, "metrics", {}) or {}),
+        "n_timepoints": getattr(result, "n_timepoints", None),
+        "attrs": {
+            "coordinate_contract": str(coordinate_contract),
+        },
+    }
+    if coordinate_contract == "cohort_anchored" and isinstance(anchor_spec, Mapping):
+        payload["attrs"].update(
+            {
+                "anchor_id": anchor_spec.get("anchor_id"),
+                "anchor_hash": anchor_spec.get("anchor_hash"),
+                "anchor_source": anchor_spec.get("anchor_source"),
+            }
+        )
+    return payload
+
+
+def _build_regional_dual_contract_export(
+    *,
+    primary_coordinate_contract: str,
+    subject_summary: Optional[Any],
+    cohort_summary: Optional[Any],
+    anchor_spec: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Build backward-compatible regional export with explicit anchor sublayers."""
+    summaries_by_contract = {
+        "subject_anchored": subject_summary,
+        "cohort_anchored": cohort_summary,
+    }
+    network_names: set[str] = set()
+    for summary in summaries_by_contract.values():
+        results = getattr(summary, "results", None)
+        if isinstance(results, Mapping):
+            network_names.update([str(k) for k in results.keys()])
+
+    out: Dict[str, Any] = {}
+    for network_name in sorted(network_names):
+        network_entry: Dict[str, Any] = {
+            "primary_coordinate_contract": str(primary_coordinate_contract),
+        }
+        anchor_layers: Dict[str, Any] = {}
+        for contract_name, summary in summaries_by_contract.items():
+            results = getattr(summary, "results", None)
+            if not isinstance(results, Mapping):
+                continue
+            result = results.get(network_name)
+            if result is None:
+                continue
+            anchor_layers[contract_name] = _regional_result_to_h5_payload(
+                result,
+                coordinate_contract=contract_name,
+                anchor_spec=anchor_spec,
+            )
+        if not anchor_layers:
+            continue
+        primary_payload = anchor_layers.get(primary_coordinate_contract)
+        if primary_payload is None:
+            primary_payload = anchor_layers.get("subject_anchored") or next(iter(anchor_layers.values()))
+        for legacy_key in ("mnps", "mnps_dot", "jacobian", "stratified", "metrics", "n_timepoints", "attrs"):
+            if legacy_key in primary_payload:
+                network_entry[legacy_key] = primary_payload[legacy_key]
+        network_entry["anchor_layers"] = anchor_layers
+        out[network_name] = network_entry
     return out
 
 
@@ -565,6 +997,8 @@ class DatasetSummaryRunner:
         self._dataset_csv_lock = Lock()
         self._run_errors_lock = Lock()
         self._run_errors: List[Dict[str, Any]] = []
+        self._stage_mapping_qc_lock = Lock()
+        self._stage_mapping_qc_entries: List[Dict[str, Any]] = []
         # Global coverage defaults, with optional dataset-specific overrides
         self.min_seconds = self.ctx.coverage.min_seconds
         self.min_epochs = self.ctx.coverage.min_epochs
@@ -621,6 +1055,12 @@ class DatasetSummaryRunner:
         self._participant_meta_map: Dict[str, Dict[str, Any]] = {}
         self._file_entity_cache: Dict[str, tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]] = {}
         self._index_paths_by_basename: Dict[str, List[str]] = {}
+        self._normalization_report: Dict[str, Any] = {
+            "enabled": False,
+            "status": "disabled",
+            "method": None,
+            "scope": None,
+        }
 
     @staticmethod
     def _normalize_subject(value: Optional[str]) -> Optional[str]:
@@ -744,6 +1184,925 @@ class DatasetSummaryRunner:
             break
         return policy
 
+    def _resolve_normalization_cfg(self) -> Dict[str, Any]:
+        """Resolve normalization config with optional per-dataset overrides."""
+        root = self.config.get("normalization", {}) if isinstance(self.config, Mapping) else {}
+        if not isinstance(root, Mapping):
+            return {}
+        resolved: Dict[str, Any] = dict(root)
+        ds_overrides = root.get("datasets", {})
+        if isinstance(ds_overrides, Mapping):
+            ds_cfg = ds_overrides.get(self.ds_id, {})
+            if isinstance(ds_cfg, Mapping):
+                resolved = _deep_merge_dict(resolved, ds_cfg)
+        resolved.pop("datasets", None)
+        return resolved
+
+    @staticmethod
+    def _normalization_key_candidates(raw_key: str) -> List[str]:
+        """Build fallback metadata key candidates for normalization fields."""
+        key = str(raw_key or "").strip()
+        if not key:
+            return []
+        key_low = key.lower()
+        candidates = [key]
+        alias_map: Dict[str, List[str]] = {
+            "site_or_hospital": [
+                "hospital",
+                "site",
+                "site_id",
+                "hospital_id",
+                "center",
+                "centre",
+                "institution",
+                "site_or_hospital",
+            ],
+        }
+        aliases = alias_map.get(key_low, [])
+        if aliases:
+            candidates.extend(aliases)
+        seen: set[str] = set()
+        out: List[str] = []
+        for cand in candidates:
+            name = str(cand).strip()
+            if not name:
+                continue
+            low = name.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            out.append(name)
+        return out
+
+    @staticmethod
+    def _lookup_meta_value(meta: Mapping[str, Any], key_candidates: Sequence[str]) -> Any:
+        """Lookup one metadata value using case-insensitive candidate keys."""
+        if not isinstance(meta, Mapping):
+            return None
+        lower_map = {str(k).strip().lower(): v for k, v in meta.items()}
+        for key in key_candidates:
+            if key in meta:
+                return meta.get(key)
+            hit = lower_map.get(str(key).strip().lower())
+            if hit is not None:
+                return hit
+        return None
+
+    @staticmethod
+    def _is_missing_meta_value(value: Any) -> bool:
+        """True when metadata values should be treated as missing."""
+        if value is None:
+            return True
+        try:
+            if bool(pd.isna(value)):
+                return True
+        except Exception:
+            pass
+        if isinstance(value, (float, np.floating)) and not np.isfinite(float(value)):
+            return True
+        if isinstance(value, str) and not value.strip():
+            return True
+        return False
+
+    @staticmethod
+    def _prepare_combat_covariate(
+        series: pd.Series,
+    ) -> tuple[pd.Series, str]:
+        """Coerce one covariate to categorical/continuous for neuroCombat."""
+        raw = series.copy()
+        numeric = pd.to_numeric(raw, errors="coerce")
+        finite_ratio = float(numeric.notna().mean()) if len(raw) else 0.0
+        unique_numeric = int(numeric.dropna().nunique())
+        if finite_ratio >= 0.95 and unique_numeric > 4:
+            fill_value = float(np.nanmedian(numeric.to_numpy(dtype=np.float64))) if numeric.notna().any() else 0.0
+            filled = numeric.fillna(fill_value).astype(float)
+            return filled, "continuous"
+
+        cleaned = raw.astype(str)
+        cleaned = cleaned.where(~raw.isna(), other="unknown")
+        cleaned = cleaned.str.strip()
+        cleaned = cleaned.where(cleaned != "", other="unknown")
+        return cleaned.astype(str), "categorical"
+
+    @staticmethod
+    def _parse_winsorize_quantiles(cfg_value: Any) -> Optional[tuple[float, float]]:
+        """Parse optional winsorization quantiles for pre-ComBat clipping."""
+        if not isinstance(cfg_value, (list, tuple)) or len(cfg_value) != 2:
+            return None
+        try:
+            low = float(cfg_value[0])
+            high = float(cfg_value[1])
+        except Exception:
+            return None
+        if not (0.0 <= low < high <= 1.0):
+            return None
+        return low, high
+
+    @staticmethod
+    def _resolve_normalization_validation_cfg(norm_cfg: Mapping[str, Any]) -> Dict[str, Any]:
+        """Resolve and sanitize normalization validation config."""
+        raw = norm_cfg.get("validation", {}) if isinstance(norm_cfg.get("validation", {}), Mapping) else {}
+        metrics_raw = raw.get("metrics", {}) if isinstance(raw.get("metrics", {}), Mapping) else {}
+        target_keys_raw = raw.get("target_keys", [])
+        if not isinstance(target_keys_raw, list):
+            target_keys_raw = []
+        target_keys = [str(v).strip() for v in target_keys_raw if str(v).strip()]
+
+        return {
+            "enabled": bool(raw.get("enabled", False)),
+            "max_rows": max(1000, int(raw.get("max_rows", 150000) or 150000)),
+            "max_features": max(8, int(raw.get("max_features", 256) or 256)),
+            "min_group_size": max(2, int(raw.get("min_group_size", 20) or 20)),
+            "max_levels": max(2, int(raw.get("max_levels", 24) or 24)),
+            "batch_key": str(raw.get("batch_key", "auto")).strip() or "auto",
+            "target_keys": target_keys,
+            "metrics": {
+                "batch_eta2": bool(metrics_raw.get("batch_eta2", True)),
+                "target_eta2": bool(metrics_raw.get("target_eta2", True)),
+                "perturbation": bool(metrics_raw.get("perturbation", True)),
+            },
+        }
+
+    def _sample_probe_indices(self, candidate_index: pd.Index, cfg: Mapping[str, Any]) -> pd.Index:
+        """Downsample probe rows deterministically when needed."""
+        max_rows = max(1, int(cfg.get("max_rows", 150000) or 150000))
+        if len(candidate_index) <= max_rows:
+            return candidate_index
+        seed = 42
+        try:
+            repro = getattr(self.ctx, "reproducibility", {}) or {}
+            seed = int(repro.get("seed", 42) or 42)
+        except Exception:
+            seed = 42
+        rng = np.random.default_rng(seed)
+        picks = np.sort(rng.choice(len(candidate_index), size=max_rows, replace=False))
+        return candidate_index.take(picks)
+
+    def _sample_probe_feature_columns(self, feature_cols: Sequence[str], cfg: Mapping[str, Any]) -> List[str]:
+        """Downsample probe feature columns deterministically when needed."""
+        cols = [str(c) for c in feature_cols]
+        max_features = max(1, int(cfg.get("max_features", 256) or 256))
+        if len(cols) <= max_features:
+            return cols
+        seed = 42
+        try:
+            repro = getattr(self.ctx, "reproducibility", {}) or {}
+            seed = int(repro.get("seed", 42) or 42)
+        except Exception:
+            seed = 42
+        rng = np.random.default_rng(seed + 101)
+        picks = np.sort(rng.choice(len(cols), size=max_features, replace=False))
+        return [cols[i] for i in picks]
+
+    def _compute_eta2_probe_summary(
+        self,
+        frame: pd.DataFrame,
+        labels: pd.Series,
+        *,
+        min_group_size: int,
+        max_levels: int,
+    ) -> Dict[str, Any]:
+        """Compute per-feature eta^2 summary for a categorical label."""
+        if frame.empty:
+            return {"status": "no_rows"}
+        label_series = labels.reindex(frame.index)
+        cleaned = label_series.map(lambda v: None if self._is_missing_meta_value(v) else str(v).strip())
+        observed = cleaned.dropna()
+        if observed.empty:
+            return {"status": "no_labels"}
+
+        counts = observed.value_counts()
+        eligible = counts[counts >= int(min_group_size)]
+        if int(eligible.shape[0]) < 2:
+            return {
+                "status": "insufficient_groups",
+                "groups_observed": int(counts.shape[0]),
+                "groups_eligible": int(eligible.shape[0]),
+                "group_counts": {str(k): int(v) for k, v in counts.to_dict().items()},
+            }
+        if int(eligible.shape[0]) > int(max_levels):
+            eligible = eligible.iloc[: int(max_levels)]
+        levels = [str(v) for v in eligible.index.tolist()]
+        mask_labels = cleaned.isin(levels).to_numpy(dtype=bool)
+        label_arr = cleaned.to_numpy(dtype=object)
+
+        eta_rows: List[tuple[str, float]] = []
+        min_points = max(20, int(2 * len(levels)))
+        for col in frame.columns:
+            values = pd.to_numeric(frame[col], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+            mask = np.isfinite(values) & mask_labels
+            if int(mask.sum()) < min_points:
+                continue
+            x = values[mask]
+            y = label_arr[mask]
+            mu = float(np.nanmean(x))
+            sst = float(np.nansum((x - mu) ** 2))
+            if not np.isfinite(sst) or sst <= 1e-12:
+                continue
+            ssb = 0.0
+            for level in levels:
+                idx = np.asarray([val == level for val in y], dtype=bool)
+                n_g = int(idx.sum())
+                if n_g <= 0:
+                    continue
+                mu_g = float(np.nanmean(x[idx]))
+                ssb += float(n_g) * float((mu_g - mu) ** 2)
+            eta2 = float(ssb / sst)
+            if np.isfinite(eta2):
+                eta_rows.append((str(col), eta2))
+
+        if not eta_rows:
+            return {
+                "status": "no_numeric_signal",
+                "group_counts": {str(k): int(v) for k, v in eligible.to_dict().items()},
+            }
+
+        eta_vals = np.asarray([v for _, v in eta_rows], dtype=np.float64)
+        top = sorted(eta_rows, key=lambda row: abs(float(row[1])), reverse=True)[:10]
+        return {
+            "status": "computed",
+            "groups_used": int(len(levels)),
+            "group_counts": {str(k): int(v) for k, v in eligible.to_dict().items()},
+            "features_evaluated": int(len(eta_rows)),
+            "eta2_median": float(np.nanmedian(eta_vals)),
+            "eta2_mean": float(np.nanmean(eta_vals)),
+            "eta2_p95": float(np.nanpercentile(eta_vals, 95)),
+            "top_features": [{"name": name, "eta2": float(val)} for name, val in top],
+        }
+
+    @staticmethod
+    def _compute_perturbation_probe_summary(
+        pre_df: pd.DataFrame,
+        post_df: pd.DataFrame,
+    ) -> Dict[str, Any]:
+        """Summarize pre/post perturbation strength across probe features."""
+        if pre_df.empty or post_df.empty:
+            return {"status": "no_rows"}
+        common_cols = [c for c in pre_df.columns if c in post_df.columns]
+        if not common_cols:
+            return {"status": "no_features"}
+
+        pct_shifts: List[float] = []
+        mad_scaled: List[float] = []
+        corrs: List[float] = []
+        top_rows: List[tuple[str, float]] = []
+        for col in common_cols:
+            pre = pd.to_numeric(pre_df[col], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+            post = pd.to_numeric(post_df[col], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+            mask = np.isfinite(pre) & np.isfinite(post)
+            if int(mask.sum()) < 10:
+                continue
+            x = pre[mask]
+            y = post[mask]
+            delta = y - x
+            pre_med = float(np.nanmedian(x))
+            pct = float(np.nanmedian(np.abs(delta) / (abs(pre_med) + 1e-9) * 100.0))
+            scale = float(np.nanmedian(np.abs(x - pre_med)) * projection.ROBUST_MAD_TO_SIGMA)
+            if not np.isfinite(scale) or scale <= 1e-9:
+                scale = float(np.nanstd(x))
+            if not np.isfinite(scale) or scale <= 1e-9:
+                scale = 1.0
+            mad_val = float(np.nanmedian(np.abs(delta) / (scale + 1e-9)))
+            if np.nanstd(x) <= 1e-12 or np.nanstd(y) <= 1e-12:
+                corr = np.nan
+            else:
+                corr = float(np.corrcoef(x, y)[0, 1])
+            pct_shifts.append(pct)
+            mad_scaled.append(mad_val)
+            if np.isfinite(corr):
+                corrs.append(corr)
+            top_rows.append((str(col), pct))
+
+        if not pct_shifts:
+            return {"status": "no_numeric_signal"}
+
+        pct_arr = np.asarray(pct_shifts, dtype=np.float64)
+        mad_arr = np.asarray(mad_scaled, dtype=np.float64)
+        corr_arr = np.asarray(corrs, dtype=np.float64) if corrs else np.asarray([], dtype=np.float64)
+        top = sorted(top_rows, key=lambda row: abs(float(row[1])), reverse=True)[:10]
+        out: Dict[str, Any] = {
+            "status": "computed",
+            "features_evaluated": int(len(pct_shifts)),
+            "median_abs_pct_shift": float(np.nanmedian(pct_arr)),
+            "p95_abs_pct_shift": float(np.nanpercentile(pct_arr, 95)),
+            "median_mad_scaled_shift": float(np.nanmedian(mad_arr)),
+            "p95_mad_scaled_shift": float(np.nanpercentile(mad_arr, 95)),
+            "top_features_abs_pct_shift": [
+                {"name": name, "abs_pct_shift": float(val)} for name, val in top
+            ],
+        }
+        if corr_arr.size:
+            out["feature_corr_median"] = float(np.nanmedian(corr_arr))
+            out["feature_corr_p05"] = float(np.nanpercentile(corr_arr, 5))
+        return out
+
+    def _compute_normalization_validation_report(
+        self,
+        *,
+        pre_probe_df: pd.DataFrame,
+        post_probe_df: pd.DataFrame,
+        batch_probe_series: Optional[pd.Series],
+        target_probe_map: Mapping[str, pd.Series],
+        validation_cfg: Mapping[str, Any],
+    ) -> Dict[str, Any]:
+        """Compute configured pre/post validation probes for normalization."""
+        report: Dict[str, Any] = {
+            "enabled": True,
+            "status": "computed",
+            "rows_sampled": int(len(pre_probe_df)),
+            "features_sampled": int(pre_probe_df.shape[1]),
+            "config": {
+                "max_rows": int(validation_cfg.get("max_rows", 0) or 0),
+                "max_features": int(validation_cfg.get("max_features", 0) or 0),
+                "min_group_size": int(validation_cfg.get("min_group_size", 0) or 0),
+                "max_levels": int(validation_cfg.get("max_levels", 0) or 0),
+                "batch_key": str(validation_cfg.get("batch_key", "auto")),
+                "target_keys": [str(v) for v in validation_cfg.get("target_keys", [])],
+            },
+            "probes": {},
+        }
+        metrics_cfg = validation_cfg.get("metrics", {}) if isinstance(validation_cfg.get("metrics", {}), Mapping) else {}
+        min_group_size = int(validation_cfg.get("min_group_size", 20) or 20)
+        max_levels = int(validation_cfg.get("max_levels", 24) or 24)
+
+        if bool(metrics_cfg.get("batch_eta2", True)) and batch_probe_series is not None:
+            pre_batch = self._compute_eta2_probe_summary(
+                pre_probe_df,
+                batch_probe_series,
+                min_group_size=min_group_size,
+                max_levels=max_levels,
+            )
+            post_batch = self._compute_eta2_probe_summary(
+                post_probe_df,
+                batch_probe_series,
+                min_group_size=min_group_size,
+                max_levels=max_levels,
+            )
+            batch_probe: Dict[str, Any] = {"pre": pre_batch, "post": post_batch}
+            if pre_batch.get("status") == "computed" and post_batch.get("status") == "computed":
+                batch_probe["delta_eta2_median"] = float(post_batch["eta2_median"] - pre_batch["eta2_median"])
+            report["probes"]["batch_eta2"] = batch_probe
+
+        if bool(metrics_cfg.get("target_eta2", True)):
+            targets: Dict[str, Any] = {}
+            for target_key, target_series in target_probe_map.items():
+                pre_target = self._compute_eta2_probe_summary(
+                    pre_probe_df,
+                    target_series,
+                    min_group_size=min_group_size,
+                    max_levels=max_levels,
+                )
+                post_target = self._compute_eta2_probe_summary(
+                    post_probe_df,
+                    target_series,
+                    min_group_size=min_group_size,
+                    max_levels=max_levels,
+                )
+                target_probe: Dict[str, Any] = {"pre": pre_target, "post": post_target}
+                if pre_target.get("status") == "computed" and post_target.get("status") == "computed":
+                    target_probe["delta_eta2_median"] = float(post_target["eta2_median"] - pre_target["eta2_median"])
+                targets[str(target_key)] = target_probe
+            report["probes"]["target_eta2"] = targets
+
+        if bool(metrics_cfg.get("perturbation", True)):
+            report["probes"]["perturbation"] = self._compute_perturbation_probe_summary(
+                pre_probe_df,
+                post_probe_df,
+            )
+
+        if not report["probes"]:
+            report["status"] = "disabled_by_metrics"
+        return report
+
+    @staticmethod
+    def _resolve_combat_family_cfg(combat_cfg: Mapping[str, Any]) -> Dict[str, Any]:
+        """Resolve family-wise ComBat grouping config."""
+        raw = combat_cfg.get("family_wise", {}) if isinstance(combat_cfg.get("family_wise", {}), Mapping) else {}
+        regex_map_raw = raw.get("regex_map", {}) if isinstance(raw.get("regex_map", {}), Mapping) else {}
+        regex_map: Dict[str, List[str]] = {}
+        for family, patterns in regex_map_raw.items():
+            if isinstance(patterns, list):
+                normalized = [str(p).strip() for p in patterns if str(p).strip()]
+                if normalized:
+                    regex_map[str(family)] = normalized
+        strategy = str(raw.get("strategy", "prefix")).strip().lower() or "prefix"
+        if strategy not in {"prefix", "regex_map"}:
+            strategy = "prefix"
+        delimiter = str(raw.get("delimiter", "_"))
+        return {
+            "enabled": bool(raw.get("enabled", False)),
+            "strategy": strategy,
+            "delimiter": delimiter if delimiter else "_",
+            "min_family_columns": max(1, int(raw.get("min_family_columns", 1) or 1)),
+            "regex_map": regex_map,
+        }
+
+    def _feature_family_name(self, feature_name: str, family_cfg: Mapping[str, Any]) -> str:
+        """Resolve one feature column to a family name."""
+        base = str(feature_name).split("__g_", 1)[0]
+        regex_map = family_cfg.get("regex_map", {}) if isinstance(family_cfg.get("regex_map", {}), Mapping) else {}
+        if regex_map:
+            for family, patterns in regex_map.items():
+                if not isinstance(patterns, list):
+                    continue
+                for pattern in patterns:
+                    try:
+                        if re.search(str(pattern), base):
+                            return str(family)
+                    except re.error:
+                        continue
+            if str(family_cfg.get("strategy", "prefix")) == "regex_map":
+                return "unmatched"
+        delimiter = str(family_cfg.get("delimiter", "_"))
+        if delimiter and delimiter in base:
+            head = base.split(delimiter, 1)[0]
+        else:
+            head = base
+        family = str(head).strip().lower() or "unknown"
+        return family
+
+    def _build_combat_family_groups(
+        self,
+        feature_cols: Sequence[str],
+        family_cfg: Mapping[str, Any],
+    ) -> Dict[str, List[str]]:
+        """Group feature columns for optional family-wise ComBat fitting."""
+        cols = [str(c) for c in feature_cols]
+        if not bool(family_cfg.get("enabled", False)):
+            return {"__all__": sorted(cols)}
+        groups: Dict[str, List[str]] = {}
+        for col in cols:
+            family = self._feature_family_name(col, family_cfg)
+            groups.setdefault(family, []).append(col)
+        for family in list(groups.keys()):
+            groups[family] = sorted(groups[family])
+
+        min_cols = max(1, int(family_cfg.get("min_family_columns", 1) or 1))
+        if min_cols > 1:
+            small = [family for family, family_cols in groups.items() if len(family_cols) < min_cols]
+            if small:
+                merged: List[str] = []
+                for family in small:
+                    merged.extend(groups.pop(family, []))
+                if merged:
+                    groups.setdefault("__other__", [])
+                    groups["__other__"].extend(merged)
+                    groups["__other__"] = sorted(set(groups["__other__"]))
+        if not groups:
+            groups["__all__"] = sorted(cols)
+        return {family: sorted(family_cols) for family, family_cols in sorted(groups.items(), key=lambda row: row[0])}
+
+    def _apply_feature_normalization(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """Apply optional post-features normalization (ComBat pilot)."""
+        norm_cfg = self._resolve_normalization_cfg()
+        validation_cfg = self._resolve_normalization_validation_cfg(norm_cfg if isinstance(norm_cfg, Mapping) else {})
+        if not norm_cfg:
+            self._normalization_report = {
+                "enabled": False,
+                "status": "missing_config",
+                "method": None,
+                "scope": None,
+                "validation": {"enabled": False, "status": "missing_config"},
+            }
+            return features_df
+
+        enabled = bool(norm_cfg.get("enabled", False))
+        method = str(norm_cfg.get("method", "")).strip().lower()
+        scope = str(norm_cfg.get("scope", "")).strip().lower()
+        strict = bool(norm_cfg.get("strict", False))
+        self._normalization_report = {
+            "enabled": bool(enabled),
+            "status": "disabled" if not enabled else "pending",
+            "method": method or None,
+            "scope": scope or None,
+            "strict": bool(strict),
+            "validation": {
+                "enabled": bool(validation_cfg.get("enabled", False)),
+                "status": "pending" if bool(validation_cfg.get("enabled", False)) and enabled else "disabled",
+            },
+        }
+        if not enabled:
+            return features_df
+        if method != "combat":
+            self._normalization_report["status"] = "unsupported_method"
+            self._normalization_report["reason"] = f"method={method or '<empty>'}"
+            logger.warning(
+                "Normalization enabled for %s but method '%s' is unsupported; skipping",
+                self.ds_id,
+                method or "<empty>",
+            )
+            return features_df
+        if scope != "post_features":
+            self._normalization_report["status"] = "unsupported_scope"
+            self._normalization_report["reason"] = f"scope={scope or '<empty>'}"
+            logger.info(
+                "Normalization scope '%s' is not implemented for summarize (%s); skipping",
+                scope or "<empty>",
+                self.ds_id,
+            )
+            return features_df
+
+        try:
+            from neuroCombat import neuroCombat  # type: ignore
+        except Exception as exc:
+            message = f"neuroCombat import failed: {exc}"
+            self._normalization_report["status"] = "failed_import"
+            self._normalization_report["reason"] = message
+            if strict:
+                raise RuntimeError(message) from exc
+            logger.warning("%s; continuing without normalization", message)
+            return features_df
+
+        if len(features_df) == 0:
+            self._normalization_report["status"] = "skipped_empty_features"
+            return features_df
+
+        batch_key = str(norm_cfg.get("batch_key", "")).strip()
+        covariate_keys = [
+            str(v).strip()
+            for v in (norm_cfg.get("covariates", []) if isinstance(norm_cfg.get("covariates", []), list) else [])
+            if str(v).strip()
+        ]
+        combat_cfg = norm_cfg.get("combat", {}) if isinstance(norm_cfg.get("combat", {}), Mapping) else {}
+        family_cfg = self._resolve_combat_family_cfg(combat_cfg)
+        chunk_size = max(1, int(combat_cfg.get("chunk_size", 24) or 24))
+        min_batch_size = max(1, int(combat_cfg.get("min_batch_size", 2) or 2))
+        min_feature_observations = max(4, int(combat_cfg.get("min_feature_observations", 16) or 16))
+        variance_epsilon = float(combat_cfg.get("variance_epsilon", 1e-9) or 1e-9)
+        winsorize_q = self._parse_winsorize_quantiles(
+            combat_cfg.get("winsorize_quantiles", [0.005, 0.995])
+        )
+
+        if not batch_key:
+            self._normalization_report["status"] = "skipped_missing_batch_key"
+            logger.warning("Normalization enabled for %s but batch_key is empty; skipping ComBat", self.ds_id)
+            return features_df
+
+        subject_ids = self._anchor_subject_ids(features_df)
+        if len(subject_ids) != len(features_df):
+            self._normalization_report["status"] = "skipped_subject_resolution_failed"
+            logger.warning("Could not align subjects to rows for ComBat (%s); skipping", self.ds_id)
+            return features_df
+        subject_series = pd.Series(subject_ids, index=features_df.index, dtype="object")
+        unique_subjects = pd.unique(subject_series)
+        meta_by_subject: Dict[str, Dict[str, Any]] = {
+            str(subject): self.participant_meta_for(str(subject))
+            for subject in unique_subjects
+        }
+
+        batch_candidates = self._normalization_key_candidates(batch_key)
+        batch_by_subject: Dict[str, Any] = {
+            sub: self._lookup_meta_value(meta_by_subject.get(sub, {}), batch_candidates)
+            for sub in meta_by_subject.keys()
+        }
+        batch_series = subject_series.map(batch_by_subject)
+        valid_mask = ~batch_series.map(self._is_missing_meta_value).to_numpy(dtype=bool)
+        if not np.any(valid_mask):
+            self._normalization_report["status"] = "skipped_no_batch_values"
+            self._normalization_report["batch_key"] = batch_key
+            logger.warning(
+                "ComBat skipped for %s: no rows had batch metadata key '%s'",
+                self.ds_id,
+                batch_key,
+            )
+            return features_df
+
+        batch_series_valid = batch_series.loc[valid_mask].astype(str).str.strip()
+        batch_counts = batch_series_valid.value_counts()
+        keep_batches = batch_counts[batch_counts >= int(min_batch_size)].index.tolist()
+        if keep_batches:
+            keep_mask = batch_series.astype(str).isin(keep_batches).to_numpy(dtype=bool)
+            valid_mask = valid_mask & keep_mask
+            batch_series_valid = batch_series.loc[valid_mask].astype(str).str.strip()
+            batch_counts = batch_series_valid.value_counts()
+        if int(batch_counts.shape[0]) < 2:
+            self._normalization_report["status"] = "skipped_single_batch"
+            self._normalization_report["batch_key"] = batch_key
+            self._normalization_report["batch_counts"] = {
+                str(k): int(v) for k, v in batch_counts.to_dict().items()
+            }
+            logger.warning(
+                "ComBat skipped for %s: expected >=2 batches after filtering, got %d",
+                self.ds_id,
+                int(batch_counts.shape[0]),
+            )
+            return features_df
+
+        valid_index = features_df.index[valid_mask]
+        covars_df = pd.DataFrame(
+            {"batch": batch_series.loc[valid_mask].astype(str).str.strip().tolist()},
+            index=np.arange(int(valid_mask.sum())),
+        )
+        categorical_cols: List[str] = []
+        continuous_cols: List[str] = []
+        covariate_coverage: Dict[str, float] = {}
+        for cov_key in covariate_keys:
+            cov_candidates = self._normalization_key_candidates(cov_key)
+            cov_by_subject = {
+                sub: self._lookup_meta_value(meta_by_subject.get(sub, {}), cov_candidates)
+                for sub in meta_by_subject.keys()
+            }
+            cov_full = subject_series.map(cov_by_subject)
+            cov_valid = cov_full.loc[valid_mask]
+            observed = cov_valid.map(lambda v: 0 if self._is_missing_meta_value(v) else 1)
+            coverage = float(observed.mean()) if len(observed) else 0.0
+            covariate_coverage[cov_key] = coverage
+            if coverage <= 0.0:
+                continue
+            coerced, kind = self._prepare_combat_covariate(cov_valid)
+            covars_df[cov_key] = coerced.to_list()
+            if kind == "continuous":
+                continuous_cols.append(cov_key)
+            else:
+                categorical_cols.append(cov_key)
+
+        feature_cols = projection.select_export_feature_columns(features_df)
+        if not feature_cols:
+            self._normalization_report["status"] = "skipped_no_numeric_features"
+            logger.warning("ComBat skipped for %s: no numeric feature columns found", self.ds_id)
+            return features_df
+        family_groups = self._build_combat_family_groups(feature_cols, family_cfg)
+        family_stats: Dict[str, Dict[str, Any]] = {
+            family: {
+                "feature_columns_total": int(len(cols)),
+                "feature_columns_harmonized": 0,
+                "chunks_total": 0,
+                "chunks_skipped": 0,
+            }
+            for family, cols in family_groups.items()
+        }
+        chunks_total = int(
+            sum(
+                (len(cols) + chunk_size - 1) // chunk_size
+                for cols in family_groups.values()
+                if len(cols) > 0
+            )
+        )
+
+        validation_enabled = bool(validation_cfg.get("enabled", False))
+        pre_probe_df: Optional[pd.DataFrame] = None
+        batch_probe_series: Optional[pd.Series] = None
+        target_probe_map: Dict[str, pd.Series] = {}
+        if validation_enabled:
+            probe_index = self._sample_probe_indices(valid_index, validation_cfg)
+            probe_feature_cols = self._sample_probe_feature_columns(feature_cols, validation_cfg)
+            if len(probe_index) > 0 and probe_feature_cols:
+                pre_probe_df = features_df.loc[probe_index, probe_feature_cols].apply(pd.to_numeric, errors="coerce")
+                probe_batch_key = str(validation_cfg.get("batch_key", "auto")).strip().lower() or "auto"
+                if probe_batch_key == "auto":
+                    batch_probe_series = batch_series.loc[probe_index]
+                else:
+                    probe_batch_candidates = self._normalization_key_candidates(probe_batch_key)
+                    probe_batch_by_subject = {
+                        sub: self._lookup_meta_value(meta_by_subject.get(sub, {}), probe_batch_candidates)
+                        for sub in meta_by_subject.keys()
+                    }
+                    probe_batch_series_full = subject_series.map(probe_batch_by_subject)
+                    batch_probe_series = probe_batch_series_full.loc[probe_index]
+                for target_key in validation_cfg.get("target_keys", []):
+                    target_name = str(target_key).strip()
+                    if not target_name:
+                        continue
+                    target_candidates = self._normalization_key_candidates(target_name)
+                    target_by_subject = {
+                        sub: self._lookup_meta_value(meta_by_subject.get(sub, {}), target_candidates)
+                        for sub in meta_by_subject.keys()
+                    }
+                    target_full = subject_series.map(target_by_subject)
+                    target_probe_map[target_name] = target_full.loc[probe_index]
+            else:
+                self._normalization_report["validation"] = {
+                    "enabled": True,
+                    "status": "insufficient_probe_sample",
+                    "rows_sampled": int(len(probe_index)),
+                    "features_sampled": int(len(probe_feature_cols)),
+                }
+
+        harmonized_columns = 0
+        skipped_columns: Dict[str, int] = {"low_support": 0, "zero_variance": 0}
+        chunk_counter = 0
+        for family_name, family_cols in family_groups.items():
+            family_state = family_stats.get(
+                family_name,
+                {
+                    "feature_columns_total": int(len(family_cols)),
+                    "feature_columns_harmonized": 0,
+                    "chunks_total": 0,
+                    "chunks_skipped": 0,
+                },
+            )
+            if not family_cols:
+                family_stats[family_name] = family_state
+                continue
+
+            for i in range(0, len(family_cols), chunk_size):
+                chunk_counter += 1
+                chunk_cols = family_cols[i : i + chunk_size]
+                family_state["chunks_total"] = int(family_state.get("chunks_total", 0)) + 1
+                chunk_df = features_df.loc[valid_index, chunk_cols].apply(pd.to_numeric, errors="coerce")
+                chunk_matrix = chunk_df.to_numpy(dtype=np.float64, copy=True)
+                prepared_rows: List[np.ndarray] = []
+                prepared_cols: List[str] = []
+                missing_masks: List[np.ndarray] = []
+
+                for col_idx, col_name in enumerate(chunk_cols):
+                    col_values = chunk_matrix[:, col_idx]
+                    finite_mask = np.isfinite(col_values)
+                    finite_count = int(finite_mask.sum())
+                    if finite_count < min_feature_observations:
+                        skipped_columns["low_support"] = skipped_columns.get("low_support", 0) + 1
+                        continue
+                    finite_vals = col_values[finite_mask]
+                    if winsorize_q is not None:
+                        q_low, q_high = winsorize_q
+                        try:
+                            lo, hi = np.nanquantile(finite_vals, [q_low, q_high])
+                        except Exception:
+                            lo, hi = np.nan, np.nan
+                        if np.isfinite(lo) and np.isfinite(hi) and hi > lo:
+                            finite_vals = np.clip(finite_vals, lo, hi)
+                    if float(np.nanstd(finite_vals)) <= variance_epsilon:
+                        skipped_columns["zero_variance"] = skipped_columns.get("zero_variance", 0) + 1
+                        continue
+                    filled = col_values.copy()
+                    fill_value = float(np.nanmedian(finite_vals))
+                    filled[finite_mask] = finite_vals
+                    filled[~finite_mask] = fill_value
+                    prepared_rows.append(filled.astype(np.float64))
+                    prepared_cols.append(str(col_name))
+                    missing_masks.append(~finite_mask)
+
+                if not prepared_rows:
+                    family_state["chunks_skipped"] = int(family_state.get("chunks_skipped", 0)) + 1
+                    continue
+                # neuroCombat becomes numerically unstable for a single-feature chunk
+                # (observed as all-NaN output), so keep that column unchanged.
+                if len(prepared_rows) == 1:
+                    skipped_columns["single_feature_family"] = skipped_columns.get("single_feature_family", 0) + 1
+                    family_state["chunks_skipped"] = int(family_state.get("chunks_skipped", 0)) + 1
+                    logger.warning(
+                        "Skipping ComBat chunk %d/%d (%s) for %s: single eligible feature (%s) would yield unstable harmonization",
+                        chunk_counter,
+                        chunks_total,
+                        family_name,
+                        self.ds_id,
+                        prepared_cols[0],
+                    )
+                    continue
+                dat = np.vstack(prepared_rows)
+                combat_result = None
+                try:
+                    combat_result = neuroCombat(
+                        dat=dat,
+                        covars=covars_df,
+                        batch_col="batch",
+                        categorical_cols=categorical_cols or None,
+                        continuous_cols=continuous_cols or None,
+                    )
+                except Exception as exc:
+                    chunk_msg = (
+                        f"ComBat failed for dataset={self.ds_id}, family={family_name}, chunk={chunk_counter}/{chunks_total}: {exc}"
+                    )
+                    if categorical_cols or continuous_cols:
+                        logger.warning("%s; retrying with batch-only model", chunk_msg)
+                        try:
+                            combat_result = neuroCombat(
+                                dat=dat,
+                                covars=covars_df[["batch"]].copy(),
+                                batch_col="batch",
+                                categorical_cols=None,
+                                continuous_cols=None,
+                            )
+                        except Exception as retry_exc:
+                            if strict:
+                                raise RuntimeError(f"{chunk_msg}; batch-only fallback also failed: {retry_exc}") from retry_exc
+                            skipped_columns["combat_failed"] = skipped_columns.get("combat_failed", 0) + int(len(prepared_cols))
+                            family_state["chunks_skipped"] = int(family_state.get("chunks_skipped", 0)) + 1
+                            logger.warning(
+                                "Skipping ComBat chunk %d/%d (%s) for %s after fallback failure: %s",
+                                chunk_counter,
+                                chunks_total,
+                                family_name,
+                                self.ds_id,
+                                retry_exc,
+                            )
+                            continue
+                    else:
+                        if strict:
+                            raise RuntimeError(chunk_msg) from exc
+                        skipped_columns["combat_failed"] = skipped_columns.get("combat_failed", 0) + int(len(prepared_cols))
+                        family_state["chunks_skipped"] = int(family_state.get("chunks_skipped", 0)) + 1
+                        logger.warning(
+                            "Skipping ComBat chunk %d/%d (%s) for %s: %s",
+                            chunk_counter,
+                            chunks_total,
+                            family_name,
+                            self.ds_id,
+                            exc,
+                        )
+                        continue
+
+                harmonized = np.asarray(combat_result["data"], dtype=np.float64)
+                for row_idx, col_name in enumerate(prepared_cols):
+                    updated = harmonized[row_idx, :].copy()
+                    missing = missing_masks[row_idx]
+                    if missing.any():
+                        updated[missing] = np.nan
+                    features_df.loc[valid_index, col_name] = updated.astype(np.float32)
+                    harmonized_columns += 1
+                    family_state["feature_columns_harmonized"] = int(
+                        family_state.get("feature_columns_harmonized", 0)
+                    ) + 1
+            family_stats[family_name] = family_state
+
+        if harmonized_columns == 0:
+            self._normalization_report = {
+                "enabled": True,
+                "status": "skipped_no_eligible_columns",
+                "method": "combat",
+                "scope": "post_features",
+                "batch_key": batch_key,
+                "batch_counts": {str(k): int(v) for k, v in batch_counts.to_dict().items()},
+                "rows_total": int(len(features_df)),
+                "rows_harmonized": int(valid_mask.sum()),
+                "feature_columns_total": int(len(feature_cols)),
+                "feature_columns_harmonized": 0,
+                "covariates_used": [str(c) for c in covars_df.columns if c != "batch"],
+                "covariate_coverage": covariate_coverage,
+                "family_wise": {
+                    "enabled": bool(family_cfg.get("enabled", False)),
+                    "strategy": str(family_cfg.get("strategy", "prefix")),
+                    "families": family_stats,
+                    "family_count": int(len(family_stats)),
+                },
+                "validation": {
+                    "enabled": bool(validation_enabled),
+                    "status": "not_run",
+                    "reason": "no_harmonized_columns",
+                },
+            }
+            logger.warning("ComBat skipped for %s: no eligible feature columns", self.ds_id)
+            return features_df
+
+        validation_report: Dict[str, Any] = {
+            "enabled": bool(validation_enabled),
+            "status": "disabled" if not validation_enabled else "not_run",
+        }
+        if validation_enabled:
+            if pre_probe_df is not None and not pre_probe_df.empty:
+                post_probe_df = features_df.loc[pre_probe_df.index, pre_probe_df.columns].apply(
+                    pd.to_numeric, errors="coerce"
+                )
+                validation_report = self._compute_normalization_validation_report(
+                    pre_probe_df=pre_probe_df,
+                    post_probe_df=post_probe_df,
+                    batch_probe_series=batch_probe_series,
+                    target_probe_map=target_probe_map,
+                    validation_cfg=validation_cfg,
+                )
+            else:
+                validation_report = {
+                    "enabled": True,
+                    "status": "insufficient_probe_sample",
+                }
+
+        self._normalization_report = {
+            "enabled": True,
+            "status": "applied",
+            "method": "combat",
+            "scope": "post_features",
+            "batch_key": batch_key,
+            "batch_counts": {str(k): int(v) for k, v in batch_counts.to_dict().items()},
+            "rows_total": int(len(features_df)),
+            "rows_harmonized": int(valid_mask.sum()),
+            "feature_columns_total": int(len(feature_cols)),
+            "feature_columns_harmonized": int(harmonized_columns),
+            "chunk_size": int(chunk_size),
+            "min_batch_size": int(min_batch_size),
+            "min_feature_observations": int(min_feature_observations),
+            "winsorize_quantiles": list(winsorize_q) if winsorize_q is not None else None,
+            "covariates_used": [str(c) for c in covars_df.columns if c != "batch"],
+            "covariate_coverage": covariate_coverage,
+            "skipped_columns": skipped_columns,
+            "family_wise": {
+                "enabled": bool(family_cfg.get("enabled", False)),
+                "strategy": str(family_cfg.get("strategy", "prefix")),
+                "families": family_stats,
+                "family_count": int(len(family_stats)),
+            },
+            "validation": validation_report,
+        }
+        logger.info(
+            "Applied ComBat normalization for %s (rows=%d/%d, columns=%d/%d, batches=%d)",
+            self.ds_id,
+            int(valid_mask.sum()),
+            int(len(features_df)),
+            int(harmonized_columns),
+            int(len(feature_cols)),
+            int(batch_counts.shape[0]),
+        )
+        return features_df
+
     def run(self) -> None:
         """Run the main workflow for this component."""
         logger.info(f"Summarizing {self.ds_id}")
@@ -762,6 +2121,7 @@ class DatasetSummaryRunner:
             return
 
         features_df = self._apply_qc_filters(features_df)
+        features_df = self._apply_feature_normalization(features_df)
 
         try:
             grouping_items = self._build_groupings(features_df)
@@ -773,6 +2133,14 @@ class DatasetSummaryRunner:
             return
 
         mnps_dir = self._create_output_dir(ds_path)
+        normalization_report_info = self._write_normalization_report_file(mnps_dir)
+        self._normalization_report["report_file"] = dict(normalization_report_info)
+        stage_mapping_qc_info: Dict[str, Any] = {
+            "schema": "mndm.stage_mapping_qc.v1",
+            "status": "none",
+            "path": None,
+            "subjects": 0,
+        }
         run_fatal_error: Optional[Exception] = None
         try:
             self._prepare_one_shot_anchor(features_df, mnps_dir)
@@ -809,6 +2177,7 @@ class DatasetSummaryRunner:
             )
             logger.exception("Summarize run failed for %s", self.ds_id)
         finally:
+            stage_mapping_qc_info = self._write_stage_mapping_qc_file(mnps_dir)
             run_errors_info = self._write_run_errors_file(
                 mnps_dir,
                 total_groupings=len(grouping_items),
@@ -846,6 +2215,9 @@ class DatasetSummaryRunner:
                         },
                         "reproducibility": self.ctx.reproducibility,
                         "grouping_collisions": self.grouping_collision_info,
+                        "normalization": self._normalization_report,
+                        "normalization_report": normalization_report_info,
+                        "stage_mapping_qc": stage_mapping_qc_info,
                         "run_status": run_status,
                         "run_errors": run_errors_info,
                         "fatal_error": fatal_error_summary,
@@ -937,6 +2309,84 @@ class DatasetSummaryRunner:
         with self._run_errors_lock:
             self._run_errors.append(dict(error_entry))
 
+    def _record_stage_mapping_qc_entry(self, entry: Mapping[str, Any]) -> None:
+        """Store one per-subject stage-mapping QC entry in a thread-safe way."""
+        with self._stage_mapping_qc_lock:
+            self._stage_mapping_qc_entries.append(dict(entry))
+
+    def _write_stage_mapping_qc_file(self, mnps_dir: Path) -> Dict[str, Any]:
+        """Write run-level stage_mapping_qc.json when per-subject entries exist."""
+        with self._stage_mapping_qc_lock:
+            entries = [dict(e) for e in self._stage_mapping_qc_entries]
+
+        summary: Dict[str, Any] = {
+            "schema": "mndm.stage_mapping_qc.v1",
+            "status": "none",
+            "path": None,
+            "subjects": int(len(entries)),
+        }
+        if not entries:
+            return summary
+
+        expected_freqs: set[int] = set()
+        detected_freqs: set[int] = set()
+        has_25 = 0
+        has_30 = 0
+        for row in entries:
+            exp = row.get("expected_frequencies_hz", [])
+            if isinstance(exp, Sequence) and not isinstance(exp, (str, bytes)):
+                for v in exp:
+                    try:
+                        expected_freqs.add(int(v))
+                    except Exception:
+                        continue
+            det = row.get("detected_raw_frequencies_hz", [])
+            if isinstance(det, Sequence) and not isinstance(det, (str, bytes)):
+                for v in det:
+                    try:
+                        detected_freqs.add(int(v))
+                    except Exception:
+                        continue
+            if bool(row.get("raw_has_25hz", False)):
+                has_25 += 1
+            if bool(row.get("raw_has_30hz", False)):
+                has_30 += 1
+
+        expected_list = sorted(expected_freqs)
+        detected_list = sorted(detected_freqs)
+        missing_expected = [int(v) for v in expected_list if int(v) not in detected_freqs]
+
+        payload = {
+            "schema": "mndm.stage_mapping_qc.v1",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "dataset_id": self.ds_id,
+            "run_dir": str(mnps_dir),
+            "aggregate": {
+                "subjects_total": int(len(entries)),
+                "subjects_with_raw_25hz": int(has_25),
+                "subjects_with_raw_30hz": int(has_30),
+                "expected_frequencies_hz": [int(v) for v in expected_list],
+                "detected_raw_frequencies_hz": [int(v) for v in detected_list],
+                "missing_expected_frequencies_hz_raw": [int(v) for v in missing_expected],
+            },
+            "subjects": entries,
+        }
+        out_path = mnps_dir / "stage_mapping_qc.json"
+        try:
+            json_writer.write_json_summary(payload, out_path)
+            summary.update(
+                {
+                    "status": "written",
+                    "path": out_path.name,
+                    "aggregate": payload.get("aggregate", {}),
+                }
+            )
+        except Exception as exc:
+            summary["status"] = "write_failed"
+            summary["error"] = str(exc)
+            logger.exception("Failed to write stage_mapping_qc.json for %s (%s)", self.ds_id, out_path)
+        return summary
+
     def _write_run_errors_file(self, mnps_dir: Path, *, total_groupings: int) -> Dict[str, Any]:
         """Write run_errors.json when subject-level failures were captured."""
         with self._run_errors_lock:
@@ -979,6 +2429,31 @@ class DatasetSummaryRunner:
             summary["status"] = "write_failed"
             summary["error"] = str(exc)
             logger.exception("Failed to write run_errors.json for %s (%s)", self.ds_id, out_path)
+        return summary
+
+    def _write_normalization_report_file(self, mnps_dir: Path) -> Dict[str, Any]:
+        """Write normalization_report.json with pre/post probe metadata."""
+        summary: Dict[str, Any] = {
+            "schema": "mndm.normalization_report.v1",
+            "status": "none",
+            "path": None,
+        }
+        payload = {
+            "schema": "mndm.normalization_report.v1",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "dataset_id": self.ds_id,
+            "run_dir": str(mnps_dir),
+            "normalization": dict(self._normalization_report),
+        }
+        out_path = mnps_dir / "normalization_report.json"
+        try:
+            json_writer.write_json_summary(payload, out_path)
+            summary["status"] = "written"
+            summary["path"] = out_path.name
+        except Exception as exc:
+            summary["status"] = "write_failed"
+            summary["error"] = str(exc)
+            logger.exception("Failed to write normalization_report.json for %s (%s)", self.ds_id, out_path)
         return summary
 
     def write_regional_csv_outputs_threadsafe(
@@ -1026,6 +2501,7 @@ class DatasetSummaryRunner:
             "rows": int(len(features_df)),
             "columns": sorted([str(c) for c in features_df.columns]),
             "column_stats": {},
+            "normalization": dict(self._normalization_report),
         }
         for col in snapshot["columns"]:
             s = features_df[col]
@@ -1792,6 +3268,13 @@ class SubjectSummaryRunner:
             )
             if not external_anchor:
                 raise ValueError(f"Feature anchor file produced no usable anchors: {anchor_path}")
+        export_contracts = _resolve_export_contract_preferences(
+            proj_cfg if isinstance(proj_cfg, Mapping) else {},
+            external_anchor_available=bool(external_anchor),
+        )
+        export_subject_anchored = bool(export_contracts.get("subject_anchored", True))
+        export_cohort_anchored = bool(export_contracts.get("cohort_anchored", False))
+        primary_coordinate_layer = str(export_contracts.get("primary_coordinate_contract", "subject_anchored"))
 
         # Project direct MNPS coordinates first (always available as fallback/provenance).
         x_direct, x_direct_coverage, feature_baselines_v1 = projection.project_features_with_coverage(
@@ -1931,9 +3414,8 @@ class SubjectSummaryRunner:
         coords_9d_cohort_anchored = None
         coords_9d_cohort_names: list[str] = []
         feature_baselines_anchor: dict[str, dict] = {}
-        primary_coordinate_layer = "subject_anchored"
 
-        if external_anchor:
+        if external_anchor and export_cohort_anchored:
             x_direct_anchor, x_direct_anchor_coverage, feature_baselines_anchor_v1 = projection.project_features_with_coverage(
                 sub_frame,
                 self.ctx.weights,
@@ -1982,16 +3464,17 @@ class SubjectSummaryRunner:
                         )
                     coords_9d_cohort_anchored = np.asarray(coords_9d_anchor, dtype=np.float32)
                     coords_9d_cohort_names = list(coords_9d_anchor_names)
-                    coords_9d = coords_9d_cohort_anchored
-                    coords_9d_names = coords_9d_cohort_names
             feature_baselines_anchor.update(feature_baselines_anchor_v1)
             x_cohort_anchored = np.asarray(x_anchor, dtype=np.float32)
             x_cohort_coverage = np.asarray(x_anchor_coverage, dtype=np.float32)
-            x = x_cohort_anchored
-            x_coverage = x_cohort_coverage
-            x_definition = f"{x_definition}_cohort_anchored"
-            primary_coordinate_layer = "cohort_anchored"
             merged_baselines.update({f"{k}__cohort_anchor": v for k, v in feature_baselines_anchor.items()})
+            if primary_coordinate_layer == "cohort_anchored":
+                x = x_cohort_anchored
+                x_coverage = x_cohort_coverage
+                x_definition = f"{x_definition}_cohort_anchored"
+                if coords_9d_cohort_anchored is not None and coords_9d_cohort_names:
+                    coords_9d = coords_9d_cohort_anchored
+                    coords_9d_names = coords_9d_cohort_names
 
         axis_cov_labels = ["m", "d", "e"]
         axis_cov_stats = {
@@ -2244,6 +3727,98 @@ class SubjectSummaryRunner:
                     dataset_label,
                 )
 
+        def _estimate_jacobian_layer(coords_arr: Optional[np.ndarray]) -> Any:
+            """Estimate a Jacobian stack for an explicit anchor layer."""
+            if coords_arr is None or not np.size(coords_arr):
+                return None
+            arr = np.asarray(coords_arr, dtype=np.float32)
+            if arr.ndim != 2 or arr.shape[0] == 0:
+                return None
+            if not np.isfinite(arr).all():
+                return None
+            dot_arr = _compute_dot(arr)
+            nn_idx = projection.build_knn_indices(
+                arr,
+                k=mnps_cfg["knn_k"],
+                metric=mnps_cfg["knn_metric"],
+                whiten=whiten_flag,
+            )
+            return jacobian.estimate_local_jacobians(
+                arr,
+                dot_arr,
+                nn_idx,
+                super_window=mnps_cfg["super_window"],
+                ridge_alpha=mnps_cfg["ridge_alpha"],
+                distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
+                j_dot_dt=float(dt),
+            )
+
+        anchor_spec = anchor_artifact.get("spec", {}) if isinstance(anchor_artifact, Mapping) else {}
+        exported_anchor_spec = anchor_spec if export_cohort_anchored else {}
+        jacobian_layers: Dict[str, Any] = {}
+        if primary_jac_enabled:
+            jac_res_subject = jac_res if primary_coordinate_layer == "subject_anchored" else _estimate_jacobian_layer(x_subject_anchored)
+            jac_res_cohort = None
+            if x_cohort_anchored is not None:
+                jac_res_cohort = jac_res if primary_coordinate_layer == "cohort_anchored" else _estimate_jacobian_layer(x_cohort_anchored)
+            if export_subject_anchored and jac_res_subject is not None:
+                jacobian_layers["jacobian_subject_anchored"] = {
+                    "J_hat": jac_res_subject.j_hat,
+                    "J_dot": jac_res_subject.j_dot,
+                    "centers": jac_res_subject.centers,
+                    "attrs": {
+                        "coordinate_contract": "subject_anchored",
+                        "coordinate_space": "mnps_3d",
+                    },
+                }
+            if export_cohort_anchored and jac_res_cohort is not None:
+                jacobian_layers["jacobian_cohort_anchored"] = {
+                    "J_hat": jac_res_cohort.j_hat,
+                    "J_dot": jac_res_cohort.j_dot,
+                    "centers": jac_res_cohort.centers,
+                    "attrs": {
+                        "coordinate_contract": "cohort_anchored",
+                        "coordinate_space": "mnps_3d",
+                        "anchor_id": exported_anchor_spec.get("anchor_id"),
+                        "anchor_hash": exported_anchor_spec.get("anchor_hash"),
+                        "anchor_source": exported_anchor_spec.get("anchor_source"),
+                    },
+                }
+        if v2_enabled:
+            jac_res_v2_subject = (
+                jac_res_v2
+                if primary_coordinate_layer == "subject_anchored"
+                else _estimate_jacobian_layer(coords_9d_subject_anchored)
+            ) if coords_9d_subject_anchored is not None and coords_9d_subject_names else None
+            jac_res_v2_cohort = (
+                jac_res_v2
+                if primary_coordinate_layer == "cohort_anchored"
+                else _estimate_jacobian_layer(coords_9d_cohort_anchored)
+            ) if coords_9d_cohort_anchored is not None and coords_9d_cohort_names else None
+            if export_subject_anchored and jac_res_v2_subject is not None:
+                jacobian_layers["jacobian_9D_subject_anchored"] = {
+                    "J_hat": jac_res_v2_subject.j_hat,
+                    "J_dot": jac_res_v2_subject.j_dot,
+                    "centers": jac_res_v2_subject.centers,
+                    "attrs": {
+                        "coordinate_contract": "subject_anchored",
+                        "coordinate_space": "coords_9d",
+                    },
+                }
+            if export_cohort_anchored and jac_res_v2_cohort is not None:
+                jacobian_layers["jacobian_9D_cohort_anchored"] = {
+                    "J_hat": jac_res_v2_cohort.j_hat,
+                    "J_dot": jac_res_v2_cohort.j_dot,
+                    "centers": jac_res_v2_cohort.centers,
+                    "attrs": {
+                        "coordinate_contract": "cohort_anchored",
+                        "coordinate_space": "coords_9d",
+                        "anchor_id": exported_anchor_spec.get("anchor_id"),
+                        "anchor_hash": exported_anchor_spec.get("anchor_hash"),
+                        "anchor_source": exported_anchor_spec.get("anchor_source"),
+                    },
+                }
+
         # Extract auxiliary arrays
         effective_stage_codebook = mnps_cfg["stage_codebook"]
         stage = extract_stage_array(sub_frame, mnps_cfg["stage_codebook"])
@@ -2336,6 +3911,38 @@ class SubjectSummaryRunner:
             except Exception:
                 logger.exception("Failed to derive pseudo-stage labels for %s", dataset_label)
 
+        event_table_columns: Dict[str, Any] = {}
+        event_provenance_events: Dict[str, np.ndarray] = {}
+        stage_mapping_qc_entry: Optional[Dict[str, Any]] = None
+        try:
+            event_provenance = self._build_bids_event_stage_provenance(
+                sub_frame=sub_frame,
+                stage_for_windows=stage,
+            )
+            if event_provenance is not None:
+                prefer_events_stage = self._prefer_events_stage_in_summary()
+                if event_provenance.get("stage_inferred") is not None and (stage is None or prefer_events_stage):
+                    stage = np.asarray(event_provenance.get("stage_inferred"), dtype=np.int8)
+                    inferred_source = event_provenance.get("stage_source")
+                    inferred_column = event_provenance.get("stage_column")
+                    if inferred_source:
+                        stage_source = str(inferred_source)
+                        if prefer_events_stage:
+                            stage_source = f"{stage_source}:override_features_stage"
+                    if inferred_column:
+                        stage_column = str(inferred_column)
+                if stage_events_path is None and event_provenance.get("events_path"):
+                    stage_events_path = str(event_provenance.get("events_path"))
+                if stage_column is None and event_provenance.get("stage_column"):
+                    stage_column = str(event_provenance.get("stage_column"))
+                if stage_source is None and event_provenance.get("stage_source"):
+                    stage_source = str(event_provenance.get("stage_source"))
+                event_table_columns = dict(event_provenance.get("event_table_columns", {}) or {})
+                event_provenance_events = dict(event_provenance.get("legacy_events", {}) or {})
+                stage_mapping_qc_entry = dict(event_provenance.get("stage_mapping_qc", {}) or {})
+        except Exception:
+            logger.exception("Failed to build BIDS event provenance for %s", dataset_label)
+
         stage_frac_labeled = None
         if stage is not None and len(stage) > 0:
             try:
@@ -2343,7 +3950,16 @@ class SubjectSummaryRunner:
             except Exception:
                 stage_frac_labeled = None
         z = extract_embodied_array(sub_frame, mnps_cfg["embodied"])
-        events = extract_events(sub_frame)
+        events = dict(extract_events(sub_frame))
+        if event_provenance_events:
+            for key, arr in event_provenance_events.items():
+                safe_key = str(key).replace("/", "_").replace("\\", "_")
+                if safe_key in events:
+                    continue
+                try:
+                    events[safe_key] = np.asarray(arr, dtype=np.float64)
+                except Exception:
+                    continue
 
         # Load regional fMRI if available (pass sub_frame for correct file matching)
         regions_bold, regions_names, regions_sfreq = self._load_regional_fmri(
@@ -2359,7 +3975,7 @@ class SubjectSummaryRunner:
 
         # Group regions and compute optional regional MNPS/MNJ context.
         regional_mnps_cfg = config.get("regional_mnps", {}) if isinstance(config, Mapping) else {}
-        group_ts, group_matrix, group_names, region_groups, regional_mnps_results = compute_regional_context(
+        group_ts, group_matrix, group_names, region_groups, regional_mnps_results_subject = compute_regional_context(
             sub_frame=sub_frame,
             regions_bold=regions_bold,
             regions_names=regions_names,
@@ -2372,6 +3988,7 @@ class SubjectSummaryRunner:
             dataset_label=dataset_label,
             proj_cfg=proj_cfg if isinstance(proj_cfg, Mapping) else {},
             normalize_mode=normalize_mode,
+            external_anchor=None,
             subject=sub_id,
             session=ses_id,
             condition=condition,
@@ -2379,6 +3996,35 @@ class SubjectSummaryRunner:
             resolve_mnps_3d_cfg=_resolve_mnps_3d_cfg,
             coerce_v1_mapping_to_v2_subcoords=_coerce_v1_mapping_to_v2_subcoords,
             align_v2_subcoords=_align_v2_subcoords,
+        )
+        regional_mnps_results_cohort = None
+        if external_anchor:
+            _, _, _, _, regional_mnps_results_cohort = compute_regional_context(
+                sub_frame=sub_frame,
+                regions_bold=regions_bold,
+                regions_names=regions_names,
+                regions_sfreq=regions_sfreq,
+                config=config,
+                regional_mnps_cfg=regional_mnps_cfg if isinstance(regional_mnps_cfg, Mapping) else {},
+                subcoords_spec=subcoords_spec if isinstance(subcoords_spec, Mapping) else {},
+                axis_weights=self.ctx.weights if isinstance(self.ctx.weights, Mapping) else {},
+                dataset_id=self.dataset.ds_id,
+                dataset_label=dataset_label,
+                proj_cfg=proj_cfg if isinstance(proj_cfg, Mapping) else {},
+                normalize_mode=normalize_mode,
+                external_anchor=external_anchor,
+                subject=sub_id,
+                session=ses_id,
+                condition=condition,
+                task=task,
+                resolve_mnps_3d_cfg=_resolve_mnps_3d_cfg,
+                coerce_v1_mapping_to_v2_subcoords=_coerce_v1_mapping_to_v2_subcoords,
+                align_v2_subcoords=_align_v2_subcoords,
+            )
+        regional_mnps_results = (
+            regional_mnps_results_cohort
+            if primary_coordinate_layer == "cohort_anchored" and regional_mnps_results_cohort is not None
+            else regional_mnps_results_subject
         )
 
         if regional_mnps_cfg.get("enabled", False) and regional_mnps_results is not None:
@@ -2473,6 +4119,19 @@ class SubjectSummaryRunner:
             dist_summary = compute_dist_summary(x=x, coords_9d=coords_9d, coords_9d_names=coords_9d_names)
         except Exception:
             logger.exception("Failed to compute dist_summary for %s", dataset_label)
+
+        conventional_eeg_summary = None
+        try:
+            conventional_eeg_summary = compute_conventional_eeg_summary(
+                sub_frame=sub_frame,
+                config=config,
+                dataset_id=self.dataset.ds_id,
+            )
+            if conventional_eeg_summary is not None:
+                extensions_payload = dict(extensions_payload) if isinstance(extensions_payload, Mapping) else {}
+                extensions_payload["conventional_eeg"] = conventional_eeg_summary
+        except Exception:
+            logger.exception("Failed to compute conventional_eeg summary for %s", dataset_label)
 
         review_qc_cfg = (
             (config.get("robustness", {}) or {}).get("review_qc", {})
@@ -2584,17 +4243,23 @@ class SubjectSummaryRunner:
             _stable_hash_array(features_robust_z_values) if features_robust_z_values.size else None
         )
         coordinate_layers: Dict[str, Any] = {
-            "coords_3d_subject_anchored": {
-                "values": x_subject_anchored,
-                "names": ["m", "d", "e"],
-                "attrs": {
-                    "coordinate_contract": "subject_anchored",
-                    "normalize_mode": normalize_mode,
-                    "role": "within_subject_geometry",
-                },
-            }
+            **(
+                {
+                    "coords_3d_subject_anchored": {
+                        "values": x_subject_anchored,
+                        "names": ["m", "d", "e"],
+                        "attrs": {
+                            "coordinate_contract": "subject_anchored",
+                            "normalize_mode": normalize_mode,
+                            "role": "within_subject_geometry",
+                        },
+                    }
+                }
+                if export_subject_anchored
+                else {}
+            )
         }
-        if coords_9d_subject_anchored is not None and coords_9d_subject_names:
+        if export_subject_anchored and coords_9d_subject_anchored is not None and coords_9d_subject_names:
             coordinate_layers["coords_9d_subject_anchored"] = {
                 "values": coords_9d_subject_anchored,
                 "names": coords_9d_subject_names,
@@ -2604,32 +4269,131 @@ class SubjectSummaryRunner:
                     "role": "within_subject_stratified_geometry",
                 },
             }
-        if x_cohort_anchored is not None:
-            anchor_spec = anchor_artifact.get("spec", {}) if isinstance(anchor_artifact, Mapping) else {}
+        if export_cohort_anchored and x_cohort_anchored is not None:
             coordinate_layers["coords_3d_cohort_anchored"] = {
                 "values": x_cohort_anchored,
                 "names": ["m", "d", "e"],
                 "attrs": {
                     "coordinate_contract": "cohort_anchored",
-                    "anchor_id": anchor_spec.get("anchor_id"),
-                    "anchor_hash": anchor_spec.get("anchor_hash"),
-                    "anchor_source": anchor_spec.get("anchor_source"),
+                    "anchor_id": exported_anchor_spec.get("anchor_id"),
+                    "anchor_hash": exported_anchor_spec.get("anchor_hash"),
+                    "anchor_source": exported_anchor_spec.get("anchor_source"),
                     "role": "clinical_group_comparison",
                 },
             }
-        if coords_9d_cohort_anchored is not None and coords_9d_cohort_names:
-            anchor_spec = anchor_artifact.get("spec", {}) if isinstance(anchor_artifact, Mapping) else {}
+        if export_cohort_anchored and coords_9d_cohort_anchored is not None and coords_9d_cohort_names:
             coordinate_layers["coords_9d_cohort_anchored"] = {
                 "values": coords_9d_cohort_anchored,
                 "names": coords_9d_cohort_names,
                 "attrs": {
                     "coordinate_contract": "cohort_anchored",
-                    "anchor_id": anchor_spec.get("anchor_id"),
-                    "anchor_hash": anchor_spec.get("anchor_hash"),
-                    "anchor_source": anchor_spec.get("anchor_source"),
+                    "anchor_id": exported_anchor_spec.get("anchor_id"),
+                    "anchor_hash": exported_anchor_spec.get("anchor_hash"),
+                    "anchor_source": exported_anchor_spec.get("anchor_source"),
                     "role": "clinical_group_comparison_stratified",
                 },
             }
+
+        stage_codebook_export = _build_stage_codebook_export(
+            effective_stage_codebook if isinstance(effective_stage_codebook, Mapping) else {},
+            stage_source=stage_source,
+            stage_column=stage_column,
+            stage_events_path=stage_events_path,
+        )
+        event_windows_columns, event_windows_attrs = _build_event_windows_export(
+            event_table_columns=event_table_columns,
+            events_path=stage_events_path,
+            time=time,
+            window_start=window_start,
+            window_end=window_end,
+            stage=stage,
+            window_sec=float(mnps_cfg["window_sec"]),
+            overlap=float(mnps_cfg["overlap"]),
+        )
+        participant_clinical_meta = _build_participant_clinical_meta(
+            participant_meta=participant_meta if isinstance(participant_meta, Mapping) else {},
+            participant_meta_source=participant_meta_source if isinstance(participant_meta_source, Mapping) else {},
+            mapped_meta=mapped_meta if isinstance(mapped_meta, Mapping) else {},
+            session=ses_id,
+            condition=condition,
+            task=task,
+            run_id=run_id,
+            acq_id=acq_id,
+        )
+        qc_windows_export = _build_qc_windows_export(
+            sub_frame=sub_frame,
+            stage=stage,
+            x_coverage=np.asarray(x_coverage, dtype=np.float32),
+            min_axis_coverage=float(min_axis_coverage),
+        )
+        coverage_export = _build_coverage_export(
+            x_coverage=np.asarray(x_coverage, dtype=np.float32),
+            min_axis_coverage=float(min_axis_coverage),
+            coordinate_layers=coordinate_layers,
+            jacobian_centers=jac_res.centers if jac_res is not None else None,
+            jacobian_9d_centers=jac_res_v2.centers if jac_res_v2 is not None else None,
+        )
+        available_coordinate_layers = sorted([str(name) for name in coordinate_layers.keys()])
+        available_jacobian_layers = sorted([str(name) for name in jacobian_layers.keys()])
+        available_coordinate_contracts = sorted(
+            {
+                str((layer.get("attrs", {}) or {}).get("coordinate_contract"))
+                for layer in coordinate_layers.values()
+                if isinstance(layer, Mapping)
+                and isinstance(layer.get("attrs", {}), Mapping)
+                and (layer.get("attrs", {}) or {}).get("coordinate_contract") is not None
+            }
+        )
+        event_table_schema_version = _decode_text_scalar(event_table_columns.get("_schema_version"))
+        normalization_report = dict(getattr(self.dataset, "_normalization_report", {}) or {})
+        normalization_report_info = normalization_report.get("report_file", {}) if isinstance(normalization_report, Mapping) else {}
+        provenance_export: Dict[str, Any] = {
+            "contract": {
+                "export_contract_version": "mndm.eeg_h5_contract.v1",
+                "config_digest_sha256": _stable_hash_mapping(self.ctx.config if isinstance(self.ctx.config, Mapping) else {}),
+                "config_filename": getattr(getattr(self.dataset, "config_path", None), "name", None),
+                "run_manifest_ref": "../run_manifest.json",
+            },
+            "anchoring": {
+                "available_coordinate_layers": available_coordinate_layers,
+                "available_jacobian_layers": available_jacobian_layers,
+                "available_coordinate_contracts": available_coordinate_contracts,
+                "primary_coordinate_layer": (
+                    "coords_3d_cohort_anchored" if primary_coordinate_layer == "cohort_anchored" else "coords_3d_subject_anchored"
+                ),
+                "primary_coordinate_contract": primary_coordinate_layer,
+                "anchor_id": exported_anchor_spec.get("anchor_id"),
+                "anchor_hash": exported_anchor_spec.get("anchor_hash"),
+                "anchor_source": exported_anchor_spec.get("anchor_source"),
+            },
+            "normalization": {
+                "status": normalization_report.get("status") if isinstance(normalization_report, Mapping) else None,
+                "method": normalization_report.get("method") if isinstance(normalization_report, Mapping) else None,
+                "scope": normalization_report.get("scope") if isinstance(normalization_report, Mapping) else None,
+                "batch_key": normalization_report.get("batch_key") if isinstance(normalization_report, Mapping) else None,
+                "report_ref": (
+                    "../normalization_report.json"
+                    if isinstance(normalization_report_info, Mapping) and normalization_report_info.get("status") == "written"
+                    else None
+                ),
+            },
+            "event_stage_mapping": {
+                "event_mapping_version": event_table_schema_version,
+                "stage_mapping_version": event_table_schema_version,
+                "stage_source": stage_source,
+                "stage_column": stage_column,
+                "stage_events_path": stage_events_path,
+                "stage_codebook_hash": _stable_hash_mapping(effective_stage_codebook)
+                if isinstance(effective_stage_codebook, Mapping) and effective_stage_codebook
+                else None,
+            },
+        }
+        regional_mnps_export = _build_regional_dual_contract_export(
+            primary_coordinate_contract=primary_coordinate_layer,
+            subject_summary=regional_mnps_results_subject if export_subject_anchored else None,
+            cohort_summary=regional_mnps_results_cohort if export_cohort_anchored else None,
+            anchor_spec=exported_anchor_spec if isinstance(exported_anchor_spec, Mapping) else {},
+        )
 
         # Build payload
         payload = schema.MNPSPayload(
@@ -2641,6 +4405,10 @@ class SubjectSummaryRunner:
             stage=stage,
             z=z,
             events=events,
+            event_table_columns=event_table_columns,
+            event_windows=event_windows_columns,
+            event_windows_attrs=event_windows_attrs,
+            codebooks=stage_codebook_export,
             nn_indices=nn_indices,
             jacobian=jac_res.j_hat if jac_res is not None else None,
             jacobian_dot=jac_res.j_dot if jac_res is not None else None,
@@ -2655,7 +4423,13 @@ class SubjectSummaryRunner:
             features_robust_z_names=features_robust_z_names,
             feature_metadata=feature_metadata,
             coordinate_layers=coordinate_layers,
-            feature_anchors=anchor_artifact or {},
+            feature_anchors=(anchor_artifact or {}) if export_cohort_anchored else {},
+            jacobian_layers=jacobian_layers,
+            participant_clinical_meta=participant_clinical_meta,
+            provenance=provenance_export,
+            coverage=coverage_export,
+            qc_windows=qc_windows_export,
+            regional_mnps=regional_mnps_export,
             attrs={
                 # Stable identity fields (used downstream for grouping/contrasts).
                 "dataset": self.dataset.ds_id,
@@ -2695,19 +4469,17 @@ class SubjectSummaryRunner:
                 "epochs_after_qc": n_after_qc,
                 "epochs_after_nan_mask": int(len(sub_frame)),
                 "mndm_version": "2.1",
+                "export_contract_version": "mndm.eeg_h5_contract.v1",
                 "primary_coordinate_layer": (
                     "coords_3d_cohort_anchored" if primary_coordinate_layer == "cohort_anchored" else "coords_3d_subject_anchored"
                 ),
                 "primary_coordinate_contract": primary_coordinate_layer,
+                "available_jacobian_layers": available_jacobian_layers,
                 "anchor_id": (
-                    (anchor_artifact.get("spec", {}) or {}).get("anchor_id")
-                    if isinstance(anchor_artifact, Mapping)
-                    else None
+                    exported_anchor_spec.get("anchor_id")
                 ),
                 "anchor_hash": (
-                    (anchor_artifact.get("spec", {}) or {}).get("anchor_hash")
-                    if isinstance(anchor_artifact, Mapping)
-                    else None
+                    exported_anchor_spec.get("anchor_hash")
                 ),
                 "x_definition": x_definition,
                 "mde_mode_requested": mde_mode_requested,
@@ -2803,23 +4575,17 @@ class SubjectSummaryRunner:
         labels_combined: Dict[str, np.ndarray] = {}
         if within_run_labels.labels:
             labels_combined.update(within_run_labels.labels)
+        stage_bool_labels = _build_stage_bool_labels(
+            stage,
+            effective_stage_codebook if isinstance(effective_stage_codebook, Mapping) else {},
+        )
+        for label_name, label_arr in stage_bool_labels.items():
+            labels_combined.setdefault(label_name, label_arr)
         labels_mapped = self._map_events_to_labels(config, time, window_start, window_end, events)
         if labels_mapped:
             labels_combined.update(labels_mapped)
         if labels_combined:
             payload.labels = labels_combined
-
-        # Add regional MNPS/MNJ results
-        if regional_mnps_results and regional_mnps_results.n_networks > 0:
-            for network_label, result in regional_mnps_results.results.items():
-                payload.regional_mnps[network_label] = {
-                    "mnps": result.mnps,
-                    "mnps_dot": result.mnps_dot,
-                    "jacobian": result.jacobian,
-                    "stratified": result.stratified,  # [T, 9] – None when 9D not run
-                    "metrics": result.metrics,
-                    "n_timepoints": result.n_timepoints,
-                }
 
         # Entropy QC checks
         entropy_qc = {}
@@ -2856,10 +4622,78 @@ class SubjectSummaryRunner:
                 "seconds_assumed": coverage_seconds_assumed,
                 "seconds_method": coverage_method,
             },
+            "coverage_h5": {
+                "status": "available",
+                "path": "/coverage",
+                "axis_fraction_path": "/coverage/axis_fraction",
+                "coordinate_layers_present": available_coordinate_layers,
+                "jacobian_layers_present": available_jacobian_layers,
+            },
+            "provenance_h5": {
+                "status": "available",
+                "path": "/provenance",
+                "contract_path": "/provenance/contract",
+                "anchoring_path": "/provenance/anchoring",
+            },
+            "jacobian_h5": {
+                "primary_path": "/jacobian",
+                "primary_v2_path": "/jacobian_9D" if jac_res_v2 is not None else None,
+                "layer_paths": [f"/{name}" for name in available_jacobian_layers],
+            },
+            "participant_h5": {
+                "clinical_json_path": "/participant/clinical_json",
+            },
             "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         }
         if isinstance(time_reference_result.get("manifest"), Mapping):
             manifest_extra["time_reference"] = dict(time_reference_result["manifest"])
+        if stage_mapping_qc_entry:
+            stage_mapping_qc_entry = dict(stage_mapping_qc_entry)
+            stage_mapping_qc_entry.update(
+                {
+                    "subject": sub_id,
+                    "session": ses_id,
+                    "run": run_id,
+                    "acq": acq_id,
+                    "task": task,
+                    "condition": condition,
+                    "stage_source": stage_source,
+                    "stage_column": stage_column,
+                    "stage_frac_labeled": stage_frac_labeled,
+                }
+            )
+            manifest_extra["stage_mapping_qc"] = stage_mapping_qc_entry
+            self.dataset._record_stage_mapping_qc_entry(stage_mapping_qc_entry)
+        if event_table_columns:
+            manifest_extra["event_provenance"] = {
+                "status": "available",
+                "events_path": stage_events_path,
+                "event_table_columns": sorted([str(k) for k in event_table_columns.keys()]),
+                "event_rows": int(
+                    len(np.asarray(event_table_columns.get("onset_sec", [])))
+                    if "onset_sec" in event_table_columns
+                    else 0
+                ),
+            }
+        if event_windows_columns or event_windows_attrs:
+            manifest_extra["event_windows"] = {
+                "status": "available",
+                "path": "/event_windows",
+                "rows": int(event_windows_attrs.get("n_rows", 0) or 0),
+                "reference": event_windows_attrs.get("reference"),
+                "bins_json": event_windows_attrs.get("bins_json"),
+            }
+        if stage_codebook_export:
+            manifest_extra["codebooks"] = {
+                "available": sorted([str(k) for k in stage_codebook_export.keys()]),
+                "stage_path": "/codebooks/stage" if "stage" in stage_codebook_export else None,
+            }
+        if regional_mnps_export:
+            manifest_extra["regional_outputs_h5"] = {
+                "path": "/regional_mnps",
+                "available_coordinate_contracts": available_coordinate_contracts,
+                "primary_coordinate_contract": primary_coordinate_layer,
+            }
         if stratified_blocks_result is not None:
             if stratified_blocks_result.blocks_manifest:
                 rows_light: list[dict[str, Any]] = []
@@ -2890,6 +4724,8 @@ class SubjectSummaryRunner:
             manifest_extra["robust_summary"] = robust_summary
         if dist_summary:
             manifest_extra["dist_summary"] = dist_summary
+        if conventional_eeg_summary:
+            manifest_extra["conventional_eeg"] = conventional_eeg_summary
         if baseline_comparisons is not None:
             manifest_extra["baseline_comparisons"] = baseline_comparisons
         if tau_summary:
@@ -3272,6 +5108,49 @@ class SubjectSummaryRunner:
             mnps_cfg=self.ctx.mnps_cfg if isinstance(self.ctx.mnps_cfg, Mapping) else {},
             dataset_id=self.dataset.ds_id,
         )
+
+    def _build_bids_event_stage_provenance(
+        self,
+        *,
+        sub_frame: pd.DataFrame,
+        stage_for_windows: Optional[np.ndarray],
+    ) -> Dict[str, Any]:
+        """Build event provenance + stage mapping QC from BIDS events TSV."""
+        result = build_bids_event_stage_provenance(
+            sub_frame=sub_frame,
+            stage_for_windows=stage_for_windows,
+            index_df=self.index_df,
+            dataset_root=self._dataset_root(),
+            lookup_rel_paths_by_file_value=self.dataset._lookup_rel_paths_by_file_value,
+            ctx_config=self.ctx.config if isinstance(self.ctx.config, Mapping) else {},
+            mnps_cfg=self.ctx.mnps_cfg if isinstance(self.ctx.mnps_cfg, Mapping) else {},
+            dataset_id=self.dataset.ds_id,
+        )
+        return {
+            "stage_inferred": result.stage_inferred,
+            "stage_source": result.stage_source,
+            "stage_column": result.stage_column,
+            "events_path": result.events_path,
+            "event_table_columns": result.event_table_columns,
+            "legacy_events": result.legacy_events,
+            "stage_mapping_qc": result.stage_mapping_qc,
+        }
+
+    def _prefer_events_stage_in_summary(self) -> bool:
+        """Return whether summarize should override feature CSV stage from BIDS events."""
+        epoching = self.ctx.config.get("epoching", {}) if isinstance(self.ctx.config, Mapping) else {}
+        if not isinstance(epoching, Mapping):
+            return False
+        ds_map = epoching.get("datasets", {})
+        if not isinstance(ds_map, Mapping):
+            return False
+        ds_cfg = ds_map.get(self.dataset.ds_id, {})
+        if not isinstance(ds_cfg, Mapping):
+            return False
+        sampling_cfg = ds_cfg.get("sampling", {})
+        if not isinstance(sampling_cfg, Mapping):
+            return False
+        return bool(sampling_cfg.get("prefer_events_stage_in_summary", False))
 
     @staticmethod
     def _estimate_coverage_seconds(sub_frame: pd.DataFrame, dt_fallback: float) -> tuple[float, str]:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
@@ -68,6 +69,14 @@ def resolve_epoching_sampling_cfg(config: Mapping[str, Any], dataset_id: Optiona
 def default_stage_map() -> Dict[str, int]:
     """Handle default stage map."""
     return {"W": 0, "Wake": 0, "N1": 1, "N2": 2, "N3": 3, "REM": 4, "R": 4, "L": -1}
+
+
+def _normalize_stage_key(value: Any) -> str:
+    """Normalize stage/event labels for robust key matching."""
+    text = str(value).strip()
+    text = "".join(ch if ch.isprintable() else " " for ch in text)
+    text = re.sub(r"\s+", " ", text).strip().lower()
+    return text
 
 
 def find_events_tsv_for_raw(file_path: str) -> Optional[Path]:
@@ -194,12 +203,17 @@ def label_epochs_from_sleep_annotation(
     if not rows:
         return None
 
-    t_mid = np.asarray([(s + e) * 0.5 / sfreq for (_, s, e) in epoch_meta], dtype=float)
+    t_start = np.asarray([s / sfreq for (_, s, _) in epoch_meta], dtype=float)
+    t_end = np.asarray([e / sfreq for (_, _, e) in epoch_meta], dtype=float)
+    t_mid = (t_start + t_end) * 0.5
     out = np.full((t_mid.shape[0],), -1, dtype=np.int16)
     for onset, duration, code in rows:
         end = onset + (duration if duration > 0 else 0.0)
         if end <= onset:
-            mask = np.isclose(t_mid, onset, atol=1e-3)
+            # Point-events should map to the epoch window containing onset.
+            mask = (t_start <= onset) & (t_end > onset)
+            if not mask.any():
+                mask = np.isclose(t_mid, onset, atol=1e-3)
         else:
             mask = (t_mid >= onset) & (t_mid < end)
         if mask.any():
@@ -215,6 +229,7 @@ def label_epochs_with_stages(
     onset_column: str = "onset",
     duration_column: str = "duration",
     stage_map: Optional[Mapping[str, int]] = None,
+    sampling_cfg: Optional[Mapping[str, Any]] = None,
 ) -> Optional[np.ndarray]:
     """Return per-epoch stage codes using events onset/duration + stage columns."""
     if events_df is None or events_df.empty or onset_column not in events_df.columns:
@@ -233,34 +248,196 @@ def label_epochs_with_stages(
         if duration_column in events_df.columns
         else np.zeros((len(events_df),), dtype=float)
     )
-    stage_series = events_df[stage_col]
+    stage_series = events_df[stage_col].astype(str).fillna("")
     stage_num = pd.to_numeric(stage_series, errors="coerce")
     if stage_map is None:
         stage_map = default_stage_map()
-    if stage_num.isna().any():
-        mapped = stage_series.astype(str).str.strip().map(
-            lambda s: stage_map.get(s, stage_map.get(s.upper(), np.nan))
-        )
-        stage_num = stage_num.fillna(pd.to_numeric(mapped, errors="coerce"))
-    stage = stage_num.to_numpy(dtype=float)
+    mapping = {
+        _normalize_stage_key(k): int(v)
+        for k, v in (stage_map.items() if isinstance(stage_map, Mapping) else [])
+        if _normalize_stage_key(k) != ""
+    }
+    mapped = stage_series.astype(str).map(lambda s: mapping.get(_normalize_stage_key(s), np.nan))
+    stage = stage_num.fillna(pd.to_numeric(mapped, errors="coerce")).to_numpy(dtype=float)
 
-    valid = np.isfinite(onset) & np.isfinite(duration) & np.isfinite(stage)
+    valid = np.isfinite(onset) & np.isfinite(duration)
     onset = onset[valid]
     duration = duration[valid]
-    stage = stage[valid].astype(int, copy=False)
+    stage = stage[valid]
+    labels = stage_series.to_numpy(dtype=object)[valid]
     if onset.size == 0:
         return None
 
-    t_mid = np.asarray([(s + e) * 0.5 / sfreq for (_, s, e) in epoch_meta], dtype=float)
+    t_start = np.asarray([s / sfreq for (_, s, _) in epoch_meta], dtype=float)
+    t_end = np.asarray([e / sfreq for (_, _, e) in epoch_meta], dtype=float)
+    t_mid = (t_start + t_end) * 0.5
     out = np.full((t_mid.shape[0],), -1, dtype=np.int16)
-    for o, d, s in zip(onset, duration, stage):
+
+    stage_blocking_cfg = {}
+    if isinstance(sampling_cfg, Mapping):
+        cfg = sampling_cfg.get("stage_blocking", {})
+        if isinstance(cfg, Mapping):
+            stage_blocking_cfg = dict(cfg)
+    blocking_enabled = bool(stage_blocking_cfg.get("enabled", False))
+
+    if not blocking_enabled:
+        finite = np.isfinite(stage)
+        onset_f = onset[finite]
+        duration_f = duration[finite]
+        stage_f = stage[finite].astype(int, copy=False)
+        if onset_f.size == 0:
+            return None
+        for o, d, s in zip(onset_f, duration_f, stage_f):
+            end = o + (d if d > 0 else 0.0)
+            if end <= o:
+                # Point-events should map to the epoch window containing onset.
+                mask = (t_start <= o) & (t_end > o)
+                if not mask.any():
+                    mask = np.isclose(t_mid, o, atol=1e-3)
+            else:
+                mask = (t_mid >= o) & (t_mid < end)
+            if mask.any():
+                out[mask] = int(s)
+        return out.astype(np.int16, copy=False)
+
+    event_regex = str(
+        stage_blocking_cfg.get(
+            "stage_event_regex",
+            stage_blocking_cfg.get(
+                "carrier_event_regex",
+                stage_blocking_cfg.get("photic_regex", ""),
+            ),
+        )
+        or ""
+    ).strip()
+    photic_re: Optional[re.Pattern[str]] = None
+    if event_regex:
+        try:
+            photic_re = re.compile(event_regex, flags=re.IGNORECASE)
+        except Exception:
+            photic_re = None
+
+    marker_labels_raw = stage_blocking_cfg.get(
+        "bridge_marker_labels",
+        stage_blocking_cfg.get("marker_labels", stage_blocking_cfg.get("hv_mark_labels", [])),
+    )
+    if isinstance(marker_labels_raw, Sequence) and not isinstance(marker_labels_raw, (str, bytes)):
+        marker_labels = [_normalize_stage_key(v) for v in marker_labels_raw]
+    elif marker_labels_raw in (None, ""):
+        marker_labels = []
+    else:
+        marker_labels = [_normalize_stage_key(marker_labels_raw)]
+    hv_labels = {v for v in marker_labels if v}
+
+    use_hv_marks = bool(stage_blocking_cfg.get("use_bridge_markers", stage_blocking_cfg.get("use_hv_marks", True)))
+    preserve_photic_blocks = bool(
+        stage_blocking_cfg.get(
+            "preserve_block_assignments",
+            stage_blocking_cfg.get("preserve_photic_blocks", True),
+        )
+    )
+    min_block_sec = float(stage_blocking_cfg.get("min_block_sec", 2.0) or 2.0)
+    max_block_sec = float(stage_blocking_cfg.get("max_block_sec", 20.0) or 20.0)
+    hv_tail_sec = float(stage_blocking_cfg.get("hv_tail_sec", 0.5) or 0.5)
+    hv_tail_cap_sec = float(stage_blocking_cfg.get("hv_tail_cap_sec", 1.0) or 1.0)
+
+    labels_norm = np.asarray([str(v).strip() for v in labels], dtype=object)
+    labels_key = np.asarray([_normalize_stage_key(v) for v in labels], dtype=object)
+    order = np.argsort(onset, kind="stable")
+
+    freq_hz = np.full((len(labels_norm),), np.nan, dtype=np.float64)
+    photic_indices: List[int] = []
+    for idx in order.tolist():
+        if photic_re is None:
+            continue
+        m = photic_re.match(str(labels_norm[idx]))
+        if not m:
+            continue
+        try:
+            freq_hz[idx] = float(m.group(1))
+        except Exception:
+            freq_hz[idx] = np.nan
+        if np.isfinite(stage[idx]):
+            photic_indices.append(int(idx))
+
+    for pos, idx in enumerate(photic_indices):
+        start = float(onset[idx])
+        next_start = float(onset[photic_indices[pos + 1]]) if (pos + 1) < len(photic_indices) else float("inf")
+        end_direct = (
+            float(start + duration[idx])
+            if np.isfinite(duration[idx]) and float(duration[idx]) > 0
+            else float("nan")
+        )
+        end_hv = float("nan")
+        if use_hv_marks and hv_labels:
+            hv_mask = np.array([_normalize_stage_key(v) in hv_labels for v in labels_norm], dtype=bool)
+            in_range = hv_mask & np.isfinite(onset) & (onset >= start)
+            if np.isfinite(next_start):
+                in_range &= onset < next_start
+            hv_onsets = np.sort(np.asarray(onset[in_range], dtype=np.float64))
+            if hv_onsets.size:
+                hv_step = float("nan")
+                if hv_onsets.size >= 2:
+                    diffs = np.diff(hv_onsets)
+                    diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
+                    if diffs.size:
+                        hv_step = float(np.median(diffs))
+                tail = float(hv_tail_sec)
+                if np.isfinite(hv_step) and hv_step > 0:
+                    tail = max(tail, min(hv_step, hv_tail_cap_sec))
+                end_hv = float(hv_onsets[-1] + tail)
+
+        if np.isfinite(end_direct) and end_direct > start:
+            end = float(end_direct)
+        elif np.isfinite(end_hv) and end_hv > start:
+            end = float(end_hv)
+        elif np.isfinite(next_start):
+            end = min(float(next_start), float(start + max_block_sec))
+        else:
+            end = float(start + max_block_sec)
+
+        if np.isfinite(next_start):
+            end = min(end, float(next_start))
+        if end - start < min_block_sec:
+            if np.isfinite(next_start) and (next_start - start) >= min_block_sec:
+                end = min(float(next_start), float(start + max_block_sec))
+            else:
+                end = float(start + min_block_sec)
+        if end <= start:
+            end = float(start + max(min_block_sec, 1e-3))
+
+        block_mask = (t_mid >= start) & (t_mid < end)
+        if block_mask.any():
+            out[block_mask] = int(stage[idx])
+
+    for idx in order.tolist():
+        if not np.isfinite(stage[idx]):
+            continue
+        is_hv = _normalize_stage_key(labels_key[idx]) in hv_labels
+        if is_hv and photic_indices:
+            # With explicit photic block inference active, treat HV marks as
+            # support/provenance signals rather than direct window labels.
+            continue
+        o = float(onset[idx])
+        d = float(duration[idx])
         end = o + (d if d > 0 else 0.0)
         if end <= o:
-            mask = np.isclose(t_mid, o, atol=1e-3)
+            mask = (t_start <= o) & (t_end > o)
+            if not mask.any():
+                mask = np.isclose(t_mid, o, atol=1e-3)
         else:
             mask = (t_mid >= o) & (t_mid < end)
-        if mask.any():
-            out[mask] = int(s)
+        if not mask.any():
+            continue
+        if np.isfinite(freq_hz[idx]):
+            mask_apply = mask & ((out == -1) | (out == int(stage[idx])))
+        elif preserve_photic_blocks:
+            mask_apply = mask & (out == -1)
+        else:
+            mask_apply = mask
+        if mask_apply.any():
+            out[mask_apply] = int(stage[idx])
+
     return out.astype(np.int16, copy=False)
 
 
@@ -406,6 +583,7 @@ def resolve_stage_stratified_epoch_set(
             onset_column=str(sampling_cfg.get("onset_column", "onset")),
             duration_column=str(sampling_cfg.get("duration_column", "duration")),
             stage_map=stage_map,
+            sampling_cfg=sampling_cfg if isinstance(sampling_cfg, Mapping) else None,
         )
 
     if stage_per_epoch is None:

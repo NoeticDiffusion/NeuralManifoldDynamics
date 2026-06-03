@@ -1,0 +1,37 @@
+version: 2.0
+modality: eeg
+
+# I-CARE part1 (random100), first 12h, non-regional block-Jacobian run.
+# Input folder is produced by physionet_ingest config with:
+#   subset.max_eeg_hours_per_patient: 12
+imports:
+  - "./config_ingest_physionet_i-care_2_1.yaml"
+
+paths:
+  # Reuse existing part1 features from the shared processed dataset folder.
+  processed_dir: "E:/Science_Datasets/physionet/processed"
+  dataset_received_dirs:
+    physionet_icare_2_1: "E:/Science_Datasets/physionet/received/i-care_2_1_random100_longitudinal/training"
+
+# Keep this run non-regional.
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+# Skip ComBat for this run.
+# "Simple normalization" remains active via imported mnps_projection settings
+# (normalize=robust_z + feature_standardization pipelines).
+normalization:
+  enabled: false
+  method: "combat"
+  scope: "post_features"

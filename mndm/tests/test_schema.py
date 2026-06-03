@@ -144,3 +144,42 @@ def test_normalize_payload_validates_coordinate_layers_and_sets_2_1_schema():
     assert "coords_3d_cohort_anchored" in out.coordinate_layers
     assert out.coordinate_layers["coords_3d_cohort_anchored"]["names"] == ["m", "d", "e"]
 
+
+def test_normalize_payload_supports_event_windows_codebooks_and_qc():
+    """New additive H5 contract payload blocks should normalize cleanly."""
+    from mndm.schema import normalize_payload
+
+    payload = _base_payload()
+    payload.event_windows = {
+        "event_id": np.array([0, 0, 1]),
+        "window_id": np.array([0, 1, 2]),
+        "bin_label": np.array(["event", "post_near", "event"], dtype=object),
+    }
+    payload.event_windows_attrs = {"reference": "onset"}
+    payload.codebooks = {
+        "stage": {
+            "codes": np.array([10, 11]),
+            "labels": ["Eyes Closed: Every 1000 ms", "Eyes Open: Every 1000 ms"],
+            "label_keys": ["eyes_closed", "eyes_open"],
+            "attrs": {"source": "consensus"},
+        }
+    }
+    payload.qc_windows = {
+        "coverage_ok": np.array([1, 1, 0, 1]),
+        "stage_transition_flag": np.array([0, 1, 0, 0]),
+        "artifact_score": np.array([0.0, 0.1, 0.2, 0.0]),
+    }
+    payload.provenance = {"contract": {"export_contract_version": "mndm.eeg_h5_contract.v1"}}
+    payload.coverage = {"axis_fraction": np.ones((4, 3), dtype=np.float32)}
+    payload.participant_clinical_meta = {"age": 72, "sex": "M"}
+
+    out = normalize_payload(payload)
+
+    assert set(out.event_windows.keys()) == {"event_id", "window_id", "bin_label"}
+    assert out.event_windows["event_id"].dtype == np.int32
+    assert out.event_windows["bin_label"].dtype.kind in {"U", "O"}
+    assert out.qc_windows["coverage_ok"].dtype == np.int8
+    assert out.qc_windows["artifact_score"].dtype == np.float32
+    assert list(out.codebooks["stage"]["label_keys"]) == ["eyes_closed", "eyes_open"]
+    assert out.participant_clinical_meta["age"] == 72
+
