@@ -161,6 +161,119 @@ def test_stage_blocking_legacy_keys_remain_supported():
     assert int(out[0]) == 50
 
 
+def test_label_epochs_with_stages_supports_fully_contained_block_membership():
+    """Strict membership should only keep epochs fully inside inferred blocks."""
+    epoch_meta = [
+        (0, 0, 800),      # [0.0, 8.0)
+        (1, 800, 1600),   # [8.0, 16.0)
+        (2, 1600, 2400),  # [16.0, 24.0)
+        (3, 2400, 3200),  # [24.0, 32.0)
+    ]
+    sfreq = 100.0
+    events_df = pd.DataFrame(
+        {
+            "onset": [0.0, 0.2, 8.0, 20.0, 20.2, 28.0],
+            "duration": [0.0] * 6,
+            "value": [
+                "PHOTO 5Hz",
+                "Photo/HV mark",
+                "Photo/HV mark",
+                "PHOTO 10Hz",
+                "Photo/HV mark",
+                "Photo/HV mark",
+            ],
+        }
+    )
+
+    out = epoch_selection.label_epochs_with_stages(
+        epoch_meta=epoch_meta,
+        sfreq=sfreq,
+        events_df=events_df,
+        stage_columns=["value"],
+        onset_column="onset",
+        duration_column="duration",
+        stage_map={
+            "PHOTO 5Hz": 50,
+            "PHOTO 10Hz": 51,
+            "Photo/HV mark": 54,
+        },
+        sampling_cfg={
+            "stage_blocking": {
+                "enabled": True,
+                "stage_event_regex": r"(?i)^PHOTO\s*(\d+)\s*Hz$",
+                "bridge_marker_labels": ["Photo/HV mark"],
+                "use_bridge_markers": True,
+                "bridge_tail_sec": 0.5,
+                "min_block_sec": 2.0,
+                "max_block_sec": 20.0,
+                "preserve_block_assignments": True,
+                "window_membership": {"mode": "fully_contained"},
+            }
+        },
+    )
+
+    assert out is not None
+    assert out.tolist() == [50, -1, -1, -1]
+
+
+def test_label_epochs_with_stages_supports_overlap_fraction_block_membership():
+    """Overlap-threshold membership should keep only strongly overlapping epochs."""
+    epoch_meta = [
+        (0, 0, 800),      # [0.0, 8.0)
+        (1, 800, 1600),   # [8.0, 16.0)
+        (2, 1600, 2400),  # [16.0, 24.0)
+        (3, 2400, 3200),  # [24.0, 32.0)
+    ]
+    sfreq = 100.0
+    events_df = pd.DataFrame(
+        {
+            "onset": [0.0, 0.2, 8.0, 20.0, 20.2, 28.0],
+            "duration": [0.0] * 6,
+            "value": [
+                "PHOTO 5Hz",
+                "Photo/HV mark",
+                "Photo/HV mark",
+                "PHOTO 10Hz",
+                "Photo/HV mark",
+                "Photo/HV mark",
+            ],
+        }
+    )
+
+    out = epoch_selection.label_epochs_with_stages(
+        epoch_meta=epoch_meta,
+        sfreq=sfreq,
+        events_df=events_df,
+        stage_columns=["value"],
+        onset_column="onset",
+        duration_column="duration",
+        stage_map={
+            "PHOTO 5Hz": 50,
+            "PHOTO 10Hz": 51,
+            "Photo/HV mark": 54,
+        },
+        sampling_cfg={
+            "stage_blocking": {
+                "enabled": True,
+                "stage_event_regex": r"(?i)^PHOTO\s*(\d+)\s*Hz$",
+                "bridge_marker_labels": ["Photo/HV mark"],
+                "use_bridge_markers": True,
+                "bridge_tail_sec": 0.5,
+                "min_block_sec": 2.0,
+                "max_block_sec": 20.0,
+                "preserve_block_assignments": True,
+                "window_membership": {
+                    "mode": "overlap_frac_ge",
+                    "min_overlap_fraction": 0.55,
+                },
+            }
+        },
+    )
+
+    assert out is not None
+    assert out.tolist() == [50, -1, -1, 51]
+
+
 def test_label_epochs_with_stages_supports_ds003490_eye_blocks_with_oddball_tones():
     """EO/EC block labels should survive alongside unmapped oddball tones."""
     epoch_meta = [

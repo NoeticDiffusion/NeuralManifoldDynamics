@@ -271,6 +271,61 @@ class TestEventTableHdf5:
 
 
 # ---------------------------------------------------------------------------
+# Derived stage-block events
+# ---------------------------------------------------------------------------
+
+class TestDerivedStageBlockEvents:
+    def test_builds_block_end_point_events_with_metadata(self):
+        from mndm.pipeline.event_annotations import event_table_from_stage_block_intervals
+        from mndm.pipeline.stage_blocking import StageBlockInterval
+
+        intervals = [
+            StageBlockInterval(
+                start_sec=10.0,
+                end_sec=18.5,
+                stage_code=50,
+                source_event_idx=3,
+                block_id=7,
+                block_parameter=10.0,
+                support_event_indices=(4, 5, 6),
+            )
+        ]
+        table = event_table_from_stage_block_intervals(intervals, source_path="raw/sub-01_events.tsv")
+
+        assert table.n == 1
+        assert table.event_type is not None and table.event_type[0] == "stage_block_end"
+        assert table.source is not None and table.source[0] == "derived:stage_blocking"
+        assert table.duration_sec is not None and table.duration_sec[0] == pytest.approx(0.0)
+        assert table.offset_sec is not None and table.offset_sec[0] == pytest.approx(18.5)
+        assert table.frequency_hz is not None and table.frequency_hz[0] == pytest.approx(10.0)
+        assert table.stage is not None and table.stage[0] == "50"
+        assert table.metadata_json is not None
+        payload = json.loads(table.metadata_json[0])
+        assert payload["derived_from"] == "stage_blocking"
+        assert payload["is_inferred"] is True
+        assert payload["end_reason"] == "unknown"
+        assert payload["membership_mode"] == ""
+        assert payload["bridge_tail_sec"] is None
+        assert payload["bridge_tail_cap_sec"] is None
+        assert payload["bridge_tail_ms"] is None
+        assert payload["bridge_tail_cap_ms"] is None
+        assert payload["block_id"] == 7
+        assert payload["block_start_ms"] == 10000.0
+        assert payload["block_end_ms"] == 18500.0
+        assert payload["block_duration_ms"] == 8500.0
+        assert payload["stage_code"] == 50
+        assert payload["source_event_idx"] == 3
+        assert payload["support_event_indices"] == [4, 5, 6]
+
+    def test_empty_intervals_return_empty_table(self):
+        from mndm.pipeline.event_annotations import event_table_from_stage_block_intervals
+
+        table = event_table_from_stage_block_intervals([], source_path="raw/sub-01_events.tsv")
+        assert table.is_empty()
+        assert table.source_path == "raw/sub-01_events.tsv"
+
+
+# ---------------------------------------------------------------------------
 # MNPSPayload integration
 # ---------------------------------------------------------------------------
 

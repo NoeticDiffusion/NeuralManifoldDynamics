@@ -80,6 +80,11 @@ python -m mndm.cli all --dataset ds005555 --config mndm/config/config_ingest_ds0
 
 The sleep-spindle configuration keeps the canonical HDF5 measurement output separate from derived event-locked sidecars. Spindle annotations, event-window alignment, matched controls, and baseline-corrected summaries should be treated as downstream analysis artifacts with their own provenance.
 
+The same sidecar layer can now also synthesize generic block-end point-events from
+`epoching.datasets.<id>.sampling.stage_blocking`. This makes it possible to align
+MNPS windows to inferred stimulation-block ends, for example to study early
+post-photic effects in `ds006036`, without adding a new HDF5/summarize contract.
+
 ## Where To Read Next
 
 - MNDM usage and output contracts: `mndm/README.md`
@@ -201,9 +206,15 @@ epoching:
           stage_event_regex: "(?i)^PHOTO\\s*(\\d+)\\s*Hz$"
           bridge_marker_labels: ["Photo/HV mark"]
           use_bridge_markers: true
+          bridge_tail_sec: 0.5
+          bridge_tail_cap_sec: 1.0
           min_block_sec: 2.0
           max_block_sec: 20.0
           preserve_block_assignments: true
+          window_membership:
+            # Interval geometry on the MNPS axis, not mnps.overlap.
+            mode: "midpoint_in_interval"
+            min_overlap_fraction: 0.0
           expected_stage_frequencies_hz: [5, 10, 15, 20, 25, 30]
 ```
 
@@ -214,7 +225,27 @@ Run outputs then expose:
 - run-level `stage_mapping_qc.json` + `run_manifest.json -> extra.stage_mapping_qc`
 - H5 `/events/*` columnar event provenance table when available
 
-Derived event-locked outputs, such as YASA-derived sleep-spindle sidecars for `ds005555`, are intentionally not part of the canonical HDF5 measurement surface unless a future release promotes a stable derived-event schema. They are joinable back to HDF5 trajectories by subject and window identifiers.
+Window-membership options:
+
+- `midpoint_in_interval` (default): historical behavior, good when you want a
+  generous block surface.
+- `fully_contained`: only MNPS windows fully inside the inferred block are
+  labeled.
+- `overlap_frac_ge`: require a configurable overlap fraction between each MNPS
+  window and the inferred block.
+
+Practical validation on `ds006036`:
+
+- switching from midpoint-based photic labeling to
+  `window_membership.mode: "fully_contained"` kept `labels_stage: true` for all
+  88 H5 outputs,
+- mean `stage_frac_labeled` changed from `0.584536` to `0.533997` (`-8.65%`),
+- photic-labeled windows changed from `1856` to `979` (`-47.25%`).
+
+This is a useful “clean photic epochs” setting when you want to suppress
+boundary contamination rather than maximize photic window count.
+
+Derived event-locked outputs, such as YASA-derived sleep-spindle sidecars for `ds005555` or derived `stage_block_end` sidecars for `ds006036`, are intentionally not part of the canonical HDF5 measurement surface unless a future release promotes a stable derived-event schema. They are joinable back to HDF5 trajectories by subject and window identifiers, and exported rows use generic `condition` labels (`event`, `matched_control`) rather than spindle-specific names.
 
 ## Development Notes
 

@@ -132,6 +132,43 @@ class TestAlignmentOverlap:
         assert len(low_event) > 0
         assert len(high_event) == 0
 
+    def test_touching_boundaries_have_zero_overlap(self):
+        from mndm.pipeline.intervals import overlap_frac, overlap_sec
+
+        # Half-open interval semantics: [0,4) and [4,8) only touch at the edge.
+        assert float(overlap_sec(0.0, 4.0, 4.0, 8.0)) == pytest.approx(0.0)
+        assert float(overlap_frac(0.0, 4.0, 4.0, 8.0)) == pytest.approx(0.0)
+
+    def test_point_event_can_drive_pre_and_post_block_bins(self):
+        from mndm.pipeline.event_alignment import AlignmentConfig, BinSpec, align_events_to_windows
+        from mndm.pipeline.event_annotations import EventTable
+
+        w_start = np.array([8.0, 12.0, 16.0, 20.0])
+        w_end = np.array([12.0, 16.0, 20.0, 24.0])
+        t = np.array([10.0, 14.0, 18.0, 22.0])
+        table = EventTable(
+            onset_sec=np.array([16.0]),
+            duration_sec=np.array([0.0]),
+            event_type=np.array(["stage_block_end"], dtype=object),
+            source=np.array(["derived:stage_blocking"], dtype=object),
+        )
+        cfg = AlignmentConfig(
+            reference="onset",
+            bins=[
+                BinSpec("in_block_tail_ms", -8.0, 0.0),
+                BinSpec("post_block_early_ms", 0.0, 8.0),
+            ],
+            overlap_threshold=0.0,
+            stage_transition_margin_sec=0.0,
+        )
+        result = align_events_to_windows(table, window_start=w_start, window_end=w_end, time=t, stage=_make_stage_n2(4), config=cfg)
+
+        labels = {(row.window_id, row.bin_label) for row in result.rows}
+        assert (0, "in_block_tail_ms") in labels
+        assert (1, "in_block_tail_ms") in labels
+        assert (2, "post_block_early_ms") in labels
+        assert (3, "post_block_early_ms") in labels
+
 
 class TestAlignmentEmpty:
     def test_empty_table_returns_empty(self):

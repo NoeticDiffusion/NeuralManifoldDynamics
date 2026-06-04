@@ -39,18 +39,8 @@ import pandas as pd
 import yasa
 
 from mndm.schema import MNPSPayload
-from mndm.pipeline.event_annotations import EventTable, load_event_table_from_csv
-from mndm.pipeline.event_alignment import AlignmentConfig, BinSpec, align_events_to_windows
-from mndm.pipeline.control_matching import MatchingConfig, build_matched_controls
-from mndm.pipeline.event_locked_export import (
-    ExportConfig, build_event_locked_table, write_event_locked_parquet,
-)
-from mndm.pipeline.event_locked_config import (
-    event_locked_profile_from_config,
-    alignment_config_from_profile,
-    matching_config_from_profile,
-    export_config_from_profile,
-)
+from mndm.pipeline.event_annotations import EventTable
+from mndm.pipeline.event_locked_runner import run_event_locked_export
 from core import config_loader
 
 # ---------------------------------------------------------------------------
@@ -224,57 +214,31 @@ def run_event_locked(sub: str, h5_path: Path, csv_path: Path, cfg: dict) -> dict
     """Run event-locked export for one subject. Returns QC dict."""
     print(f"  [{sub}] Loading payload from H5...")
     payload = load_payload(h5_path, sub)
-    n_windows = len(payload.time)
-
-    profile   = event_locked_profile_from_config(cfg, "ds005555")
-    align_cfg = alignment_config_from_profile(profile)
-    match_cfg = matching_config_from_profile(profile)
-    export_cfg = export_config_from_profile(profile, dataset_id="ds005555")
-
-    print(f"  [{sub}] Loading spindle annotations...")
-    event_table = load_event_table_from_csv(csv_path)
-
-    print(f"  [{sub}] Aligning events ({len(event_table.onset_sec)} spindles)...")
-    alignment = align_events_to_windows(
-        event_table,
-        time=payload.time,
-        stage=payload.stage,
-        window_start=payload.window_start,
-        window_end=payload.window_end,
-        config=align_cfg,
+    out_parquet = h5_path.parent / f"{sub}_Sleep_acq-psg_event_locked_v1_{_channel_slug(CHANNEL)}.parquet"
+    print(f"  [{sub}] Running reusable event-locked pipeline...")
+    result = run_event_locked_export(
+        payload=payload,
+        config=cfg,
+        dataset_id="ds005555",
+        source_path=csv_path,
+        subject_id=sub,
+        run_id="Sleep_acq-psg",
+        out_prefix=out_parquet.with_suffix(""),
     )
+    event_table = result.event_table
+    alignment = result.alignment
+    controls = result.controls
     n_aligned = alignment.qc.get("n_events_aligned", 0)
     n_excluded = alignment.qc.get("n_events_excluded_stage_transition", 0)
-    print(f"  [{sub}] Aligned: {n_aligned}, excluded (transition): {n_excluded}")
-
-    print(f"  [{sub}] Matching controls...")
-    controls = build_matched_controls(
-        event_table,
-        time=payload.time,
-        window_start=payload.window_start,
-        window_end=payload.window_end,
-        stage=payload.stage,
-        config=match_cfg,
-    )
     n_matched = len(controls.rows)
     match_rate = controls.qc.get("match_success_rate", 0.0)
+    n_rows = len(result.rows)
+    print(f"  [{sub}] Aligned: {n_aligned}, excluded (transition): {n_excluded}")
     print(f"  [{sub}] Controls: {n_matched}, match rate: {match_rate:.2f}")
-
-    print(f"  [{sub}] Building export table...")
-    table = build_event_locked_table(
-        payload=payload, alignment=alignment, controls=controls,
-        subject_id=sub, run_id="Sleep_acq-psg", dataset_id="ds005555",
-        config=export_cfg,
-        event_table=event_table,
-    )
-    n_rows = len(table)
-
-    out_parquet = h5_path.parent / f"{sub}_Sleep_acq-psg_event_locked_v1_{_channel_slug(CHANNEL)}.parquet"
-    write_event_locked_parquet(table, out_parquet)
 
     df_ex = pd.read_parquet(str(out_parquet))
     finite_frac = float(df_ex["mnps_finite"].mean()) if "mnps_finite" in df_ex.columns else 1.0
-    bins_populated = list(df_ex[df_ex["condition"]=="spindle_event"]["bin_label"].unique()) if "bin_label" in df_ex.columns else []
+    bins_populated = list(df_ex[df_ex["condition"]!="matched_control"]["bin_label"].unique()) if "bin_label" in df_ex.columns else []
     n_spindles_total = len(event_table.onset_sec)
     excl_frac = n_excluded / n_spindles_total if n_spindles_total > 0 else 0.0
 

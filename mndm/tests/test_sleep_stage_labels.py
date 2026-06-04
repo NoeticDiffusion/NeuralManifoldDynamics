@@ -5,7 +5,9 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
+pytest.importorskip("scipy")
 from mndm.pipeline.summary import DatasetSummaryRunner, SubjectSummaryRunner
 from mndm.pipeline import summary as summary_mod
 
@@ -401,6 +403,103 @@ def test_photic_qc_marks_25_and_30_when_present(monkeypatch, tmp_path: Path):
     assert stage_qc.get("raw_has_25hz") is True
     assert stage_qc.get("raw_has_30hz") is True
     assert stage_qc.get("missing_expected_frequencies_hz_raw", []) == []
+
+
+def test_photic_block_membership_can_require_full_containment(monkeypatch, tmp_path: Path):
+    """Strict block membership should drop boundary-touching MNPS windows."""
+    ctx = _build_ctx(tmp_path)
+    ds_id = "ds006036"
+    ctx.config["epoching"]["datasets"][ds_id] = {
+        "sampling": {
+            "onset_column": "onset",
+            "duration_column": "duration",
+            "stage_columns": ["value"],
+            "stage_blocking": {
+                "enabled": True,
+                "stage_event_regex": r"(?i)^PHOTO\s*(\d+)\s*Hz$",
+                "bridge_marker_labels": ["Photo/HV mark"],
+                "use_bridge_markers": True,
+                "bridge_tail_sec": 0.5,
+                "min_block_sec": 2.0,
+                "max_block_sec": 20.0,
+                "preserve_block_assignments": True,
+                "window_membership": {"mode": "fully_contained"},
+            },
+        }
+    }
+    ctx.config["mnps"]["stage_codebook"] = {
+        "PHOTO 5Hz": 50,
+        "PHOTO 10Hz": 51,
+        "Photo/HV mark": 54,
+    }
+    ctx.mnps_cfg["stage_codebook"] = dict(ctx.config["mnps"]["stage_codebook"])
+
+    received_ds = ctx.received_dir / ds_id / "sub-001" / "eeg"
+    received_ds.mkdir(parents=True, exist_ok=True)
+    eeg_name = "sub-001_task-photomark_eeg.edf"
+    (received_ds / eeg_name).write_bytes(b"")
+    (received_ds / "sub-001_task-photomark_events.tsv").write_text(
+        "\n".join(
+            [
+                "onset\tduration\tvalue",
+                "0.0\t0\tPHOTO 5Hz",
+                "0.2\t0\tPhoto/HV mark",
+                "8.0\t0\tPhoto/HV mark",
+                "20.0\t0\tPHOTO 10Hz",
+                "20.2\t0\tPhoto/HV mark",
+                "28.0\t0\tPhoto/HV mark",
+            ]
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    index_df = pd.DataFrame([{"path": str(Path("sub-001/eeg") / eeg_name), "modality": "eeg", "subject": "001"}])
+    features_df = pd.DataFrame(
+        {
+            "file": [eeg_name, eeg_name, eeg_name, eeg_name],
+            "t_start": [0.0, 8.0, 16.0, 24.0],
+            "t_end": [8.0, 16.0, 24.0, 32.0],
+            "qc_ok_eeg": [1, 1, 1, 1],
+            "feat_m": np.linspace(0, 1, 4),
+            "feat_d": np.linspace(1, 2, 4),
+            "feat_e": np.linspace(2, 3, 4),
+        }
+    )
+
+    captured = {}
+    monkeypatch.setattr(
+        summary_mod,
+        "write_summary_manifest_and_h5",
+        lambda **kwargs: captured.update({"payload": kwargs["payload"], "manifest": kwargs["manifest"]}),
+    )
+    monkeypatch.setattr(summary_mod.json_writer, "build_manifest", lambda *_args, **_kwargs: _args[3])
+    monkeypatch.setattr(summary_mod.json_writer, "write_json_summary", lambda *_, **__: None)
+
+    dataset_runner = DatasetSummaryRunner(ctx, ds_id, None, "subject")
+    dataset_runner.participants_df = None
+    dataset_runner.min_seconds = 0
+    dataset_runner.min_epochs = 0
+
+    subject_runner = SubjectSummaryRunner(
+        dataset_runner=dataset_runner,
+        ds_path=ctx.processed_dir / ds_id,
+        mnps_dir=ctx.processed_dir / ds_id,
+        index_df=index_df,
+    )
+    subject_runner.run(
+        sub_id="sub-001",
+        ses_id=None,
+        raw_task="photomark",
+        run_id=None,
+        acq_id=None,
+        sub_frame=features_df,
+    )
+
+    payload = captured.get("payload")
+    assert payload is not None
+    assert payload.stage is not None
+    assert payload.stage.tolist() == [50, -1, -1, -1]
 
 
 def test_ds003490_exports_event_windows_and_self_describing_stage_labels(monkeypatch, tmp_path: Path):

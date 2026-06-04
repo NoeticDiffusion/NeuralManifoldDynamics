@@ -102,11 +102,16 @@ epoching:
       #     # Optional marker labels that densify the active block until next start event.
       #     bridge_marker_labels: []
       #     use_bridge_markers: true
-      #     hv_tail_sec: 0.5
-      #     hv_tail_cap_sec: 1.0
+      #     bridge_tail_sec: 0.5
+      #     bridge_tail_cap_sec: 1.0
       #     min_block_sec: 2.0
       #     max_block_sec: 20.0
       #     preserve_block_assignments: true
+      #     # How inferred absolute blocks claim windows on the MNPS axis.
+      #     # This is interval geometry, not mnps.overlap (stride overlap).
+      #     window_membership:
+      #       mode: "midpoint_in_interval"   # or fully_contained / overlap_frac_ge
+      #       min_overlap_fraction: 0.0
       #     # Optional QC expectation list for explicit presence/absence reporting.
       #     expected_stage_frequencies_hz: []
       #
@@ -114,6 +119,8 @@ epoching:
       #   # photic_regex -> stage_event_regex
       #   # hv_mark_labels -> bridge_marker_labels
       #   # use_hv_marks -> use_bridge_markers
+      #   # hv_tail_sec -> bridge_tail_sec
+      #   # hv_tail_cap_sec -> bridge_tail_cap_sec
       #   # preserve_photic_blocks -> preserve_block_assignments
       #   # expected_frequencies_hz -> expected_stage_frequencies_hz
 
@@ -277,25 +284,48 @@ normalization:
       perturbation: true
   datasets: {}
 
-# Optional event-locked workflow (sleep spindle style overlays).
+# Optional event-locked sidecar workflow.
+# This is a derived analysis layer: it does not change the primary H5/summarize
+# contract in v1. Use it for annotation-driven or derived point-event analyses.
 event_locked:
   datasets: {}
     # example_dataset:
     #   enabled: true
     #   profile: "event_locked_v1"
-    #   event_types: ["sleep_spindle"]
+    #   # Source kinds:
+    #   # - csv: load an external EventTable-compatible CSV/TSV
+    #   # - derived_stage_block_end: infer stage blocks from
+    #   #   epoching.datasets.<id>.sampling.stage_blocking and emit one
+    #   #   point-event per inferred block end
+    #   event_source:
+    #     kind: "derived_stage_block_end"
+    #     # Optional filters on inferred blocks before synthetic events are emitted.
+    #     stage_codes: [50, 51]
+    #     block_parameters: [10, 15]
+    #   event_types: ["stage_block_end"]
     #   stage_filter: ["N2"]
-    #   reference: "peak"
+    #   reference: "onset"
     #   bins:
-    #     pre_far: [-30.0, -10.0]
-    #     pre_near: [-10.0, 0.0]
-    #     event: [0.0, 3.0]
-    #     post_near: [3.0, 10.0]
-    #     post_far: [10.0, 30.0]
+    #     # Bin names are semantic. The exact timing contract is defined by
+    #     # the numeric bounds, not by the label text itself.
+    #     in_block_tail_ms: [-8.0, 0.0]
+    #     post_block_early_ms: [0.0, 8.0]
+    #     post_block_late_ms: [8.0, 16.0]
+    #   # For csv source kinds this can point directly at the annotation file.
+    #   # For derived_stage_block_end it can point at the raw *_events.tsv
+    #   # consumed by stage_blocking.
+    #   # event_source:
+    #   #   source_path: "path/to/sub-01_task-rest_events.tsv"
     #   controls:
-    #     stage: "N2"
     #     n_controls_per_event: 3
+    #     exclusion_margin_sec: 30.0
     #     seed: 42
+    #   export:
+    #     write_parquet: true
+    #     write_csv: true
+    #     # Generic condition labels in the exported sidecar rows.
+    #     event_condition_label: "event"
+    #     control_condition_label: "matched_control"
 
 # Optional pseudo-stage proxy when explicit stage labels are absent.
 pseudo_stage:
@@ -329,6 +359,8 @@ mnps_9d:
 # When omitted:
 # - subject_anchored defaults to true
 # - cohort_anchored defaults to true only when an external/fit anchor is active
+# Example: export both subject- and cohort-anchored layers in the same run
+# when an external/fit anchor is active.
 # mnps_projection:
 #   export_contracts:
 #     subject_anchored: true

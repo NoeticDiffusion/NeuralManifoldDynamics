@@ -56,11 +56,16 @@ epoching:
       # Optional support markers that densify an active block.
       bridge_marker_labels: []
       use_bridge_markers: true
-      hv_tail_sec: 0.5
-      hv_tail_cap_sec: 1.0
+      bridge_tail_sec: 0.5
+      bridge_tail_cap_sec: 1.0
       min_block_sec: 2.0
       max_block_sec: 20.0
       preserve_block_assignments: true
+      window_membership:
+        # How inferred blocks claim MNPS windows. This is interval geometry,
+        # not mnps.overlap (which controls the MNPS stride).
+        mode: "midpoint_in_interval"
+        min_overlap_fraction: 0.0
       # Optional expected frequencies/intensity ids for explicit QC reporting.
       expected_stage_frequencies_hz: []
   datasets: {}
@@ -77,6 +82,8 @@ epoching:
     #       enabled: true
     #       stage_event_regex: "(?i)^PHOTO\\s*(\\d+)\\s*Hz$"
     #       bridge_marker_labels: ["Photo/HV mark"]
+    #       window_membership:
+    #         mode: "fully_contained"
     #       expected_stage_frequencies_hz: [5, 10]
 
 features:
@@ -174,6 +181,35 @@ mnps_9d:
     e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
     e_m: {ecg_rmssd: 1.0}
   datasets: {}
+
+# Optional derived event-locked sidecars.
+# These are downstream analytical exports, not new H5 groups in v1.
+event_locked:
+  datasets: {}
+    # YOUR_DATASET_ID:
+    #   enabled: true
+    #   profile: "block_end_event_locked_v1"
+    #   event_source:
+    #     kind: "derived_stage_block_end"
+    #     # Optional filters on inferred blocks before synthetic point-events are built.
+    #     # stage_codes: [50]
+    #     # block_parameters: [10]
+    #   event_types: ["stage_block_end"]
+    #   reference: "onset"
+    #   bins:
+    #     # Bin names are semantic. The exact timing contract is defined by
+    #     # the numeric bounds, not by the label text itself.
+    #     in_block_tail_ms: [-8.0, 0.0]
+    #     post_block_early_ms: [0.0, 8.0]
+    #     post_block_late_ms: [8.0, 16.0]
+    #   stage_filter: ["N2"]
+    #   controls:
+    #     n_controls_per_event: 3
+    #     exclusion_margin_sec: 30.0
+    #     seed: 42
+    #   export:
+    #     write_parquet: true
+    #     write_csv: true
 
 # Optional anchored export-contract selection.
 # Example:

@@ -51,7 +51,18 @@ Relevant config knobs (dataset override under `epoching.datasets.<id>.sampling`)
 - `stage_blocking.enabled` (bool): enables continuous block inference from sparse event markers.
 - `stage_blocking.stage_event_regex`: regex for block-start event labels.
 - `stage_blocking.bridge_marker_labels`: optional dense in-block marker labels.
+- `stage_blocking.bridge_tail_sec` / `stage_blocking.bridge_tail_cap_sec`: control
+  how far bridge markers extend an inferred block when no explicit duration is present.
+- `stage_blocking.window_membership.mode`: how inferred absolute blocks claim MNPS windows.
+  Common values: `midpoint_in_interval`, `fully_contained`, `overlap_frac_ge`.
+- `stage_blocking.window_membership.min_overlap_fraction`: overlap threshold used when
+  `window_membership.mode: overlap_frac_ge`.
 - `stage_blocking.expected_stage_frequencies_hz`: optional expected frequency/intensity ids for explicit QC presence/absence reporting.
+- legacy aliases still accepted: `photic_regex`, `hv_mark_labels`, `use_hv_marks`,
+  `hv_tail_sec`, `hv_tail_cap_sec`, `preserve_photic_blocks`, `expected_frequencies_hz`.
+- `mnps.overlap` vs `stage_blocking.window_membership.min_overlap_fraction`: the former is
+  MNPS stride overlap during window construction; the latter is interval geometry when labeling
+  already-constructed windows.
 
 ---
 
@@ -162,7 +173,12 @@ Created if `payload.events` and/or `payload.event_table_columns` exists.
   - **`/events/mapping_mode`**, **`/events/mapping_rule`** *(utf-8 strings, shape `[N]`)*
   - **`/events/source_event_column`** *(utf-8 strings, shape `[N]`)*
   - **`/events/inferred_block_id`**, **`/events/window_assignment_count`** *(int32, shape `[N]`)*
-  - optional stage-block frequency helpers (e.g. `stage_block_frequency_hz`, `is_stage_block_event`)
+  - optional stage-block helpers (e.g. `stage_block_frequency_hz`, `is_stage_block_event`);
+    historical photic aliases such as `photic_frequency_hz` may also be present for backward compatibility
+- Interpretation note:
+  - `window_assignment_count` depends on `stage_blocking.window_membership.mode`
+  - stricter modes like `fully_contained` usually reduce assigned photic/block windows
+    without changing raw frequency detection or the presence of `/labels/stage`
 - Group attrs:
   - **`_has_event_table`** *(bool-like)*: indicates columnar event table is present.
   - **`_schema_version`** *(str)*: event-provenance schema tag when exported.
@@ -191,6 +207,36 @@ Created when summarize emits the additive EEG event-window contract.
 This group is additive: `/events` remains the source event table, while
 `/event_windows` provides the exact join contract needed for event-locked
 downstream analysis.
+
+---
+
+### Derived Event-Locked Sidecars
+
+These are not written into the subject H5 contract in v1. Instead, the
+event-locked pipeline writes flat Parquet/CSV sidecars that can be joined back
+to H5 by identifiers such as `subject_id`, `run_id`, `window_id`, and
+`matched_event_id`.
+
+Common sidecar columns include:
+
+- **`condition`** *(str)*: generic row type, typically `event` or `matched_control`
+- **`event_type`** *(str)*: semantic event label such as `sleep_spindle` or `stage_block_end`
+- **`event_source`** *(str)*: provenance source such as `annotation:*` or `derived:stage_blocking`
+- **`event_onset_sec`**, **`event_duration_sec`** *(float64)*: aligned source-event timing
+- **`bin_label`**, **`rel_time_sec`**, **`overlap_sec`**, **`overlap_frac`**: event-to-window alignment fields
+- **`match_rank`**, **`match_distance`**, **`matched_event_id`**: matched-control provenance fields
+
+When `event_source.kind: "derived_stage_block_end"` is used, the exported event
+rows are synthesized from inferred `stage_blocking` intervals:
+
+- one point-event is emitted per inferred block end
+- the synthetic event uses `event_type = "stage_block_end"` unless overridden
+- metadata/provenance is stored in the sidecar event columns rather than as a
+  new H5 group
+- the synthetic event metadata includes audit fields such as
+  `derived_from`, `is_inferred`, `end_reason`, `membership_mode`,
+  `bridge_tail_sec`, `bridge_tail_cap_sec`, `bridge_tail_ms`,
+  `block_start_ms`, `block_end_ms`, and `block_duration_ms`
 
 ---
 

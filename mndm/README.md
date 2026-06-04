@@ -339,11 +339,16 @@ epoching:
           stage_event_regex: "(?i)^PHOTO\\s*(\\d+)\\s*Hz$"
           bridge_marker_labels: ["Photo/HV mark"]
           use_bridge_markers: true
-          hv_tail_sec: 0.5
-          hv_tail_cap_sec: 1.0
+          bridge_tail_sec: 0.5
+          bridge_tail_cap_sec: 1.0
           min_block_sec: 2.0
           max_block_sec: 20.0
           preserve_block_assignments: true
+          window_membership:
+            # Controls how inferred absolute blocks claim MNPS windows.
+            # This is interval geometry, not mnps.overlap (stride overlap).
+            mode: "midpoint_in_interval"
+            min_overlap_fraction: 0.0
           expected_stage_frequencies_hz: [5, 10, 15, 20, 25, 30]
 ```
 
@@ -358,7 +363,42 @@ Outputs and provenance:
 Backward compatibility:
 
 - legacy keys remain accepted: `photic_regex`, `hv_mark_labels`, `use_hv_marks`,
-  `preserve_photic_blocks`, `expected_frequencies_hz`.
+  `hv_tail_sec`, `hv_tail_cap_sec`, `preserve_photic_blocks`,
+  `expected_frequencies_hz`.
+
+Window-membership modes:
+
+- `midpoint_in_interval` (default): preserves historical behavior.
+- `fully_contained`: only windows entirely inside an inferred block are labeled.
+- `overlap_frac_ge`: require `window_membership.min_overlap_fraction` of each
+  MNPS window to overlap the inferred block.
+
+Note: `mnps.overlap` controls the stride between MNPS windows, while
+`stage_blocking.window_membership.min_overlap_fraction` controls interval
+geometry after those windows already exist.
+
+Canonical tail names are now `bridge_tail_sec` and `bridge_tail_cap_sec`; the
+older `hv_*` names remain accepted as aliases for compatibility with existing
+dataset overlays.
+
+Validated practical example:
+
+- `ds006036` was rerun with `window_membership.mode: "fully_contained"` in
+  `mndm/config/config_ingest_ds006036.yaml`
+- output root:
+  `E:/Science_Datasets/openneuro/processed_ds006036_strict_fully_contained_v1`
+- result:
+  - `labels_stage: true` and `h5_with_stage: 88`
+  - mean `stage_frac_labeled` changed from `0.584536` to `0.533997`
+  - total labeled windows changed from `3422` to `3178`
+  - photic windows changed from `1856` to `979`
+
+Interpretation:
+
+- `fully_contained` is a good fit when you want “pure block-internal windows”
+  rather than boundary-tolerant labels.
+- `overlap_frac_ge` is the better compromise mode when `fully_contained` removes
+  too many rare-event windows.
 
 ### Normalization (ComBat pilot, post-features)
 
@@ -560,6 +600,13 @@ MNDM now includes generic helpers for event-locked analyses:
 - `mndm.pipeline.event_alignment`: map events to MNPS windows and relative-time bins
 - `mndm.pipeline.control_matching`: select matched non-event control windows
 - `mndm.pipeline.event_locked_export`: write flat analysis tables with provenance
+- `mndm.pipeline.event_locked_runner`: resolve an event source, run alignment/control matching, and write sidecars
+
+Supported event sources now include both:
+
+- external annotation tables (`event_source.kind: "csv"`)
+- derived block-end point-events (`event_source.kind: "derived_stage_block_end"`) synthesized from
+  `epoching.datasets.<id>.sampling.stage_blocking`
 
 These helpers are designed as a derived analysis layer. The canonical HDF5 output remains the measurement surface (`/mnps_3d`, `/coords_9d`, explicit MNDM 2.1 coordinate layers, `/jacobian`, `/labels`, feature surfaces, and provenance). Event annotations, event-window mappings, matched controls, and baseline-corrected summaries should be kept as sidecars or clearly marked derived groups unless a future release promotes a stable derived-event schema.
 
@@ -570,6 +617,36 @@ python -m mndm.cli all --dataset ds005555 --config mndm/config/config_ingest_ds0
 ```
 
 This overlay uses short windows suitable for spindle-scale event alignment while preserving stage labels as time-aligned annotations.
+
+For post-block analyses, configure a dataset profile such as:
+
+```yaml
+event_locked:
+  datasets:
+    ds006036:
+      enabled: true
+      event_source:
+        kind: "derived_stage_block_end"
+      event_types: ["stage_block_end"]
+      stage_filter: []
+      reference: "onset"
+      bins:
+        in_block_tail_ms: [-8.0, 0.0]
+        post_block_early_ms: [0.0, 8.0]
+        post_block_late_ms: [8.0, 16.0]
+```
+
+The runner will infer stage blocks from `sampling.stage_blocking`, emit one
+derived point-event at each inferred block end, then feed those events through
+the same alignment, optional matched-control, and sidecar-export path. The v1
+contract remains sidecar-only: no new HDF5 group is introduced for these
+derived block-end exports.
+
+Because block end is inferred rather than directly observed, each derived event
+also carries audit metadata in `metadata_json`, including fields such as
+`derived_from`, `is_inferred`, `end_reason`, `membership_mode`,
+`bridge_tail_sec`, `bridge_tail_cap_sec`, `bridge_tail_ms`,
+`block_start_ms`, and `block_end_ms`.
 
 ### Within-Run Labels
 

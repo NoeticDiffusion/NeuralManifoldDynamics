@@ -14,7 +14,7 @@ One row per ``(subject_id, condition, event_id, bin_label, window_id)``.
 
 ``condition`` values:
 
-* ``"spindle_event"``   — a window whose bin assignment came from a real event
+* ``"event"``           — a window whose bin assignment came from a real event
 * ``"matched_control"`` — a control window matched to a real event
 
 Mandatory columns (always present)
@@ -110,6 +110,8 @@ class ExportConfig:
         when ``None`` and the path exists; pass an explicit value to override
         or skip computation.  Stored in every provenance row so that the
         exact detector output file can always be identified.
+    event_condition_label / control_condition_label:
+        String labels used in the exported ``condition`` column.
     """
 
     def __init__(
@@ -126,6 +128,8 @@ class ExportConfig:
         alignment_reference: Optional[str] = None,
         control_seed: Optional[int] = None,
         annotation_source_hash: Optional[str] = None,
+        event_condition_label: str = "event",
+        control_condition_label: str = "matched_control",
     ) -> None:
         self.write_parquet = write_parquet
         self.write_csv = write_csv
@@ -138,6 +142,8 @@ class ExportConfig:
         self.alignment_reference = alignment_reference
         self.control_seed = control_seed
         self.annotation_source_hash = annotation_source_hash
+        self.event_condition_label = str(event_condition_label or "event")
+        self.control_condition_label = str(control_condition_label or "matched_control")
 
     @classmethod
     def from_dict(cls, cfg: Mapping[str, Any]) -> "ExportConfig":
@@ -146,6 +152,8 @@ class ExportConfig:
             write_csv=bool(cfg.get("write_csv", False)),
             include_coords_9d=bool(cfg.get("include_coords_9d", True)),
             provenance_in_every_row=bool(cfg.get("provenance_in_every_row", True)),
+            event_condition_label=str(cfg.get("event_condition_label", "event") or "event"),
+            control_condition_label=str(cfg.get("control_condition_label", "matched_control") or "matched_control"),
         )
 
 
@@ -371,7 +379,7 @@ def build_event_locked_table(
 
     rows: List[Dict[str, Any]] = []
 
-    # --- Spindle-event rows -----------------------------------------------
+    # --- Event rows -------------------------------------------------------
     for arow in alignment.rows:
         w_idx = arow.window_id
         ev_idx = arow.event_id
@@ -380,7 +388,7 @@ def build_event_locked_table(
         if config.provenance_in_every_row:
             row.update(provenance)
 
-        row["condition"] = "spindle_event"
+        row["condition"] = config.event_condition_label
         row["event_id"] = ev_idx
         row["window_id"] = w_idx
         row["bin_label"] = arow.bin_label
@@ -422,7 +430,7 @@ def build_event_locked_table(
         if config.provenance_in_every_row:
             row.update(provenance)
 
-        row["condition"] = "matched_control"
+        row["condition"] = config.control_condition_label
         row["event_id"] = -1
         row["window_id"] = w_idx
         # bin_label and rel_time for a control window are relative to the
@@ -447,7 +455,7 @@ def build_event_locked_table(
         rows.append(row)
 
     logger.info(
-        "Event-locked table: %d spindle rows + %d control rows = %d total (subject=%s)",
+        "Event-locked table: %d event rows + %d control rows = %d total (subject=%s)",
         len(alignment.rows),
         len(controls.rows),
         len(rows),
@@ -556,8 +564,17 @@ def event_locked_export_manifest_entry(
 
     Records row counts per condition, QC summaries, and output paths.
     """
-    n_spindle = sum(1 for r in rows if r.get("condition") == "spindle_event")
-    n_control = sum(1 for r in rows if r.get("condition") == "matched_control")
+    condition_counts: Dict[str, int] = {}
+    for row in rows:
+        condition = str(row.get("condition", ""))
+        condition_counts[condition] = int(condition_counts.get(condition, 0)) + 1
+
+    n_control = sum(
+        1
+        for row in rows
+        if int(row.get("event_id", -1)) < 0 and int(row.get("matched_event_id", -1)) >= 0
+    )
+    n_event = len(rows) - n_control
 
     paths_entry = []
     if out_paths:
@@ -565,8 +582,10 @@ def event_locked_export_manifest_entry(
 
     return {
         "n_rows_total": len(rows),
-        "n_spindle_event_rows": n_spindle,
+        "n_event_rows": n_event,
+        "n_spindle_event_rows": n_event,
         "n_matched_control_rows": n_control,
+        "condition_counts": condition_counts,
         "alignment_qc": {k: v for k, v in alignment.qc.items() if k != "_bins_objects"},
         "control_qc": controls.qc,
         "output_paths": paths_entry,

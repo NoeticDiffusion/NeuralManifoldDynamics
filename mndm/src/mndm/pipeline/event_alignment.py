@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 
 from .event_annotations import EventTable
+from .intervals import overlap_frac, overlap_sec
 
 logger = logging.getLogger(__name__)
 
@@ -326,12 +327,10 @@ def align_events_to_windows(
                 continue
 
             # Overlap with event interval
-            overlap_lo = max(w_start, onset)
-            overlap_hi = min(w_end, ev_end)
-            overlap_sec = max(0.0, overlap_hi - overlap_lo)
-            overlap_frac = (overlap_sec / w_dur) if w_dur > 0 else 0.0
+            overlap_sec_val = float(overlap_sec(w_start, w_end, onset, ev_end))
+            overlap_frac_val = float(overlap_frac(w_start, w_end, onset, ev_end))
 
-            is_event_window = overlap_frac >= config.overlap_threshold
+            is_event_window = overlap_frac_val >= config.overlap_threshold
 
             rows.append(
                 AlignmentRow(
@@ -339,8 +338,8 @@ def align_events_to_windows(
                     window_id=w_idx,
                     rel_time_sec=rel_sec,
                     bin_label=bin_label,
-                    overlap_sec=overlap_sec,
-                    overlap_frac=overlap_frac,
+                    overlap_sec=overlap_sec_val,
+                    overlap_frac=overlap_frac_val,
                     stage=w_stage,
                     is_event_window=is_event_window,
                 )

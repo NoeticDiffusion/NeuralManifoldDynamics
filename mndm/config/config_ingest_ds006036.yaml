@@ -66,12 +66,56 @@ epoching:
           stage_event_regex: "(?i)^PHOTO\\s*(\\d+)\\s*Hz$"
           bridge_marker_labels: ["Photo/HV mark"]
           use_bridge_markers: true
-          hv_tail_sec: 0.5
+          bridge_tail_sec: 0.5
+          bridge_tail_cap_sec: 1.0
           min_block_sec: 2.0
           max_block_sec: 20.0
           preserve_block_assignments: true
+          window_membership:
+            # Keep windows with strong but not perfect in-block overlap.
+            mode: "overlap_frac_ge"
+            min_overlap_fraction: 0.75
           # Explicit contract for downstream verification/QC.
           expected_stage_frequencies_hz: [3, 5, 7, 10, 15, 20, 25, 30]
+
+event_locked:
+  datasets:
+    ds006036:
+      enabled: true
+      profile: "ds006036_stage_block_end_v1"
+      event_source:
+        kind: "derived_stage_block_end"
+      event_types: ["stage_block_end"]
+      # Do not force a sleep-stage filter here: this profile is intended for
+      # post-block analyses around photic block ends.
+      stage_filter: []
+      reference: "onset"
+      # Derived block-end events land exactly at block boundaries, so the
+      # usual stage-transition exclusion should be disabled for this profile.
+      exclude_stage_transition_margin_sec: 0.0
+      bins:
+        # Bin names are semantic. The exact timing contract is defined by the
+        # numeric bounds here, not by the label text itself.
+        # Keep bins non-overlapping in one profile because event_locked
+        # alignment uses first-match-wins semantics.
+        in_block_tail_ms: [-8.0, 0.0]
+        post_block_early_ms: [0.0, 8.0]
+        post_block_late_ms: [8.0, 16.0]
+        # Exploratory short tail such as [-4, 0] should be run as a separate
+        # profile/export, not alongside the full [-8, 0] tail in the same run.
+      min_overlap_fraction: 0.0
+      controls:
+        n_controls_per_event: 3
+        exclusion_margin_sec: 30.0
+        seed: 42
+      export:
+        write_parquet: true
+        write_csv: true
+
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
 
 mnps:
   stage_codebook:

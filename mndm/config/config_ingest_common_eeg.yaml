@@ -76,11 +76,16 @@ epoching:
       stage_event_regex: ""
       bridge_marker_labels: []
       use_bridge_markers: true
-      hv_tail_sec: 0.5
-      hv_tail_cap_sec: 1.0
+      bridge_tail_sec: 0.5
+      bridge_tail_cap_sec: 1.0
       min_block_sec: 2.0
       max_block_sec: 20.0
       preserve_block_assignments: true
+      window_membership:
+        # Controls how inferred absolute blocks claim 8 s MNPS windows.
+        # This is interval overlap geometry, not mnps.overlap (stride overlap).
+        mode: "midpoint_in_interval"
+        min_overlap_fraction: 0.0
       expected_stage_frequencies_hz: []
   datasets: {}
 

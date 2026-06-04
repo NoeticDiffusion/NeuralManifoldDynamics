@@ -82,12 +82,14 @@ class EventLockedProfile:
     control_seed: int = 42
     n_controls_per_event: int = 3
     control_exclusion_margin_sec: float = 30.0
+    event_source_kind: str = "csv"
 
     def to_dict(self) -> Dict[str, Any]:
         """Return a JSON-serialisable dict for manifest / provenance export."""
         return {
             "profile_name": self.profile_name,
             "dataset_id": self.dataset_id,
+            "event_source_kind": self.event_source_kind,
             "event_types": list(self.event_types),
             "stage_filter_labels": list(self.stage_filter_labels),
             "stage_filter_codes": list(self.stage_filter_codes),
@@ -98,6 +100,30 @@ class EventLockedProfile:
             "control_seed": self.control_seed,
             "n_controls_per_event": self.n_controls_per_event,
             "control_exclusion_margin_sec": self.control_exclusion_margin_sec,
+        }
+
+
+@dataclass(frozen=True)
+class EventSourceConfig:
+    """Configuration for resolving an EventTable for event-locked export."""
+
+    kind: str = "csv"
+    event_type: str = "sleep_spindle"
+    event_kind: str = "end"
+    stage_codes: tuple = ()
+    block_parameters: tuple = ()
+    source_label: str = "derived:stage_blocking"
+    source_path: str = ""
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "event_type": self.event_type,
+            "event_kind": self.event_kind,
+            "stage_codes": list(self.stage_codes),
+            "block_parameters": list(self.block_parameters),
+            "source_label": self.source_label,
+            "source_path": self.source_path,
         }
 
 
@@ -150,8 +176,21 @@ def _parse_stage_filter(
     return codes
 
 
-def _parse_bins(raw_bins: Mapping[str, Any]) -> List[BinSpec]:
-    """Convert YAML bins dict to ordered list of BinSpec."""
+def _parse_bins(raw_bins: Any) -> List[BinSpec]:
+    """Convert YAML or JSON bin config to an ordered list of BinSpec."""
+    if isinstance(raw_bins, list):
+        result = []
+        for item in raw_bins:
+            if not isinstance(item, Mapping):
+                continue
+            try:
+                result.append(BinSpec(str(item["label"]), float(item["lo"]), float(item["hi"])))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if result:
+            return result
+        return [BinSpec(label, lo, hi) for label, lo, hi in DEFAULT_BINS]
+
     if not isinstance(raw_bins, Mapping) or not raw_bins:
         return [BinSpec(label, lo, hi) for label, lo, hi in DEFAULT_BINS]
     result = []
@@ -206,6 +245,8 @@ def event_locked_profile_from_config(
     stage_filter_codes = tuple(_parse_stage_filter(stage_filter_labels, codebook))
 
     reference = str(ds_cfg.get("reference", "peak"))
+    event_source_cfg = ds_cfg.get("event_source", {}) if isinstance(ds_cfg.get("event_source"), Mapping) else {}
+    event_source_kind = str(event_source_cfg.get("kind", "csv") or "csv")
 
     raw_bins = ds_cfg.get("bins", {})
     bins = _parse_bins(raw_bins)
@@ -226,6 +267,7 @@ def event_locked_profile_from_config(
         profile_name=profile_name,
         dataset_id=dataset_id,
         event_types=event_types,
+        event_source_kind=event_source_kind,
         stage_filter_labels=stage_filter_labels,
         stage_filter_codes=stage_filter_codes,
         reference=reference,
@@ -235,6 +277,56 @@ def event_locked_profile_from_config(
         control_seed=control_seed,
         n_controls_per_event=n_controls,
         control_exclusion_margin_sec=exclusion_margin,
+    )
+
+
+def event_source_config_from_config(
+    config: Mapping[str, Any],
+    dataset_id: str,
+    *,
+    stage_codebook: Optional[Mapping[str, int]] = None,
+) -> EventSourceConfig:
+    """Build an ``EventSourceConfig`` from the loaded config dict."""
+    codebook = dict(stage_codebook) if stage_codebook else _DEFAULT_STAGE_CODEBOOK
+    ds_cfg = _resolve_event_locked_dataset_cfg(config, dataset_id)
+    raw = ds_cfg.get("event_source", {}) if isinstance(ds_cfg.get("event_source"), Mapping) else {}
+
+    kind = str(raw.get("kind", "csv") or "csv").strip().lower()
+    if not kind:
+        kind = "csv"
+
+    event_types_raw = ds_cfg.get("event_types", ["sleep_spindle"])
+    if not isinstance(event_types_raw, list):
+        event_types_raw = [event_types_raw]
+    configured_event_types = [str(v) for v in event_types_raw if str(v).strip()]
+    default_event_type = "stage_block_end" if kind == "derived_stage_block_end" else "sleep_spindle"
+    event_type = str(raw.get("event_type", configured_event_types[0] if configured_event_types else default_event_type) or default_event_type)
+
+    event_kind = str(raw.get("event_kind", "end") or "end").strip().lower()
+
+    stage_codes_raw = raw.get("stage_codes", raw.get("block_stage_codes", []))
+    if not isinstance(stage_codes_raw, list):
+        stage_codes_raw = [stage_codes_raw]
+    stage_codes = tuple(_parse_stage_filter([str(v) for v in stage_codes_raw], codebook))
+
+    block_parameters_raw = raw.get("block_parameters", raw.get("block_parameter_values", []))
+    if not isinstance(block_parameters_raw, list):
+        block_parameters_raw = [block_parameters_raw]
+    block_parameters: List[float] = []
+    for value in block_parameters_raw:
+        try:
+            block_parameters.append(float(value))
+        except (TypeError, ValueError):
+            continue
+
+    return EventSourceConfig(
+        kind=kind,
+        event_type=event_type,
+        event_kind=event_kind,
+        stage_codes=tuple(stage_codes),
+        block_parameters=tuple(block_parameters),
+        source_label=str(raw.get("source_label", "derived:stage_blocking") or "derived:stage_blocking"),
+        source_path=str(raw.get("source_path", "") or ""),
     )
 
 
@@ -303,6 +395,8 @@ def export_config_from_yaml(
         write_csv=bool(exp_cfg.get("write_csv", True)),
         include_coords_9d=bool(exp_cfg.get("include_coords_9d", True)),
         provenance_in_every_row=bool(exp_cfg.get("provenance_in_every_row", True)),
+        event_condition_label=str(exp_cfg.get("event_condition_label", "event") or "event"),
+        control_condition_label=str(exp_cfg.get("control_condition_label", "matched_control") or "matched_control"),
     )
 
 
@@ -336,6 +430,8 @@ def export_config_from_profile(
         bins_json=profile.bins_json,
         alignment_reference=profile.reference,
         control_seed=profile.control_seed,
+        event_condition_label=io_cfg.event_condition_label,
+        control_condition_label=io_cfg.control_condition_label,
     )
 
 

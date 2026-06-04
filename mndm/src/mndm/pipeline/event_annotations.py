@@ -60,6 +60,11 @@ _STR_COLS = frozenset(
 )
 
 
+def _sec_to_ms(value_sec: float) -> float:
+    """Convert seconds to milliseconds, preserving NaN."""
+    return float(value_sec) * 1000.0 if np.isfinite(float(value_sec)) else np.nan
+
+
 @dataclass
 class EventTable:
     """Columnar representation of time-stamped event annotations.
@@ -121,6 +126,113 @@ class EventTable:
 def make_empty_event_table(source_path: str = "empty") -> EventTable:
     """Return a zero-row EventTable."""
     return EventTable(onset_sec=np.empty(0, dtype=np.float64), source_path=source_path)
+
+
+def event_table_from_stage_block_intervals(
+    intervals: Sequence[Any],
+    *,
+    event_kind: str = "end",
+    event_type: str = "stage_block_end",
+    source: str = "derived:stage_blocking",
+    source_path: str = "synthetic:stage_blocking",
+) -> EventTable:
+    """Build a synthetic EventTable from inferred stage-block intervals.
+
+    Parameters
+    ----------
+    intervals:
+        Sequence of objects exposing at least ``start_sec``, ``end_sec``,
+        ``stage_code``, ``block_id``, ``block_parameter``, ``source_event_idx``,
+        and optionally ``support_event_indices``.
+    event_kind:
+        Which point to emit for each interval. Supported: ``"start"``,
+        ``"end"``. The emitted event is always a point-event with
+        ``duration_sec = 0``.
+    event_type:
+        Value written into the EventTable ``event_type`` column.
+    source:
+        Value written into the EventTable ``source`` column.
+    source_path:
+        Provenance path for the synthetic table. For derived block events this
+        should typically be the raw BIDS ``*_events.tsv`` source path.
+    """
+    intervals = list(intervals or [])
+    if not intervals:
+        return make_empty_event_table(source_path)
+
+    if event_kind not in {"start", "end"}:
+        raise ValueError(f"Unsupported event_kind '{event_kind}'. Expected 'start' or 'end'.")
+
+    onset_vals: List[float] = []
+    freq_vals: List[float] = []
+    stage_vals: List[str] = []
+    metadata_vals: List[str] = []
+
+    for interval in intervals:
+        start_sec = float(getattr(interval, "start_sec"))
+        end_sec = float(getattr(interval, "end_sec"))
+        onset_sec = start_sec if event_kind == "start" else end_sec
+        block_id = int(getattr(interval, "block_id", -1))
+        stage_code = int(getattr(interval, "stage_code", -1))
+        source_event_idx = int(getattr(interval, "source_event_idx", -1))
+        block_parameter = float(getattr(interval, "block_parameter", np.nan))
+        support_event_indices = tuple(int(v) for v in getattr(interval, "support_event_indices", ()) or ())
+        derived_from = str(getattr(interval, "derived_from", "stage_blocking") or "stage_blocking")
+        end_reason = str(getattr(interval, "end_reason", "unknown") or "unknown")
+        membership_mode = str(getattr(interval, "membership_mode", "") or "")
+        bridge_tail_sec = float(getattr(interval, "bridge_tail_sec", np.nan))
+        bridge_tail_cap_sec = float(getattr(interval, "bridge_tail_cap_sec", np.nan))
+        is_inferred = bool(getattr(interval, "is_inferred", True))
+        start_ms = _sec_to_ms(start_sec)
+        end_ms = _sec_to_ms(end_sec)
+        bridge_tail_ms = _sec_to_ms(bridge_tail_sec)
+        bridge_tail_cap_ms = _sec_to_ms(bridge_tail_cap_sec)
+
+        onset_vals.append(onset_sec)
+        freq_vals.append(block_parameter if np.isfinite(block_parameter) else np.nan)
+        stage_vals.append(str(stage_code))
+        metadata_vals.append(
+            json.dumps(
+                {
+                    "derived_event_kind": str(event_kind),
+                    "derived_from": derived_from,
+                    "is_inferred": is_inferred,
+                    "end_reason": end_reason,
+                    "membership_mode": membership_mode,
+                    "bridge_tail_sec": (bridge_tail_sec if np.isfinite(bridge_tail_sec) else None),
+                    "bridge_tail_cap_sec": (bridge_tail_cap_sec if np.isfinite(bridge_tail_cap_sec) else None),
+                    "bridge_tail_ms": (bridge_tail_ms if np.isfinite(bridge_tail_ms) else None),
+                    "bridge_tail_cap_ms": (bridge_tail_cap_ms if np.isfinite(bridge_tail_cap_ms) else None),
+                    "block_id": block_id,
+                    "block_start_sec": start_sec,
+                    "block_end_sec": end_sec,
+                    "block_start_ms": (start_ms if np.isfinite(start_ms) else None),
+                    "block_end_ms": (end_ms if np.isfinite(end_ms) else None),
+                    "block_duration_ms": ((end_ms - start_ms) if np.isfinite(start_ms) and np.isfinite(end_ms) else None),
+                    "stage_code": stage_code,
+                    "block_parameter": (block_parameter if np.isfinite(block_parameter) else None),
+                    "source_event_idx": source_event_idx,
+                    "support_event_indices": list(support_event_indices),
+                },
+                ensure_ascii=False,
+            )
+        )
+
+    n = len(onset_vals)
+    onset_arr = np.asarray(onset_vals, dtype=np.float64)
+    zeros = np.zeros((n,), dtype=np.float64)
+    return EventTable(
+        onset_sec=onset_arr,
+        duration_sec=zeros.copy(),
+        offset_sec=onset_arr.copy(),
+        frequency_hz=np.asarray(freq_vals, dtype=np.float64),
+        event_type=np.asarray([str(event_type)] * n, dtype=object),
+        source=np.asarray([str(source)] * n, dtype=object),
+        stage=np.asarray(stage_vals, dtype=object),
+        metadata_json=np.asarray(metadata_vals, dtype=object),
+        source_path=str(source_path),
+        n_events_loaded=n,
+    )
 
 
 def load_event_table_from_csv(

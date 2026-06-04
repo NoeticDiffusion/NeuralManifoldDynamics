@@ -120,7 +120,7 @@ def _make_controls(payload, table):
 # ---------------------------------------------------------------------------
 
 class TestSpindleRows:
-    def test_spindle_rows_have_condition_spindle_event(self):
+    def test_event_rows_have_generic_event_condition(self):
         from mndm.pipeline.event_locked_export import build_event_locked_table, ExportConfig
 
         payload = _make_payload()
@@ -132,10 +132,10 @@ class TestSpindleRows:
             payload=payload, alignment=alignment, controls=controls,
             event_table=table, subject_id="sub-001", config=ExportConfig(include_coords_9d=True),
         )
-        spindle_rows = [r for r in rows if r["condition"] == "spindle_event"]
+        spindle_rows = [r for r in rows if r["condition"] == "event"]
         assert len(spindle_rows) > 0
         for r in spindle_rows:
-            assert r["condition"] == "spindle_event"
+            assert r["condition"] == "event"
 
     def test_spindle_rows_have_valid_bin_labels(self):
         from mndm.pipeline.event_locked_export import build_event_locked_table, ExportConfig
@@ -152,7 +152,7 @@ class TestSpindleRows:
             payload=payload, alignment=alignment, controls=controls, event_table=table,
             config=ExportConfig(),
         )
-        for r in (r for r in rows if r["condition"] == "spindle_event"):
+        for r in (r for r in rows if r["condition"] == "event"):
             assert r["bin_label"] in valid_labels, f"Unexpected bin: {r['bin_label']}"
 
     def test_spindle_rows_have_mnps_columns(self):
@@ -166,7 +166,7 @@ class TestSpindleRows:
             controls=_make_controls(payload, table),
             event_table=table,
         )
-        for r in (r for r in rows if r["condition"] == "spindle_event"):
+        for r in (r for r in rows if r["condition"] == "event"):
             assert "m" in r and "d" in r and "e" in r
             assert "m_dot" in r and "d_dot" in r and "e_dot" in r
 
@@ -182,7 +182,7 @@ class TestSpindleRows:
             event_table=table,
             subject_id="sub-001",
         )
-        for r in (r for r in rows if r["condition"] == "spindle_event"):
+        for r in (r for r in rows if r["condition"] == "event"):
             assert r["event_type"] == "sleep_spindle"
             assert r["event_source"] == "annotation:test"
             assert r["event_channel"] == "Cz"
@@ -410,7 +410,7 @@ class TestMissingOptionalTensors:
             config=ExportConfig(include_coords_9d=True),
         )
         # coords_9d columns should be NaN but present (if include_coords_9d=True)
-        spindle = [r for r in rows if r["condition"] == "spindle_event"]
+        spindle = [r for r in rows if r["condition"] == "event"]
         if spindle:
             # m_a should be NaN when coords_9d absent
             assert np.isnan(spindle[0].get("m_a", 0.0)) or "m_a" not in spindle[0]
@@ -426,7 +426,7 @@ class TestMissingOptionalTensors:
             controls=_make_controls(payload, table),
             event_table=table,
         )
-        for r in (r for r in rows if r["condition"] == "spindle_event"):
+        for r in (r for r in rows if r["condition"] == "event"):
             assert np.isnan(r["m_dot"])
             assert np.isnan(r["d_dot"])
             assert np.isnan(r["e_dot"])
@@ -443,7 +443,7 @@ class TestMissingOptionalTensors:
             event_table=table,
         )
         # stage should default to -1 for all rows
-        for r in (r for r in rows if r["condition"] == "spindle_event"):
+        for r in (r for r in rows if r["condition"] == "event"):
             assert r["stage"] == -1
 
     def test_no_window_bounds(self):
@@ -457,7 +457,7 @@ class TestMissingOptionalTensors:
             controls=_make_controls(payload, table),
             event_table=table,
         )
-        for r in (r for r in rows if r["condition"] == "spindle_event"):
+        for r in (r for r in rows if r["condition"] == "event"):
             assert np.isnan(r["window_start_sec"])
             assert np.isnan(r["window_end_sec"])
 
@@ -474,7 +474,7 @@ class TestMissingOptionalTensors:
         )
         # Should produce rows without crashing; event metadata columns = NaN/empty
         assert isinstance(rows, list)
-        for r in (r for r in rows if r["condition"] == "spindle_event"):
+        for r in (r for r in rows if r["condition"] == "event"):
             assert np.isnan(r["event_onset_sec"])
 
 
@@ -564,9 +564,10 @@ class TestManifestEntry:
 
         entry = event_locked_export_manifest_entry(rows, alignment=alignment, controls=controls)
         assert entry["n_rows_total"] == len(rows)
-        assert entry["n_spindle_event_rows"] + entry["n_matched_control_rows"] == len(rows)
+        assert entry["n_event_rows"] + entry["n_matched_control_rows"] == len(rows)
         assert "alignment_qc" in entry
         assert "control_qc" in entry
+        assert entry["condition_counts"]["event"] == entry["n_event_rows"]
 
 
 # ---------------------------------------------------------------------------
@@ -592,7 +593,7 @@ class TestCsvOutput:
             assert p.exists()
             content = p.read_text(encoding="utf-8")
             assert "condition" in content
-            assert "spindle_event" in content
+            assert "event" in content
 
     def test_write_csv_empty_rows_returns_none(self):
         from mndm.pipeline.event_locked_export import write_event_locked_csv

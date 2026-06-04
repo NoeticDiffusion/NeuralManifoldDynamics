@@ -11,6 +11,13 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+from .intervals import TimeInterval, event_window_mask, window_membership_mask
+from .stage_blocking import (
+    infer_stage_block_intervals,
+    match_stage_block_parameters,
+    stage_blocking_config_from_mapping,
+)
+
 
 @dataclass
 class BidsEventStageProvenance:
@@ -119,13 +126,13 @@ def _event_mask_for_window(
     t_mid: np.ndarray,
 ) -> np.ndarray:
     """Return per-window mask for one event."""
-    end = float(onset) + (float(duration) if float(duration) > 0 else 0.0)
-    if end <= float(onset):
-        mask = (t_start <= float(onset)) & (t_end > float(onset))
-        if not mask.any():
-            mask = np.isclose(t_mid, float(onset), atol=1e-3)
-        return mask
-    return (t_mid >= float(onset)) & (t_mid < end)
+    return event_window_mask(
+        onset=float(onset),
+        duration=float(duration),
+        t_start=t_start,
+        t_end=t_end,
+        t_mid=t_mid,
+    )
 
 
 def _build_legacy_event_arrays(
@@ -158,7 +165,7 @@ def _build_stage_with_blocking(
     t_end: np.ndarray,
     sampling_cfg: Mapping[str, Any],
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Build per-window stage with optional photic block expansion."""
+    """Build per-window stage with optional generic block expansion."""
     n_events = int(len(onsets))
     t_mid = (t_start + t_end) / 2.0
     out = np.full((t_mid.shape[0],), -1, dtype=np.int16)
@@ -166,81 +173,18 @@ def _build_stage_with_blocking(
     mapped_codes = np.full((n_events,), np.nan, dtype=np.float64)
     mapping_mode = np.asarray(["unmapped"] * n_events, dtype=object)
     block_ids = np.full((n_events,), -1, dtype=np.int32)
-    freq_hz = np.full((n_events,), np.nan, dtype=np.float64)
     window_assign_counts = np.zeros((n_events,), dtype=np.int32)
 
-    blocking_cfg = sampling_cfg.get("stage_blocking", {}) if isinstance(sampling_cfg, Mapping) else {}
-    blocking_cfg = dict(blocking_cfg) if isinstance(blocking_cfg, Mapping) else {}
-    blocking_enabled = bool(blocking_cfg.get("enabled", False))
-
+    blocking_cfg = stage_blocking_config_from_mapping(
+        sampling_cfg.get("stage_blocking", {}) if isinstance(sampling_cfg, Mapping) else {}
+    )
     labels_norm = np.asarray([_normalize_label(v) for v in labels_raw], dtype=object)
     labels_key = np.asarray([_normalize_key(v) for v in labels_raw], dtype=object)
     stage_vals = np.asarray(direct_codes, dtype=np.float64)
-
     order = np.argsort(onsets, kind="stable")
+    freq_hz = match_stage_block_parameters(labels_norm.tolist(), blocking_cfg)
 
-    # Generic stage-blocking config supports multiple key aliases.
-    event_regex = str(
-        blocking_cfg.get(
-            "stage_event_regex",
-            blocking_cfg.get(
-                "carrier_event_regex",
-                blocking_cfg.get("photic_regex", ""),
-            ),
-        )
-        or ""
-    ).strip()
-    photic_re: Optional[re.Pattern[str]] = None
-    if event_regex:
-        try:
-            photic_re = re.compile(event_regex, flags=re.IGNORECASE)
-        except Exception:
-            photic_re = None
-
-    def _match_freq(label: str) -> Optional[float]:
-        if not label or photic_re is None:
-            return None
-        m = photic_re.match(str(label))
-        if not m:
-            return None
-        try:
-            return float(m.group(1))
-        except Exception:
-            return None
-
-    hv_labels_raw = blocking_cfg.get(
-        "bridge_marker_labels",
-        blocking_cfg.get("marker_labels", blocking_cfg.get("hv_mark_labels", [])),
-    )
-    if isinstance(hv_labels_raw, Sequence) and not isinstance(hv_labels_raw, (str, bytes)):
-        hv_values = list(hv_labels_raw)
-    elif hv_labels_raw in (None, ""):
-        hv_values = []
-    else:
-        hv_values = [hv_labels_raw]
-    hv_labels = {_normalize_key(v) for v in hv_values if _normalize_key(v)}
-    protect_non_photic = bool(
-        blocking_cfg.get(
-            "preserve_block_assignments",
-            blocking_cfg.get("preserve_photic_blocks", True),
-        )
-    )
-    min_block_sec = float(blocking_cfg.get("min_block_sec", 2.0) or 2.0)
-    max_block_sec = float(blocking_cfg.get("max_block_sec", 20.0) or 20.0)
-    hv_tail_sec = float(blocking_cfg.get("hv_tail_sec", 0.5) or 0.5)
-    hv_tail_cap_sec = float(blocking_cfg.get("hv_tail_cap_sec", 1.0) or 1.0)
-    use_hv_marks = bool(blocking_cfg.get("use_bridge_markers", blocking_cfg.get("use_hv_marks", True)))
-
-    photic_indices: List[int] = []
-    for idx in order.tolist():
-        freq = _match_freq(str(labels_norm[idx]))
-        if freq is None:
-            continue
-        freq_hz[idx] = float(freq)
-        if np.isfinite(stage_vals[idx]):
-            photic_indices.append(int(idx))
-
-    if not blocking_enabled:
+    if not blocking_cfg.enabled:
         for idx in order.tolist():
             if not np.isfinite(stage_vals[idx]):
                 continue
@@ -259,96 +203,48 @@ def _build_stage_with_blocking(
             mapping_mode[idx] = "direct"
         return out.astype(np.int16, copy=False), mapped_codes, mapping_mode, block_ids, freq_hz, window_assign_counts
 
-    block_counter = 0
-    for pos, idx in enumerate(photic_indices):
-        start = float(onsets[idx])
-        next_start = (
-            float(onsets[photic_indices[pos + 1]])
-            if (pos + 1) < len(photic_indices)
-            else float("inf")
+    block_intervals = infer_stage_block_intervals(
+        onsets=np.asarray(onsets, dtype=float),
+        durations=np.asarray(durations, dtype=float),
+        labels_raw=labels_raw,
+        stage_codes=stage_vals,
+        cfg=blocking_cfg,
+    )
+    carrier_indices = {interval.source_event_idx for interval in block_intervals}
+    bridge_labels = set(blocking_cfg.bridge_marker_labels)
+
+    for interval in block_intervals:
+        idx = int(interval.source_event_idx)
+        block_mask = window_membership_mask(
+            t_start=t_start,
+            t_end=t_end,
+            t_mid=t_mid,
+            interval=TimeInterval(start_sec=float(interval.start_sec), end_sec=float(interval.end_sec)),
+            spec=blocking_cfg.window_membership,
         )
-        end_direct = (
-            float(start + durations[idx])
-            if np.isfinite(durations[idx]) and float(durations[idx]) > 0
-            else float("nan")
-        )
-        end_hv = float("nan")
-        if use_hv_marks and hv_labels:
-            hv_mask = np.array(
-                [
-                    (_normalize_key(v) in hv_labels)
-                    for v in labels_norm
-                ],
-                dtype=bool,
-            )
-            hv_onsets = onsets[
-                hv_mask
-                & np.isfinite(onsets)
-                & (onsets >= start)
-                & (onsets < next_start if np.isfinite(next_start) else np.ones_like(onsets, dtype=bool))
-            ]
-            hv_onsets = np.asarray(hv_onsets, dtype=np.float64)
-            if hv_onsets.size:
-                hv_onsets = np.sort(hv_onsets)
-                hv_step = float("nan")
-                if hv_onsets.size >= 2:
-                    diffs = np.diff(hv_onsets)
-                    diffs = diffs[np.isfinite(diffs) & (diffs > 0)]
-                    if diffs.size:
-                        hv_step = float(np.median(diffs))
-                tail = float(hv_tail_sec)
-                if np.isfinite(hv_step) and hv_step > 0:
-                    tail = max(tail, min(hv_step, hv_tail_cap_sec))
-                end_hv = float(hv_onsets[-1] + tail)
-
-        if np.isfinite(end_direct) and end_direct > start:
-            end = float(end_direct)
-        elif np.isfinite(end_hv) and end_hv > start:
-            end = float(end_hv)
-        elif np.isfinite(next_start):
-            end = min(float(next_start), float(start + max_block_sec))
-        else:
-            end = float(start + max_block_sec)
-
-        if np.isfinite(next_start):
-            end = min(end, float(next_start))
-        if end - start < min_block_sec:
-            if np.isfinite(next_start) and (next_start - start) >= min_block_sec:
-                end = min(float(next_start), float(start + max_block_sec))
-            else:
-                end = float(start + min_block_sec)
-        if end <= start:
-            end = float(start + max(min_block_sec, 1e-3))
-
-        block_mask = (t_mid >= start) & (t_mid < end)
         if block_mask.any():
-            out[block_mask] = int(stage_vals[idx])
-        mapped_codes[idx] = float(stage_vals[idx])
+            out[block_mask] = int(interval.stage_code)
+        mapped_codes[idx] = float(interval.stage_code)
         mapping_mode[idx] = "direct_photic_block"
-        block_ids[idx] = int(block_counter)
+        block_ids[idx] = int(interval.block_id)
         window_assign_counts[idx] = int(block_mask.sum())
 
-        hv_row_mask = np.array(
-            [
-                (_normalize_key(v) in hv_labels)
-                for v in labels_norm
-            ],
-            dtype=bool,
-        ) & np.isfinite(onsets) & (onsets >= start) & (onsets < end)
-        hv_indices = np.where(hv_row_mask)[0]
-        for hv_idx in hv_indices.tolist():
-            if not np.isfinite(mapped_codes[hv_idx]):
-                mapped_codes[hv_idx] = float(stage_vals[idx])
-                mapping_mode[hv_idx] = "inferred_photic_block"
-                block_ids[hv_idx] = int(block_counter)
-                freq_hz[hv_idx] = freq_hz[idx]
-        block_counter += 1
+        for support_idx in interval.support_event_indices:
+            if not np.isfinite(mapped_codes[support_idx]):
+                mapped_codes[support_idx] = float(interval.stage_code)
+                mapping_mode[support_idx] = "inferred_photic_block"
+                block_ids[support_idx] = int(interval.block_id)
+                freq_hz[support_idx] = freq_hz[idx]
 
     for idx in order.tolist():
         if not np.isfinite(stage_vals[idx]):
             continue
-        is_hv = _normalize_key(labels_norm[idx]) in hv_labels
-        if is_hv and photic_indices:
+        if idx in carrier_indices:
+            # Carrier rows define inferred blocks and should not re-label
+            # boundary windows via point-event fallback under stricter modes.
+            continue
+        is_bridge = labels_key[idx] in bridge_labels
+        if is_bridge and carrier_indices:
             if np.isnan(mapped_codes[idx]):
                 mapped_codes[idx] = float(stage_vals[idx])
                 mapping_mode[idx] = "direct_hv_support"
@@ -368,7 +264,7 @@ def _build_stage_with_blocking(
 
         if np.isfinite(freq_hz[idx]):
             mask_apply = mask & ((out == -1) | (out == int(stage_vals[idx])))
-        elif protect_non_photic:
+        elif blocking_cfg.preserve_block_assignments:
             mask_apply = mask & (out == -1)
         else:
             mask_apply = mask
@@ -438,23 +334,10 @@ def _build_stage_mapping_qc(
                 continue
             window_stage_counts[key] = window_stage_counts.get(key, 0) + 1
 
-    stage_blocking = sampling_cfg.get("stage_blocking", {}) if isinstance(sampling_cfg, Mapping) else {}
-    expected_raw = (
-        stage_blocking.get(
-            "expected_stage_frequencies_hz",
-            stage_blocking.get("expected_frequencies_hz", []),
-        )
-        if isinstance(stage_blocking, Mapping)
-        else []
+    stage_blocking = stage_blocking_config_from_mapping(
+        sampling_cfg.get("stage_blocking", {}) if isinstance(sampling_cfg, Mapping) else {}
     )
-    expected_freqs: List[int] = []
-    if isinstance(expected_raw, Sequence) and not isinstance(expected_raw, (str, bytes)):
-        for v in expected_raw:
-            try:
-                expected_freqs.append(int(v))
-            except Exception:
-                continue
-    expected_freqs = sorted(set(expected_freqs))
+    expected_freqs = list(stage_blocking.expected_stage_frequencies_hz)
     detected_freqs = sorted({int(round(float(v))) for v in raw_freq_vals.tolist()})
 
     missing_expected_raw = [int(v) for v in expected_freqs if int(v) not in detected_freqs]
@@ -464,9 +347,7 @@ def _build_stage_mapping_qc(
         "mapped_stage_code_counts": {str(k): int(v) for k, v in sorted(mapped_code_counts.items(), key=lambda kv: kv[0])},
         "unmapped_event_label_counts": {str(k): int(v) for k, v in sorted(unmapped_label_counts.items(), key=lambda kv: kv[0])},
         "mapping_mode_counts": {str(k): int(v) for k, v in sorted(mode_counts.items(), key=lambda kv: kv[0])},
-        "stage_blocking_enabled": bool(
-            stage_blocking.get("enabled", False) if isinstance(stage_blocking, Mapping) else False
-        ),
+        "stage_blocking_enabled": bool(stage_blocking.enabled),
         "raw_stage_frequency_event_counts_hz": {
             str(k): int(v)
             for k, v in sorted(raw_freq_counts.items(), key=lambda kv: int(kv[0]))
@@ -600,8 +481,10 @@ def build_bids_event_stage_provenance(
     qc["n_event_rows_mapped"] = int(np.isfinite(mapped_codes).sum())
     qc["n_event_rows_unmapped"] = int(np.size(mapped_codes) - int(np.isfinite(mapped_codes).sum()))
     qc["n_windows"] = int(len(stage_used)) if stage_used is not None else int(len(stage_inferred))
-    blocking_cfg = sampling_cfg.get("stage_blocking", {}) if isinstance(sampling_cfg, Mapping) else {}
-    blocking_enabled = bool(blocking_cfg.get("enabled", False)) if isinstance(blocking_cfg, Mapping) else False
+    blocking_cfg = stage_blocking_config_from_mapping(
+        sampling_cfg.get("stage_blocking", {}) if isinstance(sampling_cfg, Mapping) else {}
+    )
+    blocking_enabled = bool(blocking_cfg.enabled)
     mapping_rule_name = "stage_map_plus_stage_blocking" if blocking_enabled else "stage_map_only"
 
     event_table_columns: Dict[str, Any] = {
