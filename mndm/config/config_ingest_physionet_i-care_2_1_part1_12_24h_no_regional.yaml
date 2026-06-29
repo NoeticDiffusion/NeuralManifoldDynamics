@@ -25,7 +25,32 @@ regional_mnps:
 mnps_9d:
   enabled: true
   block_jacobians:
-    enabled: true
+    enabled: false
+
+conventional_eeg:
+  enabled: true
+  packs: ["tier1", "complexity", "coma"]
+  export:
+    per_epoch_columns: true
+    summaries: true
+  coma:
+    suppression_ratio: true
+    burst_suppression_proxy: true
+    continuity_proxy: true
+    alpha_delta_ratio: true
+    suppression:
+      amplitude_floor: 0.01
+      relative_to_rms: 0.20
+      envelope_smoothing_sec: 0.25
+    reactivity_proxy:
+      enabled: true
+      diff_features:
+        - eeg_conventional_coma_alpha_delta_ratio
+        - eeg_conventional_coma_continuity_proxy
+        - eeg_permutation_entropy
+        - eeg_highfreq_power_30_45
+      eps: 1.0e-6
+      clip_at: 5.0
 
 normalization:
   enabled: false

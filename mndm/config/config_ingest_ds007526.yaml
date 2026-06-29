@@ -1,0 +1,94 @@
+version: 2.0
+modality: eeg
+
+# ds007526 overlay config.
+# Keep the first pass simple: use default EEG processing, separate outputs by
+# BIDS task (`rest` / `walk`), and carry the rich participants.tsv clinical row
+# into H5 participant metadata during summarize.
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds007526
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds007526"
+  dataset_name: "PD-EEG: Resting-State & Walking EEG in Parkinson's Disease"
+  dataset_version: "1.0.2"
+  doi: "10.18112/openneuro.ds007526.v1.0.2"
+  url: "https://openneuro.org/datasets/ds007526"
+
+paths:
+  received_dir: "N:/received"
+  processed_dir: "N:/processed/openneuro"
+  dataset_received_dirs:
+    ds007526: "N:/received/ds007526"
+
+preprocess:
+  eeg_csd:
+    enabled: false
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
+      temporal: ["T7", "T8", "TP7", "TP8"]
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: false
+
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+  # Mirror the ds006036 auto-fit pattern so cohort_anchored layers are emitted
+  # from this run's own feature table when no external frozen anchor is supplied.
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "ds007526_cohort_auto_v2_1"
+    anchor_source: "ds007526_all_subjects_features_table"
+    scale_method: "iqr"
+    min_subjects: 3
+
+metadata_extraction:
+  datasets:
+    ds007526:
+      participants:
+        path: "participants.tsv"
+        extra_tables:
+          - path: "sourcedata/clinical_data/full_UPDRS_data.tsv"
+            subject_id_column: "Subject"
+            join_to_base_column: "subject_id"
+            column_normalization: "snake_case"
+            column_prefix: "updrs_item_"
+          - path: "sourcedata/clinical_data/longitudinal_clinical_data.tsv"
+            subject_id_column: "subject_id"
+            join_to_base_column: "subject_id"
+            column_normalization: "snake_case"
+            column_prefix: "longitudinal_"
+      group:
+        candidates: ["group"]
+        normalize:
+          hc: "Control"
+          pd: "Parkinson"
+      task:
+        from_filename: true
+        normalize:
+          rest: "rest"
+          walk: "walk"

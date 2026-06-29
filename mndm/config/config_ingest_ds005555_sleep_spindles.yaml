@@ -59,6 +59,10 @@ event_locked:
     ds005555:
       enabled: true
       profile: "sleep_spindle_event_locked_v1"
+      event_source:
+        kind: "csv"
+      # Resolve sibling detector outputs next to each *_events.tsv file.
+      csv_source_glob: "{events_core}_spindles_yasa_v1_*.csv"
       event_types: ["sleep_spindle"]
       stage_filter: ["N2"]
       reference: "peak"   # use spindle peak when available; fallback to onset
@@ -81,6 +85,8 @@ event_locked:
         write_csv: true
         include_coords_9d: true
         provenance_in_every_row: true
+        event_condition_label: "spindle_event"
+        control_condition_label: "matched_control"
 
 # ── Disable heavyweight features not needed for spindle-scale windows ─────
 # Dynamic FC is expensive and designed for longer windows; disable here.

@@ -36,7 +36,14 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 
 - Python 3.11+
 - Dependencies: `numpy`, `scipy`, `pandas`, `mne`, `h5py`, `pyyaml`, `tqdm`, `joblib`
-- Optional: `openneuro-py` (for dataset downloads)
+- `uv` (provides the `uvx` command) — used by the `download` command to run the
+  latest `openneuro-py` in an isolated environment. Install standalone from
+  https://docs.astral.sh/uv/ or via `pip install uv` (already in the repo
+  `requirements.txt`).
+- Optional: a locally installed `openneuro-py` — only used when downloads are
+  configured to bypass uvx (`download.use_uvx: false`). Note that some installed
+  versions are broken against the current OpenNeuro GraphQL schema (see
+  Troubleshooting in `Command_cheat_sheet.md`); uvx is the recommended path.
 
 ---
 
@@ -50,14 +57,19 @@ cd NoeticDiffusionDataIngest/openneuro
 python -m venv .venv
 .venv\Scripts\activate
 
-# Install dependencies
+# Install dependencies (includes `uv` for uvx-based downloads)
 pip install -U pip
 pip install -r requirements.txt
+
+# Optional: a local openneuro-py (only needed if you set download.use_uvx: false)
 pip install openneuro-py
 
 # (Optional) For private datasets
 openneuro-py login
 ```
+
+The `download` command runs `uvx openneuro-py@latest download ...` by default,
+so a working latest openneuro-py is used without modifying your environment.
 
 ---
 

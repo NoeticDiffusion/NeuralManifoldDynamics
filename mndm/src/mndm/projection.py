@@ -159,6 +159,37 @@ def _strict_robust_z_column(col_data: np.ndarray, eps: float = 1e-9) -> tuple[np
     return transformed, center, scale
 
 
+def _apply_column_pipeline(
+    col_values: np.ndarray,
+    pipeline: Sequence[str],
+    clip_threshold: float = 6.0,
+) -> np.ndarray:
+    """Apply a named transform pipeline to a 1-D feature array.
+
+    Supports the same steps as ``_resolve_feature_pipeline``:
+    * ``log10``    – replaces values with log10; non-positive values become NaN.
+    * ``robust_z`` – applies ``_strict_robust_z_column`` on the current values.
+    * ``clip``     – clips to ``[-clip_threshold, clip_threshold]``.
+
+    Returns a float32 array of the same shape.  Used to compute
+    ``features_projection_z`` (the transform-aware robust-z surface).
+    """
+    data: np.ndarray = np.asarray(col_values, dtype=np.float64).copy()
+    for step in pipeline:
+        step_str = str(step).strip().lower()
+        if step_str == "log10":
+            pos_mask = np.isfinite(data) & (data > 0)
+            result = np.full_like(data, np.nan)
+            result[pos_mask] = np.log10(data[pos_mask])
+            data = result
+        elif step_str in ("robust_z", "robust"):
+            z, _, _ = _strict_robust_z_column(data.astype(np.float32))
+            data = z.astype(np.float64)
+        elif step_str == "clip":
+            data = np.where(np.isfinite(data), np.clip(data, -clip_threshold, clip_threshold), data)
+    return data.astype(np.float32)
+
+
 def is_export_feature_column(name: str, series: pd.Series) -> bool:
     """Handle is export feature column."""
     col = str(name).strip()
@@ -204,6 +235,9 @@ def build_feature_export_bundle(
     v2_set = {str(v) for v in (v2_features or [])}
     raw_values = np.full((n_rows, len(feature_cols)), np.nan, dtype=np.float32)
     robust_z_values = np.full((n_rows, len(feature_cols)), np.nan, dtype=np.float32)
+    # Transform-aware robust-z: applies the configured pipeline (e.g. log10 → robust_z → clip)
+    # before robust-z, so MEG physical values are correctly standardised.
+    projection_z_values = np.full((n_rows, len(feature_cols)), np.nan, dtype=np.float32)
 
     metadata: Dict[str, list[Any]] = {
         "feature_name": [],
@@ -246,11 +280,11 @@ def build_feature_export_bundle(
             group_label = ""
             is_regional = False
 
-        projection_steps = _format_pipeline_steps(
-            _resolve_feature_pipeline(base_name, feature_standardization),
-            clip_threshold,
-        )
+        resolved_pipeline = _resolve_feature_pipeline(base_name, feature_standardization)
+        projection_steps = _format_pipeline_steps(resolved_pipeline, clip_threshold)
         projection_transform_applied = " -> ".join(projection_steps) if normalize_mode else "none"
+        # Compute transform-aware robust-z (applies log10 before robust_z for spectral features).
+        projection_z_values[:, idx] = _apply_column_pipeline(col_values, resolved_pipeline, clip_threshold)
         used_by_mnps_3d = int(col in direct_set or base_name in direct_set)
         used_by_coords_9d = int(col in v2_set or base_name in v2_set)
         used_by_regional_projection = int(is_regional and (base_name in direct_set or base_name in v2_set))
@@ -306,6 +340,8 @@ def build_feature_export_bundle(
         "raw_names": list(feature_cols),
         "robust_z_values": robust_z_values,
         "robust_z_names": list(feature_cols),
+        "projection_z_values": projection_z_values,
+        "projection_z_names": list(feature_cols),
         "metadata": normalized_metadata,
     }
 

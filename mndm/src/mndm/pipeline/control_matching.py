@@ -121,9 +121,13 @@ class ControlMatchResult:
 
 def _quartile(value: float, lo: float, hi: float) -> int:
     """Return 0-3 quartile index of value in [lo, hi]."""
+    if not np.isfinite(value) or not np.isfinite(lo) or not np.isfinite(hi):
+        return 0
     if hi <= lo:
         return 0
     frac = (value - lo) / (hi - lo)
+    if not np.isfinite(frac):
+        return 0
     return int(min(3, max(0, int(frac * 4))))
 
 
@@ -188,8 +192,12 @@ def build_matched_controls(
     if table.is_empty() or n_windows == 0:
         return ControlMatchResult(rows=[], qc=qc)
 
-    t_min = float(np.min(time))
-    t_max = float(np.max(time))
+    finite_time = np.asarray(time, dtype=np.float64)
+    finite_time = finite_time[np.isfinite(finite_time)]
+    if finite_time.size == 0:
+        return ControlMatchResult(rows=[], qc=qc)
+    t_min = float(np.min(finite_time))
+    t_max = float(np.max(finite_time))
 
     # Pre-compute all event onset times for exclusion mask.
     event_onsets = table.onset_sec.astype(np.float64)
@@ -221,7 +229,7 @@ def build_matched_controls(
             in_exclusion |= (time >= (eo - margin)) & (time <= (ee + margin))
 
         # Build candidate mask.
-        candidate_mask = ~in_exclusion
+        candidate_mask = ~in_exclusion & np.isfinite(time)
         if config.target_stage is not None:
             candidate_mask &= stage_arr == config.target_stage
 

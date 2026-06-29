@@ -1,0 +1,328 @@
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+# ds006848  — verbal working-memory + resting state (Pavlov et al., follow-up to ds003838)
+#
+# 30 healthy adults, 64-ch EEG (BrainVision .vhdr/.vmrk/.eeg), ECG, PPG, behavioural data.
+#
+# TASKS
+#   task-rest      4×1-min Eyes_Closed / Eyes_Opened blocks + ~3:52 cartoon watching
+#   task-verbalwm  7-digit sequences, 4 presentation modes identified by Retention_* markers:
+#                    Retention_Simultaneous  (all 7 digits at once, 2800 ms)
+#                    Retention_Fast          (400 ms/digit, no ISI)
+#                    Retention_FastDelay     (400 ms/digit + 600 ms ISI)
+#                    Retention_Slow          (1000 ms/digit)
+#
+# TRIAL STRUCTURE (verbalwm, each ~28 s)
+#   Baseline_2s → Encoding_DigitValue_X (×7) → Retention_<mode> (6 s) → Digits_Retrieval (~18 s)
+#
+# The Retention_* marker is the cleanest condition identifier; encoding mode is encoded there.
+#
+# NOTE: Run `mndm check-structure --dataset ds006848` after first indexing to verify event codes.
+
+datasets:
+  - ds006848
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds006848"
+  dataset_name: "EEG, ECG, PPG and behavioral data in verbal working memory and resting state"
+  dataset_version: "1.0.0"
+  url: "https://openneuro.org/datasets/ds006848"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "J:/processed/openneuro"
+  dataset_received_dirs:
+    ds006848: "K:/ExternalReceivedDatasets/openneuro/received/ds006848"
+
+indexing:
+  multimodal_bundles:
+    enabled: true
+    group_by: ["subject", "session", "task", "run", "acq"]
+    primary_modality: "eeg"
+    # ECG and PPG are co-recorded in the BrainVision EEG file; beh is in a separate tsv.
+    include_modalities: ["eeg", "ecg", "ppg", "beh"]
+
+preprocess:
+  eeg_csd:
+    enabled: false
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+
+  # ICA artifact removal via preprocess.artifacts (the schema read by preprocess.py).
+  # eog_proxy_channels: Fp1/Fp2 as EOG proxy (no dedicated EOG channels in ds006848).
+  # ecg_channel: null = auto-detect ECG channel type from BrainVision co-recording.
+  artifacts:
+    method: "ica"
+    ica_n_components: 20
+    ica_method: "fastica"
+    ica_random_state: 42
+    ica_fit_highpass_hz: 1.0
+    eog_proxy_channels: ["Fp1", "Fp2"]
+    ica_eog_threshold: 3.0
+    ecg_channel: null
+    ica_ecg_threshold: 3.0
+    ica_max_components_to_remove: 5
+
+  # ICA section below is documentation-only (not read by the pipeline).
+  # The preprocess.artifacts section above activates ICA.
+  ica:
+    enabled: true             # set true for ICA-cleaned rerun
+    n_components: 20
+    method: "fastica"
+    random_state: 42
+    max_iter: 1000
+    eog:
+      enabled: true
+      channels: []
+      proxy_channels: ["Fp1", "Fp2"]
+      threshold: 3.0
+    ecg:
+      enabled: true            # ECG is co-recorded in the BrainVision file
+      channel: null            # auto-detect ECG channel type
+      threshold: 3.0
+    icalabel:
+      enabled: false           # requires mne-icalabel; enable when available
+    max_components_to_remove: 5
+
+  # RANSAC bad-channel detection: not run yet; enable for ICA-cleaned rerun.
+  bad_channels:
+    enabled: true
+    method: "ransac"
+    interpolate: true
+    max_bad_fraction: 0.2
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8", "AF3", "AF4"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4", "FCz"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz", "P7", "P8"]
+      temporal: ["T7", "T8", "TP7", "TP8"]
+
+features:
+  ecg:
+    peak_detector: "neurokit2"   # Pan-Tompkins via NeuroKit2; avoids T-wave double-detection
+    hrv:
+      enabled: true
+      superwindow_s: 60.0
+      window_mode: centered
+      min_nn_intervals: 20
+      min_coverage_fraction: 0.5
+      max_artifact_fraction: 0.25
+      pnn50_threshold_ms: 50.0
+      # Gate HRV windows that overlap speech/typing retrieval artefacts.
+      # Windows with any overlap are flagged ecg_hrv_contains_excluded_label=True.
+      exclude_labels:
+        - Digits_Retrieval
+      complexity:
+        enabled: true
+        sampen_order: 2
+        sampen_tolerance_mult: 0.2
+        min_nn_for_sampen: 50
+        dfa_short_nvals_lo: 4
+        dfa_short_nvals_hi: 12
+        min_nn_for_dfa: 16
+
+anchor_state:
+  enabled: true
+
+anchor_coupling:
+  enabled: true
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: false
+  min_windows: 3
+  condition_number_max: 1000000.0
+
+# ---------------------------------------------------------------------------
+# Within-run stage labels
+#
+# Uses the new generic "events_tsv" source type (state_labels.py) which reads
+# the BIDS _events.tsv and assigns labels via last-value-carried-forward (LVCF).
+#
+# Codebook keys MUST match the actual trial_type values in the events.tsv.
+# Confirmed events (sub-001):
+#   verbalwm: Baseline_2s, Encoding_DigitValue_0..9, Encoding_Set_Simultaneous,
+#             Retention_Simultaneous, Retention_Fast, Retention_FastDelay,
+#             Retention_Slow, Digits_Retrieval, Rest, Experiment_End, Boundary
+#   rest:     Eyes_Closed, Eyes_Opened, Start_Cartoon, End_Cartoon, Boundary
+#
+# label_set whitelist restricts LVCF propagation to the listed trial_types;
+# encoding/baseline events are not included so they collapse into unlabeled.
+# ---------------------------------------------------------------------------
+within_run_labels:
+  datasets:
+    ds006848:
+      enabled: true
+      output_name: task_state_label
+      write_to_stage: true
+      write_to_labels: true
+      codebook:
+        # verbalwm retention / retrieval phases
+        Retention_Simultaneous:   3
+        Retention_Fast:           4
+        Retention_FastDelay:      5
+        Retention_Slow:           6
+        Digits_Retrieval:         7
+        # rest-task blocks
+        Eyes_Closed:             10
+        Eyes_Opened:             11
+        Start_Cartoon:           12
+      rules:
+        - id: ds006848_task_state_from_events_tsv
+          source:
+            type: events_tsv
+            trial_type_column: trial_type
+            onset_column: onset
+            # Only propagate the meaningful task phases; encoding/baseline are
+            # too short (400 ms/digit) and would fragment the LVCF labeling.
+            label_set:
+              - Retention_Simultaneous
+              - Retention_Fast
+              - Retention_FastDelay
+              - Retention_Slow
+              - Digits_Retrieval
+              - Eyes_Closed
+              - Eyes_Opened
+              - Start_Cartoon
+            # Reset labeling at trial boundaries so retention labels don't bleed
+            reset_on_labels:
+              - Boundary
+              - Baseline_2s
+
+# ---------------------------------------------------------------------------
+# Event-locked epochs
+# Anchor on the Retention_* events (condition onset) and on rest-state events.
+# ---------------------------------------------------------------------------
+event_locked:
+  datasets:
+    ds006848:
+      enabled: true
+      event_source:
+        kind: bids_events
+        trial_type_column: trial_type
+        onset_column: onset
+        duration_column: duration
+        exclude_types:
+          - Boundary
+          - Baseline_2s
+          - n/a
+      event_types:
+        - "Retention_Simultaneous"
+        - "Retention_Fast"
+        - "Retention_FastDelay"
+        - "Retention_Slow"
+        - "Digits_Retrieval"
+        - "Eyes_Closed"
+        - "Eyes_Opened"
+        - "Start_Cartoon"
+      reference: onset
+      stage_filter: []
+      bins:
+        baseline_2s: [-2.0, 0.0]
+        early_6s:    [0.0, 6.0]
+        late_6s:     [6.0, 12.0]
+      controls:
+        n_controls_per_event: 2
+        exclusion_margin_sec: 4.0
+        seed: 7
+      export:
+        write_parquet: true
+        write_csv: true
+
+# ---------------------------------------------------------------------------
+# Block-native windows
+# For verbalwm: each Retention_* event starts a 6-s retention block followed
+# by ~18 s retrieval.  Minimum block = 6 s (retention window only).
+# Sliding 4-s windows with 2-s step are a reasonable starting point.
+#
+# For rest: Eyes_Closed / Eyes_Opened blocks are ~60 s; cartoon ~232 s.
+# ---------------------------------------------------------------------------
+block_native:
+  datasets:
+    ds006848:
+      enabled: true
+      source:
+        kind: "duration_events"
+        use_derived_task_state_segments: true
+        label_column: "trial_type"
+        onset_column: "onset"
+        duration_column: "duration"
+        block_event_labels:
+          # verbalwm retention phases  (6-s blocks per trial)
+          - "Retention_Simultaneous"
+          - "Retention_Fast"
+          - "Retention_FastDelay"
+          - "Retention_Slow"
+          - "Digits_Retrieval"
+          # rest-task blocks  (~60-232 s)
+          - "Eyes_Closed"
+          - "Eyes_Opened"
+          - "Start_Cartoon"
+        block_event_stage_codes:
+          "Retention_Simultaneous": 3
+          "Retention_Fast":         4
+          "Retention_FastDelay":    5
+          "Retention_Slow":         6
+          "Digits_Retrieval":       7
+          "Eyes_Closed":           10
+          "Eyes_Opened":           11
+          "Start_Cartoon":         12
+        min_block_sec: 4.0
+        max_block_sec: 600.0
+      window_profile:
+        profile: "whole_block"
+        kind: "sliding"
+        window_length_sec: 4.0
+        step_sec: 2.0
+        emit_relative_position: true
+        min_block_sec: 4.0
+        min_windows_per_block: 1
+      export:
+        write_parquet: true
+        write_csv: true
+
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - ecg_hr_bpm
+      - ecg_hrv_rmssd_ms
+      - ppg_rate_bpm
+      - ppg_amplitude_mean
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+metadata_extraction:
+  datasets:
+    ds006848:
+      group:
+        default: "Healthy"
+      task:
+        from_filename: true
+        normalize:
+          rest: "rest"
+          verbalwm: "verbal_wm"

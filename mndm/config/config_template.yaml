@@ -141,6 +141,26 @@ robustness:
       #   groups:
       #     frontal: ["Fp1", "Fp2", "F3", "F4", "Fz"]
       #     central: ["C3", "C4", "Cz"]
+  review_qc:
+    baseline_comparisons:
+      enabled: false
+      smoothing_window_epochs: 5
+      max_series_per_family: 6
+    null_sanity_tests:
+      enabled: false
+      seed: 42
+    mnps_mnj_sanity:
+      enabled: false
+      coord_spaces: ["mnps_3d", "coords_9d"]
+      finite_row_warn_frac: 0.95
+      constant_var_tol: 1.0e-8
+      min_unique_values: 3
+      cond_warn: 1000000.0
+      rel_mse_warn: 1.0
+      robustified_variant:
+        enabled: true
+        winsorize_quantiles: [0.01, 0.99]
+        jacobian_ridge_floor: 1.0e-6
 
 # Optional EEG-only conventional qEEG comparator layer.
 # This writes extra `eeg_conventional_*` feature columns and summarize-time
@@ -151,6 +171,7 @@ conventional_eeg:
   # - "tier1": relative power, slowing ratios, alpha peak, median frequency, spectral edge
   # - "complexity": spectral entropy, permutation entropy, Hjorth complexity/mobility
   # - "connectivity": summary synchrony features from configured EEG channel pairs
+  # - "coma": ICU/coma-oriented EEG proxies (suppression, continuity, ADR, reactivity proxy)
   packs: ["tier1", "complexity", "connectivity"]
   export:
     per_epoch_columns: true
@@ -188,6 +209,24 @@ conventional_eeg:
       ppc: false
     outputs:
       summary_stats: ["mean", "std"]
+  coma:
+    suppression_ratio: true
+    burst_suppression_proxy: true
+    continuity_proxy: true
+    alpha_delta_ratio: true
+    suppression:
+      amplitude_floor: 0.01
+      relative_to_rms: 0.20
+      envelope_smoothing_sec: 0.25
+    reactivity_proxy:
+      enabled: true
+      diff_features:
+        - eeg_conventional_coma_alpha_delta_ratio
+        - eeg_conventional_coma_continuity_proxy
+        - eeg_permutation_entropy
+        - eeg_highfreq_power_30_45
+      eps: 1.0e-6
+      clip_at: 5.0
   # Optional per-dataset override surface.
   # datasets:
   #   example_dataset:
@@ -327,6 +366,42 @@ event_locked:
     #     event_condition_label: "event"
     #     control_condition_label: "matched_control"
 
+# Optional block-native interval/window contract.
+# This writes additive H5 groups `/blocks/*` and `/block_windows/*` and optional
+# sidecars `block_native_windows.parquet/.csv` per subject run.
+# Long-term architecture direction: keep event_locked bins as derived views over
+# canonical block-native intervals.
+block_native:
+  datasets: {}
+    # example_dataset:
+    #   enabled: true
+    #   source:
+    #     kind: "stage_blocking"   # stage_blocking | duration_events | task_phase
+    #     label_column: "value"
+    #     onset_column: "onset"
+    #     duration_column: "duration"
+    #     # duration_events only:
+    #     # block_event_labels: ["Eyes Closed: Every 1000 ms"]
+    #     # block_event_stage_codes: {"Eyes Closed: Every 1000 ms": 10}
+    #     # task_phase only:
+    #     # phase_prefixes: {training: "training_", test: "test_"}
+    #     # gap_tolerance_sec: 10.0
+    #   window_profile:
+    #     # Either a primitive kind or a named profile alias.
+    #     profile: "whole_block"
+    #     # Named aliases:
+    #     # whole_block, early_block, mid_block, late_block, last5, tail8,
+    #     # post_offset_0_8, post_offset_8_16
+    #     kind: "sliding"
+    #     window_length_sec: 4.0
+    #     step_sec: 2.0
+    #     emit_relative_position: true
+    #     min_block_sec: 4.0
+    #     min_windows_per_block: 2
+    #   export:
+    #     write_parquet: true
+    #     write_csv: true
+
 # Optional pseudo-stage proxy when explicit stage labels are absent.
 pseudo_stage:
   datasets: {}
@@ -365,6 +440,19 @@ mnps_9d:
 #   export_contracts:
 #     subject_anchored: true
 #     cohort_anchored: true
+#   # Option A: reference an existing frozen anchor artifact.
+#   anchor:
+#     enabled: true
+#     path: "path/to/anchor.json"
+#     scale_method: "iqr"
+#     min_subjects: 3
+#   # Option B: fit a one-shot anchor from the current dataset run.
+#   anchor_auto_fit:
+#     enabled: true
+#     anchor_id: "my_dataset_cohort_auto_v2_1"
+#     anchor_source: "all_subjects_features_table"
+#     scale_method: "iqr"
+#     min_subjects: 3
 
 # Optional NDT ingest toggles used in some overlays.
 ndt_ingest:

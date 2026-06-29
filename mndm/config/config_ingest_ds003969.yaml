@@ -1,0 +1,210 @@
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+# ds003969 — "Meditation vs thinking task" (Delorme & Braboszcz, OpenNeuro).
+#
+# Biosemi 64-ch EEG (.bdf), 98 subjects (HTR/CTR/SNY/VIP meditation traditions),
+# 4 recordings/subject: task-med1breath, task-med2, task-think1, task-think2.
+#
+# The 64 scalp channels are typed EEG in BIDS; the 16 auxiliary channels
+# (EXG1-8, GSR1-2, Erg1-2, Resp, Plet, Temp) are typed MISC/RESP/TEMP/GSR in the
+# BIDS channels.tsv. MNE reads the .bdf directly (not the BIDS sidecar types), so
+# the auxiliary channels need explicit channel_typing rules below for the
+# embodied-anchoring ingest to find EOG/ECG/PPG/RESP.
+#
+# EXG sensor mapping (from dataset author Claire Braboszcz in the OpenNeuro
+# comments, cross-confirmed by A. S. Ghatpande):
+#   EXG1  left eye corner            -> HEOG
+#   EXG2  right eye corner           -> HEOG
+#   EXG3  left eye eyebrow (above)   -> VEOG
+#   EXG4  left eye below             -> VEOG
+#   EXG5  left mastoide              -> M1 (reference)
+#   EXG6  right mastoide             -> M2 (reference)
+#   EXG7  middle of the collar bone  -> ECG        <-- key embodied signal
+#   EXG8  extra electrode for Fp1    -> Fp1 replacement (see NOTE)
+#
+# NOTE on Fp1 / EXG8: the Fp1 electrode on the Biosemi cap was defective
+# (flat line at this gain, per Ghatpande) and was replaced by an extra electrode
+# wired to EXG8.  EXG8 is therefore the usable Fp1 signal.  The pipeline has no
+# generic channel-rename hook, so EXG8 is typed `misc` here to avoid creating a
+# second EEG channel without a montage position (which would break average-reref
+# / CSD / regional groups).  A future refine should rename EXG8 -> Fp1, drop the
+# flat original Fp1, and let EXG8 carry the Fp1 montage slot.
+#
+# NOTE on PPG pick-up: features/ppg.py finds the PPG channel by name regex
+# (ppg|pleth|pulse|photopleth) and, failing that, falls back to ALL `bio`-type
+# channels.  The channel is named "Plet" (no "h"), so the name regex does NOT
+# match and the bio fallback is used.  Therefore Plet is typed `bio` (so it is
+# picked as PPG) while GSR1/GSR2/Temp are typed `misc` (so the bio fallback does
+# not grab them as PPG).  An EDA extractor + `bio` typing for GSR is a future
+# step.
+
+datasets:
+  - ds003969
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds003969"
+  dataset_name: "Meditation vs thinking task"
+  dataset_version: "1.0.0"
+  doi: "10.18112/openneuro.ds003969.v1.0.0"
+  url: "https://openneuro.org/datasets/ds003969"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "J:/processed/openneuro"
+  dataset_received_dirs:
+    ds003969: "K:/ExternalReceivedDatasets/openneuro/received/ds003969"
+
+indexing:
+  multimodal_bundles:
+    enabled: true
+    group_by: ["subject", "session", "task", "run", "acq"]
+    primary_modality: "eeg"
+    # ECG (EXG7) and PPG (Plet) are co-recorded in the Biosemi .bdf.
+    # GSR/Resp/Temp are typed but have no feature extractor yet.
+    include_modalities: ["eeg", "ecg", "ppg"]
+
+preprocess:
+  eeg_csd:
+    enabled: false
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+
+  # EOG regression using the dedicated EOG channels (EXG1-4, typed eog below).
+  # Lighter than ICA and sufficient for a 98-subject continuous-recording dataset.
+  # ECG (EXG7) is left in the raw so features.ecg HRV extraction sees the true
+  # cardiac signal (no ICA ECG removal).
+  artifacts:
+    method: "eog_reg"
+
+  # Biosemi auxiliary channel typing.  Dataset rules run before the generic
+  # default_rules; first match wins.  Use anchored regex so EXG1 is not matched
+  # by an EXG1* prefix rule intended for other channels.
+  channel_typing:
+    enabled: true
+    datasets:
+      ds003969:
+        rules:
+          # EOG (eye channels)
+          - {regex: "(?i)^EXG1$", type: "eog"}   # HEOG (left eye corner)
+          - {regex: "(?i)^EXG2$", type: "eog"}   # HEOG (right eye corner)
+          - {regex: "(?i)^EXG3$", type: "eog"}   # VEOG (left eyebrow above)
+          - {regex: "(?i)^EXG4$", type: "eog"}   # VEOG (left eye below)
+          # ECG (key embodied signal)
+          - {regex: "(?i)^EXG7$", type: "ecg"}   # ECG (mid collar bone)
+          # PPG / photoplethysmograph -> bio (picked as PPG via bio fallback)
+          - {regex: "(?i)^Plet$", type: "bio"}   # PPG
+          # Respiration
+          - {regex: "(?i)^Resp$", type: "resp"}  # respiration belt
+          # Mastoid references (not used as EEG; kept as misc)
+          - {regex: "(?i)^EXG5$", type: "misc"}  # M1 left mastoid
+          - {regex: "(?i)^EXG6$", type: "misc"}  # M2 right mastoid
+          # EXG8 = defective-Fp1 replacement electrode; misc until a rename step
+          - {regex: "(?i)^EXG8$", type: "misc"}  # Fp1 replacement (see NOTE)
+          # EDA / GSR: typed misc (no EDA extractor yet; avoid PPG bio fallback)
+          - {regex: "(?i)^GSR1$", type: "misc"}  # EDA
+          - {regex: "(?i)^GSR2$", type: "misc"}  # EDA
+          # Temperature: misc (no extractor; avoid PPG bio fallback)
+          - {regex: "(?i)^Temp$", type: "misc"}  # temperature
+          # Ergometer inputs: misc
+          - {regex: "(?i)^Erg1$", type: "misc"}
+          - {regex: "(?i)^Erg2$", type: "misc"}
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "Fpz", "AF3", "AF4", "AF7", "AF8", "AFz",
+                "F3", "F4", "Fz", "F7", "F8", "F1", "F2", "F5", "F6"]
+      central: ["FC1", "FC2", "FC3", "FC4", "FC5", "FC6", "FCz",
+                "C3", "Cz", "C4", "C1", "C2", "C5", "C6", "FT7", "FT8"]
+      parietal_occipital: ["CP1", "CP2", "CP3", "CP4", "CP5", "CP6", "CPz",
+                           "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "Pz",
+                           "PO3", "PO4", "PO7", "PO8", "POz",
+                           "O1", "O2", "Oz", "Iz"]
+      temporal: ["T7", "T8", "TP7", "TP8"]
+
+features:
+  ecg:
+    peak_detector: "neurokit2"   # Pan-Tompkins via NeuroKit2; avoids T-wave double-detection
+    hrv:
+      enabled: true
+      superwindow_s: 60.0
+      window_mode: centered
+      min_nn_intervals: 20
+      min_coverage_fraction: 0.5
+      max_artifact_fraction: 0.25
+      pnn50_threshold_ms: 50.0
+      complexity:
+        enabled: true
+        sampen_order: 2
+        sampen_tolerance_mult: 0.2
+        min_nn_for_sampen: 50
+        dfa_short_nvals_lo: 4
+        dfa_short_nvals_hi: 12
+        min_nn_for_dfa: 16
+
+anchor_state:
+  enabled: true
+
+anchor_coupling:
+  enabled: true
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: false
+  min_windows: 3
+  condition_number_max: 1000000.0
+
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - ecg_hr_bpm
+      - ecg_hrv_rmssd_ms
+      - ppg_rate_bpm
+      - ppg_amplitude_mean
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+metadata_extraction:
+  datasets:
+    ds003969:
+      group:
+        candidates: ["group"]
+        # participants.tsv `group` values are lowercase codes; normalize to the
+        # meditation tradition labels from participants.json.
+        normalize:
+          ctr: "Control"
+          htr: "Himalayan"
+          sny: "Isha"
+          vip: "Vipassana"
+      task:
+        from_filename: true
+        # Four BIDS task labels collapse to the two paradigm conditions.
+        # med1breath is a breath-focused meditation session.
+        normalize:
+          med1breath: "meditation"
+          med2: "meditation"
+          think1: "thinking"
+          think2: "thinking"

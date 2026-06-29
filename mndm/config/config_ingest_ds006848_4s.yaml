@@ -1,0 +1,17 @@
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds006848.yaml"
+
+# Short-window override for peer-review Task 3 (F2/F3 purity validation)
+# Changes MNPS window from 8 s to 4 s, step from 4 s to 2 s (50% overlap).
+# All other parameters identical to the 20260626 run.
+#
+# Run with:
+#   python -m mndm.cli features --config mndm/config/config_ingest_ds006848_4s.yaml
+#   python -m mndm.cli summarize --config mndm/config/config_ingest_ds006848_4s.yaml
+
+mnps:
+  window_sec: 4.0
+  overlap: 0.5

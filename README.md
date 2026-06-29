@@ -2,6 +2,15 @@
 
 Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation for EEG and fMRI workflows.
 
+Current documented release line: **NeuralManifoldDynamics 2.3**.
+
+Version 2.3 keeps the versioned measurement-contract framing introduced in the
+2.1 coordinate-contract release, and extends it with the **Embodied Anchoring
+Principle**: additive embodied/interoceptive exports aligned to the canonical
+MNPS time grid (`anchor_state`, `anchor_quality`, optional `anchor_coupling`,
+and HRV-oriented raw feature surfaces) without redefining the canonical
+`mnps_3d = [m,d,e]` chart.
+
 This root README is intentionally high-level. Package-specific usage, schema details, and command references live in each subproject.
 
 ## What This Repo Contains
@@ -13,8 +22,10 @@ The repository is organized around a shared pipeline:
 3. Compute per-epoch or per-window features.
 4. Project features into MNPS spaces.
 5. Write subject-level and run-level outputs for analysis and QC.
-6. Optionally build derived event-locked sidecars from annotated events.
-7. Optionally add config-driven conventional EEG comparator outputs beside MNPS.
+6. Optionally export additive embodied/interoceptive surfaces beside MNPS (`anchor_state`, `anchor_quality`, optional `anchor_coupling`, and raw HRV-oriented feature families).
+7. Optionally build derived event-locked sidecars from annotated or derived events.
+8. Optionally generate block-native analysis windows aligned to inferred or derived temporal blocks (relative position within block, distance to block end, canonical block timing fields `start_sec/end_sec/duration_sec`, and per-window join key `source_window_index` exported to HDF5 `/blocks/` and `/block_windows/` groups as well as Parquet/CSV sidecars).
+9. Optionally add config-driven conventional EEG comparator outputs beside MNPS.
 
 ## Main Packages
 
@@ -34,6 +45,24 @@ download or locate data -> ingest/index -> mndm features -> mndm summarize
 ```
 
 If the dataset is already present on disk, you usually work directly with `mndm`.
+
+## Quickstart Notebook
+
+The fastest way to see the pipeline in action is to open `quickstart.ipynb` at the repo root.  
+It runs entirely on **synthetic EEG** — no dataset download needed — and produces an interactive  
+3D MNPS trajectory plot in under 5 minutes from a clean clone:
+
+```text
+Raw EEG (synthetic, 5 min)  →  band-power features  →  project_features()
+  →  estimate_derivatives()  →  build_knn_indices()  →  estimate_local_jacobians()
+  →  interactive 3D [m, d, e] trajectory
+```
+
+```powershell
+jupyter lab quickstart.ipynb
+```
+
+---
 
 ## Quick Start
 
@@ -85,6 +114,14 @@ The same sidecar layer can now also synthesize generic block-end point-events fr
 MNPS windows to inferred stimulation-block ends, for example to study early
 post-photic effects in `ds006036`, without adding a new HDF5/summarize contract.
 
+For task datasets such as `ds003838`, the repository now also supports
+embodied/task-aware runs where:
+
+- within-run task-state labels are written on the MNPS grid,
+- event-locked sidecars can be derived from those task-state segments,
+- block-native windows can be derived from the same task-state segments, and
+- raw HRV v0.1 columns (`ecg_hrv_*`) can appear directly in block-native sidecars.
+
 ## Where To Read Next
 
 - MNDM usage and output contracts: `mndm/README.md`
@@ -123,11 +160,31 @@ Those runs usually contain:
 - `normalization_report.json` (when normalization is configured)
 - `run_errors.json` (when any grouping/subject run failed)
 - `stage_mapping_qc.json` (when event-based stage mapping QC is available)
+- `block_native_qc.json` (when block-native windows are enabled and emitted)
 - per-subject or per-run subdirectories with `summary.json`, QC JSON, and HDF5 outputs
+
+Subject-level summarize outputs now also carry an always-on mathematical validity contract for geometry:
+
+- `summary.json.geometry_contract`
+- `qc_summary.json.geometry_contract`
+- HDF5 `/provenance/geometry_contract/*`
+
+This contract is separate from reviewer-facing QA. When MNPS rows or Jacobian windows are mathematically unusable, MNDM drops those rows/windows from the canonical export and records counts/reasons in `geometry_contract` instead of silently clamping values. Downstream analyses that interpret MNPS, `coords_9d`, Jacobians, or reachability-style summaries should check this block before treating a subject/run as fully valid.
+
+MNDM 2.3 also adds an embodied anchoring surface that remains separate from both
+the canonical coordinates and the cohort/external `feature_anchors` contract:
+
+- `/anchor_state/*` and `/anchor_state_dot/*` for time-aligned embodied state
+- `/anchor_quality/*` for modality support and quality
+- optional `/anchor_coupling/*` for additive body-brain coupling diagnostics
+- `summary.json.anchor_hrv_v0_1` when HRV v0.1 raw features are enabled
+
+These are intended as additive analysis surfaces, not as a fourth canonical
+MNPS axis and not as a replacement for the anchored coordinate contracts.
 
 For EEG overlays with `conventional_eeg.enabled: true`, the feature table can
 also include `eeg_conventional_*` comparator columns from the generic `tier1`,
-`complexity`, and `connectivity` packs, and summarized outputs expose a
+`complexity`, `connectivity`, and `coma` packs, and summarized outputs expose a
 separate `conventional_eeg` block plus `/extensions/conventional_eeg/*` in HDF5.
 
 Typical EEG usage is to enable one or more of:
@@ -135,6 +192,13 @@ Typical EEG usage is to enable one or more of:
 - `packs: ["tier1"]` for relative power, slowing ratios, and peak-frequency comparators
 - `packs: ["complexity"]` for spectral entropy, permutation entropy, and Hjorth comparators
 - `packs: ["connectivity"]` for summary synchrony metrics from configured EEG channel pairs
+- `packs: ["coma"]` for EEG-only ICU/coma proxies (`suppression_ratio`,
+  `burst_suppression_proxy`, `continuity_proxy`, `alpha_delta_ratio`,
+  `reactivity_proxy`)
+
+When the `coma` pack is enabled without external clinical sidecars, summarize
+also records explicit `unavailable` status for multimodal coma biomarkers
+(`SSEP`, `NSE`, `GCS`, `S100B`) so reviewer-facing outputs make the data boundary explicit.
 
 Connectivity outputs currently follow names such as:
 
@@ -172,7 +236,8 @@ For WFDB overlays with `time_reference.enabled: true`, H5 outputs also include:
 
 and `run_manifest.json` reports capability flags for time-reference presence.
 
-MNDM 2.1 outputs can also expose explicit coordinate contracts:
+MNDM 2.3 outputs retain the explicit coordinate contracts introduced in the
+2.1 release line:
 
 - `/coords_3d_subject_anchored` and `/coords_9d_subject_anchored` for within-subject geometry
 - `/coords_3d_cohort_anchored` and `/coords_9d_cohort_anchored` for cohort/external-anchored clinical group comparisons
@@ -247,11 +312,60 @@ boundary contamination rather than maximize photic window count.
 
 Derived event-locked outputs, such as YASA-derived sleep-spindle sidecars for `ds005555` or derived `stage_block_end` sidecars for `ds006036`, are intentionally not part of the canonical HDF5 measurement surface unless a future release promotes a stable derived-event schema. They are joinable back to HDF5 trajectories by subject and window identifiers, and exported rows use generic `condition` labels (`event`, `matched_control`) rather than spindle-specific names.
 
+### Block-Native Window Analysis
+
+Block-native analysis generates analysis windows directly from inferred temporal blocks rather than labeling a pre-existing global epoch grid. Windows carry explicit relative-position metadata: `relative_time_in_block_sec`, `distance_to_block_end_sec`, and `relative_pos_0_1`.
+
+Enable it per-dataset under `block_native.datasets.<id>`:
+
+```yaml
+block_native:
+  datasets:
+    ds006036:
+      enabled: true
+      source:
+        kind: "stage_blocking"   # or "duration_events" / "task_phase"
+        label_column: "value"
+        onset_column: "onset"
+        duration_column: "duration"
+      window_profile:
+        kind: "sliding"          # or "tail" / "post_offset" / "partitioned"
+        window_length_sec: 4.0
+        step_sec: 2.0
+        emit_relative_position: true
+        min_block_sec: 4.0
+        min_windows_per_block: 2
+      export:
+        write_parquet: true
+        write_csv: true
+```
+
+Block source kinds:
+
+- `stage_blocking`: reuses the existing `stage_blocking` event-regex infrastructure (suitable for `ds006036` photic stimulation)
+- `duration_events`: infers blocks from TSV event labels with explicit durations (suitable for resting-state eyes-open/closed designs)
+- `task_phase`: groups consecutive events that share a common label prefix (suitable for trial-phase designs)
+
+In the current `ds003838` embodied-anchoring path, block-native windows can also
+be driven from derived task-state segments rather than raw one-second digit
+events. This is the preferred surface for sustained HRV analyses, while
+`event_locked` remains the better fit for onset/offset or short-event questions.
+
+Run outputs include:
+
+- HDF5 `/blocks/*` columnar table (one row per inferred block)
+- HDF5 `/block_windows/*` columnar table (one row per generated window, with full relative-position geometry)
+- Parquet/CSV sidecar files in the subject run directory
+- `run_manifest.json` capability flag `has_block_native_windows`
+
+See `mndm/README.md` for full YAML reference and `mndm/Output_variables_guide.md` for the complete H5 schema.
+
 ## Development Notes
 
 - `requirements.txt` is shared from the repo root.
 - `pyarrow` is recommended so feature tables can use parquet cleanly.
 - Worker count and memory budget are controlled from the CLI, especially for `mndm.cli features` and `mndm.cli all`.
+- OpenNeuro downloads (`openneuro_ingest`) run through `uvx openneuro-py@latest` by default, so the latest released openneuro-py is used in an isolated environment. This avoids breakage from installed openneuro-py versions whose GraphQL metadata query is incompatible with the current OpenNeuro server schema. `uv` (providing `uvx`) is included in `requirements.txt`. Override with `download.use_uvx: false` in config or the `OPENNEURO_PREFER_UVX=0` env var. See `openneuro_ingest/Command_cheat_sheet.md`.
 
 
 ## Read the docs

@@ -560,6 +560,63 @@ class TestLoadParticipantTable:
         assert df.loc[df["participant_id"] == "sub-002", "CPZ_at_scan"].iloc[0] == pytest.approx(311.5)
         assert df.attrs["source_format"] == "merged_participants_and_extra_tables"
 
+    def test_load_participant_table_merges_extra_tables_via_subject_id(self, tmp_path: Path):
+        """Merge extra tables by matching a base-table alias column such as subject_id."""
+        dataset_root = tmp_path / "dsJoin"
+        clinical_dir = dataset_root / "sourcedata" / "clinical_data"
+        clinical_dir.mkdir(parents=True)
+        (dataset_root / "participants.tsv").write_text(
+            "participant_id\tsubject_id\tgroup\nsub-029\tPD0001\tPD\nsub-060\tPDM001\tPD\n",
+            encoding="utf-8",
+        )
+        (clinical_dir / "full_UPDRS_data.tsv").write_text(
+            "Subject\t3.1\t3.2\nPD0001\t2\t3\nPDM001\t1\t4\n",
+            encoding="utf-8",
+        )
+        (clinical_dir / "longitudinal_clinical_data.tsv").write_text(
+            "subject_id\teeg_date\tfollowup_date\tupdrs_total\nPD0001\t2019-05-22\t2021-08-16\t52\nPDM001\t2020-12-28\t2024-12-04\t47\n",
+            encoding="utf-8",
+        )
+
+        config = {
+            "metadata_extraction": {
+                "datasets": {
+                    "dsJoin": {
+                        "participants": {
+                            "extra_tables": [
+                                {
+                                    "path": "sourcedata/clinical_data/full_UPDRS_data.tsv",
+                                    "subject_id_column": "Subject",
+                                    "join_to_base_column": "subject_id",
+                                    "column_normalization": "snake_case",
+                                    "column_prefix": "updrs_item_",
+                                },
+                                {
+                                    "path": "sourcedata/clinical_data/longitudinal_clinical_data.tsv",
+                                    "subject_id_column": "subject_id",
+                                    "join_to_base_column": "subject_id",
+                                    "column_normalization": "snake_case",
+                                    "column_prefix": "longitudinal_",
+                                },
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+
+        df = load_participant_table(tmp_path, "dsJoin", config)
+        assert df is not None
+        assert list(df["participant_id"]) == ["sub-029", "sub-060"]
+        row = df.loc[df["participant_id"] == "sub-029"].iloc[0].to_dict()
+        assert row["subject_id"] == "PD0001"
+        assert row["updrs_item_3_1"] == 2
+        assert row["updrs_item_3_2"] == 3
+        assert row["longitudinal_eeg_date"] == "2019-05-22"
+        assert row["longitudinal_followup_date"] == "2021-08-16"
+        assert row["longitudinal_updrs_total"] == 52
+        assert df.attrs["source_format"] == "merged_participants_and_extra_tables"
+
 
 class TestBuildDatasetLabel:
     """Test build_dataset_label for various input combinations."""

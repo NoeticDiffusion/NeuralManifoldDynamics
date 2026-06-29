@@ -7,6 +7,7 @@ from functools import lru_cache
 import json
 import logging
 import math
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
@@ -85,6 +86,8 @@ def build_within_run_labels(
                 rule=rule,
                 dataset_root=dataset_root,
                 sub_id=sub_id,
+                task=task,
+                raw_task=raw_task,
                 tr_sec=tr_sec,
                 midpoints=midpoints,
                 sub_frame=sub_frame,
@@ -212,11 +215,156 @@ def _rule_matches(
     return True
 
 
+def _evaluate_rule_events_tsv(
+    *,
+    source: Mapping[str, Any],
+    dataset_root: Path,
+    sub_id: str,
+    task: Optional[str],
+    raw_task: Optional[str],
+    midpoints: np.ndarray,
+    meta: Dict[str, Any],
+) -> tuple[Optional[np.ndarray], Dict[str, Any]]:
+    """Label windows from a BIDS events.tsv using last-value-carried-forward.
+
+    Searches for the events file automatically when no explicit ``path`` is
+    given, trying BIDS sub-{sub_id}/eeg and sub-{sub_id}/ directories.
+    The ``trial_type`` column (configurable) is mapped to state labels via
+    LVCF: each event's label extends until the onset of the next event.
+    An optional ``label_set`` whitelist restricts which trial_type values
+    are propagated; others emit ``None`` (unlabeled).
+    """
+    events_df = _load_bids_events_tsv(
+        source=source,
+        dataset_root=dataset_root,
+        sub_id=sub_id,
+        task=task,
+        raw_task=raw_task,
+    )
+    if events_df is None or events_df.empty:
+        logger.debug(
+            "events_tsv: no events file found for sub-%s task=%s", sub_id, task or raw_task
+        )
+        return None, meta
+
+    onset_col = str(source.get("onset_column", "onset") or "onset")
+    trial_type_col = str(source.get("trial_type_column", "trial_type") or "trial_type")
+    label_set_raw = source.get("label_set")
+    label_set: Optional[set] = (
+        {str(v).strip() for v in label_set_raw if str(v).strip()}
+        if isinstance(label_set_raw, (list, tuple, set))
+        else None
+    )
+    reset_on_raw = source.get("reset_on_labels")
+    reset_on: set = (
+        {str(v).strip() for v in reset_on_raw if str(v).strip()}
+        if isinstance(reset_on_raw, (list, tuple, set))
+        else set()
+    )
+
+    if onset_col not in events_df.columns:
+        logger.warning("events_tsv: onset column %r not found", onset_col)
+        return None, meta
+    if trial_type_col not in events_df.columns:
+        logger.warning("events_tsv: trial_type column %r not found", trial_type_col)
+        return None, meta
+
+    onset = pd.to_numeric(events_df[onset_col], errors="coerce").to_numpy(dtype=float)
+    raw_labels = events_df[trial_type_col].astype(str).fillna("").tolist()
+    n_events = len(onset)
+
+    out = np.full((midpoints.shape[0],), None, dtype=object)
+    current_label: Optional[str] = None
+
+    for idx in range(n_events):
+        if not np.isfinite(onset[idx]):
+            continue
+        ev_label = raw_labels[idx].strip() if idx < len(raw_labels) else ""
+        if not ev_label or ev_label.lower() in {"nan", "n/a", "boundary"}:
+            continue
+
+        if ev_label in reset_on:
+            current_label = None
+            continue
+
+        if label_set is not None and ev_label not in label_set:
+            current_label = None
+            continue
+
+        current_label = ev_label
+        start_sec = float(onset[idx])
+        end_sec = float(onset[idx + 1]) if (
+            idx + 1 < n_events and np.isfinite(onset[idx + 1])
+        ) else np.inf
+        mask = _segment_mask(midpoints, start_sec, end_sec)
+        out[mask] = current_label
+
+    n_assigned = int(np.sum(out != None))  # noqa: E711
+    meta.update({
+        "source": "events_tsv",
+        "trial_type_column": trial_type_col,
+        "n_events": n_events,
+        "n_assigned_windows": n_assigned,
+    })
+    return out, meta
+
+
+def _load_bids_events_tsv(
+    *,
+    source: Mapping[str, Any],
+    dataset_root: Path,
+    sub_id: str,
+    task: Optional[str],
+    raw_task: Optional[str],
+) -> Optional[pd.DataFrame]:
+    """Locate and load a BIDS events TSV, with auto-resolution from subject/task."""
+    path_value = source.get("path")
+    if isinstance(path_value, (str, Path)) and str(path_value).strip():
+        raw_path = Path(str(path_value).strip())
+        path = raw_path if raw_path.is_absolute() else (dataset_root / raw_path).resolve()
+        if path.exists():
+            try:
+                return pd.read_csv(path, sep="\t")
+            except Exception:
+                logger.exception("events_tsv: failed reading %s", path)
+                return None
+
+    # Auto-resolve BIDS path: sub-{sub_id}/{datatype}/sub-{sub_id}_task-{task}_events.tsv
+    candidate_tasks = [t for t in [raw_task, task] if t]
+    # Normalise: "verbal_wm" → "verbalwm", strip underscores/spaces
+    def _normalise(t: str) -> str:
+        return re.sub(r"[_\s-]", "", t.lower())
+
+    expanded_tasks: List[str] = []
+    for t in candidate_tasks:
+        expanded_tasks.append(t)
+        n = _normalise(t)
+        if n != t:
+            expanded_tasks.append(n)
+
+    sub_prefix = sub_id if sub_id.startswith("sub-") else f"sub-{sub_id}"
+    for t in expanded_tasks:
+        for subdir in ["eeg", "ieeg", "meg", "."]:
+            p = dataset_root / sub_prefix / subdir / f"{sub_prefix}_task-{t}_events.tsv"
+            if p.exists():
+                try:
+                    return pd.read_csv(p, sep="\t")
+                except Exception:
+                    logger.exception("events_tsv: failed reading %s", p)
+    logger.debug(
+        "events_tsv: events file not found for sub=%s task=%s in %s",
+        sub_id, candidate_tasks, dataset_root,
+    )
+    return None
+
+
 def _evaluate_rule(
     *,
     rule: Mapping[str, Any],
     dataset_root: Path,
     sub_id: str,
+    task: Optional[str],
+    raw_task: Optional[str],
     tr_sec: Optional[float],
     midpoints: np.ndarray,
     sub_frame: pd.DataFrame,
@@ -228,6 +376,17 @@ def _evaluate_rule(
     source_type = str(source.get("type", "")).strip().lower()
     rule_id = str(rule.get("id") or source_type or "within_run_rule")
     meta: Dict[str, Any] = {"id": rule_id, "source_type": source_type}
+
+    if source_type == "events_tsv":
+        return _evaluate_rule_events_tsv(
+            source=source,
+            dataset_root=dataset_root,
+            sub_id=sub_id,
+            task=task,
+            raw_task=raw_task,
+            midpoints=midpoints,
+            meta=meta,
+        )
 
     if source_type in {"column_from_features", "feature_column"}:
         column = str(source.get("column", "")).strip()
@@ -377,6 +536,13 @@ def _normalize_label_value(value: Any) -> Optional[Any]:
     """Normalize raw label values to None or a scalar."""
     if value is None:
         return None
+    if isinstance(value, bytes):
+        try:
+            decoded = value.decode("utf-8")
+        except Exception:
+            decoded = value.decode("utf-8", errors="ignore")
+        stripped = decoded.strip()
+        return stripped or None
     if isinstance(value, str):
         stripped = value.strip()
         return stripped or None
@@ -558,3 +724,98 @@ def summarize_within_run_manifest(manifest: Mapping[str, Any]) -> Dict[str, Any]
     if manifest.get("stage_codebook"):
         compact["stage_codebook"] = manifest.get("stage_codebook")
     return json.loads(json.dumps(compact))
+
+
+def build_label_segment_event_table(
+    *,
+    labels: Sequence[Any],
+    window_start: np.ndarray,
+    window_end: np.ndarray,
+    source_path: str = "derived:within_run_labels",
+    source_label: str = "derived:within_run_labels",
+) -> "EventTable":
+    """Convert a per-window label series into contiguous segment events."""
+    from .event_annotations import EventTable
+
+    label_arr = np.asarray(labels, dtype=object)
+    start_arr = np.asarray(window_start, dtype=np.float64)
+    end_arr = np.asarray(window_end, dtype=np.float64)
+    n = min(label_arr.shape[0], start_arr.shape[0], end_arr.shape[0])
+    if n <= 0:
+        return EventTable(
+            onset_sec=np.zeros((0,), dtype=np.float64),
+            event_type=np.zeros((0,), dtype=object),
+            source=np.zeros((0,), dtype=object),
+            source_path=str(source_path),
+            n_events_loaded=0,
+        )
+
+    events_onset: List[float] = []
+    events_duration: List[float] = []
+    events_peak: List[float] = []
+    events_type: List[str] = []
+    events_stage: List[str] = []
+    events_source: List[str] = []
+
+    current_label: Optional[str] = None
+    seg_start = -1
+    seg_end = -1
+
+    def _flush_segment() -> None:
+        if current_label is None or seg_start < 0 or seg_end < seg_start:
+            return
+        onset = float(start_arr[seg_start])
+        offset = float(end_arr[seg_end])
+        if not np.isfinite(onset):
+            return
+        if not np.isfinite(offset) or offset < onset:
+            offset = onset
+        duration = max(0.0, offset - onset)
+        peak = onset + 0.5 * duration
+        events_onset.append(onset)
+        events_duration.append(duration)
+        events_peak.append(peak)
+        events_type.append(current_label)
+        events_stage.append(current_label)
+        events_source.append(str(source_label))
+
+    for idx in range(n):
+        raw = label_arr[idx]
+        label_value = _normalize_label_value(raw)
+        label = str(label_value) if label_value is not None else None
+        if label is None:
+            _flush_segment()
+            current_label = None
+            seg_start = -1
+            seg_end = -1
+            continue
+        if current_label is None:
+            current_label = label
+            seg_start = idx
+            seg_end = idx
+            continue
+        if label == current_label and idx == seg_end + 1:
+            seg_end = idx
+            continue
+        _flush_segment()
+        current_label = label
+        seg_start = idx
+        seg_end = idx
+    _flush_segment()
+
+    onsets = np.asarray(events_onset, dtype=np.float64)
+    durations = np.asarray(events_duration, dtype=np.float64)
+    peaks = np.asarray(events_peak, dtype=np.float64)
+    event_types = np.asarray(events_type, dtype=object)
+    sources = np.asarray(events_source, dtype=object)
+    stages = np.asarray(events_stage, dtype=object)
+    return EventTable(
+        onset_sec=onsets,
+        duration_sec=durations,
+        peak_sec=peaks,
+        event_type=event_types,
+        source=sources,
+        stage=stages,
+        source_path=str(source_path),
+        n_events_loaded=int(onsets.shape[0]),
+    )

@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
 import numpy as np
+import pandas as pd
 
 logger = logging.getLogger(__name__)
 
@@ -484,3 +485,160 @@ def event_table_manifest_entry(table: EventTable) -> Dict[str, Any]:
         "schema_version": _SCHEMA_VERSION,
         **dur_stats,
     }
+
+
+def load_event_table_from_bids_events(
+    path: Path,
+    *,
+    event_types: Optional[Sequence[str]] = None,
+    trial_type_column: str = "trial_type",
+    onset_column: str = "onset",
+    duration_column: str = "duration",
+    exclude_types: Optional[Sequence[str]] = None,
+) -> EventTable:
+    """Load an EventTable from a BIDS ``*_events.tsv`` file.
+
+    Reads the BIDS events file directly using the raw ``onset`` / ``trial_type``
+    / ``duration`` columns (standard BIDS naming).  Does NOT require a
+    ``derived:task_state_label`` column — event onsets are taken straight from
+    the file.
+
+    This is the generic, dataset-agnostic path for event-locked analysis in
+    BIDS datasets.  Any recording with a companion ``*_events.tsv`` can use it.
+
+    Parameters
+    ----------
+    path : Path
+        Path to the BIDS ``*_events.tsv`` file.
+    event_types : sequence of str, optional
+        Whitelist of ``trial_type`` values to keep.  If ``None`` or empty, all
+        non-empty rows are kept.
+    trial_type_column : str
+        Name of the column holding event labels (default ``"trial_type"``).
+    onset_column : str
+        Name of the onset column in seconds (default ``"onset"``).
+    duration_column : str
+        Name of the duration column in seconds (default ``"duration"``).
+    exclude_types : sequence of str, optional
+        Blacklist of ``trial_type`` values to drop (applied after whitelist).
+
+    Returns
+    -------
+    EventTable
+        A valid (possibly empty) EventTable with ``event_type`` = ``trial_type``.
+        Provenance fields are populated so callers can report why events were
+        excluded.
+    """
+    path = Path(path)
+    if not path.exists():
+        logger.warning("BIDS events file not found: %s", path)
+        return make_empty_event_table(str(path))
+
+    sep = "\t" if path.suffix.lower() == ".tsv" else ","
+    try:
+        df = pd.read_csv(path, sep=sep)
+    except Exception:
+        logger.exception("Failed to read BIDS events file: %s", path)
+        return make_empty_event_table(str(path))
+
+    if df.empty:
+        return EventTable(
+            onset_sec=np.empty(0, dtype=np.float64),
+            source_path=str(path),
+            n_events_loaded=0,
+        )
+
+    n_loaded = len(df)
+
+    # Report available trial types for diagnostics
+    if trial_type_column in df.columns:
+        found_types = sorted(df[trial_type_column].dropna().astype(str).unique().tolist())
+        logger.debug(
+            "BIDS events (%s): %d rows, trial_types=%s",
+            path.name,
+            n_loaded,
+            found_types,
+        )
+    else:
+        logger.warning(
+            "BIDS events (%s): missing column '%s'; available=%s",
+            path.name,
+            trial_type_column,
+            sorted(df.columns.tolist()),
+        )
+        return make_empty_event_table(str(path))
+
+    if onset_column not in df.columns:
+        logger.warning(
+            "BIDS events (%s): missing onset column '%s'", path.name, onset_column
+        )
+        return make_empty_event_table(str(path))
+
+    # Build whitelist / blacklist sets
+    keep_set: Optional[set] = None
+    if event_types:
+        keep_set = {str(t).strip() for t in event_types if str(t).strip()}
+    drop_set: set = set()
+    if exclude_types:
+        drop_set = {str(t).strip() for t in exclude_types if str(t).strip()}
+
+    onset_arr = pd.to_numeric(df[onset_column], errors="coerce").to_numpy(dtype=np.float64)
+    type_arr = df[trial_type_column].fillna("").astype(str).tolist()
+
+    if duration_column in df.columns:
+        dur_arr: Optional[np.ndarray] = pd.to_numeric(
+            df[duration_column], errors="coerce"
+        ).to_numpy(dtype=np.float64)
+    else:
+        dur_arr = None
+
+    onset_out: List[float] = []
+    type_out: List[str] = []
+    dur_out: List[float] = []
+    n_excluded_type = 0
+    n_excluded_onset = 0
+
+    for idx, (onset, label) in enumerate(zip(onset_arr, type_arr)):
+        label = label.strip()
+        if not np.isfinite(onset):
+            n_excluded_onset += 1
+            continue
+        if not label or label.lower() in {"nan", "n/a", ""}:
+            n_excluded_type += 1
+            continue
+        if keep_set is not None and label not in keep_set:
+            n_excluded_type += 1
+            continue
+        if label in drop_set:
+            n_excluded_type += 1
+            continue
+        onset_out.append(float(onset))
+        type_out.append(label)
+        dur_out.append(float(dur_arr[idx]) if dur_arr is not None and np.isfinite(dur_arr[idx]) else float("nan"))
+
+    n_kept = len(onset_out)
+    logger.info(
+        "BIDS event-lock (%s): %d/%d events kept (excluded_type=%d, excluded_onset=%d)",
+        path.name,
+        n_kept,
+        n_loaded,
+        n_excluded_type,
+        n_excluded_onset,
+    )
+
+    if not onset_out:
+        return EventTable(
+            onset_sec=np.empty(0, dtype=np.float64),
+            event_type=np.empty(0, dtype=object),
+            source_path=str(path),
+            n_events_loaded=n_loaded,
+        )
+
+    return EventTable(
+        onset_sec=np.asarray(onset_out, dtype=np.float64),
+        event_type=np.asarray(type_out, dtype=object),
+        duration_sec=np.asarray(dur_out, dtype=np.float64),
+        source_path=str(path),
+        source=np.full(n_kept, "bids_events_tsv", dtype=object),
+        n_events_loaded=n_loaded,
+    )

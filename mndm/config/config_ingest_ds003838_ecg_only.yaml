@@ -1,0 +1,101 @@
+version: 1.2
+modality: eeg
+
+# ds003838 ECG-only + classic EEG comparators config.
+#
+# Purpose (reviewer response: Major concern 1 + 4):
+#   1. Test whether listen-peak and mem5 optimum hold in a PURE ECG cohort.
+#   2. Add three established EEG cognitive-neuroscience indices as independent
+#      comparators so the article can show EEG and autonomic anchors tell the
+#      same load story.
+#
+# ECG indices (anchor_index backbone):
+#   sympathetic_index  — HR mean (+), RMSSD (−)           [autonomic load proxy]
+#   vagal_index        — RMSSD + SDNN (+), HR mean (−)    [vagal tone proxy]
+#
+# Classic EEG indices (added as independent comparators in anchor_state):
+#   frontal_theta_index   — frontal θ (+), frontal α (−)
+#       Frontal theta (4–7 Hz at Fz/frontal group) increases reliably with
+#       working-memory load (Klimesch 1999; Jensen & Tesche 2002).
+#       Alpha suppression at the same sites signals engagement.
+#   alpha_engagement_index — parietal-occipital α (−, inverted)
+#       Posterior alpha ERD tracks attentional engagement (Worden et al. 2000).
+#       High alpha = relaxed/disengaged; low alpha = engaged → inverted here so
+#       higher index = more engaged.
+#   eeg_complexity_index  — permutation entropy + Hjorth complexity (+)
+#       Nonlinear complexity increases with active processing (Bruzzo et al. 2008).
+#       Used as the 'e' axis in the MNPS contract, so also a useful comparator.
+#
+# Run:
+#   python -m mndm.cli summarize --dataset ds003838 \
+#       --config mndm/config/config_ingest_ds003838_ecg_only.yaml
+#
+imports:
+  - "./config_ingest_ds003838.yaml"   # inherit all ds003838 defaults
+
+anchor_state:
+  enabled: true
+  index_specs:
+
+    # ------------------------------------------------------------------
+    # ECG-only autonomic indices
+    # ------------------------------------------------------------------
+    sympathetic_index:
+      positive:
+        - ["ecg_hrv_hr_mean_bpm", "ecg_hr_bpm"]
+      negative:
+        - ["ecg_hrv_rmssd_ms", "ecg_rmssd"]
+
+    vagal_index:
+      positive:
+        - ["ecg_hrv_rmssd_ms", "ecg_rmssd"]
+        - ["ecg_hrv_sdnn_ms", "ecg_sdnn"]
+      negative:
+        - ["ecg_hrv_hr_mean_bpm", "ecg_hr_bpm"]
+
+    # ------------------------------------------------------------------
+    # Classic EEG cognitive-load / arousal indices
+    # ------------------------------------------------------------------
+
+    frontal_theta_index:
+      # Frontal theta up (+) with WM load; frontal alpha down (−) with engagement.
+      # Prefer group-level features to reduce volume-conduction bias.
+      positive:
+        - ["eeg_theta__g_frontal", "eeg_theta"]
+      negative:
+        - ["eeg_alpha__g_frontal", "eeg_alpha"]
+
+    alpha_engagement_index:
+      # Posterior/parietal alpha is the canonical ERD engagement marker.
+      # Inverted (negative) so the index is high when alpha is suppressed.
+      # Beta/alpha ratio added as a positive confirmatory signal.
+      positive:
+        - ["eeg_beta_alpha__g_parietal_occipital", "eeg_beta_alpha"]
+      negative:
+        - ["eeg_alpha__g_parietal_occipital", "eeg_alpha_theta"]
+
+    eeg_complexity_index:
+      # Permutation entropy and Hjorth complexity both increase with active
+      # cortical processing.  SampEn added as a further confirmatory measure.
+      positive:
+        - ["eeg_permutation_entropy__g_frontal", "eeg_permutation_entropy"]
+        - ["eeg_hjorth_complexity__g_frontal", "eeg_hjorth_complexity"]
+        - ["eeg_sample_entropy__g_frontal", "eeg_sample_entropy"]
+      negative: []
+
+    # vascular_index: omitted (requires PPG)
+    # pupil_arousal_index: omitted (requires pupillometry)
+
+# Keep anchor_coupling so pairwise EEG↔ECG coupling is also exported.
+anchor_coupling:
+  enabled: true
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: false
+  min_windows: 3
+  condition_number_max: 1000000.0
+
+# Output to a separate sub-directory (timestamp distinguishes runs).
+paths:
+  processed_dir: "J:/processed/openneuro"
+

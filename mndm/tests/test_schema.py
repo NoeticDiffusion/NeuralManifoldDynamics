@@ -99,6 +99,50 @@ def test_normalize_coords_9d_can_allow_duplicate_constant_columns():
     assert diag["duplicate_constant_count"] == 2
 
 
+def test_normalize_coords_9d_can_allow_duplicate_nonconstant_columns():
+    """Exact duplicate non-constant subcoordinates can proceed in degraded mode."""
+    from mndm.schema import mnps_9d_CANONICAL_ORDER, _normalize_coords_9d
+
+    names = list(mnps_9d_CANONICAL_ORDER)
+    values = np.arange(6 * len(names), dtype=np.float32).reshape(6, len(names))
+    values[:, names.index("m_e")] = values[:, names.index("m_a")]
+    values[:, names.index("d_s")] = values[:, names.index("d_n")]
+
+    out_values, out_names, diag = _normalize_coords_9d(
+        values,
+        names,
+        allow_duplicate_columns=True,
+        return_diagnostics=True,
+    )
+
+    assert out_names == names
+    assert out_values.shape == values.shape
+    assert diag["duplicate_pairs"] == {"m_e": "m_a", "d_s": "d_n"}
+    assert diag["duplicate_count"] == 2
+    assert diag["duplicate_constant_pairs"] == {}
+    assert diag["duplicate_constant_count"] == 0
+
+
+def test_normalize_payload_can_allow_duplicate_coords_9d_columns():
+    """Payload normalization should preserve duplicate 9D diagnostics when allowed."""
+    from mndm.schema import mnps_9d_CANONICAL_ORDER, normalize_payload
+
+    payload = _base_payload()
+    names = list(mnps_9d_CANONICAL_ORDER)
+    values = np.arange(4 * len(names), dtype=np.float32).reshape(4, len(names))
+    values[:, names.index("m_e")] = values[:, names.index("m_a")]
+    payload.coords_9d = values
+    payload.coords_9d_names = names
+    payload.attrs["coords_9d_allow_duplicate_columns"] = True
+    payload.attrs["coords_9d_allow_duplicate_constant_columns"] = True
+
+    out = normalize_payload(payload)
+
+    assert out.coords_9d is not None
+    assert out.attrs["coords_9d_duplicate_pairs"] == {"m_e": "m_a"}
+    assert out.attrs["coords_9d_duplicate_count"] == 1
+
+
 def test_normalize_payload_validates_feature_surfaces_and_metadata():
     """Test normalize payload validates feature surfaces and metadata."""
     from mndm.schema import normalize_payload
@@ -139,10 +183,47 @@ def test_normalize_payload_validates_coordinate_layers_and_sets_2_1_schema():
 
     out = normalize_payload(payload)
 
-    assert out.attrs["schema_version"] == "mnps_tensor_spec_v2_1"
-    assert out.attrs["mndm_version"] == "2.1"
+    assert out.attrs["schema_version"] == "mnps_tensor_spec_v2_4"
+    assert out.attrs["mndm_version"] == "2.4"
     assert "coords_3d_cohort_anchored" in out.coordinate_layers
     assert out.coordinate_layers["coords_3d_cohort_anchored"]["names"] == ["m", "d", "e"]
+
+
+def test_normalize_payload_validates_anchor_groups_and_distinguishes_them_from_feature_anchors():
+    """AnchorState-style groups should normalize independently from feature anchors."""
+    from mndm.schema import normalize_payload
+
+    payload = _base_payload()
+    payload.anchor_state = {
+        "values": np.arange(12, dtype=np.float32).reshape(4, 3),
+        "names": ["sympathetic_index", "vagal_index", "anchor_index"],
+        "attrs": {"contract": "noetic_anchor_state_v0"},
+    }
+    payload.anchor_state_dot = {
+        "values": np.ones((4, 3), dtype=np.float32),
+        "names": ["sympathetic_index", "vagal_index", "anchor_index"],
+    }
+    payload.anchor_quality = {
+        "values": np.array(
+            [
+                [1.0, 0.9],
+                [1.0, 0.8],
+                [0.0, 0.2],
+                [1.0, 0.7],
+            ],
+            dtype=np.float32,
+        ),
+        "names": ["ecg_quality_ok", "pupil_quality_score"],
+    }
+
+    out = normalize_payload(payload)
+
+    assert out.attrs["schema_version"] == "mnps_tensor_spec_v2_4"
+    assert out.anchor_state["names"] == ["sympathetic_index", "vagal_index", "anchor_index"]
+    assert out.anchor_state["values"].shape == (4, 3)
+    assert out.anchor_state["attrs"]["contract"] == "noetic_anchor_state_v0"
+    assert out.anchor_quality["values"].dtype == np.float32
+    assert out.feature_anchors == {}
 
 
 def test_normalize_payload_supports_event_windows_codebooks_and_qc():

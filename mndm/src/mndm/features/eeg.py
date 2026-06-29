@@ -342,6 +342,186 @@ def _compute_conventional_connectivity_features(
     return out
 
 
+def _moving_average_1d(values: np.ndarray, window: int) -> np.ndarray:
+    """Return a same-length moving average for a 1-D array."""
+    arr = np.asarray(values, dtype=float)
+    if arr.size == 0:
+        return arr
+    w = max(1, int(window))
+    if w <= 1:
+        return arr.copy()
+    kernel = np.ones(w, dtype=float) / float(w)
+    return np.convolve(arr, kernel, mode="same")
+
+
+def _compute_conventional_coma_features(
+    *,
+    epoch_signal: np.ndarray,
+    sfreq: float,
+    bandpowers: Mapping[str, float],
+    conventional_cfg: Mapping[str, Any],
+) -> Dict[str, Any]:
+    """Compute ICU/coma-oriented proxy features from a single EEG epoch."""
+    export_cfg = conventional_cfg.get("export", {}) if isinstance(conventional_cfg, Mapping) else {}
+    per_epoch_columns = bool(export_cfg.get("per_epoch_columns", True))
+    summaries = bool(export_cfg.get("summaries", True))
+    if not (per_epoch_columns or summaries):
+        return {}
+
+    enabled = bool(conventional_cfg.get("enabled", False))
+    packs = _resolve_conventional_packs(conventional_cfg)
+    if not enabled or "coma" not in packs:
+        return {}
+
+    coma_cfg = conventional_cfg.get("coma", {}) if isinstance(conventional_cfg, Mapping) else {}
+    if not isinstance(coma_cfg, Mapping):
+        coma_cfg = {}
+    suppression_cfg = coma_cfg.get("suppression", {})
+    if not isinstance(suppression_cfg, Mapping):
+        suppression_cfg = {}
+
+    def _float_or_default(value: Any, default: float) -> float:
+        try:
+            out = float(value)
+        except Exception:
+            out = float(default)
+        return out if np.isfinite(out) else float(default)
+
+    amplitude_floor = _float_or_default(suppression_cfg.get("amplitude_floor", 0.01), 0.01)
+    relative_to_rms = _float_or_default(suppression_cfg.get("relative_to_rms", 0.20), 0.20)
+    smoothing_sec = max(0.0, _float_or_default(suppression_cfg.get("envelope_smoothing_sec", 0.25), 0.25))
+    smooth_window = int(round(float(sfreq) * smoothing_sec)) if np.isfinite(sfreq) and sfreq > 0 else 1
+    smooth_window = max(1, smooth_window)
+
+    arr = np.asarray(epoch_signal, dtype=float)
+    finite = np.isfinite(arr)
+    if not np.any(finite):
+        return {
+            "eeg_conventional_coma_suppression_ratio": np.nan,
+            "eeg_conventional_coma_continuity_proxy": np.nan,
+            "eeg_conventional_coma_burst_suppression_proxy": np.nan,
+            "eeg_conventional_coma_alpha_delta_ratio": np.nan,
+        }
+
+    x = arr[finite]
+    rms = float(np.sqrt(np.mean(np.square(x)))) if x.size else np.nan
+    threshold = max(float(amplitude_floor), float(relative_to_rms) * float(rms)) if np.isfinite(rms) else float(amplitude_floor)
+
+    envelope = _moving_average_1d(np.abs(x), smooth_window)
+    suppression_mask = envelope <= threshold
+    suppression_ratio = float(np.mean(suppression_mask)) if suppression_mask.size else np.nan
+
+    out: Dict[str, Any] = {}
+    if bool(coma_cfg.get("suppression_ratio", True)):
+        out["eeg_conventional_coma_suppression_ratio"] = suppression_ratio
+    if bool(coma_cfg.get("continuity_proxy", True)):
+        out["eeg_conventional_coma_continuity_proxy"] = (
+            1.0 - suppression_ratio if np.isfinite(suppression_ratio) else np.nan
+        )
+    if bool(coma_cfg.get("burst_suppression_proxy", True)):
+        if suppression_mask.size <= 1 or not np.isfinite(suppression_ratio):
+            burst_proxy = np.nan
+        else:
+            transitions = float(np.mean(suppression_mask[1:] != suppression_mask[:-1]))
+            mix = float(4.0 * suppression_ratio * (1.0 - suppression_ratio))
+            burst_proxy = float(np.clip(mix * transitions, 0.0, 1.0))
+        out["eeg_conventional_coma_burst_suppression_proxy"] = burst_proxy
+    if bool(coma_cfg.get("alpha_delta_ratio", True)):
+        out["eeg_conventional_coma_alpha_delta_ratio"] = _safe_ratio(
+            float(bandpowers.get("alpha", np.nan)),
+            float(bandpowers.get("delta", np.nan)),
+        )
+    return out
+
+
+def _compute_conventional_coma_reactivity_proxy(
+    *,
+    frame: pd.DataFrame,
+    conventional_cfg: Mapping[str, Any],
+) -> Optional[np.ndarray]:
+    """Compute a deterministic epoch-to-epoch reactivity proxy series."""
+    if frame.empty:
+        return None
+
+    export_cfg = conventional_cfg.get("export", {}) if isinstance(conventional_cfg, Mapping) else {}
+    per_epoch_columns = bool(export_cfg.get("per_epoch_columns", True))
+    summaries = bool(export_cfg.get("summaries", True))
+    if not (per_epoch_columns or summaries):
+        return None
+
+    enabled = bool(conventional_cfg.get("enabled", False))
+    packs = _resolve_conventional_packs(conventional_cfg)
+    if not enabled or "coma" not in packs:
+        return None
+
+    coma_cfg = conventional_cfg.get("coma", {}) if isinstance(conventional_cfg, Mapping) else {}
+    if not isinstance(coma_cfg, Mapping):
+        coma_cfg = {}
+    reactivity_cfg_raw = coma_cfg.get("reactivity_proxy", {})
+    if isinstance(reactivity_cfg_raw, bool):
+        if not reactivity_cfg_raw:
+            return None
+        reactivity_cfg: Mapping[str, Any] = {}
+    elif isinstance(reactivity_cfg_raw, Mapping):
+        reactivity_cfg = reactivity_cfg_raw
+        if not bool(reactivity_cfg.get("enabled", True)):
+            return None
+    else:
+        reactivity_cfg = {}
+
+    default_features = [
+        "eeg_conventional_coma_alpha_delta_ratio",
+        "eeg_conventional_coma_continuity_proxy",
+        "eeg_permutation_entropy",
+        "eeg_highfreq_power_30_45",
+    ]
+    feature_cols_raw = reactivity_cfg.get("diff_features", default_features)
+    if isinstance(feature_cols_raw, (str, bytes)):
+        candidate_cols = [str(feature_cols_raw)]
+    elif isinstance(feature_cols_raw, list):
+        candidate_cols = [str(col).strip() for col in feature_cols_raw if str(col).strip()]
+    else:
+        candidate_cols = list(default_features)
+
+    try:
+        eps = float(reactivity_cfg.get("eps", 1.0e-6))
+    except Exception:
+        eps = 1.0e-6
+    if not np.isfinite(eps) or eps <= 0:
+        eps = 1.0e-6
+    try:
+        clip_at = float(reactivity_cfg.get("clip_at", 5.0))
+    except Exception:
+        clip_at = 5.0
+
+    delta_series: list[np.ndarray] = []
+    for col in candidate_cols:
+        if col not in frame.columns:
+            continue
+        values = pd.to_numeric(frame[col], errors="coerce").to_numpy(dtype=float)
+        finite = np.isfinite(values)
+        if int(np.sum(finite)) < 2:
+            continue
+        med = float(np.nanmedian(values))
+        mad = float(np.nanmedian(np.abs(values - med)))
+        scale = float(1.4826 * mad) if np.isfinite(mad) else np.nan
+        if not np.isfinite(scale) or scale <= eps:
+            std = float(np.nanstd(values))
+            scale = std if np.isfinite(std) and std > eps else eps
+        z = (values - med) / scale
+        delta = np.abs(np.diff(z, prepend=z[0]))
+        delta_series.append(delta)
+
+    if not delta_series:
+        return None
+
+    stacked = np.vstack(delta_series)
+    proxy = np.nanmean(stacked, axis=0)
+    if np.isfinite(clip_at) and clip_at > 0:
+        proxy = np.clip(proxy, 0.0, clip_at) / clip_at
+    return proxy.astype(np.float32)
+
+
 def _compute_hjorth_metrics(data: np.ndarray) -> Tuple[float, float]:
     """Compute Hjorth mobility and complexity for a 1D epoch signal."""
     x = np.asarray(data, dtype=np.float64)
@@ -595,6 +775,91 @@ def _label_epochs_with_stages(
     return out.astype(np.int16, copy=False)
 
 
+def _parse_ds003838_task_state(label_text: str) -> tuple[Optional[str], Optional[str], Optional[float]]:
+    """Infer ds003838 task/load labels from one event-row text blob."""
+    text = str(label_text or "").strip().lower()
+    if not text:
+        return None, None, None
+    if "rest" in text:
+        return "rest", "rest", 0.0
+
+    load = None
+    for candidate in (13, 9, 5):
+        if f"{candidate}" in text:
+            load = float(candidate)
+            break
+
+    if any(token in text for token in ("listen", "encoding", "passive")):
+        return "listen", (f"load_{int(load)}" if load is not None else "listen"), load
+    if any(token in text for token in ("mem", "memory", "maintenance", "recall", "probe", "response")):
+        if load is not None:
+            return f"mem{int(load)}", f"load_{int(load)}", load
+        return "memory", "memory", np.nan
+    if load is not None:
+        return f"mem{int(load)}", f"load_{int(load)}", load
+    return None, None, None
+
+
+def _label_epochs_for_ds003838_task(
+    epoch_meta: List[tuple[int, int, int]],
+    sfreq: float,
+    events_df: pd.DataFrame,
+    raw_file_path: Optional[str],
+) -> Dict[str, np.ndarray]:
+    """Infer ds003838 within-run task/load labels from BIDS events."""
+    if events_df is None or events_df.empty or "onset" not in events_df.columns:
+        return {}
+    onset = pd.to_numeric(events_df["onset"], errors="coerce").to_numpy(dtype=float)
+    duration = (
+        pd.to_numeric(events_df["duration"], errors="coerce").fillna(0.0).to_numpy(dtype=float)
+        if "duration" in events_df.columns
+        else np.zeros((len(events_df),), dtype=float)
+    )
+    text_cols = [col for col in events_df.columns if str(col).lower() not in {"onset", "duration", "sample"}]
+    row_text = events_df[text_cols].astype(str).agg(" ".join, axis=1).tolist() if text_cols else [""] * len(events_df)
+    midpoints = np.asarray([(start + end) * 0.5 / sfreq for (_, start, end) in epoch_meta], dtype=float)
+    state = np.asarray([""] * len(epoch_meta), dtype=object)
+    load_label = np.asarray([""] * len(epoch_meta), dtype=object)
+    load_n = np.full((len(epoch_meta),), np.nan, dtype=np.float32)
+
+    for idx, text in enumerate(row_text):
+        state_label, load_label_value, load_numeric = _parse_ds003838_task_state(text)
+        if state_label is None:
+            continue
+        start_sec = float(onset[idx]) if idx < len(onset) and np.isfinite(onset[idx]) else np.nan
+        if not np.isfinite(start_sec):
+            continue
+        dur_sec = float(duration[idx]) if idx < len(duration) and np.isfinite(duration[idx]) else 0.0
+        if dur_sec > 0:
+            end_sec = start_sec + dur_sec
+        elif idx + 1 < len(onset) and np.isfinite(onset[idx + 1]):
+            end_sec = float(onset[idx + 1])
+        else:
+            end_sec = np.inf
+        mask = (midpoints >= start_sec) & (midpoints < end_sec)
+        if not np.any(mask):
+            continue
+        state[mask] = str(state_label)
+        if load_label_value is not None:
+            load_label[mask] = str(load_label_value)
+        if load_numeric is not None:
+            load_n[mask] = float(load_numeric)
+
+    if raw_file_path and "task-rest" in str(raw_file_path).lower() and not np.any(state != ""):
+        state[:] = "rest"
+        load_label[:] = "rest"
+        load_n[:] = 0.0
+
+    out: Dict[str, np.ndarray] = {}
+    if np.any(state != ""):
+        out["task_state_label"] = state
+    if np.any(load_label != ""):
+        out["task_load_label"] = load_label
+    if np.isfinite(load_n).any():
+        out["task_load_n"] = load_n.astype(np.float32, copy=False)
+    return out
+
+
 def _contiguous_runs(indices: np.ndarray) -> List[tuple[int, int]]:
     """Return inclusive (start_idx, end_idx) runs over sorted integer indices."""
     if indices.size == 0:
@@ -712,6 +977,7 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     # Dataset / channel metadata (may be absent in tests or legacy callers)
     dataset_id = signals.get("dataset_id")
     raw_file_path = signals.get("file_path")
+    events_df = None
     channels_map = signals.get("channels") if isinstance(signals, Mapping) else None
     eeg_channels = None
     if isinstance(channels_map, Mapping):
@@ -971,6 +1237,31 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                     stage_by_epoch_id[int(epoch_id_all)] = int(stage_per_epoch[i_meta])
         except Exception:
             stage_by_epoch_id = {}
+    task_labels_by_epoch_id: Dict[str, Dict[int, Any]] = {}
+    if str(dataset_id or "").strip().lower() == "ds003838" and events_df is not None:
+        try:
+            ds003838_labels = _label_epochs_for_ds003838_task(
+                meta_all,
+                float(sfreq),
+                events_df,
+                raw_file_path,
+            )
+            for label_name, values in ds003838_labels.items():
+                arr = np.asarray(values, dtype=object if values.dtype.kind in {"U", "O"} else values.dtype)
+                value_map: Dict[int, Any] = {}
+                for i_meta, (epoch_id_all, _, _) in enumerate(meta_all):
+                    if i_meta >= len(arr):
+                        continue
+                    raw_value = arr[i_meta]
+                    if raw_value is None:
+                        continue
+                    if isinstance(raw_value, str) and raw_value == "":
+                        continue
+                    value_map[int(epoch_id_all)] = raw_value
+                if value_map:
+                    task_labels_by_epoch_id[str(label_name)] = value_map
+        except Exception:
+            logger.exception("Failed to infer ds003838 task/load labels for %s", raw_file_path)
     nwb_labels_by_epoch_id: Dict[str, Dict[int, Any]] = {}
     if nwb_epoch_labels.labels:
         for label_name, values in nwb_epoch_labels.labels.items():
@@ -1111,6 +1402,10 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
             value = value_map.get(int(epoch_id))
             if value is not None:
                 features_dict[label_name] = value
+        for label_name, value_map in task_labels_by_epoch_id.items():
+            value = value_map.get(int(epoch_id))
+            if value is not None:
+                features_dict[label_name] = value
 
         # --- Global montage (index 0) ---
         global_bandpowers: Dict[str, float] = {}
@@ -1173,6 +1468,14 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                 order=pe_order,
                 delay=pe_delay,
                 normalize=pe_normalize,
+                conventional_cfg=conventional_cfg,
+            )
+        )
+        conventional_features.update(
+            _compute_conventional_coma_features(
+                epoch_signal=epochs_agg_arr[i, 0],
+                sfreq=float(sfreq),
+                bandpowers=global_bandpowers,
                 conventional_cfg=conventional_cfg,
             )
         )
@@ -1258,6 +1561,16 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
 
     df = pd.DataFrame(records)
     t_epoch1 = time.perf_counter()
+
+    try:
+        coma_reactivity_proxy = _compute_conventional_coma_reactivity_proxy(
+            frame=df,
+            conventional_cfg=conventional_cfg,
+        )
+        if coma_reactivity_proxy is not None and len(coma_reactivity_proxy) == len(df):
+            df["eeg_conventional_coma_reactivity_proxy"] = coma_reactivity_proxy
+    except Exception:
+        logger.exception("Conventional EEG coma reactivity proxy failed; continuing without reactivity proxy")
 
     # ------------------------------------------------------------------
     # v1.2 modular extensions (synchrony / complexity / dFC / graph)

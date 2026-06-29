@@ -468,6 +468,15 @@ class PreprocessedSignals:
     meta: Dict[str, Any]
 
 
+def _infer_path_datatype(file_path: Path) -> Optional[str]:
+    """Infer a coarse BIDS datatype from path segments."""
+    lowered = [str(part).strip().lower() for part in file_path.parts]
+    for name in ("eeg", "meg", "ecg", "pupil", "beh", "func"):
+        if name in lowered:
+            return "fmri" if name == "func" else name
+    return None
+
+
 def _infer_dataset_id(file_path: Path, config: Mapping[str, Any]) -> Optional[str]:
     """Internal helper: infer dataset id."""
     dataset_ids = config.get("datasets") if isinstance(config, Mapping) else None
@@ -493,6 +502,63 @@ def _infer_dataset_id(file_path: Path, config: Mapping[str, Any]) -> Optional[st
         if name.startswith("ds") and name[2:].isdigit():
             return name
     return None
+
+
+def preprocess_pupil_table(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
+    """Preprocess a pupil TSV/CSV file into aligned pupil signals."""
+    dataset_id = _infer_dataset_id(file_path, config)
+    suffix = file_path.suffix.lower()
+    sep = "\t" if suffix == ".tsv" else ","
+    table = pd.read_csv(file_path, sep=sep)
+    if table.empty:
+        raise ValueError(f"Pupil table is empty: {file_path}")
+
+    lower_map = {str(col).strip().lower(): str(col) for col in table.columns}
+    time_candidates = ["time", "timestamp", "timestamps", "pupil_timestamp", "recording_timestamp"]
+    time_col = next((lower_map[name] for name in time_candidates if name in lower_map), None)
+    if time_col is not None:
+        times = pd.to_numeric(table[time_col], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+        finite_times = times[np.isfinite(times)]
+        if finite_times.size >= 2:
+            dt = np.diff(finite_times)
+            dt = dt[np.isfinite(dt) & (dt > 0)]
+            sfreq = float(1.0 / np.median(dt)) if dt.size else 120.0
+        else:
+            sfreq = 120.0
+    else:
+        sfreq = 120.0
+
+    pupil_cols: list[str] = []
+    for col in table.columns:
+        key = str(col).strip().lower()
+        if any(token in key for token in ("diameter", "pupil")) and not any(
+            token in key for token in ("confidence", "timestamp", "time", "blink", "gaze", "norm_pos", " x", " y")
+        ):
+            pupil_cols.append(str(col))
+    if not pupil_cols:
+        raise ValueError(f"Could not find pupil diameter columns in {file_path}")
+
+    pupil_cols = pupil_cols[:2]
+    pupil_values = [
+        pd.to_numeric(table[col], errors="coerce").to_numpy(dtype=np.float64, copy=False)
+        for col in pupil_cols
+    ]
+    pupil_arr = np.vstack([np.asarray(v, dtype=np.float32) for v in pupil_values])
+    meta: Dict[str, Any] = {
+        "file": str(file_path),
+        "dataset_id": dataset_id,
+        "pupil_time_column": time_col,
+        "pupil_signal_columns": list(pupil_cols),
+        "table_rows": int(len(table)),
+        "original_sfreq": float(sfreq),
+        "target_sfreq_resolved": float(sfreq),
+    }
+    return PreprocessedSignals(
+        signals={"pupil": pupil_arr},
+        sfreq=float(sfreq),
+        channels={"pupil": list(pupil_cols)},
+        meta=meta,
+    )
 
 
 def _resolve_fmri_config(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
@@ -954,6 +1020,77 @@ def _prepare_brainvision_vhdr_for_mne(vhdr_path: Path) -> Tuple[Path, List[Path]
         return vhdr_path, []
 
 
+def _repair_eeglab_set_fdt_path(set_path: Path) -> Optional[Path]:
+    """Return a temp-patched .set path when the internal FDT reference is stale.
+
+    Some OpenNeuro datasets (e.g. ds003645, originally ds000117) were renamed
+    to BIDS format after the EEGLAB export was done.  The .set files still
+    reference the old FDT filename (e.g. ``ds000117_sub002_run-1.fdt``) but
+    the on-disk file uses the BIDS name (e.g.
+    ``sub-002_task-FacePerception_run-1_eeg.fdt``).  This function:
+
+    1. Reads the mat structure with scipy.io.
+    2. Checks whether the referenced FDT file exists.
+    3. If not, locates the actual ``.fdt`` in the same directory.
+    4. Writes a temp ``.mat`` file with the corrected ``datfile`` field and
+       returns its path for MNE to load instead.
+
+    Returns ``None`` when no repair is needed or possible.
+    """
+    try:
+        import scipy.io as sio
+    except ImportError:
+        return None
+    try:
+        mat = sio.loadmat(str(set_path), squeeze_me=True)
+    except Exception:
+        return None
+
+    datfile_raw = mat.get("datfile")
+    if datfile_raw is None:
+        return None
+    datfile = str(datfile_raw).strip() if not isinstance(datfile_raw, np.ndarray) else str(datfile_raw.flat[0]).strip()
+    if not datfile:
+        return None
+
+    fdt_referenced = set_path.parent / datfile
+    if fdt_referenced.exists():
+        return None  # already correct
+
+    fdt_candidates = sorted(set_path.parent.glob("*.fdt"))
+    if not fdt_candidates:
+        return None
+
+    run_m = re.search(r"run[_-](\d+)", set_path.stem, re.IGNORECASE)
+    if run_m:
+        # Use the full 'run-N' token (not just the digit) to avoid false
+        # matches on subject IDs that share digits with run numbers
+        # (e.g. run_num="2" would match "sub-002" in every filename).
+        run_token = run_m.group(0).lower()  # e.g. "run-2" or "run_2"
+        matched = [f for f in fdt_candidates if run_token in f.stem.lower()]
+        actual_fdt = matched[0] if matched else fdt_candidates[0]
+    else:
+        actual_fdt = fdt_candidates[0]
+
+    logger.info(
+        "EEGLAB FDT mismatch for %s: referenced '%s' not found; using '%s'",
+        set_path.name, datfile, actual_fdt.name,
+    )
+    try:
+        # MNE reads EEG.data (not EEG.datfile) as the FDT path.
+        # When EEG.data == 'in set file' (string with no .fdt extension) MNE
+        # raises "Expected .fdt file format".  Patching EEG.data to the actual
+        # FDT filename lets MNE find and load the binary data correctly.
+        mat["datfile"] = np.array([actual_fdt.name], dtype=object)
+        mat["data"] = np.array([actual_fdt.name], dtype=object)
+        tmp_set = set_path.parent / f"_fdt_patched_{set_path.name}"
+        sio.savemat(str(tmp_set), mat)
+        return tmp_set
+    except Exception as exc:
+        logger.warning("FDT path repair failed for %s: %s", set_path.name, exc)
+        return None
+
+
 def _load_epoched_eeglab_as_raw(set_path: Path) -> Tuple["mne.io.BaseRaw", Dict[str, Any]]:
     """Load epoched EEGLAB .set and flatten epochs into a continuous RawArray."""
     if mne is None:  # pragma: no cover
@@ -1243,6 +1380,8 @@ def _wfdb_channel_type(name: str) -> str:
     ch = str(name or "").strip().lower()
     if ch.startswith("ecg") or ch.startswith("ekg"):
         return "ecg"
+    if "ppg" in ch or "pleth" in ch or "pulse" in ch or "photopleth" in ch:
+        return "bio"
     if "eog" in ch:
         return "eog"
     if "emg" in ch:
@@ -1339,6 +1478,11 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         raw.notch_filter(freqs=notch_hz, picks=eeg_picks, verbose=False)
 
     eeg_bandpass = preprocess_cfg.get("eeg_bandpass", [1, 45]) if isinstance(preprocess_cfg, Mapping) else [1, 45]
+    meg_bandpass = (
+        preprocess_cfg.get("meg_bandpass", eeg_bandpass)
+        if isinstance(preprocess_cfg, Mapping)
+        else eeg_bandpass
+    )
     if eeg_bandpass is not None and len(eeg_bandpass) == 2 and len(eeg_picks) > 0:
         raw.filter(l_freq=eeg_bandpass[0], h_freq=eeg_bandpass[1], picks=eeg_picks, verbose=False)
 
@@ -1487,9 +1631,12 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     Returns:
         :class:`PreprocessedSignals` with arrays, ``sfreq``, channel maps, and meta.
     """
+    suffixes = "".join(file_path.suffixes).lower()
+    source_datatype = _infer_path_datatype(file_path)
+    if suffixes.endswith((".tsv", ".csv")) and source_datatype == "pupil":
+        return preprocess_pupil_table(file_path, config)
     if mne is None:
         raise RuntimeError("mne is required for EEG preprocessing but is not installed.")
-    suffixes = "".join(file_path.suffixes).lower()
     if suffixes.endswith(".nii") or suffixes.endswith(".nii.gz"):
         return preprocess_fmri(file_path, config)
     if suffixes.endswith(".nwb"):
@@ -1503,6 +1650,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     target_sfreq = preprocess_cfg.get("sfreq", 250) if isinstance(preprocess_cfg, Mapping) else 250
     notch_hz = preprocess_cfg.get("notch_hz", None) if isinstance(preprocess_cfg, Mapping) else None
     eeg_bandpass = preprocess_cfg.get("eeg_bandpass", [1, 45]) if isinstance(preprocess_cfg, Mapping) else [1, 45]
+    meg_bandpass = preprocess_cfg.get("meg_bandpass", eeg_bandpass) if isinstance(preprocess_cfg, Mapping) else eeg_bandpass
     reref = preprocess_cfg.get("reref", "average") if isinstance(preprocess_cfg, Mapping) else "average"
     gpu_flag = preprocess_cfg.get("gpu", False) if isinstance(preprocess_cfg, Mapping) else False
     eeglab_cfg = preprocess_cfg.get("eeglab", {}) if isinstance(preprocess_cfg, Mapping) else {}
@@ -1559,6 +1707,19 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                     "Loaded epoched EEGLAB as concatenated continuous stream for %s",
                     file_path.name,
                 )
+            else:
+                raise
+        except OSError as exc:
+            # EEGLAB .set files from migrated/renamed datasets may reference an
+            # FDT binary with the old filename.  Attempt path repair and retry.
+            if suffixes.endswith(".set") and "expected .fdt file format" in str(exc).lower():
+                patched_set = _repair_eeglab_set_fdt_path(Path(file_path_for_mne))
+                if patched_set is not None:
+                    cleanup_after_load.append(patched_set)
+                    raw = mne.io.read_raw(patched_set, preload=False, verbose=False)
+                    logger.info("EEGLAB FDT repair succeeded for %s", file_path.name)
+                else:
+                    raise
             else:
                 raise
         except ValueError as exc:
@@ -1678,7 +1839,32 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     # This reduces compute/memory without changing downstream feature semantics.
     t_pick0 = time.perf_counter()
     try:
-        keep_picks = mne.pick_types(raw.info, eeg=True, eog=True, ecg=True, emg=True, seeg=True, ecog=True)
+        if source_datatype == "ecg":
+            keep_picks = mne.pick_types(raw.info, eeg=True, ecg=True, eog=True, emg=True, resp=True, bio=True, misc=True)
+        elif source_datatype == "meg":
+            keep_picks = mne.pick_types(
+                raw.info,
+                meg=True,
+                ref_meg=False,
+                eeg=True,
+                eog=True,
+                ecg=True,
+                emg=True,
+                resp=True,
+                bio=True,
+            )
+        else:
+            keep_picks = mne.pick_types(
+                raw.info,
+                eeg=True,
+                eog=True,
+                ecg=True,
+                emg=True,
+                seeg=True,
+                ecog=True,
+                resp=True,
+                bio=True,
+            )
         n_total = len(raw.ch_names)
         n_keep = int(len(keep_picks))
         if n_keep > 0 and n_keep < n_total:
@@ -1762,7 +1948,12 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             logger.warning("EOG regression failed (%s); continuing without regression", exc)
 
     def _apply_ica(r: mne.io.BaseRaw) -> None:
-        """Internal helper: apply ica."""
+        """Internal helper: apply ICA artifact removal.
+
+        Supports EOG proxy channels (e.g. Fp1/Fp2) for datasets without
+        dedicated EOG electrodes, and ECG component detection when a cardiac
+        channel is present.
+        """
         if ICA is None:
             logger.info("ICA not available; skipping ICA artifacts removal")
             return
@@ -1779,23 +1970,75 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         )
         method = str(art_cfg.get("ica_method", "fastica"))
         fit_highpass_hz = float(art_cfg.get("ica_fit_highpass_hz", 1.0) or 1.0)
+        eog_threshold = float(art_cfg.get("ica_eog_threshold", 3.0) or 3.0)
+        ecg_threshold = float(art_cfg.get("ica_ecg_threshold", 3.0) or 3.0)
+        max_exclude = int(art_cfg.get("ica_max_components_to_remove", 5) or 5)
+
+        # EOG proxy: if no dedicated EOG channels, temporarily retype Fp1/Fp2
+        # (or user-specified channels) as EOG for component detection.
+        proxy_channels: List[str] = list(art_cfg.get("eog_proxy_channels", []) or [])
+        retyped_as_eog: List[str] = []
+
         try:
             ica = ICA(n_components=n_comp, method=method, random_state=random_state, max_iter="auto")
             raw_fit = r.copy()
             if fit_highpass_hz > 0:
                 raw_fit.filter(l_freq=fit_highpass_hz, h_freq=None, picks=eeg_picks, verbose=False)
-            ica.fit(raw_fit, picks=eeg_picks, verbose=False)
-            # Try to find EOG-related components if EOG channels exist
-            eog_picks = mne.pick_types(r.info, eog=True)
+
+            # Apply EOG proxy retyping on raw_fit before ICA fit
+            if proxy_channels:
+                eog_picks_existing = mne.pick_types(raw_fit.info, eog=True)
+                if len(eog_picks_existing) == 0:
+                    valid_proxy = [ch for ch in proxy_channels if ch in raw_fit.ch_names]
+                    if valid_proxy:
+                        raw_fit.set_channel_types(
+                            {ch: "eog" for ch in valid_proxy}, on_unit_change="ignore"
+                        )
+                        retyped_as_eog = valid_proxy
+                        logger.info("Using EOG proxy channels for ICA: %s", valid_proxy)
+
+            ica.fit(raw_fit, picks=mne.pick_types(raw_fit.info, eeg=True), verbose=False)
+
             exclude_idx: List[int] = []
-            if len(eog_picks) > 0:
-                for eog_idx in eog_picks:
+
+            # EOG component detection
+            eog_picks_fit = mne.pick_types(raw_fit.info, eog=True)
+            if len(eog_picks_fit) > 0:
+                for eog_idx in eog_picks_fit:
                     eog_ch_name = raw_fit.ch_names[eog_idx]
-                    this_idx, _ = ica.find_bads_eog(raw_fit, ch_name=eog_ch_name)
+                    try:
+                        this_idx, _ = ica.find_bads_eog(
+                            raw_fit, ch_name=eog_ch_name, threshold=eog_threshold
+                        )
+                        exclude_idx.extend(this_idx)
+                    except Exception as eog_exc:
+                        logger.debug("EOG component detection failed for %s: %s", eog_ch_name, eog_exc)
+
+            # ECG component detection
+            ecg_picks_fit = mne.pick_types(raw_fit.info, ecg=True)
+            ecg_channel_cfg: Optional[str] = art_cfg.get("ecg_channel") or None
+            ecg_ch_names: List[str] = []
+            if ecg_channel_cfg and ecg_channel_cfg in raw_fit.ch_names:
+                ecg_ch_names = [ecg_channel_cfg]
+            elif len(ecg_picks_fit) > 0:
+                ecg_ch_names = [raw_fit.ch_names[i] for i in ecg_picks_fit]
+            for ecg_ch in ecg_ch_names:
+                try:
+                    this_idx, _ = ica.find_bads_ecg(
+                        raw_fit, ch_name=ecg_ch, threshold=ecg_threshold
+                    )
                     exclude_idx.extend(this_idx)
-            ica.exclude = list(sorted(set(exclude_idx)))
+                except Exception as ecg_exc:
+                    logger.debug("ECG component detection failed for %s: %s", ecg_ch, ecg_exc)
+
+            # Apply safety cap
+            unique_idx = list(sorted(set(exclude_idx)))
+            ica.exclude = unique_idx[:max_exclude]
             ica.apply(r)
-            logger.info("Applied ICA (n_components=%d); excluded %d components", n_comp, len(ica.exclude))
+            logger.info(
+                "Applied ICA (n_components=%d); excluded %d components (eog_proxy=%s, ecg=%s)",
+                n_comp, len(ica.exclude), retyped_as_eog or "none", ecg_ch_names or "none",
+            )
         except Exception as exc:
             logger.warning("ICA artifact removal failed (%s); continuing without ICA", exc)
 
@@ -1815,13 +2058,50 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     # Apply notch filter globally if configured (in-place)
     t_notch0 = time.perf_counter()
     if notch_hz is not None and not skip_time_filters:
-        raw.notch_filter(freqs=notch_hz, verbose=False)
+        if source_datatype == "ecg":
+            notch_picks = mne.pick_types(
+                raw.info,
+                ecg=True,
+                eog=True,
+                emg=True,
+                resp=True,
+                bio=True,
+                misc=True,
+            )
+        elif source_datatype == "meg":
+            notch_picks = mne.pick_types(
+                raw.info,
+                meg=True,
+                ref_meg=False,
+                eeg=True,
+                eog=True,
+                ecg=True,
+                emg=True,
+                resp=True,
+                bio=True,
+            )
+        else:
+            notch_picks = mne.pick_types(
+                raw.info,
+                eeg=True,
+                eog=True,
+                ecg=True,
+                emg=True,
+                seeg=True,
+                ecog=True,
+                resp=True,
+                bio=True,
+            )
+        if len(notch_picks) > 0:
+            raw.notch_filter(freqs=notch_hz, picks=notch_picks, verbose=False)
+        else:
+            logger.info("Skipping notch filter for %s: no eligible channels after typing", file_path.name)
     preprocess_timings["notch"] = float(time.perf_counter() - t_notch0)
 
     # Treat intracranial EEG (sEEG/ECoG) as EEG for ingest purposes.
     # Many BIDS iEEG datasets (e.g. ds004100) label channels as "seeg"/"ecog",
     # which would otherwise result in empty EEG feature extraction.
-    eeg_like_chans = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
+    eeg_like_chans = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True) if source_datatype != "ecg" else np.array([], dtype=int)
 
     # Apply EEG bandpass on EEG-like picks only
     t_bandpass0 = time.perf_counter()
@@ -1836,6 +2116,18 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             raw._data[eeg_chans, :] = filtered  # type: ignore[attr-defined]
     preprocess_timings["bandpass"] = float(time.perf_counter() - t_bandpass0)
 
+    # Optional MEG bandpass for FIF-based M/EEG recordings.
+    t_meg_bandpass0 = time.perf_counter()
+    meg_chans = mne.pick_types(raw.info, meg=True, ref_meg=False)
+    if len(meg_chans) > 0 and meg_bandpass is not None and len(meg_bandpass) == 2 and not skip_time_filters:
+        try:
+            raw.filter(l_freq=meg_bandpass[0], h_freq=meg_bandpass[1], picks=meg_chans, verbose=False)
+        except Exception:
+            data = raw.get_data(picks=meg_chans)
+            filtered = mne.filter.filter_data(data, raw.info["sfreq"], meg_bandpass[0], meg_bandpass[1], verbose=False)
+            raw._data[meg_chans, :] = filtered  # type: ignore[attr-defined]
+    preprocess_timings["meg_bandpass"] = float(time.perf_counter() - t_meg_bandpass0)
+
     # Resample once for all channels if needed
     # (Note: we already resampled early to save memory, so this is now usually a no-op).
     t_resample_late0 = time.perf_counter()
@@ -1846,19 +2138,23 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     # Detect and drop obviously bad EEG-like channels (simple heuristics) BEFORE CAR reref.
     bad_channel_cfg = (config.get("robustness", {}).get("bad_channels", {}) if isinstance(config, dict) else {}) or {}
     t_badch0 = time.perf_counter()
-    bad_info = _detect_bad_eeg_channels(raw, bad_channel_cfg)
-    bad_eeg_channels = bad_info.get("bad_channels", []) or []
-    if bad_eeg_channels:
-        try:
-            raw.drop_channels(bad_eeg_channels)
-            logger.info(
-                "Dropped %d bad EEG channels for %s: %s",
-                len(bad_eeg_channels),
-                file_path.name,
-                ", ".join(bad_eeg_channels),
-            )
-        except Exception as exc:
-            logger.warning("Failed to drop bad EEG channels for %s: %s", file_path.name, exc)
+    if source_datatype == "ecg":
+        bad_info = {"bad_channels": [], "reasons": {}}
+        bad_eeg_channels = []
+    else:
+        bad_info = _detect_bad_eeg_channels(raw, bad_channel_cfg)
+        bad_eeg_channels = bad_info.get("bad_channels", []) or []
+        if bad_eeg_channels:
+            try:
+                raw.drop_channels(bad_eeg_channels)
+                logger.info(
+                    "Dropped %d bad EEG channels for %s: %s",
+                    len(bad_eeg_channels),
+                    file_path.name,
+                    ", ".join(bad_eeg_channels),
+                )
+            except Exception as exc:
+                logger.warning("Failed to drop bad EEG channels for %s: %s", file_path.name, exc)
     preprocess_timings["bad_channel_detection_drop"] = float(time.perf_counter() - t_badch0)
 
     # Optional scalp-EEG CSD / Surface Laplacian step to suppress broad
@@ -1867,7 +2163,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     eeg_csd_cfg = _resolve_eeg_csd_config(config, dataset_id)
     csd_applied = False
     csd_reason: Optional[str] = None
-    if bool(eeg_csd_cfg.get("enabled", False)):
+    if source_datatype != "ecg" and bool(eeg_csd_cfg.get("enabled", False)):
         if compute_current_source_density is None:
             csd_reason = "mne_csd_unavailable"
             logger.warning("EEG CSD requested but mne.compute_current_source_density is unavailable")
@@ -1918,7 +2214,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     # Average re-reference for EEG-like channels if requested.
     # We do manual referencing so iEEG (seeg/ecog) is also covered.
     t_reref0 = time.perf_counter()
-    eeg_chans = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
+    eeg_chans = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True) if source_datatype != "ecg" else np.array([], dtype=int)
     if reref == "average" and len(eeg_chans) > 0:
         if csd_applied:
             logger.info("Skipping average reref for %s because EEG CSD is already reference-free", file_path.name)
@@ -1939,10 +2235,28 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     # EEG (including iEEG: seeg/ecog and scalp EEG transformed to CSD)
     # MNE returns SI units (V). Convert to µV so PSD band-powers are on a
     # numerically stable scale (~1 µV²/Hz instead of ~1e-12 V²/Hz).
-    eeg_chans = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True, csd=True)
+    eeg_chans = (
+        mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True, csd=True)
+        if source_datatype != "ecg"
+        else np.array([], dtype=int)
+    )
     if len(eeg_chans) > 0:
         modality_signals["eeg"] = raw.get_data(picks=eeg_chans) * 1e6
         channels_dict["eeg"] = [raw.ch_names[i] for i in eeg_chans]
+
+    # MEG
+    meg_chans = mne.pick_types(raw.info, meg=True, ref_meg=False)
+    if len(meg_chans) > 0:
+        modality_signals["meg"] = raw.get_data(picks=meg_chans)
+        channels_dict["meg"] = [raw.ch_names[i] for i in meg_chans]
+        meg_mag_chans = mne.pick_types(raw.info, meg="mag", ref_meg=False)
+        meg_grad_chans = mne.pick_types(raw.info, meg="grad", ref_meg=False)
+        if len(meg_mag_chans) > 0:
+            modality_signals["meg_mag"] = raw.get_data(picks=meg_mag_chans)
+            channels_dict["meg_mag"] = [raw.ch_names[i] for i in meg_mag_chans]
+        if len(meg_grad_chans) > 0:
+            modality_signals["meg_grad"] = raw.get_data(picks=meg_grad_chans)
+            channels_dict["meg_grad"] = [raw.ch_names[i] for i in meg_grad_chans]
 
     # EOG
     eog_chans = mne.pick_types(raw.info, eog=True)
@@ -1958,9 +2272,30 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
 
     # ECG
     ecg_chans = mne.pick_types(raw.info, ecg=True)
+    if len(ecg_chans) == 0 and source_datatype == "ecg" and len(raw.ch_names) > 0:
+        ecg_chans = np.asarray([0], dtype=int)
     if len(ecg_chans) > 0:
         modality_signals["ecg"] = raw.get_data(picks=ecg_chans)
         channels_dict["ecg"] = [raw.ch_names[i] for i in ecg_chans]
+    # Respiration
+    resp_chans = mne.pick_types(raw.info, resp=True)
+    if len(resp_chans) > 0:
+        modality_signals["resp"] = raw.get_data(picks=resp_chans)
+        channels_dict["resp"] = [raw.ch_names[i] for i in resp_chans]
+    # PPG / pleth: prefer explicit bio channels or name-based matching.
+    bio_chans = list(mne.pick_types(raw.info, bio=True))
+    ppg_chans = [
+        idx
+        for idx, ch_name in enumerate(raw.ch_names)
+        if re.search(r"(?i)(ppg|pleth|pulse|photopleth)", str(ch_name))
+    ]
+    if not ppg_chans and bio_chans:
+        ppg_chans = [idx for idx in bio_chans if idx not in list(ecg_chans)]
+    if not ppg_chans and source_datatype == "ecg":
+        ppg_chans = [idx for idx in range(len(raw.ch_names)) if idx not in list(ecg_chans)][:1]
+    if ppg_chans:
+        modality_signals["ppg"] = raw.get_data(picks=ppg_chans)
+        channels_dict["ppg"] = [raw.ch_names[i] for i in ppg_chans]
     preprocess_timings["collect_modalities"] = float(time.perf_counter() - t_collect0)
     preprocess_timings["total"] = float(time.perf_counter() - t_pre0)
 

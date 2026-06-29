@@ -181,6 +181,59 @@ def _sha256_of_file(path: Path, chunk: int = 1 << 20) -> str:
 # Row builders
 # ---------------------------------------------------------------------------
 
+
+def _estimate_rate_per_min(
+    *,
+    payload: MNPSPayload,
+    event_table: Optional[EventTable],
+    controls: ControlMatchResult,
+) -> float:
+    """Estimate event rate per minute for compatibility sidecars."""
+    n_events = int(event_table.n) if event_table is not None else 0
+    if n_events <= 0:
+        return float("nan")
+
+    stage = payload.stage if payload.stage is not None else None
+    target_stage = controls.qc.get("target_stage") if isinstance(controls.qc, Mapping) else None
+    coverage_minutes = float("nan")
+
+    if stage is not None and target_stage is not None:
+        try:
+            stage_arr = np.asarray(stage, dtype=np.int32)
+            target_mask = stage_arr == int(target_stage)
+            if payload.window_start is not None and payload.window_end is not None:
+                w_start = np.asarray(payload.window_start, dtype=np.float64)
+                w_end = np.asarray(payload.window_end, dtype=np.float64)
+                durations = w_end - w_start
+                valid = np.isfinite(durations) & (durations > 0) & target_mask
+                if np.any(valid):
+                    coverage_minutes = float(np.sum(durations[valid]) / 60.0)
+            if not np.isfinite(coverage_minutes):
+                n_target = int(np.sum(target_mask))
+                if n_target > 0 and len(payload.time) > 1:
+                    dt = float(np.nanmedian(np.diff(np.asarray(payload.time, dtype=np.float64))))
+                    if np.isfinite(dt) and dt > 0:
+                        coverage_minutes = float((n_target * dt) / 60.0)
+        except Exception:
+            coverage_minutes = float("nan")
+
+    if not np.isfinite(coverage_minutes) or coverage_minutes <= 0:
+        if payload.window_start is not None and payload.window_end is not None:
+            try:
+                w_start = np.asarray(payload.window_start, dtype=np.float64)
+                w_end = np.asarray(payload.window_end, dtype=np.float64)
+                durations = w_end - w_start
+                valid = np.isfinite(durations) & (durations > 0)
+                if np.any(valid):
+                    coverage_minutes = float(np.sum(durations[valid]) / 60.0)
+            except Exception:
+                coverage_minutes = float("nan")
+
+    if not np.isfinite(coverage_minutes) or coverage_minutes <= 0:
+        return float("nan")
+    return float(n_events / coverage_minutes)
+
+
 def _mnps_at(payload: MNPSPayload, w_idx: int) -> Dict[str, Any]:
     """Extract MNPS 3D values and derivatives at window index ``w_idx``."""
     out: Dict[str, Any] = {}
@@ -224,6 +277,60 @@ def _coords9d_at(payload: MNPSPayload, w_idx: int, *, include: bool) -> Dict[str
         for name in names_attr:
             out[str(name)] = np.nan
         out["coords_9d_finite"] = 0
+    return out
+
+
+def _scalar_value(value: Any) -> Any:
+    """Convert numpy scalars/bytes into plain row-friendly Python values."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except Exception:
+            return value.decode("utf-8", errors="ignore")
+    return value
+
+
+def _named_group_at(group: Any, w_idx: int, *, suffix: str = "") -> Dict[str, Any]:
+    """Extract one row from a ``{"values","names"}`` payload group."""
+    if not isinstance(group, Mapping):
+        return {}
+    values = group.get("values")
+    names = group.get("names")
+    if values is None or names is None:
+        return {}
+    arr = np.asarray(values)
+    if arr.ndim != 2 or w_idx < 0 or w_idx >= arr.shape[0]:
+        return {}
+    out: Dict[str, Any] = {}
+    for idx, raw_name in enumerate(list(names)[: arr.shape[1]]):
+        out[f"{str(raw_name)}{suffix}"] = _scalar_value(arr[w_idx, idx])
+    return out
+
+
+def _labels_at(payload: MNPSPayload, w_idx: int) -> Dict[str, Any]:
+    """Extract aligned label arrays from ``payload.labels``."""
+    labels = getattr(payload, "labels", None)
+    if not isinstance(labels, Mapping) or w_idx < 0:
+        return {}
+    out: Dict[str, Any] = {}
+    for key, values in labels.items():
+        arr = np.asarray(values)
+        if arr.ndim != 1 or w_idx >= arr.shape[0]:
+            continue
+        out[str(key)] = _scalar_value(arr[w_idx])
+    return out
+
+
+def _anchor_exports_at(payload: MNPSPayload, w_idx: int) -> Dict[str, Any]:
+    """Extract aligned anchor-state, derivative, and quality values for one window."""
+    if w_idx < 0:
+        return {}
+    out: Dict[str, Any] = {}
+    out.update(_named_group_at(getattr(payload, "anchor_state", None), w_idx))
+    out.update(_named_group_at(getattr(payload, "anchor_state_dot", None), w_idx, suffix="_dot"))
+    out.update(_named_group_at(getattr(payload, "anchor_quality", None), w_idx, suffix="_quality"))
     return out
 
 
@@ -376,6 +483,11 @@ def build_event_locked_table(
         "n_events_excluded_transition": int(a_qc.get("n_events_excluded_stage_transition", 0)),
         "match_success_rate": float(c_qc.get("match_success_rate", np.nan)),
     }
+    rate_per_min = _estimate_rate_per_min(
+        payload=payload,
+        event_table=event_table,
+        controls=controls,
+    )
 
     rows: List[Dict[str, Any]] = []
 
@@ -397,10 +509,13 @@ def build_event_locked_table(
         row["overlap_frac"] = arow.overlap_frac
         row["is_event_window"] = int(arow.is_event_window)
         row["stage"] = arow.stage
+        row["rate_per_min"] = rate_per_min
 
         row.update(_timing_at(payload, w_idx, time=time))
         row.update(_mnps_at(payload, w_idx))
         row.update(_coords9d_at(payload, w_idx, include=config.include_coords_9d))
+        row.update(_anchor_exports_at(payload, w_idx))
+        row.update(_labels_at(payload, w_idx))
         row.update(_event_meta(event_table, ev_idx))
 
         # Control metadata not applicable
@@ -442,10 +557,13 @@ def build_event_locked_table(
         row["overlap_frac"] = 0.0
         row["is_event_window"] = 0
         row["stage"] = crow.stage
+        row["rate_per_min"] = rate_per_min
 
         row.update(_timing_at(payload, w_idx, time=time))
         row.update(_mnps_at(payload, w_idx))
         row.update(_coords9d_at(payload, w_idx, include=config.include_coords_9d))
+        row.update(_anchor_exports_at(payload, w_idx))
+        row.update(_labels_at(payload, w_idx))
         row.update(_event_meta(None, -1))  # no event metadata for control windows
 
         row["match_rank"] = crow.match_rank

@@ -1,0 +1,98 @@
+======================================================================
+GATE 2 — ECG features regenerated (new columns)
+======================================================================
+Features file: features.parquet, rows=42593, cols=110
+
+New column presence check:
+  OK       ecg_polarity_inverted
+  OK       ecg_peak_detector
+  OK       ecg_hrv_dominant_stage_label
+  OK       ecg_hrv_dominant_stage_frac
+  OK       ecg_hrv_n_stage_labels
+  OK       ecg_hrv_contains_excluded_label
+
+ECG polarity distribution:
+  polarity_inverted=True: 39477/42593 epochs (92.7%)
+  Files with predominantly inverted polarity: 48
+    sub-001_task-rest_eeg.vhdr: 1.00
+    sub-001_task-verbalwm_eeg.vhdr: 1.00
+    sub-002_task-verbalwm_eeg.vhdr: 1.00
+    sub-003_task-verbalwm_eeg.vhdr: 1.00
+    sub-004_task-verbalwm_eeg.vhdr: 1.00
+    sub-005_task-verbalwm_eeg.vhdr: 1.00
+    sub-006_task-verbalwm_eeg.vhdr: 1.00
+    sub-007_task-rest_eeg.vhdr: 1.00
+    sub-007_task-verbalwm_eeg.vhdr: 1.00
+    sub-008_task-verbalwm_eeg.vhdr: 1.00
+
+Peak detector usage:
+ecg_peak_detector
+neurokit2    42593
+
+HR and RMSSD summary (after polarity correction):
+  HR bpm: median=76.2, IQR=[71.5, 82.8], p5=62.4, p95=99.2
+  RMSSD ms: median=40.7, IQR=[29.3, 55.1], p5=13.2, p95=115.4
+
+Per-file median HR (top 10 highest — flags inverted/double-detected):
+                          file     hr_med  rmssd_med  pol_frac
+sub-003_task-verbalwm_eeg.vhdr 116.028789  13.964827       1.0
+    sub-023_task-rest_eeg.vhdr  97.986396   9.458826       1.0
+sub-005_task-verbalwm_eeg.vhdr  97.870195  13.068153       1.0
+sub-006_task-verbalwm_eeg.vhdr  97.284151  28.241197       1.0
+sub-017_task-verbalwm_eeg.vhdr  95.350803  17.957666       1.0
+sub-023_task-verbalwm_eeg.vhdr  94.177216  11.837728       1.0
+sub-008_task-verbalwm_eeg.vhdr  87.303192  22.420267       1.0
+    sub-017_task-rest_eeg.vhdr  87.015177  36.224109       1.0
+sub-015_task-verbalwm_eeg.vhdr  84.957184  31.288976       1.0
+    sub-034_task-rest_eeg.vhdr  84.609186  20.871033       1.0
+
+  Files with HR > 100 bpm: 1
+
+======================================================================
+GATE 3 — HRV contamination reporting
+======================================================================
+qc_ok_ecg_hrv windows: 42593
+Windows with excluded label (Digits_Retrieval): 37352 (87.7%)
+
+Dominant stage label distribution (qc_ok windows):
+ecg_hrv_dominant_stage_label
+Digits_Retrieval             32711
+Rest                          2540
+Eyes_Opened                   1382
+Eyes_Closed                   1342
+Start_Cartoon                 1293
+Retention_FastDelay            778
+Retention_Slow                 766
+Retention_Simultaneous         711
+Retention_Fast                 562
+                               315
+Experiment_End                 108
+End_Cartoon                     79
+Baseline_2s                      5
+Encoding_Set_Simultaneous        1
+
+Science lead gate (qc_ok AND not_excluded AND dominant_frac>=0.60):
+  Windows passing gate: 4279 / 42593 (10.0%)
+  PASS: Sufficient clean HRV windows for analysis.
+
+======================================================================
+GATE 1 — Event-locking (bids_events kind)
+======================================================================
+Latest run dir: neuralmanifolddynamics_ds006848_20260626_105642
+Event-locked parquet files found: 104
+Total event-locked rows: 48464
+
+Event counts by type:
+event_type
+    48464
+
+Subjects with event-locked data: 30
+
+======================================================================
+VALIDATION SUMMARY
+======================================================================
+  PASS          Gate 2 (new ECG columns)
+  PASS          Gate 3 (HRV contamination)
+  PASS          Gate 1 (event-locking)
+
+Proceed to 04b encoding-phase analysis only when all gates PASS.

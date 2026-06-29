@@ -949,6 +949,123 @@ def _merge_participant_tables(
     return out
 
 
+def _normalize_join_token(value: Any) -> str:
+    """Normalize a join-key scalar to a comparable string token."""
+    try:
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    text = str(value).strip()
+    if text.lower() in {"", "nan", "none", "null"}:
+        return ""
+    return text
+
+
+def _merge_participant_tables_via_base_column(
+    base_df: pd.DataFrame,
+    sidecar_df: pd.DataFrame,
+    *,
+    base_column: str,
+    merge_strategy: str,
+) -> pd.DataFrame:
+    """Merge extra metadata using a non-canonical key from the base table.
+
+    Example: the base participants table uses canonical `participant_id`, while
+    an auxiliary clinical TSV is keyed by `subject_id`. In that case we want to
+    match `base_df[subject_id]` against `sidecar_df["participant_id"]`, while
+    preserving the base table's canonical `participant_id` column.
+    """
+    left = base_df.copy()
+    right = sidecar_df.copy()
+    base_key = str(base_column or "").strip()
+    if not base_key:
+        return _merge_participant_tables(left, right, merge_strategy=merge_strategy)
+    if base_key not in left.columns:
+        logger.warning("Cannot join extra participants table via missing base column '%s'", base_key)
+        return left
+    if "participant_id" not in right.columns:
+        logger.warning("Cannot join extra participants table via '%s': missing participant_id column", base_key)
+        return left
+
+    left["participant_id"] = left["participant_id"].astype(str)
+    left["__join_key"] = left[base_key].map(_normalize_join_token)
+    right["participant_id"] = right["participant_id"].map(_normalize_join_token)
+    right = right[right["participant_id"] != ""].copy()
+
+    duplicate_mask = right["participant_id"].duplicated(keep="last")
+    if duplicate_mask.any():
+        dup_count = int(duplicate_mask.sum())
+        logger.warning(
+            "Extra participants table %s had %d duplicate join ids for base column '%s'; keeping last occurrence",
+            str(sidecar_df.attrs.get("source_path", "")),
+            dup_count,
+            base_key,
+        )
+        right = right.drop_duplicates(subset=["participant_id"], keep="last")
+
+    right_idx = right.set_index("participant_id")
+    left_join_keys = left["__join_key"]
+    joinable_keys = {str(idx) for idx in right_idx.index if str(idx)}
+    matched = int(left_join_keys.isin(joinable_keys).sum())
+    if matched == 0 and len(left) > 0 and len(right_idx) > 0:
+        logger.warning(
+            "Extra participants table %s produced no matches via base column '%s'",
+            str(sidecar_df.attrs.get("source_path", "")),
+            base_key,
+        )
+
+    merged = left.copy()
+    for col in right_idx.columns:
+        sidecar_col = left_join_keys.map(right_idx[col])
+        if col not in merged.columns:
+            merged[col] = sidecar_col
+            continue
+        if merge_strategy == "prefer_existing":
+            merged[col] = merged[col].combine_first(sidecar_col)
+        else:
+            merged[col] = sidecar_col.combine_first(merged[col])
+
+    out = merged.drop(columns=["__join_key"], errors="ignore")
+    out.attrs["source_path"] = str(base_df.attrs.get("source_path", ""))
+    out.attrs["source_format"] = "merged_participants_and_extra_tables"
+    out.attrs["subject_id_column"] = "participant_id"
+    return out
+
+
+def _apply_extra_table_column_rules(
+    df: pd.DataFrame,
+    table_cfg: Mapping[str, Any],
+) -> pd.DataFrame:
+    """Apply optional renaming/normalization rules to extra-table columns."""
+    out = df.copy()
+    key_mode = str(table_cfg.get("column_normalization", "none")).strip().lower()
+    prefix = str(table_cfg.get("column_prefix", "")).strip()
+    column_map_cfg = table_cfg.get("column_map", {})
+    column_map: Dict[str, str] = {}
+    if isinstance(column_map_cfg, Mapping):
+        for key, value in column_map_cfg.items():
+            key_norm = str(key).strip().lower()
+            val_norm = str(value).strip()
+            if key_norm and val_norm:
+                column_map[key_norm] = val_norm
+
+    rename: Dict[str, str] = {}
+    for col in out.columns:
+        original = str(col).strip()
+        if not original or original == "participant_id":
+            continue
+        mapped = column_map.get(original.lower(), original)
+        mapped = _normalize_metadata_key(mapped, key_mode)
+        if prefix and mapped != "participant_id":
+            mapped = f"{prefix}{mapped}"
+        if mapped and mapped != original:
+            rename[str(col)] = mapped
+    if rename:
+        out = out.rename(columns=rename)
+    return out
+
+
 def _load_additional_participant_tables(
     dataset_root: Path,
     participants_cfg: Mapping[str, Any],
@@ -1001,12 +1118,18 @@ def _load_additional_participant_tables(
         include_raw = item.get("include_columns", [])
         if isinstance(include_raw, Sequence) and not isinstance(include_raw, (str, bytes)):
             include_cols = [str(v).strip() for v in include_raw if str(v).strip()]
-            keep = ["participant_id", *[c for c in include_cols if c in normalized.columns and c != "participant_id"]]
-            normalized = normalized[[c for c in keep if c in normalized.columns]]
+            if include_cols:
+                keep = ["participant_id", *[c for c in include_cols if c in normalized.columns and c != "participant_id"]]
+                normalized = normalized[[c for c in keep if c in normalized.columns]]
+
+        normalized = _apply_extra_table_column_rules(normalized, item)
 
         normalized.attrs["source_path"] = str(candidate_path)
         normalized.attrs["source_format"] = candidate_path.suffix.lower().lstrip(".") or "text"
         normalized.attrs["subject_id_column"] = "participant_id"
+        join_to_base = item.get("join_to_base_column", item.get("base_join_column"))
+        if isinstance(join_to_base, str) and join_to_base.strip():
+            normalized.attrs["join_to_base_column"] = join_to_base.strip()
         tables.append(normalized)
     return tables
 
@@ -1107,9 +1230,26 @@ def load_participant_table(
         extra_merge_strategy = "prefer_sidecar"
     for extra_df in extra_tables:
         if merged is None:
+            join_to_base = str(extra_df.attrs.get("join_to_base_column", "")).strip()
+            if join_to_base:
+                logger.warning(
+                    "Skipping extra participants table %s because join_to_base_column='%s' requires a base participants table",
+                    str(extra_df.attrs.get("source_path", "")),
+                    join_to_base,
+                )
+                continue
             merged = extra_df
         else:
-            merged = _merge_participant_tables(merged, extra_df, merge_strategy=extra_merge_strategy)
+            join_to_base = str(extra_df.attrs.get("join_to_base_column", "")).strip()
+            if join_to_base:
+                merged = _merge_participant_tables_via_base_column(
+                    merged,
+                    extra_df,
+                    base_column=join_to_base,
+                    merge_strategy=extra_merge_strategy,
+                )
+            else:
+                merged = _merge_participant_tables(merged, extra_df, merge_strategy=extra_merge_strategy)
             source_paths = [str(merged.attrs.get("source_path", "")).strip(), str(extra_df.attrs.get("source_path", "")).strip()]
             source_paths = [p for p in source_paths if p]
             if source_paths:

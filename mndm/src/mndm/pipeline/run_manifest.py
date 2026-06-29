@@ -57,6 +57,8 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
     epoch_ds = _pick(_pick(_pick(config, "epoching", {}), "datasets", {}), ds_id, None)
     meta_ds = _pick(_pick(_pick(config, "metadata_extraction", {}), "datasets", {}), ds_id, None)
     mnps_9d_ds = _pick(_pick(_pick(config, "mnps_9d", {}), "datasets", {}), ds_id, None)
+    block_native_ds = _pick(_pick(_pick(config, "block_native", {}), "datasets", {}), ds_id, None)
+    meg_mapping_cfg = _pick(config, "meg_mapping", {})
     time_ref_cfg = _pick(config, "time_reference", {})
     time_ref_ds = _pick(_pick(time_ref_cfg, "datasets", {}), ds_id, None)
     within_run_labels = _pick(config, "within_run_labels", {})
@@ -78,6 +80,8 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
             "dataset_override": mnps_9d_ds,
         },
         "mnps_projection": _pick(config, "mnps_projection", {}),
+        "meg_mapping": meg_mapping_cfg if isinstance(meg_mapping_cfg, Mapping) else {},
+        "block_native": {"dataset_override": block_native_ds},
         "mnps_extensions": {"keys": sorted(list(_pick(config, "mnps_extensions", {}).keys()))}
         if isinstance(_pick(config, "mnps_extensions", {}), Mapping)
         else {},
@@ -151,6 +155,12 @@ def _field_guide() -> Dict[str, Any]:
             "coords_9d_cohort_anchored/values": "MNDM 2.1 cohort/external-anchored stratified coordinates [T,K].",
             "feature_anchors/spec attrs": "MNDM 2.1 feature-anchor identity, source policy, and hash.",
             "feature_anchors/per_feature/*": "Per-feature anchor center/scale statistics aligned by feature_name.",
+            "anchor_state/values": "Noetic Anchoring Dynamics aligned anchor-state matrix [T,Q]. Separate from cohort feature_anchors.",
+            "anchor_state/names": "Column names for anchor_state/values.",
+            "anchor_state_dot/values": "Time-derivative or finite-difference anchor-state matrix [T,Q].",
+            "anchor_quality/values": "Aligned anchor signal-quality matrix [T,Qq].",
+            "anchor_quality/names": "Column names for anchor_quality/values.",
+            "anchor_coupling/*": "Optional additive body-brain coupling diagnostics (for example J_xa/J_ax blocks and metrics).",
             "features_raw/values": "Per-epoch raw feature matrix [T,K] in original scale.",
             "features_raw/names": "Column names for features_raw/values.",
             "features_raw/metadata/*": "Machine-readable per-feature metadata aligned to features_raw/names.",
@@ -177,24 +187,59 @@ def _field_guide() -> Dict[str, Any]:
             "participant/clinical_json": "Additive richer participant/session metadata embedded as JSON.",
             "coverage/*": "Explicit coverage contract for axes, coordinate layers, and Jacobian center mappings.",
             "provenance/*": "Structured export-contract, anchoring, normalization, and event/stage provenance.",
+            "provenance/geometry_contract/*": "Always-on mathematical invalidity contract for canonical MNPS/coords_9d/Jacobian export.",
             "qc/windows/*": "Light-weight per-window QC contract aligned to /time.",
             "regions/bold": "Optional regional signals (e.g., fMRI ROI x time).",
             "regions/names": "Names corresponding to rows in regions/bold.",
+            "blocks/block_id": "Block-native: integer block identifiers [B].",
+            "blocks/stage_code": "Block-native: stage/condition code for each block [B].",
+            "blocks/start_sec": "Block-native: block start times in seconds [B].",
+            "blocks/end_sec": "Block-native: block end times in seconds [B].",
+            "blocks/duration_sec": "Block-native: block durations in seconds [B].",
+            "blocks/frequency_hz": "Block-native: inferred block parameter/frequency when available [B].",
+            "blocks/source_event_idx": "Block-native: source event row index used to seed each block [B].",
+            "blocks/support_event_count": "Block-native: number of supporting in-block events [B].",
+            "blocks/derived_from": "Block-native: block source kind (stage_blocking, duration_events, task_phase).",
+            "blocks/end_reason": "Block-native: reason used to terminate each inferred block [B].",
+            "blocks/membership_mode": "Block-native: membership mode policy used by stage_blocking when available.",
+            "blocks/is_inferred": "Block-native: 1 when block boundaries are inferred (0 for explicit-duration events).",
+            "block_windows/block_id": "Block-native: block identifier for each window [N].",
+            "block_windows/window_id_within_block": "Block-native: sequential index within block [N].",
+            "block_windows/stage_code": "Block-native: stage code inherited from parent block [N].",
+            "block_windows/block_start_sec": "Block-native: parent block start time [N].",
+            "block_windows/block_end_sec": "Block-native: parent block end time [N].",
+            "block_windows/block_duration_sec": "Block-native: parent block duration [N].",
+            "block_windows/window_start_sec": "Block-native: window start times [N].",
+            "block_windows/window_end_sec": "Block-native: window end times [N].",
+            "block_windows/window_center_sec": "Block-native: window center times [N].",
+            "block_windows/relative_time_in_block_sec": "Block-native: window center minus block start [N].",
+            "block_windows/distance_to_block_end_sec": "Block-native: block end minus window center [N].",
+            "block_windows/relative_pos_0_1": "Block-native: normalized position 0-1 within block [N].",
+            "block_windows/source_window_index": "Block-native: nearest source MNPS window index for exact joins [N].",
+            "block_windows/partition_label": "Block-native: partition/bin label string per window [N].",
+            "block_windows/is_post_offset": "Block-native: 1 if window falls after block_end [N].",
         },
         "naming_notes": {
             "jacobian": "MNJ estimate from primary 3D MNPS.",
             "coords_9d": "Stratified MNPS coordinate group (often 9D).",
             "coordinate_layers": "MNDM 2.1 explicit coordinate contracts; subject-anchored is for within-subject dynamics, cohort-anchored is for clinical group contrasts.",
             "feature_anchors": "Frozen feature-scaling reference used to construct cohort/external-anchored coordinate layers.",
+            "anchor_state": "Embodied/interoceptive state export aligned to the canonical MNPS time grid; not the same concept as feature_anchors.",
             "mnps_9d": "Configuration/runtime term for stratified MNPS coordinate system.",
             "capabilities.regional_outputs": "True when H5 files embed derived `/regional_mnps/*` network-level outputs.",
             "capabilities.raw_region_signals": "True when H5 files embed raw `/regions/*` signals (typically fMRI ROI x time).",
             "capabilities.regional_outputs_path": "Canonical regional output path for all modalities.",
             "capabilities.raw_features": "True when H5 files embed `/features_raw/*` feature exports.",
             "capabilities.robust_z_features": "True when H5 files embed `/features_robust_z/*` feature exports.",
+            "capabilities.anchor_state": "True when H5 files embed `/anchor_state/*` aligned anchor-state exports.",
+            "capabilities.anchor_quality": "True when H5 files embed `/anchor_quality/*` aligned anchor signal-quality exports.",
+            "capabilities.anchor_coupling": "True when H5 files embed `/anchor_coupling/*` additive coupling diagnostics.",
             "capabilities.time_reference": "True when H5 files embed `/extensions/time_reference/*` timeline provenance.",
+            "capabilities.has_block_native_windows": "True when H5 files embed `/block_windows/*` block-native window tables.",
+            "capabilities.coordinate_contracts": "Requested vs realized coordinate contracts inferred from config and emitted H5 layers.",
             "participant": "Subject-level participant metadata export group embedded into each H5.",
             "participant_mapped_meta": "Canonical metadata derived from participant rows plus YAML extraction rules.",
+            "geometry_contract": "Always-on canonical validity contract. Use this, not review_qc, to decide whether exported geometry is mathematically usable downstream.",
         },
         "source": {
             "source": "Dataset provenance metadata declared in the active YAML config.",
@@ -372,6 +417,10 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
     has_coords_9d_subject_count = 0
     has_coords_9d_cohort_count = 0
     has_time_reference_count = 0
+    has_block_native_count = 0
+    has_anchor_state_count = 0
+    has_anchor_quality_count = 0
+    has_anchor_coupling_count = 0
     bad_files: list[str] = []
 
     for p in h5_paths[: max_files if max_files > 0 else len(h5_paths)]:
@@ -420,6 +469,27 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
 
                 if "feature_anchors" in f:
                     has_feature_anchors_count += 1
+                if "anchor_state" in f:
+                    try:
+                        g = f["anchor_state"]
+                        if "values" in g:
+                            has_anchor_state_count += 1
+                    except Exception:
+                        pass
+                if "anchor_quality" in f:
+                    try:
+                        g = f["anchor_quality"]
+                        if "values" in g:
+                            has_anchor_quality_count += 1
+                    except Exception:
+                        pass
+                if "anchor_coupling" in f:
+                    try:
+                        g = f["anchor_coupling"]
+                        if len(g.keys()) > 0:
+                            has_anchor_coupling_count += 1
+                    except Exception:
+                        pass
                 if "coords_3d_subject_anchored" in f and "values" in f["coords_3d_subject_anchored"]:
                     has_coords_3d_subject_count += 1
                 if "coords_3d_cohort_anchored" in f and "values" in f["coords_3d_cohort_anchored"]:
@@ -467,6 +537,14 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
                     except Exception:
                         pass
 
+                if "block_windows" in f:
+                    try:
+                        bw = f["block_windows"]
+                        if len(bw.keys()) > 0:
+                            has_block_native_count += 1
+                    except Exception:
+                        pass
+
         except Exception:
             bad_files.append(str(p))
 
@@ -497,6 +575,12 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
         "robust_z_features_path": "/features_robust_z",
         "feature_anchors": bool(has_feature_anchors_count > 0),
         "feature_anchors_path": "/feature_anchors",
+        "anchor_state": bool(has_anchor_state_count > 0),
+        "anchor_state_path": "/anchor_state",
+        "anchor_quality": bool(has_anchor_quality_count > 0),
+        "anchor_quality_path": "/anchor_quality",
+        "anchor_coupling": bool(has_anchor_coupling_count > 0),
+        "anchor_coupling_path": "/anchor_coupling",
         "coords_3d_subject_anchored": bool(has_coords_3d_subject_count > 0),
         "coords_3d_cohort_anchored": bool(has_coords_3d_cohort_count > 0),
         "coords_9d_subject_anchored": bool(has_coords_9d_subject_count > 0),
@@ -505,12 +589,17 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
         "time_reference_path": "/extensions/time_reference",
         "labels_stage": bool(has_stage_count > 0),
         "v2_like_artifacts": bool(has_v2_like_count > 0),
+        "has_block_native_windows": bool(has_block_native_count > 0),
+        "block_native_windows_path": "/block_windows",
         "counts": {
             "h5_with_regional_outputs": int(has_regional_outputs_count),
             "h5_with_raw_region_signals": int(has_raw_region_signals_count),
             "h5_with_raw_features": int(has_raw_features_count),
             "h5_with_robust_z_features": int(has_robust_z_features_count),
             "h5_with_feature_anchors": int(has_feature_anchors_count),
+            "h5_with_anchor_state": int(has_anchor_state_count),
+            "h5_with_anchor_quality": int(has_anchor_quality_count),
+            "h5_with_anchor_coupling": int(has_anchor_coupling_count),
             "h5_with_coords_3d_subject_anchored": int(has_coords_3d_subject_count),
             "h5_with_coords_3d_cohort_anchored": int(has_coords_3d_cohort_count),
             "h5_with_coords_9d_subject_anchored": int(has_coords_9d_subject_count),
@@ -518,8 +607,97 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
             "h5_with_time_reference": int(has_time_reference_count),
             "h5_with_stage": int(has_stage_count),
             "h5_with_v2_like": int(has_v2_like_count),
+            "h5_with_block_native_windows": int(has_block_native_count),
         },
     }
+
+
+def _summarize_coordinate_contracts(config: Mapping[str, Any], probe: Mapping[str, Any]) -> Dict[str, Any]:
+    """Resolve requested vs realized coordinate contracts for run manifest."""
+    proj_cfg = config.get("mnps_projection", {}) if isinstance(config, Mapping) else {}
+    export_cfg = (
+        proj_cfg.get("export_contracts", {})
+        if isinstance(proj_cfg, Mapping) and isinstance(proj_cfg.get("export_contracts", {}), Mapping)
+        else {}
+    )
+
+    requested_subject = bool(export_cfg.get("subject_anchored", True))
+    requested_cohort = bool(export_cfg.get("cohort_anchored", False))
+    requested_contracts: list[str] = []
+    if requested_subject:
+        requested_contracts.append("subject_anchored")
+    if requested_cohort:
+        requested_contracts.append("cohort_anchored")
+
+    realized_subject = bool(
+        probe.get("coords_3d_subject_anchored", False)
+        or probe.get("coords_9d_subject_anchored", False)
+    )
+    realized_cohort = bool(
+        probe.get("coords_3d_cohort_anchored", False)
+        or probe.get("coords_9d_cohort_anchored", False)
+    )
+    realized_contracts: list[str] = []
+    if realized_subject:
+        realized_contracts.append("subject_anchored")
+    if realized_cohort:
+        realized_contracts.append("cohort_anchored")
+
+    skipped_contracts_with_reason: list[Dict[str, str]] = []
+    if requested_subject and not realized_subject:
+        skipped_contracts_with_reason.append(
+            {
+                "contract": "subject_anchored",
+                "reason": "requested_but_not_emitted_in_probed_h5",
+            }
+        )
+    if requested_cohort and not realized_cohort:
+        skipped_contracts_with_reason.append(
+            {
+                "contract": "cohort_anchored",
+                "reason": "requested_but_not_emitted_in_probed_h5",
+            }
+        )
+
+    return {
+        "requested_contracts": requested_contracts,
+        "realized_contracts": realized_contracts,
+        "skipped_contracts_with_reason": skipped_contracts_with_reason,
+    }
+
+
+def _write_command_used(
+    mnps_dir: Path,
+    *,
+    git_rev: Optional[str],
+    created_at: str,
+) -> Path:
+    """Write command_used.txt into the run directory for full replay transparency."""
+    argv = sys.argv[:]
+    # Reconstruct the invocation as a single shell-friendly line.
+    import shlex
+
+    cmd_line = " ".join(shlex.quote(a) for a in argv)
+
+    lines = [
+        "# NeuralManifoldDynamics — exact run command",
+        "# Paste this line into the same working directory to reproduce this run.",
+        "#",
+        cmd_line,
+        "",
+        "# ── Provenance ──────────────────────────────────────────────────────────────",
+        f"# created_at : {created_at}",
+        f"# git_rev    : {git_rev or 'unavailable'}",
+        f"# python     : {sys.version.split()[0]}",
+        f"# platform   : {platform.platform()}",
+        f"# run_dir    : {mnps_dir}",
+    ]
+    out = mnps_dir / "command_used.txt"
+    try:
+        out.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Could not write command_used.txt: %s", exc)
+    return out
 
 
 def write_run_manifest(
@@ -559,6 +737,7 @@ def write_run_manifest(
 
     probe = _probe_h5_capabilities(h5_files, max_files=200)
     subj = _summarize_subject_jsons(summary_jsons)
+    coordinate_contracts = _summarize_coordinate_contracts(config, probe)
 
     # Best-effort git revision (optional)
     git_rev = None
@@ -611,6 +790,7 @@ def write_run_manifest(
         },
         "capabilities": {
             **probe,
+            "coordinate_contracts": coordinate_contracts,
             "block_jacobians": {
                 "any": bool(block_csvs),
                 "regional_any": bool(regional_block_csvs),
@@ -647,6 +827,14 @@ def write_run_manifest(
                 manifest["reproducibility"] = merged
         except Exception:
             manifest["extra"] = {"note": "extra was not JSON-serializable"}
+
+    command_used_path = _write_command_used(
+        mnps_dir, git_rev=git_rev, created_at=manifest["created_at"]
+    )
+    manifest["command_used"] = {
+        "path": command_used_path.name,
+        "argv": sys.argv[:],
+    }
 
     out_path = mnps_dir / "run_manifest.json"
     return json_writer.write_json_summary(manifest, out_path)

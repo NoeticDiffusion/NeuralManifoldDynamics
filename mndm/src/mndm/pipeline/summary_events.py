@@ -291,6 +291,12 @@ def _build_stage_mapping_qc(
 ) -> Dict[str, Any]:
     """Build stage/event mapping QC dict."""
     raw_counts = Counter(_normalize_label(v) for v in labels_raw if _normalize_label(v))
+    cleaned_counts = Counter(
+        re.sub(r"\s+", " ", "".join(ch if ch.isprintable() else " " for ch in _normalize_label(v))).strip()
+        for v in labels_raw
+        if _normalize_label(v)
+    )
+    normalized_counts = Counter(_normalize_key(v) for v in labels_raw if _normalize_key(v))
 
     mapped_code_counts: Dict[str, int] = {}
     for v in mapped_codes.tolist():
@@ -344,9 +350,12 @@ def _build_stage_mapping_qc(
 
     return {
         "raw_event_label_counts": {str(k): int(v) for k, v in sorted(raw_counts.items(), key=lambda kv: kv[0])},
+        "cleaned_event_label_counts": {str(k): int(v) for k, v in sorted(cleaned_counts.items(), key=lambda kv: kv[0])},
+        "normalized_event_label_counts": {str(k): int(v) for k, v in sorted(normalized_counts.items(), key=lambda kv: kv[0])},
         "mapped_stage_code_counts": {str(k): int(v) for k, v in sorted(mapped_code_counts.items(), key=lambda kv: kv[0])},
         "unmapped_event_label_counts": {str(k): int(v) for k, v in sorted(unmapped_label_counts.items(), key=lambda kv: kv[0])},
         "mapping_mode_counts": {str(k): int(v) for k, v in sorted(mode_counts.items(), key=lambda kv: kv[0])},
+        "mapping_status_counts": {str(k): int(v) for k, v in sorted(mode_counts.items(), key=lambda kv: kv[0])},
         "stage_blocking_enabled": bool(stage_blocking.enabled),
         "raw_stage_frequency_event_counts_hz": {
             str(k): int(v)

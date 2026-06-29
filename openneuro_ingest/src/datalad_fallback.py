@@ -17,6 +17,17 @@ from typing import Iterable, Sequence
 
 logger = logging.getLogger("datalad_fallback")
 
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+for _extra_src in (
+    _REPO_ROOT / "core" / "src",
+    _REPO_ROOT / "mndm" / "src",
+    _REPO_ROOT / "openneuro_ingest" / "src",
+):
+    if _extra_src.exists():
+        extra_str = str(_extra_src)
+        if extra_str not in sys.path:
+            sys.path.insert(0, extra_str)
+
 
 def _default_config_path() -> Path:
     return Path(__file__).resolve().parents[1] / "config" / "config_ingest.yaml"
@@ -30,6 +41,20 @@ def _load_config(config_path: Path) -> dict:
     except Exception as exc:
         logger.warning("Failed to load config %s: %s", config_path, exc)
         return {}
+
+
+def _import_bids_index_module():
+    try:
+        from mndm import bids_index
+
+        return bids_index
+    except Exception:
+        try:
+            from openneuro import bids_index
+
+            return bids_index
+        except Exception as exc:
+            raise RuntimeError("Unable to import bids_index module") from exc
 
 
 def _resolve_data_dir(config: dict, override: Path | None) -> Path:
@@ -127,12 +152,56 @@ class GetPlan:
     derivatives_skipped: bool
 
 
-def _build_get_plan(dataset: "Dataset", paths: Sequence[str] | None, include_derivatives: bool) -> GetPlan:
+def _normalize_subject_ids(subjects: Sequence[str] | None) -> list[str]:
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for subject in subjects or []:
+        token = str(subject).strip()
+        if not token:
+            continue
+        if not token.lower().startswith("sub-"):
+            token = f"sub-{token}"
+        if token not in seen:
+            normalized.append(token)
+            seen.add(token)
+    return normalized
+
+
+def _merge_subset_targets(paths: Sequence[str] | None, subjects: Sequence[str] | None) -> list[str]:
+    targets: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: str) -> None:
+        token = str(value).strip()
+        if not token or token in seen:
+            return
+        targets.append(token)
+        seen.add(token)
+
+    normalized_subjects = _normalize_subject_ids(subjects)
+    if normalized_subjects:
+        for meta_path in ("README", "CHANGES", "dataset_description.json", "participants.tsv", "participants.json"):
+            _add(meta_path)
+
+    for path in paths or []:
+        _add(str(path))
+    for subject in normalized_subjects:
+        _add(subject)
+    return targets
+
+
+def _build_get_plan(
+    dataset: "Dataset",
+    paths: Sequence[str] | None,
+    subjects: Sequence[str] | None,
+    include_derivatives: bool,
+) -> GetPlan:
     # Choose what to fetch:
-    # - explicit subset overrides everything
+    # - explicit subset paths / subject selections override the default full-dataset walk
     # - default: fetch all top-level entries except derivatives
-    if paths:
-        targets = [str(p) for p in paths if str(p).strip()]
+    merged_targets = _merge_subset_targets(paths, subjects)
+    if merged_targets:
+        targets = list(merged_targets)
         if not targets:
             targets = ["."]
         return GetPlan(targets=targets, derivatives_skipped=not include_derivatives)
@@ -210,6 +279,7 @@ def _get_content(
     dataset: "Dataset",
     jobs: int | None,
     paths: Sequence[str] | None,
+    subjects: Sequence[str] | None,
     include_derivatives: bool,
     on_failure: str,
     result_renderer: str,
@@ -219,7 +289,7 @@ def _get_content(
 ) -> None:
     from datalad.support.exceptions import IncompleteResultsError
 
-    plan = _build_get_plan(dataset, paths, include_derivatives)
+    plan = _build_get_plan(dataset, paths, subjects, include_derivatives)
     targets = plan.targets
 
     # Avoid logging thousands of targets; show count + small preview only.
@@ -304,6 +374,16 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         help=(
             "Optional dataset-relative path(s) to fetch (default: full dataset). "
             "Can be provided multiple times, e.g. --subset sub-01/func --subset sub-02/func"
+        ),
+    )
+    parser.add_argument(
+        "--subject",
+        action="append",
+        default=None,
+        help=(
+            "Optional subject id(s) to fetch as top-level BIDS subject folders, "
+            "e.g. --subject sub-002 --subject sub-003. "
+            "When used, core metadata files like README and participants.tsv are also fetched."
         ),
     )
     parser.add_argument(
@@ -415,6 +495,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     dataset,
                     jobs=args.jobs,
                     paths=args.subset,
+                    subjects=args.subject,
                     include_derivatives=args.include_derivatives,
                     on_failure=args.on_failure,
                     result_renderer=args.result_renderer,
@@ -423,10 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     preview=int(args.targets_preview or 0),
                 )
             if args.build_index:
-                try:
-                    from openneuro import bids_index
-                except Exception as exc:  # pragma: no cover - import failure
-                    raise RuntimeError("Unable to import bids_index module") from exc
+                bids_index = _import_bids_index_module()
                 ds_path = Path(dataset.pathobj)
                 logger.info("Building file_index.csv for %s", ds_path)
                 index_df = bids_index.build_file_index(ds_path)

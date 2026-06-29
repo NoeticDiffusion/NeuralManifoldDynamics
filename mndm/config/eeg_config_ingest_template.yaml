@@ -211,12 +211,51 @@ event_locked:
     #     write_parquet: true
     #     write_csv: true
 
+# Optional block-native interval/window contract.
+# Use this when windows should be generated from inferred blocks directly,
+# rather than labeling a global epoch grid post-hoc.
+block_native:
+  datasets: {}
+    # YOUR_DATASET_ID:
+    #   enabled: true
+    #   source:
+    #     kind: "stage_blocking"   # stage_blocking | duration_events | task_phase
+    #     label_column: "value"
+    #     onset_column: "onset"
+    #     duration_column: "duration"
+    #   window_profile:
+    #     profile: "tail8"
+    #     # Named aliases:
+    #     # whole_block, early_block, mid_block, late_block, last5, tail8,
+    #     # post_offset_0_8, post_offset_8_16
+    #     window_length_sec: 4.0
+    #     step_sec: 2.0
+    #     emit_relative_position: true
+    #     min_block_sec: 4.0
+    #     min_windows_per_block: 2
+    #   export:
+    #     write_parquet: true
+    #     write_csv: true
+
 # Optional anchored export-contract selection.
 # Example:
 # mnps_projection:
 #   export_contracts:
 #     subject_anchored: true
 #     cohort_anchored: true
+#   # Option A: use an already-frozen anchor artifact.
+#   anchor:
+#     enabled: true
+#     path: "path/to/anchor.json"
+#     scale_method: "iqr"
+#     min_subjects: 3
+#   # Option B: fit one-shot anchor from this run's feature table.
+#   anchor_auto_fit:
+#     enabled: true
+#     anchor_id: "your_dataset_cohort_auto_v2_1"
+#     anchor_source: "all_subjects_features_table"
+#     scale_method: "iqr"
+#     min_subjects: 3
 
 robustness:
   bootstrap_n: 0

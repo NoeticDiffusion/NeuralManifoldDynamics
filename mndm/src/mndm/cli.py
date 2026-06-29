@@ -60,6 +60,15 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
         default=None,
         help="Override hard DVARS scrub threshold (features.metrics.dvars_threshold)",
     )
+    p.add_argument(
+        "--force-features",
+        action="store_true",
+        default=False,
+        help=(
+            "Force re-extraction of all features, ignoring cached features.parquet "
+            "and intermediate JSON files. Use after updating feature code or config."
+        ),
+    )
 
 
 def _add_anchor_fit_args(p: argparse.ArgumentParser) -> None:
@@ -219,7 +228,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import orchestrate
         return orchestrate.cmd_features(
             config, dataset_ids, args.out_dir, args.data_dir,
-            subject=args.subject, n_jobs=n_jobs, mem_budget_gb=args.mem_budget_gb
+            subject=args.subject, n_jobs=n_jobs, mem_budget_gb=args.mem_budget_gb,
+            force_features=getattr(args, "force_features", False),
         )
     elif args.command == "summarize":
         from . import orchestrate
@@ -354,7 +364,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         from . import orchestrate
         if orchestrate.cmd_features(
             config, dataset_ids, args.out_dir, args.data_dir,
-            subject=args.subject, n_jobs=n_jobs, mem_budget_gb=args.mem_budget_gb
+            subject=args.subject, n_jobs=n_jobs, mem_budget_gb=args.mem_budget_gb,
+            force_features=getattr(args, "force_features", False),
         ) != 0:
             return 1
         return orchestrate.cmd_summarize(

@@ -60,6 +60,18 @@ robustness:
     null_sanity_tests:
       enabled: true
       seed: 42
+    mnps_mnj_sanity:
+      enabled: true
+      coord_spaces: ["mnps_3d", "coords_9d"]
+      finite_row_warn_frac: 0.95
+      constant_var_tol: 1.0e-8
+      min_unique_values: 3
+      cond_warn: 1000000.0
+      rel_mse_warn: 1.0
+      robustified_variant:
+        enabled: true
+        winsorize_quantiles: [0.01, 0.99]
+        jacobian_ridge_floor: 1.0e-6
   coverage:
     datasets:
       physionet_icare_2_1:

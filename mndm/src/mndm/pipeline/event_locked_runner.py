@@ -17,11 +17,13 @@ from .event_alignment import AlignmentResult, align_events_to_windows
 from .event_annotations import (
     EventTable,
     event_table_from_stage_block_intervals,
+    load_event_table_from_bids_events,
     load_event_table_from_csv,
 )
 from .event_locked_config import (
     EventLockedProfile,
     EventSourceConfig,
+    _resolve_event_locked_dataset_cfg,
     alignment_config_from_profile,
     event_locked_profile_from_config,
     event_source_config_from_config,
@@ -138,6 +140,41 @@ def resolve_event_table_for_event_locked(
         if effective_path is None:
             raise ValueError("CSV event source requires either event_table or source_path.")
         table = load_event_table_from_csv(effective_path, event_type_filter=source_cfg.event_type or None)
+        return source_cfg, table
+
+    if source_cfg.kind == "bids_events":
+        # Direct BIDS events.tsv event-locking: no derived:task_state_label required.
+        # Event onsets are read straight from the companion *_events.tsv file,
+        # filtered by the ``event_types`` list configured under
+        # ``event_locked.datasets.<id>.event_types``.
+        effective_path = Path(source_cfg.source_path) if source_cfg.source_path else source_path
+        if effective_path is None:
+            raise ValueError(
+                "bids_events event source requires source_path to a BIDS *_events.tsv file."
+            )
+        ds_cfg = _resolve_event_locked_dataset_cfg(config, dataset_id)
+        event_types_raw = ds_cfg.get("event_types", [])
+        if not isinstance(event_types_raw, list):
+            event_types_raw = [event_types_raw]
+        event_types = [str(t).strip() for t in event_types_raw if str(t).strip()]
+        event_source_raw = (
+            ds_cfg.get("event_source", {})
+            if isinstance(ds_cfg.get("event_source"), Mapping)
+            else {}
+        )
+        trial_type_col = str(event_source_raw.get("trial_type_column", "trial_type") or "trial_type")
+        onset_col = str(event_source_raw.get("onset_column", "onset") or "onset")
+        duration_col = str(event_source_raw.get("duration_column", "duration") or "duration")
+        exclude_types_raw = event_source_raw.get("exclude_types", []) or []
+        exclude_types = [str(t).strip() for t in (exclude_types_raw if isinstance(exclude_types_raw, list) else [exclude_types_raw])]
+        table = load_event_table_from_bids_events(
+            path=effective_path,
+            event_types=event_types or None,
+            trial_type_column=trial_type_col,
+            onset_column=onset_col,
+            duration_column=duration_col,
+            exclude_types=exclude_types or None,
+        )
         return source_cfg, table
 
     if source_cfg.kind != "derived_stage_block_end":

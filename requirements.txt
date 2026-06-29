@@ -12,7 +12,12 @@ datalad==1.2.3
 datalad-installer
 networkx==3.3
 nibabel==5.2.1
-openneuro-py==2026.3.0
+openneuro-py>=2026.4.1
+# uv provides the `uvx` command used by openneuro_ingest to run the latest
+# openneuro-py in an isolated environment (default download path). A standalone
+# uv install (https://docs.astral.sh/uv/) also satisfies this; the pin here just
+# guarantees `uvx` is available after `pip install -r requirements.txt`.
+uv
 nilearn==0.13.1
 pyarrow==23.0.1
 dandi==0.75.1
@@ -21,3 +26,6 @@ yasa==0.7.0
 physionet==0.1.5
 wfdb==4.3.1
 neuroCombat==0.2.12
+antropy==0.1.9
+nolds==0.6.3
+neurokit2>=0.2.13

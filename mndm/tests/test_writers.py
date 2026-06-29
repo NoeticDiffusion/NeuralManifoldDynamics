@@ -106,6 +106,27 @@ def test_write_h5(require_real_h5py):
                 "attrs": {"coordinate_contract": "cohort_anchored", "anchor_id": "unit-test"},
             },
         },
+        anchor_state={
+            "values": np.random.rand(5, 3).astype(np.float32),
+            "names": ["sympathetic_index", "vagal_index", "anchor_index"],
+            "attrs": {"contract": "noetic_anchor_state_v0"},
+        },
+        anchor_state_dot={
+            "values": np.random.rand(5, 3).astype(np.float32),
+            "names": ["sympathetic_index", "vagal_index", "anchor_index"],
+        },
+        anchor_quality={
+            "values": np.random.rand(5, 2).astype(np.float32),
+            "names": ["ecg_quality_ok", "pupil_quality_score"],
+        },
+        anchor_coupling={
+            "J_xa": np.random.rand(3, 3, 3).astype(np.float32),
+            "metrics": np.random.rand(3, 4).astype(np.float32),
+            "metric_names": np.array(
+                ["drive_a_to_x", "drive_x_to_a", "asymmetry", "rotation"],
+                dtype=object,
+            ),
+        },
         event_windows={
             "event_id": np.array([0, 0, 1], dtype=np.int32),
             "window_id": np.array([0, 1, 3], dtype=np.int32),
@@ -219,6 +240,39 @@ def test_write_h5(require_real_h5py):
             "coverage_ok": np.array([1, 1, 1, 1, 1], dtype=np.int8),
             "stage_transition_flag": np.array([0, 1, 0, 0, 0], dtype=np.int8),
         },
+        block_table_columns={
+            "block_id": np.array([0], dtype=np.int32),
+            "stage_code": np.array([53], dtype=np.int32),
+            "start_sec": np.array([0.0], dtype=np.float32),
+            "end_sec": np.array([20.0], dtype=np.float32),
+            "duration_sec": np.array([20.0], dtype=np.float32),
+            "frequency_hz": np.array([20.0], dtype=np.float32),
+            "source_event_idx": np.array([3], dtype=np.int32),
+            "support_event_count": np.array([5], dtype=np.int32),
+            "derived_from": np.array(["stage_blocking"], dtype=object),
+            "end_reason": np.array(["bridge_tail"], dtype=object),
+            "membership_mode": np.array(["overlap_frac_ge"], dtype=object),
+            "bridge_tail_sec": np.array([0.5], dtype=np.float32),
+            "bridge_tail_cap_sec": np.array([1.0], dtype=np.float32),
+            "is_inferred": np.array([1], dtype=np.int8),
+        },
+        block_window_table_columns={
+            "block_id": np.array([0, 0], dtype=np.int32),
+            "window_id_within_block": np.array([0, 1], dtype=np.int32),
+            "stage_code": np.array([53, 53], dtype=np.int32),
+            "block_start_sec": np.array([0.0, 0.0], dtype=np.float32),
+            "block_end_sec": np.array([20.0, 20.0], dtype=np.float32),
+            "block_duration_sec": np.array([20.0, 20.0], dtype=np.float32),
+            "window_start_sec": np.array([12.0, 14.0], dtype=np.float32),
+            "window_end_sec": np.array([16.0, 18.0], dtype=np.float32),
+            "window_center_sec": np.array([14.0, 16.0], dtype=np.float32),
+            "relative_time_in_block_sec": np.array([14.0, 16.0], dtype=np.float32),
+            "distance_to_block_end_sec": np.array([6.0, 4.0], dtype=np.float32),
+            "relative_pos_0_1": np.array([0.7, 0.8], dtype=np.float32),
+            "source_window_index": np.array([7, 8], dtype=np.int32),
+            "partition_label": np.array(["tail", "tail"], dtype=object),
+            "is_post_offset": np.array([0, 0], dtype=np.int8),
+        },
         regional_mnps={
             "DMN": {
                 "mnps": np.random.rand(5, 3).astype(np.float32),
@@ -271,6 +325,17 @@ def test_write_h5(require_real_h5py):
             assert "spec" in f["feature_anchors"]
             assert "per_feature" in f["feature_anchors"]
             assert f["feature_anchors"]["spec"].attrs["anchor_id"] == "unit-test"
+            assert "anchor_state" in f
+            assert "values" in f["anchor_state"]
+            assert "names" in f["anchor_state"]
+            assert f["anchor_state"].attrs["contract"] == "noetic_anchor_state_v0"
+            assert "anchor_state_dot" in f
+            assert "values" in f["anchor_state_dot"]
+            assert "anchor_quality" in f
+            assert "values" in f["anchor_quality"]
+            assert "anchor_coupling" in f
+            assert "J_xa" in f["anchor_coupling"]
+            assert "metrics" in f["anchor_coupling"]
             assert "coords_3d_subject_anchored" in f
             assert "coords_3d_cohort_anchored" in f
             assert "values" in f["coords_3d_cohort_anchored"]
@@ -299,6 +364,17 @@ def test_write_h5(require_real_h5py):
             assert "qc" in f
             assert "windows" in f["qc"]
             assert "coverage_ok" in f["qc"]["windows"]
+            assert "blocks" in f
+            assert "block_windows" in f
+            assert "start_sec" in f["blocks"]
+            assert "frequency_hz" in f["blocks"]
+            assert "source_event_idx" in f["blocks"]
+            assert "support_event_count" in f["blocks"]
+            assert "source_window_index" in f["block_windows"]
+            assert f["blocks"].attrs["_schema_version"] == "block_native_v1"
+            assert f["block_windows"].attrs["_schema_version"] == "block_native_v1"
+            assert "schema_version" not in f["blocks"].attrs
+            assert "schema_version" not in f["block_windows"].attrs
             # Extensions group should be present when extensions are provided
             assert "extensions" in f
             assert "e_kappa" in f["extensions"]

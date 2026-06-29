@@ -532,6 +532,42 @@ The safest rollout is:
 - additive H5 groups second
 - only later allow block-native to become the actual primary analysis mode
 
+## Block Source Kinds
+
+Block inference must generalize beyond `stage_blocking` to support all test
+datasets. Three source kinds are defined:
+
+### `stage_blocking` — ds006036
+
+Delegates to the existing `infer_stage_block_intervals()` pipeline.
+The `BlockSourceConfig` for this kind requires `sampling_cfg.stage_blocking.enabled: true`
+in the dataset's `epoching` section. No new inference logic is needed.
+
+### `duration_events` — ds003490
+
+Infers one block per event row that has an explicit `duration` field.
+Suitable for datasets where EO/EC blocks are represented as single events with
+known durations (e.g. `"Eyes Closed: Every 1000 ms"` in ds003490).
+
+Config fields: `block_event_labels`, `block_event_stage_codes`, `label_column`,
+`min_block_sec`, `max_block_sec`.
+
+### `task_phase` — ds003509 / ds003506
+
+Groups consecutive events that share a configured label prefix into a phase block.
+A block boundary is emitted when: the prefix changes, or the gap to the next
+event exceeds `gap_tolerance_sec`.
+
+Suitable for Parkinson cognitive-task datasets with compact event families:
+- ds003509: `training_*` vs `test_*` (Simon conflict).
+- ds003506: `choose_*` vs `match_*` (reinforcement learning).
+
+Config fields: `phase_prefixes` (dict: phase_name → prefix), `gap_tolerance_sec`,
+`min_block_sec`, `label_column`.
+
+See `project/block-native_window/milestones.md` for dataset-specific YAML
+examples and test case specifications for all three source kinds.
+
 ## Recommended First Consumer
 
 Use `ds006036` as the first consumer because:

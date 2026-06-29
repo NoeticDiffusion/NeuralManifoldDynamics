@@ -50,6 +50,46 @@ def build_epoch_meta(n_samples: int, epoch_length_samples: int, epoch_step_sampl
     return out
 
 
+def build_block_native_epoch_meta(
+    blocks: Sequence,
+    spec: Any,
+    *,
+    sfreq: float,
+) -> List[tuple[int, int, int]]:
+    """Build ``(epoch_id, start_sample, end_sample)`` tuples from block-native windows.
+
+    Converts :class:`~mndm.pipeline.block_windows.BlockWindowRow` objects (as
+    returned by :func:`~mndm.pipeline.block_windows.generate_block_windows`) into
+    the same ``(epoch_id, start_idx, end_idx)`` contract used by the global epoch
+    grid.  This allows downstream feature extractors to consume block-native windows
+    through the same interface as global epochs.
+
+    Parameters
+    ----------
+    blocks:
+        Iterable of :class:`~mndm.pipeline.stage_blocking.StageBlockInterval`.
+    spec:
+        :class:`~mndm.pipeline.block_windows.BlockWindowSpec` profile.
+    sfreq:
+        Sampling frequency in Hz.  Used to convert window boundaries from seconds
+        to sample indices.
+
+    Returns
+    -------
+    List[tuple[int, int, int]]
+        Ordered list of ``(epoch_id, start_sample, end_sample)`` tuples.
+    """
+    from ..pipeline.block_windows import generate_block_windows
+
+    window_rows = generate_block_windows(list(blocks), spec)
+    out: List[tuple[int, int, int]] = []
+    for epoch_id, row in enumerate(window_rows):
+        start_sample = int(round(row.window_start_sec * sfreq))
+        end_sample = int(round(row.window_end_sec * sfreq))
+        out.append((epoch_id, start_sample, end_sample))
+    return out
+
+
 def resolve_epoching_sampling_cfg(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
     """Resolve epoch sampling config with optional per-dataset overrides."""
     epoching = config.get("epoching", {}) if isinstance(config, Mapping) else {}

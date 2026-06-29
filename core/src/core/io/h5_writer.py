@@ -43,6 +43,18 @@ def _create_dataset(parent: Any, name: str, data, compression: str = "gzip", com
         str_dtype = h5py.string_dtype(encoding="utf-8")
         parent.create_dataset(name, data=arr.astype(str).astype(object), dtype=str_dtype)
         return
+    if arr.dtype.kind == "O" and arr.size > 0:
+        # Object array: if all elements are strings, write as variable-length UTF-8.
+        try:
+            flat = arr.flat
+            if all(isinstance(v, (str, bytes)) for v in flat):
+                str_dtype = h5py.string_dtype(encoding="utf-8")
+                str_arr = np.array([v.decode("utf-8") if isinstance(v, bytes) else str(v)
+                                    for v in arr.flat], dtype=object).reshape(arr.shape)
+                parent.create_dataset(name, data=str_arr, dtype=str_dtype)
+                return
+        except Exception:
+            pass
     if arr.shape == ():
         # Scalar dataset – no compression/chunking allowed
         parent.create_dataset(name, data=arr)
@@ -229,6 +241,36 @@ def _write_coordinate_layers_group(h5: h5py.File, coordinate_layers: Mapping[str
                 group.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
         group.attrs.setdefault("schema_version", "mndm.coordinate_layer.v2.1")
         group.attrs.setdefault("alignment", "per_timepoint")
+
+
+def _write_named_matrix_group(
+    h5: h5py.File,
+    *,
+    group_name: str,
+    payload: Mapping[str, Any],
+    schema_version: str,
+) -> None:
+    """Write an aligned named matrix group such as `/anchor_state`."""
+    if not isinstance(payload, Mapping) or not payload:
+        return
+    values = payload.get("values")
+    if values is None or np.size(values) == 0:
+        return
+    group = h5.require_group(_sanitize_h5_key(str(group_name)))
+    _create_dataset(group, "values", np.asarray(values, dtype=np.float32))
+    names = payload.get("names")
+    if names:
+        str_dtype = h5py.string_dtype(encoding="utf-8")
+        names_utf8 = np.asarray([str(v) for v in names], dtype=object)
+        group.create_dataset("names", data=names_utf8, dtype=str_dtype)
+    attrs = payload.get("attrs", {})
+    if isinstance(attrs, Mapping):
+        for key, value in attrs.items():
+            if value is None:
+                continue
+            group.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
+    group.attrs.setdefault("_schema_version", schema_version)
+    group.attrs.setdefault("alignment", "per_timepoint")
 
 
 def _write_feature_anchors_group(h5: h5py.File, feature_anchors: Mapping[str, Any]) -> None:
@@ -568,6 +610,14 @@ def write_h5(
             feature_metadata=getattr(payload, "feature_metadata", None),
             export_transform="strict_robust_z",
         )
+        _write_feature_surface_group(
+            h5,
+            group_name="features_projection_z",
+            values=getattr(payload, "features_projection_z_values", None),
+            names=getattr(payload, "features_projection_z_names", None),
+            feature_metadata=getattr(payload, "feature_metadata", None),
+            export_transform="projection_z",
+        )
 
         _write_feature_anchors_group(
             h5,
@@ -582,6 +632,31 @@ def write_h5(
         _write_coordinate_layers_group(
             h5,
             getattr(payload, "coordinate_layers", None),
+        )
+
+        _write_named_matrix_group(
+            h5,
+            group_name="anchor_state",
+            payload=getattr(payload, "anchor_state", None),
+            schema_version="mndm.anchor_state.v1",
+        )
+        _write_named_matrix_group(
+            h5,
+            group_name="anchor_state_dot",
+            payload=getattr(payload, "anchor_state_dot", None),
+            schema_version="mndm.anchor_state_dot.v1",
+        )
+        _write_named_matrix_group(
+            h5,
+            group_name="anchor_quality",
+            payload=getattr(payload, "anchor_quality", None),
+            schema_version="mndm.anchor_quality.v1",
+        )
+        _write_nested_mapping_group(
+            h5,
+            "anchor_coupling",
+            getattr(payload, "anchor_coupling", None),
+            schema_version="mndm.anchor_coupling.v1",
         )
 
         if payload.z is not None and payload.z.size:
@@ -635,6 +710,26 @@ def write_h5(
             h5,
             getattr(payload, "event_windows", None),
             getattr(payload, "event_windows_attrs", None),
+        )
+
+        _write_nested_mapping_group(
+            h5,
+            "blocks",
+            getattr(payload, "block_table_columns", None),
+            schema_version="block_native_v1",
+        )
+        _write_nested_mapping_group(
+            h5,
+            "block_windows",
+            getattr(payload, "block_window_table_columns", None),
+            schema_version="block_native_v1",
+        )
+
+        _write_nested_mapping_group(
+            h5,
+            "row_source",
+            getattr(payload, "row_source_columns", None),
+            schema_version="mndm.row_source.v1",
         )
 
         _write_nested_mapping_group(

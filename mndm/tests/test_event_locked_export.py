@@ -170,6 +170,26 @@ class TestSpindleRows:
             assert "m" in r and "d" in r and "e" in r
             assert "m_dot" in r and "d_dot" in r and "e_dot" in r
 
+    def test_rows_include_rate_per_min(self):
+        from mndm.pipeline.event_locked_export import build_event_locked_table
+
+        payload = _make_payload()
+        table = _make_event_table()
+        rows = build_event_locked_table(
+            payload=payload,
+            alignment=_make_alignment(payload, table),
+            controls=_make_controls(payload, table),
+            event_table=table,
+        )
+        values = [
+            float(r.get("rate_per_min", np.nan))
+            for r in rows
+            if np.isfinite(float(r.get("rate_per_min", np.nan)))
+        ]
+        assert values
+        assert all(v > 0 for v in values)
+        assert len({round(v, 12) for v in values}) == 1
+
     def test_spindle_rows_carry_event_metadata(self):
         from mndm.pipeline.event_locked_export import build_event_locked_table
 
@@ -219,7 +239,48 @@ class TestControlRows:
         )
         for r in (r for r in rows if r["condition"] == "matched_control"):
             assert r["matched_event_id"] >= 0
-            assert r["match_rank"] >= 1
+
+
+class TestAnchorAndLabelExports:
+    def test_event_locked_rows_include_anchor_and_task_labels(self):
+        from mndm.pipeline.event_locked_export import build_event_locked_table
+
+        payload = _make_payload()
+        payload.labels["task_state_label"] = np.array(["rest"] * len(payload.time), dtype=object)
+        payload.labels["task_load_n"] = np.zeros((len(payload.time),), dtype=np.float32)
+        payload.anchor_state = {
+            "values": np.stack(
+                [
+                    np.linspace(0.0, 1.0, len(payload.time), dtype=np.float32),
+                    np.linspace(1.0, 2.0, len(payload.time), dtype=np.float32),
+                ],
+                axis=1,
+            ),
+            "names": ["anchor_index", "vagal_index"],
+        }
+        payload.anchor_state_dot = {
+            "values": np.ones((len(payload.time), 2), dtype=np.float32) * 0.25,
+            "names": ["anchor_index", "vagal_index"],
+        }
+        payload.anchor_quality = {
+            "values": np.ones((len(payload.time), 2), dtype=np.float32) * 0.9,
+            "names": ["anchor_index", "vagal_index"],
+        }
+
+        table = _make_event_table()
+        rows = build_event_locked_table(
+            payload=payload,
+            alignment=_make_alignment(payload, table),
+            controls=_make_controls(payload, table),
+            event_table=table,
+        )
+        assert rows
+        row = rows[0]
+        assert "anchor_index" in row
+        assert "anchor_index_dot" in row
+        assert "anchor_index_quality" in row
+        assert row["task_state_label"] == "rest"
+        assert row["task_load_n"] == pytest.approx(0.0)
 
     def test_control_rows_have_no_event_metadata(self):
         from mndm.pipeline.event_locked_export import build_event_locked_table

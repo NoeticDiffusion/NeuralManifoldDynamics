@@ -41,6 +41,67 @@ preprocess:
     # Use >1 to parallelize MNE resample across channels.
     n_jobs: 1   # int or "auto"
   gpu: false
+
+  # ---------------------------------------------------------------------------
+  # Bad-channel detection (RANSAC / correlation).
+  # Disabled by default for backward compatibility.
+  # Enable per-dataset by overriding in the dataset config.
+  # ---------------------------------------------------------------------------
+  bad_channels:
+    enabled: false
+    method: "ransac"          # "ransac" | "correlation" | "both"
+    ransac:
+      min_channels: 3
+      n_resample: 50
+      min_corr: 0.75
+      unbroken_time: 0.4
+      noise_threshold: 4.0
+    correlation:
+      window_s: 1.0
+      threshold: 0.4
+    interpolate: true          # interpolate detected bad channels
+    max_bad_fraction: 0.2      # skip subject if >20% of channels bad
+
+  # ---------------------------------------------------------------------------
+  # ICA artifact removal.
+  # Disabled by default. Enable per-dataset.
+  #
+  # For datasets without dedicated EOG channels (e.g. ds006848), set
+  # eog_proxy_channels to frontopolar channels (Fp1, Fp2) which are highly
+  # correlated with vertical EOG.
+  #
+  # For MEG datasets, add cardiac proxy via the ecg_proxy_channel field.
+  # ---------------------------------------------------------------------------
+  ica:
+    enabled: false
+    n_components: 20           # number of ICA components (or fraction of channels)
+    method: "fastica"          # "fastica" | "infomax" | "picard"
+    random_state: 42
+    max_iter: 1000
+    fit_params: {}
+    # EOG component detection
+    eog:
+      enabled: true
+      # If dedicated EOG channels exist, list them here.
+      # If empty, falls back to eog_proxy_channels.
+      channels: []
+      # Frontopolar channels used as EOG proxy when no dedicated EOG exists.
+      proxy_channels: ["Fp1", "Fp2"]
+      threshold: 3.0           # z-score threshold for component rejection
+      measure: "correlation"   # "correlation" | "ctps"
+    # ECG/cardiac component detection
+    ecg:
+      enabled: false
+      channel: null            # null = auto-detect from ECG channel type
+      threshold: 3.0
+      measure: "correlation"
+    # EMG/muscle component detection via ICLabel (requires mne-icalabel)
+    icalabel:
+      enabled: false
+      threshold: 0.80          # probability threshold for muscle/eye rejection
+      reject_labels: ["muscle", "eye"]  # ICLabel categories to reject
+    # Maximum components to remove (safety cap)
+    max_components_to_remove: 5
   eeglab:
     # If a .set file is epoched and must be concatenated to a surrogate Raw stream,
     # default to skip time-domain filters/resampling to avoid boundary ringing.
@@ -55,7 +116,9 @@ preprocess:
     default_rules:
       - {regex: "(?i)^(VEOG|HEOG|EOG|EYE)", type: "eog"}
       - {regex: "(?i)^(ECG|EKG)", type: "ecg"}
+      - {regex: "(?i)^(PPG|PLETH|PULSE|PHOTO)", type: "bio"}
       - {regex: "(?i)^(EMG|CHEMG|CHIN|LEG|RLEG|LLEG|MENTALIS)", type: "emg"}
+      - {regex: "(?i)^(RESP|THOR|ABD)", type: "resp"}
     # External dataset policy library (optional):
     # - mndm/config/channel_typing/<dataset_id>_channel_typing.yml
     # - mndm/config/channel_typing/datasets.yml
@@ -93,6 +156,15 @@ features:
   eeg_psd: {method: "multitaper", bandwidth: null}
   eeg_bands: {delta: [1,4], theta: [4,8], alpha: [8,12], beta: [13,30], gamma: [30,45]}
   ratios: {alpha_theta: ["alpha","theta"], beta_alpha: ["beta","alpha"]}
+  ecg:
+    hrv:
+      enabled: false
+      superwindow_s: 60.0
+      window_mode: "centered"
+      min_nn_intervals: 20
+      min_coverage_fraction: 0.5
+      max_artifact_fraction: 0.25
+      pnn50_threshold_ms: 50.0
   permutation_entropy:
     order: 5
     delay: 1

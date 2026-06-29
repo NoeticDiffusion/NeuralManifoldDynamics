@@ -90,10 +90,49 @@ conventional_eeg:
         hjorth_complexity: true
         hjorth_mobility: true
 
+block_native:
+  datasets:
+    ds003490:
+      enabled: true
+      source:
+        # Eyes-open and eyes-closed resting blocks are represented as single
+        # long events with explicit duration in the events_tsv.
+        kind: "duration_events"
+        label_column: "trial_type"
+        onset_column: "onset"
+        duration_column: "duration"
+        block_event_labels:
+          - "Eyes Closed: Every 1000 ms"
+          - "Eyes Open: Every 1000 ms"
+        block_event_stage_codes:
+          "Eyes Closed: Every 1000 ms": 10
+          "Eyes Open: Every 1000 ms": 11
+        min_block_sec: 30.0
+        max_block_sec: 600.0
+      window_profile:
+        profile: "whole_block"
+        kind: "sliding"
+        window_length_sec: 8.0
+        step_sec: 4.0
+        emit_relative_position: true
+        min_block_sec: 8.0
+        min_windows_per_block: 2
+      export:
+        write_parquet: true
+        write_csv: true
+
 mnps_projection:
   export_contracts:
     subject_anchored: true
     cohort_anchored: true
+  # Ensure cohort_anchored layers are actually emitted by fitting a frozen
+  # anchor from this run's cohort features before summarize starts.
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "ds003490_cohort_auto_v2_1"
+    anchor_source: "ds003490_all_subjects_features_table"
+    scale_method: "iqr"
+    min_subjects: 3
 
 mnps:
   stage_codebook:

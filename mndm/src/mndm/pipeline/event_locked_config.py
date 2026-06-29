@@ -351,7 +351,12 @@ def alignment_config_from_profile(
     margin = 30.0
     if config is not None:
         ds_cfg = _resolve_event_locked_dataset_cfg(config, dataset_id)
-        margin = float(ds_cfg.get("exclude_stage_transition_margin_sec", 30.0))
+        # For direct BIDS event-locking the events ARE the state transitions,
+        # so the sleep-spindle transition exclusion should default to 0.
+        default_margin = 0.0 if profile.event_source_kind == "bids_events" else 30.0
+        margin = float(ds_cfg.get("exclude_stage_transition_margin_sec", default_margin))
+    elif profile.event_source_kind == "bids_events":
+        margin = 0.0
 
     overlap_threshold = 0.0
     if config is not None:

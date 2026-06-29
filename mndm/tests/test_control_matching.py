@@ -154,6 +154,28 @@ class TestControlMatchingQC:
         assert "match_success_rate" in result.qc
         assert 0.0 <= result.qc["match_success_rate"] <= 1.0
 
+    def test_nan_time_windows_do_not_break_quartile_matching(self):
+        from mndm.pipeline.control_matching import MatchingConfig, build_matched_controls
+        from mndm.pipeline.event_annotations import EventTable
+
+        w_start, w_end, t = _make_windows(8)
+        t = t.astype(np.float64)
+        t[3] = np.nan
+        stage = np.full(8, 2, dtype=np.int16)
+        table = EventTable(onset_sec=np.array([10.0]), duration_sec=np.array([1.0]))
+
+        result = build_matched_controls(
+            table,
+            time=t,
+            window_start=w_start,
+            window_end=w_end,
+            stage=stage,
+            config=MatchingConfig(n_controls_per_event=2, seed=7, exclusion_margin_sec=2.0),
+        )
+
+        assert "match_success_rate" in result.qc
+        assert all(np.isfinite(float(t[row.control_window_id])) for row in result.rows)
+
 
 class TestControlMatchingEmpty:
     def test_empty_table_returns_empty(self):

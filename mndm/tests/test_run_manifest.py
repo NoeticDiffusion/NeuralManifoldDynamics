@@ -212,3 +212,107 @@ def test_run_manifest_copies_yaml_and_records_filename(tmp_path: Path):
     copied_path = mnps_dir / config_path.name
     assert copied_path.exists()
     assert copied_path.read_text(encoding="utf-8") == config_path.read_text(encoding="utf-8")
+
+
+def test_run_manifest_reports_requested_vs_realized_coordinate_contracts(tmp_path: Path):
+    """Coordinate contracts should expose requested/realized/skipped breakdown."""
+    mnps_dir = tmp_path / "mnps_dsX_20260101_000005"
+    rec_dir = mnps_dir / "sub-001_cond_task_run-01"
+    rec_dir.mkdir(parents=True)
+    _write_min_summary_json(rec_dir / "summary.json")
+
+    with h5py.File(rec_dir / "sub-001_cond_task_run-01.h5", "w") as h5:
+        subject_layer = h5.require_group("coords_3d_subject_anchored")
+        subject_layer.create_dataset("values", data=np.zeros((2, 3), dtype=np.float32))
+
+    config = _base_config()
+    config["mnps_projection"] = {
+        "export_contracts": {
+            "subject_anchored": True,
+            "cohort_anchored": True,
+        }
+    }
+
+    out_path = write_run_manifest(
+        mnps_dir=mnps_dir,
+        config=config,
+        ds_id="dsX",
+        received_dir=tmp_path / "received",
+        processed_dir=tmp_path / "processed",
+        h5_mode="subject",
+    )
+
+    manifest = json.loads(out_path.read_text(encoding="utf-8"))
+    contracts = manifest["capabilities"]["coordinate_contracts"]
+    assert contracts["requested_contracts"] == ["subject_anchored", "cohort_anchored"]
+    assert contracts["realized_contracts"] == ["subject_anchored"]
+    skipped = contracts["skipped_contracts_with_reason"]
+    assert isinstance(skipped, list) and len(skipped) == 1
+    assert skipped[0]["contract"] == "cohort_anchored"
+
+
+def test_run_manifest_probes_anchor_capabilities(tmp_path: Path):
+    """Run manifest should expose AnchorState capability flags separately from feature anchors."""
+    mnps_dir = tmp_path / "mnps_dsX_20260101_000006"
+    rec_dir = mnps_dir / "sub-001_cond_task_run-01"
+    rec_dir.mkdir(parents=True)
+    _write_min_summary_json(rec_dir / "summary.json")
+
+    with h5py.File(rec_dir / "sub-001_cond_task_run-01.h5", "w") as h5:
+        anchor_state = h5.require_group("anchor_state")
+        anchor_state.create_dataset("values", data=np.zeros((2, 3), dtype=np.float32))
+        anchor_quality = h5.require_group("anchor_quality")
+        anchor_quality.create_dataset("values", data=np.zeros((2, 2), dtype=np.float32))
+        anchor_coupling = h5.require_group("anchor_coupling")
+        anchor_coupling.create_dataset("metrics", data=np.zeros((1, 4), dtype=np.float32))
+
+    out_path = write_run_manifest(
+        mnps_dir=mnps_dir,
+        config=_base_config(),
+        ds_id="dsX",
+        received_dir=tmp_path / "received",
+        processed_dir=tmp_path / "processed",
+        h5_mode="subject",
+    )
+
+    manifest = json.loads(out_path.read_text(encoding="utf-8"))
+    capabilities = manifest["capabilities"]
+    assert capabilities["anchor_state"] is True
+    assert capabilities["anchor_state_path"] == "/anchor_state"
+    assert capabilities["anchor_quality"] is True
+    assert capabilities["anchor_quality_path"] == "/anchor_quality"
+    assert capabilities["anchor_coupling"] is True
+    assert capabilities["anchor_coupling_path"] == "/anchor_coupling"
+
+
+def test_run_manifest_excerpt_includes_meg_mapping_contract(tmp_path: Path):
+    """Run manifest excerpt should preserve MEG shadow-mapping contract metadata."""
+    mnps_dir = tmp_path / "mnps_ds003645_20260101_000007"
+    rec_dir = mnps_dir / "sub-002_meeg_faces_run-01"
+    rec_dir.mkdir(parents=True)
+    _write_min_summary_json(rec_dir / "summary.json")
+
+    config = _base_config()
+    config["modality"] = "meg"
+    config["meg_mapping"] = {
+        "enabled": True,
+        "mapping_family": "electrophysiology_shadow",
+        "mapping_reference": "eeg_contract_v2",
+        "sensor_types": ["mag", "grad"],
+        "feature_combination": "robust_z_then_median",
+    }
+
+    out_path = write_run_manifest(
+        mnps_dir=mnps_dir,
+        config=config,
+        ds_id="ds003645",
+        received_dir=tmp_path / "received",
+        processed_dir=tmp_path / "processed",
+        h5_mode="subject",
+    )
+
+    manifest = json.loads(out_path.read_text(encoding="utf-8"))
+    excerpt = manifest["config"]["excerpt"]
+    assert excerpt["meg_mapping"]["mapping_family"] == "electrophysiology_shadow"
+    assert excerpt["meg_mapping"]["mapping_reference"] == "eeg_contract_v2"
+    assert excerpt["meg_mapping"]["sensor_types"] == ["mag", "grad"]

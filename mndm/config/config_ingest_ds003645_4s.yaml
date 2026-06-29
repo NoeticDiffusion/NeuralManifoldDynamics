@@ -1,0 +1,22 @@
+version: 1.2
+# Window-multiverse variant: 4s windows, 1s step (D-test from MEG2.md).
+# Imports all MEG-specific settings from the base ds003645 config;
+# only overrides window size, MNPS projection step, and output directory.
+imports:
+  - "./config_ingest_ds003645.yaml"
+
+paths:
+  # Separate processed_dir avoids collisions with the 8s intermediate JSON cache.
+  processed_dir: "E:/Science_Datasets/openneuro/processed_4s"
+
+epoching:
+  length_s: 4.0
+  step_s: 1.0
+
+mnps:
+  window_sec: 4.0
+  # overlap = 1 - (step / window) = 1 - (1 / 4) = 0.75
+  overlap: 0.75
+  # Relax min segment for derivative at shorter windows
+  derivative_robust:
+    min_seg: 7

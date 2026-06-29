@@ -5,7 +5,7 @@ import sys
 
 import numpy as np
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 
 def test_jacobian_recovers_linear_system():
@@ -124,4 +124,41 @@ def test_jacobian_is_exactly_deterministic_for_identical_inputs():
     assert np.array_equal(first.centers, second.centers)
     assert np.array_equal(first.j_hat, second.j_hat)
     assert np.array_equal(first.j_dot, second.j_dot)
+
+
+def test_estimate_anchor_coupling_exports_cross_blocks_and_metrics():
+    from mndm.jacobian import estimate_anchor_coupling
+
+    rng = np.random.default_rng(2027)
+    x = rng.normal(size=(40, 3)).astype(np.float32)
+    a = rng.normal(size=(40, 2)).astype(np.float32)
+    j_xx = np.array([[0.1, 0.0, 0.02], [0.01, -0.05, 0.0], [0.0, 0.03, -0.07]], dtype=np.float32)
+    j_xa = np.array([[0.2, -0.1], [0.05, 0.04], [-0.02, 0.08]], dtype=np.float32)
+    j_ax = np.array([[0.03, -0.02, 0.01], [0.04, 0.01, -0.05]], dtype=np.float32)
+    j_aa = np.array([[0.02, -0.01], [0.0, 0.03]], dtype=np.float32)
+    x_dot = x @ j_xx.T + a @ j_xa.T
+    a_dot = x @ j_ax.T + a @ j_aa.T
+    nn_idx = np.tile(np.arange(len(x)), (len(x), 1)).astype(np.int32)
+
+    result = estimate_anchor_coupling(
+        x,
+        x_dot,
+        a,
+        a_dot,
+        nn_idx,
+        super_window=1,
+        ridge_alpha=1e-6,
+    )
+
+    assert result["J_z"].shape[1:] == (5, 5)
+    assert result["J_xa"].shape[1:] == (3, 2)
+    assert result["J_ax"].shape[1:] == (2, 3)
+    assert result["metrics"].shape[1] == 4
+    assert result["metric_names"] == [
+        "forward_drive_fro",
+        "reverse_drive_fro",
+        "directional_asymmetry",
+        "rotational_exchange",
+    ]
+    assert np.isfinite(result["metrics"]).any()
 

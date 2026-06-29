@@ -16,12 +16,16 @@ datasets:
   # Our current EEG indexer focuses on EDF/BrainVision/EEGLAB/BDF; if ds003947 is .fif-only
   # you may need to extend `bids_index.py` + preprocessing to ingest it.
   - ds003947
+  # Wakeman-Henson MEEG faces dataset (simultaneous MEG + EEG, plus sMRI)
+  - ds003645
   # EEG (TruScan 128): resting-state + task (deception + cognitive control)
   - ds004511
   # LSD experience multimodal neuroimaging (fMRI BOLD + phenotypes)
   - ds003059
   # Resting EEG with high/low BDI (Allen lab)
   - ds003478
+  # Probabilistic selection task EEG with high/low BDI (Allen lab, U Arizona; complement to ds003478)
+  - ds003474
   # Resting-state fMRI depression vs controls (TR=2.5s)
   - ds002748
   - id: ds003171
@@ -143,6 +147,27 @@ download:
         - "**/participants.tsv"
         - "**/participants.json"
         - "**/phenotype/**"
+    ds003645:
+      # Wakeman-Henson face MEEG:
+      # - simultaneous MEG/EEG live primarily under /meg as FIF
+      # - some EEG exports may exist under /eeg
+      # - keep structural MRI T1w for future source-localization workflows
+      include_patterns:
+        - "**/meg/**"
+        - "**/eeg/**"
+        - "**/*.fif"
+        - "**/*.set"
+        - "**/*.fdt"
+        - "**/*_meg.json"
+        - "**/*_eeg.json"
+        - "**/*_channels.tsv"
+        - "**/*_events.tsv"
+        - "**/anat/*_T1w.nii*"
+        - "**/anat/*_T1w.json"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/README*"
+        - "**/dataset_description.json"
     ds005555:
       # BOAS sleep dataset: EDF recordings live under /eeg with per-recording events + channels.
       # Keep download tight: EEG folder + participants.
@@ -177,6 +202,15 @@ download:
         - "**/participants.json"
     ds003478:
       # Resting EEG: include EEG directory plus participant metadata.
+      include_patterns:
+        - "**/eeg/**"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/phenotype/**"
+    ds003474:
+      # Probabilistic selection task EEG (Allen lab, U Arizona; companion to ds003478).
+      # HEOG/VEOG may be mislabeled; some channels pre-interpolated.  Download full
+      # EEG folder plus phenotype sheets for BDI group labels.
       include_patterns:
         - "**/eeg/**"
         - "**/participants.tsv"
@@ -341,6 +375,12 @@ preprocess:
   channel_typing:
     enabled: true
     datasets:
+      ds003474:
+        # Allen lab probabilistic selection task (US recording; HEOG/VEOG may be swapped).
+        # Type both variants as eog so artifact regression works regardless of label order.
+        rules:
+          - {regex: "(?i)^[HV]EOG$", type: "eog"}
+          - {regex: "(?i)^EOG", type: "eog"}
       ds004511:
         # Deception dataset (TruScan 128): ensure numeric channels are typed as EEG.
         rules:
@@ -417,6 +457,9 @@ preprocess:
     ica_method: "fastica"
     # Optional per-dataset overrides
     datasets:
+      ds003474:
+        # Allen lab task EEG: HEOG/VEOG present (possibly swapped); regress them out.
+        method: "eog_reg"
       ds003490:
         method: "eog_reg"
       ds005114:
@@ -634,6 +677,12 @@ mnps_9d:
       # EEG-only depression dataset: no EDA/ECG channels, so the default
       # e_s/e_m definitions (eda_phasic_energy/ecg_rmssd) would both collapse
       # to identical constant series → schema rejects duplicate v2 columns.
+      subcoords:
+        e_s: *v2_eeg_proxy_e_s
+        e_m: *v2_eeg_proxy_e_m
+    ds003474:
+      # EEG-only probabilistic selection task (Allen lab companion to ds003478).
+      # No EDA/ECG channels; use EEG proxies for embodied subcoords.
       subcoords:
         e_s: *v2_eeg_proxy_e_s
         e_m: *v2_eeg_proxy_e_m
@@ -1017,6 +1066,28 @@ metadata_extraction:
         default: "rest"
       task:
         from_filename: true
+    ds003474:
+      # Probabilistic selection task, BDI high/low (Allen lab companion to ds003478).
+      # BDI group label conventions may differ from ds003478; cover common variants.
+      group:
+        candidates: ["Group", "BDI", "BDI_group", "bdi_group", "bdi_score",
+                     "Diagnosis", "diagnosis", "cohort", "Cohort"]
+        normalize:
+          high:    "HighBDI"
+          highbdi: "HighBDI"
+          hbdi:    "HighBDI"
+          low:     "LowBDI"
+          lowbdi:  "LowBDI"
+          lbdi:    "LowBDI"
+      condition:
+        default: "task"
+      task:
+        from_filename: true
+        default: "probabilistic_selection"
+        normalize:
+          probabilisticselection: "probabilistic_selection"
+          selection: "probabilistic_selection"
+          pst: "probabilistic_selection"
     ds004511:
       # Deception dataset: healthy cohort; disambiguate outputs by BIDS task label.
       group:

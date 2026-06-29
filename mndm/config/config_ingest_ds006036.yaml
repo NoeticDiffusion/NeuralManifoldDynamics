@@ -112,10 +112,43 @@ event_locked:
         write_parquet: true
         write_csv: true
 
+block_native:
+  datasets:
+    ds006036:
+      enabled: true
+      source:
+        # Reuse existing stage_blocking infrastructure — blocks are already
+        # inferred from PHOTO events in epoching.datasets.ds006036.sampling.
+        kind: "stage_blocking"
+        label_column: "value"
+        onset_column: "onset"
+        duration_column: "duration"
+      window_profile:
+        # Named profile alias (maps to kind=sliding over full block).
+        profile: "whole_block"
+        kind: "sliding"
+        window_length_sec: 4.0
+        step_sec: 2.0
+        emit_relative_position: true
+        # Drop blocks that are too short to fit at least two non-overlapping windows.
+        min_block_sec: 4.0
+        min_windows_per_block: 2
+      export:
+        write_parquet: true
+        write_csv: true
+
 mnps_projection:
   export_contracts:
     subject_anchored: true
     cohort_anchored: true
+  # Required for actual cohort_anchored emission when no external anchor file
+  # is provided in mnps_projection.anchor.path.
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "ds006036_cohort_auto_v2_1"
+    anchor_source: "ds006036_all_subjects_features_table"
+    scale_method: "iqr"
+    min_subjects: 3
 
 mnps:
   stage_codebook:

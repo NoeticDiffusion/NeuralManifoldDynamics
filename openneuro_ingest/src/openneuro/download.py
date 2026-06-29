@@ -17,13 +17,20 @@ Outputs
 
 Dependencies
 ------------
-- Optional: `openneuro` at runtime when downloads are invoked.
+- Optional: `openneuro` at runtime when downloads are invoked via the Python
+  API (only used when ``download.use_uvx`` is false).
+- `uvx` (from `uv`) on PATH by default; the download is run through
+  ``uvx openneuro-py@latest`` so the latest released openneuro-py is used
+  in an isolated environment. Override with ``download.use_uvx: false`` in
+  config or the ``OPENNEURO_PREFER_UVX=0`` env var.
 """
 
 from __future__ import annotations
 
 import logging
+import os
 import re
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -86,40 +93,72 @@ def _resolve_patterns_for_dataset(
     return include_patterns, exclude_patterns
 
 
+def _user_script_dirs() -> List[Path]:
+    """Per-user script directories where pip `--user` installs CLI entry points."""
+    dirs: List[Path] = []
+    if sys.platform.startswith("win"):
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            pyxy = f"Python{sys.version_info.major}{sys.version_info.minor}"
+            dirs.append(Path(appdata) / "Python" / pyxy / "Scripts")
+    else:
+        home = os.environ.get("HOME")
+        if home:
+            dirs.append(Path(home) / ".local" / "bin")
+    return dirs
+
+
 def _perform_openneuro_download(
     dataset_id: str,
     dataset_path: Path,
     include_patterns: Sequence[str],
     exclude_patterns: Sequence[str],
+    *,
+    use_uvx: bool = True,
 ) -> None:
-    """Attempt download via Python API, falling back to CLI."""
+    """Attempt download via the openneuro-py CLI, optionally via the Python API.
+
+    By default (``use_uvx=True``) the download is run through
+    ``uvx openneuro-py@latest`` so the pipeline uses the latest released
+    openneuro-py in an isolated environment. This avoids breakage from an
+    installed openneuro-py whose GraphQL metadata query is incompatible
+    with the current OpenNeuro server schema — e.g. 2026.3.0 querying the
+    removed ``key`` field on ``DatasetFile`` raises
+    ``Cannot query field "key" on type "DatasetFile"`` and never reaches
+    the file-transfer stage. ``uvx`` fetches a working latest version
+    without modifying the current project.
+
+    When ``use_uvx=False`` the function first tries the locally installed
+    ``openneuro`` Python API, and on failure falls back to a locally
+    installed ``openneuro-py`` CLI executable (or uvx if none is found).
+    """
     api_error: Exception | None = None
 
-    try:
-        import openneuro as on  # type: ignore
+    if not use_uvx:
+        try:
+            import openneuro as on  # type: ignore
 
-        logger.info("Using openneuro-py Python API")
-        kwargs = {
-            "dataset": dataset_id,
-            "target_dir": str(dataset_path),
-        }
-        if include_patterns:
-            kwargs["include"] = list(include_patterns)
-        if exclude_patterns:
-            kwargs["exclude"] = list(exclude_patterns)
+            logger.info("Using openneuro-py Python API")
+            kwargs = {
+                "dataset": dataset_id,
+                "target_dir": str(dataset_path),
+            }
+            if include_patterns:
+                kwargs["include"] = list(include_patterns)
+            if exclude_patterns:
+                kwargs["exclude"] = list(exclude_patterns)
 
-        on.download(**kwargs)
-        return
-    except Exception as exc:  # noqa: BLE001 - capture for fallback analysis
-        api_error = exc
-        missing = _extract_missing_patterns(str(exc))
-        if missing:
-            raise MissingIncludePatternError(missing, source="python_api") from exc
-        logger.info("Falling back to openneuro-py CLI due to: %s", exc)
+            on.download(**kwargs)
+            return
+        except Exception as exc:  # noqa: BLE001 - capture for fallback analysis
+            api_error = exc
+            missing = _extract_missing_patterns(str(exc))
+            if missing:
+                raise MissingIncludePatternError(missing, source="python_api") from exc
+            logger.info("Falling back to openneuro-py CLI due to: %s", exc)
 
-    cli = _resolve_openneuro_cli()
-    cmd: List[str] = [
-        cli,
+    cli_prefix = _resolve_openneuro_cli(prefer_uvx=use_uvx)
+    cmd: List[str] = cli_prefix + [
         "download",
         f"--dataset={dataset_id}",
         f"--target-dir={str(dataset_path)}",
@@ -129,6 +168,7 @@ def _perform_openneuro_download(
     for exc in exclude_patterns:
         cmd.extend(["--exclude", exc])
 
+    logger.info("Using openneuro-py CLI via: %s", " ".join(cli_prefix))
     try:
         subprocess.run(
             cmd,
@@ -172,8 +212,13 @@ def download_datasets(dataset_ids: Iterable[str], config: Mapping[str, object], 
         If download fails after retries.
     """
     result: Dict[str, Path] = {}
-    retries = config.get("download", {}).get("retries", 3) if isinstance(config, dict) else 3
-    
+    dl_cfg = config.get("download", {}) if isinstance(config, dict) else {}
+    retries = dl_cfg.get("retries", 3)
+    use_uvx = bool(dl_cfg.get("use_uvx", True))
+    env_override = os.environ.get("OPENNEURO_PREFER_UVX")
+    if env_override is not None and env_override.strip():
+        use_uvx = env_override.strip().lower() in ("1", "true", "yes", "on")
+
     for ds_id in dataset_ids:
         logger.info(f"Downloading dataset {ds_id}")
         dataset_path = Path(out_dir) / ds_id
@@ -187,7 +232,13 @@ def download_datasets(dataset_ids: Iterable[str], config: Mapping[str, object], 
         last_error: Exception | None = None
         while True:
             try:
-                _perform_openneuro_download(ds_id, dataset_path, sanitized_includes, exclude_patterns)
+                _perform_openneuro_download(
+                    ds_id,
+                    dataset_path,
+                    sanitized_includes,
+                    exclude_patterns,
+                    use_uvx=use_uvx,
+                )
                 success = True
                 logger.info(f"Successfully downloaded {ds_id}")
                 break
@@ -227,16 +278,42 @@ def download_datasets(dataset_ids: Iterable[str], config: Mapping[str, object], 
 
 
 
-def _resolve_openneuro_cli() -> str:
-    """Return the path/name of the openneuro-py CLI executable.
+def _resolve_openneuro_cli(prefer_uvx: bool = True) -> List[str]:
+    """Return the command prefix for invoking the openneuro-py CLI.
 
-    On Windows within a venv, this is typically `openneuro-py.exe` under Scripts.
-    Otherwise, rely on PATH to resolve `openneuro-py`.
+    When ``prefer_uvx`` is True (default), return ``["uvx", "openneuro-py@latest"]``
+    so the pipeline runs the latest released openneuro-py in an isolated
+    environment. This sidesteps installed versions whose GraphQL metadata
+    query is incompatible with the current OpenNeuro server schema.
+
+    When ``prefer_uvx`` is False, resolve a locally installed
+    ``openneuro-py`` executable in this order:
+      1. interpreter Scripts dir (venv) — ``openneuro-py(.exe)``
+      2. per-user Scripts dir (pip ``--user`` installs)
+      3. ``shutil.which("openneuro-py")`` (PATH)
+      4. ``uvx openneuro-py@latest`` (always-available fallback)
     """
-    # Try venv Scripts first
-    venv_scripts = Path(sys.executable).parent
-    candidate = venv_scripts / ("openneuro-py.exe" if sys.platform.startswith("win") else "openneuro-py")
-    if candidate.exists():
-        return str(candidate)
-    return "openneuro-py"
+    if not prefer_uvx:
+        exe_name = "openneuro-py.exe" if sys.platform.startswith("win") else "openneuro-py"
+        # 1. venv / interpreter Scripts
+        cand = Path(sys.executable).parent / exe_name
+        if cand.exists():
+            return [str(cand)]
+        # 2. per-user Scripts
+        for base in _user_script_dirs():
+            c = base / exe_name
+            if c.exists():
+                return [str(c)]
+        # 3. PATH
+        which = shutil.which("openneuro-py")
+        if which:
+            return [which]
+
+    # 4. uvx (preferred, or last-resort fallback)
+    if shutil.which("uvx") is None:
+        raise RuntimeError(
+            "uvx not found on PATH. Install uv (https://docs.astral.sh/uv/) or set "
+            "download.use_uvx: false after installing a working openneuro-py."
+        )
+    return ["uvx", "openneuro-py@latest"]
 

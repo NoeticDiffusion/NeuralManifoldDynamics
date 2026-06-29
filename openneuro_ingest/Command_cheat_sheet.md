@@ -11,11 +11,15 @@ Quick command reference for the OpenNeuro BIDS ingest pipeline.
 python -m venv .venv
 .venv\Scripts\activate
 
-# Install dependencies
+# Install dependencies (includes `uv`, which provides the `uvx` command)
 pip install -U pip
 pip install -r requirements.txt
-pip install openneuro-py
 ```
+
+OpenNeuro downloads run through `uvx openneuro-py@latest` by default, so you do
+NOT need to `pip install openneuro-py` unless you opt out of uvx (see
+Troubleshooting below). A standalone `uv` install from
+https://docs.astral.sh/uv/ also satisfies the `uvx` requirement.
 
 ---
 
@@ -151,11 +155,38 @@ noetic_output/
 
 | Issue | Solution |
 |-------|----------|
-| Private dataset access | Run `openneuro-py login` once |
-| Slow downloads | Re-run; partial files resume automatically |
-| JSON serialization error | Update to latest code version |
+| Download fails with `Cannot query field "key" on type "DatasetFile"` | Installed openneuro-py is too old for the current OpenNeuro GraphQL schema. The pipeline defaults to `uvx openneuro-py@latest` to avoid this; ensure `uvx` is on PATH (`pip install uv` or standalone uv). |
+| `uvx not found on PATH` | Install `uv` (https://docs.astral.sh/uv/) or `pip install uv`. Alternatively set `download.use_uvx: false` in config after installing a working local openneuro-py. |
+| Private dataset access | Run `openneuro-py login` once (the uvx run shares your `~/.config/openneuro-py` / `%APPDATA%` token). |
+| Slow downloads | Re-run; partial files resume automatically (openneuro-py resumes interrupted downloads). |
+| JSON serialization error | Update to latest code version. |
 | Out of memory | Reduce `--n-jobs` or `--mem-budget-gb` |
 | Missing features | Check `failed_files.txt` for errors |
+
+### OpenNeuro downloads via uvx (default)
+
+The `download` command invokes `uvx openneuro-py@latest download ...` by default
+so the latest released openneuro-py runs in an isolated environment. This
+sidesteps installed versions whose GraphQL metadata query is incompatible with
+the current OpenNeuro server (e.g. openneuro-py 2026.3.0 raises
+`Cannot query field "key" on type "DatasetFile"` and never reaches the
+file-transfer stage).
+
+Controls:
+
+```powershell
+# Force the local Python API / local openneuro-py CLI instead of uvx
+# (only do this if you have installed a working openneuro-py)
+$env:OPENNEURO_PREFER_UVX = "0"
+python -m openneuro.cli download --dataset ds003969 --config openneuro_ingest\config\config_ingest_ds003969.yaml
+```
+
+Or in config:
+
+```yaml
+download:
+  use_uvx: false   # default: true
+```
 
 ### Fallback: OpenNeuro “curl script” (presigned S3 URLs)
 

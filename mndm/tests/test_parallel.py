@@ -124,6 +124,39 @@ def test_merge_feature_frames_adds_embodied_proxy_priority():
     ]
 
 
+def test_merge_feature_frames_prefers_new_anchor_modalities_before_legacy_fallbacks():
+    """PPG/pupil columns should outrank legacy EOG/EEG fallbacks when ECG RMSSD is absent."""
+    from mndm.parallel import _merge_feature_frames
+
+    df_eeg = pd.DataFrame({"epoch_id": [0, 1], "eeg_highfreq_power_30_45": [1.0, 2.0]})
+    df_eog = pd.DataFrame({"epoch_id": [0, 1], "eog_blink_rate": [10.0, 20.0]})
+    df_ppg = pd.DataFrame({"epoch_id": [0, 1], "ppg_rate_bpm": [70.0, np.nan]})
+    df_pupil = pd.DataFrame({"epoch_id": [0, 1], "pupil_dilation_velocity": [0.5, 0.6]})
+
+    merged = _merge_feature_frames([df_eeg, df_eog, df_ppg, df_pupil])
+
+    assert merged["embodied_arousal_proxy_source"].tolist() == ["ppg_rate_bpm", "pupil_dilation_velocity"]
+
+
+def test_merge_feature_frames_uses_meg_highfreq_before_eeg_highfreq():
+    """MEG shadow runs should prefer the MEG high-frequency proxy over the EEG fallback."""
+    from mndm.parallel import _merge_feature_frames
+
+    df_meg = pd.DataFrame({"epoch_id": [0, 1], "meg_highfreq_power_30_45": [5.0, 6.0]})
+    df_eeg = pd.DataFrame({"epoch_id": [0, 1], "eeg_highfreq_power_30_45": [1.0, 2.0]})
+
+    merged = _merge_feature_frames([df_eeg, df_meg])
+
+    assert merged["embodied_arousal_proxy_source"].tolist() == [
+        "meg_highfreq_power_30_45",
+        "meg_highfreq_power_30_45",
+    ]
+    assert np.allclose(
+        pd.to_numeric(merged["embodied_arousal_proxy"], errors="coerce").to_numpy(dtype=float),
+        np.array([5.0, 6.0], dtype=float),
+    )
+
+
 def test_resolve_feature_io_policy_auto_large_prefers_parquet(tmp_path: Path):
     """Test resolve feature io policy auto large prefers parquet."""
     from mndm.parallel import resolve_feature_io_policy

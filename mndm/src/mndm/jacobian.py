@@ -101,6 +101,9 @@ def estimate_local_jacobians(
     j_list = []
     centers_ok: list[int] = []
     failures = 0
+    failed_centers: list[int] = []
+    failed_insufficient_neighbours = 0
+    failed_nonfinite_samples = 0
     local_fit_mse: list[float] = []
     local_fit_mse_baseline: list[float] = []
     rel_mse_baseline: list[float] = []
@@ -109,6 +112,8 @@ def estimate_local_jacobians(
         neighbour_idx = _gather_indices(center, nn_idx, super_window, x.shape[0])
         if neighbour_idx.size < dim + 1:  # minimum to solve dim params + intercept
             failures += 1
+            failed_centers.append(int(center))
+            failed_insufficient_neighbours += 1
             continue
 
         x_samples = x[neighbour_idx]
@@ -119,6 +124,8 @@ def estimate_local_jacobians(
         xdot_samples = xdot_samples[finite_mask]
         if x_samples.shape[0] < dim + 1:
             failures += 1
+            failed_centers.append(int(center))
+            failed_nonfinite_samples += 1
             continue
 
         x_mean = np.mean(x_samples, axis=0, keepdims=True)
@@ -170,10 +177,28 @@ def estimate_local_jacobians(
             j_hat=np.zeros((0, dim, dim), dtype=np.float32),
             j_dot=np.zeros((0, dim, dim), dtype=np.float32),
             centers=np.zeros((0,), dtype=np.int32),
-            diagnostics={"windows": 0, "failed": float(failures)},
+            diagnostics={
+                "windows": 0,
+                "failed": float(failures),
+                "attempted_centers": np.asarray(centers, dtype=np.int32),
+                "failed_centers": np.asarray(failed_centers, dtype=np.int32),
+                "failed_insufficient_neighbours": float(failed_insufficient_neighbours),
+                "failed_nonfinite_samples": float(failed_nonfinite_samples),
+                "condition_number_windows": np.zeros((0,), dtype=np.float64),
+            },
         )
 
     j_hat = np.stack(j_list, axis=0)
+    condition_number = np.full((j_hat.shape[0],), np.nan, dtype=np.float64)
+    try:
+        svals = np.linalg.svd(j_hat.astype(np.float64), compute_uv=False)
+        smin = np.min(svals, axis=1)
+        smax = np.max(svals, axis=1)
+        ok = np.isfinite(smin) & np.isfinite(smax) & (smin > 0)
+        condition_number[ok] = np.asarray(smax[ok] / smin[ok], dtype=np.float64)
+    except Exception:
+        logger.exception("Failed vectorized SVD for per-window Jacobian condition numbers")
+
     # j_dot is computed as a centered finite-difference gradient along window order.
     # If j_dot_dt is provided (>0), it is interpreted as seconds per Jacobian step.
     if j_hat.shape[0] > 1:
@@ -189,10 +214,19 @@ def estimate_local_jacobians(
         "j_dot_dt": float(j_dot_dt) if (j_dot_dt is not None and np.isfinite(j_dot_dt) and j_dot_dt > 0) else 1.0,
         "local_fit_mse_median": float(np.nanmedian(np.asarray(local_fit_mse, dtype=np.float64))) if local_fit_mse else float("nan"),
         "local_fit_mse_baseline_median": float(np.nanmedian(np.asarray(local_fit_mse_baseline, dtype=np.float64))) if local_fit_mse_baseline else float("nan"),
-        "rel_mse_baseline_median": float(np.nanmedian(np.asarray(rel_mse_baseline, dtype=np.float64))) if rel_mse_baseline else float("nan"),
+        "rel_mse_baseline_median": (
+            float(np.median(np.asarray(rel_mse_baseline, dtype=np.float64)[np.isfinite(np.asarray(rel_mse_baseline, dtype=np.float64))]))
+            if np.any(np.isfinite(np.asarray(rel_mse_baseline, dtype=np.float64)))
+            else float("nan")
+        ),
         "local_fit_mse_windows": np.asarray(local_fit_mse, dtype=np.float32),
         "local_fit_mse_baseline_windows": np.asarray(local_fit_mse_baseline, dtype=np.float32),
         "rel_mse_baseline_windows": np.asarray(rel_mse_baseline, dtype=np.float32),
+        "condition_number_windows": condition_number,
+        "attempted_centers": np.asarray(centers, dtype=np.int32),
+        "failed_centers": np.asarray(failed_centers, dtype=np.int32),
+        "failed_insufficient_neighbours": float(failed_insufficient_neighbours),
+        "failed_nonfinite_samples": float(failed_nonfinite_samples),
     }
 
     return JacobianResult(
@@ -201,6 +235,108 @@ def estimate_local_jacobians(
         centers=np.asarray(centers_ok, dtype=np.int32),
         diagnostics=diagnostics,
     )
+
+
+def estimate_anchor_coupling(
+    x: np.ndarray,
+    x_dot: np.ndarray,
+    anchor_state: np.ndarray,
+    anchor_state_dot: np.ndarray,
+    nn_idx: np.ndarray,
+    *,
+    super_window: int = 3,
+    ridge_alpha: float = 1.0,
+    distance_weighted: bool = False,
+    j_dot_dt: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Estimate additive body-brain coupling blocks from a joint local model."""
+    x_arr = np.asarray(x, dtype=np.float32)
+    xdot_arr = np.asarray(x_dot, dtype=np.float32)
+    a_arr = np.asarray(anchor_state, dtype=np.float32)
+    adot_arr = np.asarray(anchor_state_dot, dtype=np.float32)
+    if x_arr.ndim != 2 or xdot_arr.ndim != 2 or a_arr.ndim != 2 or adot_arr.ndim != 2:
+        return {}
+    if x_arr.shape != xdot_arr.shape or a_arr.shape != adot_arr.shape:
+        return {}
+    if x_arr.shape[0] != a_arr.shape[0] or x_arr.shape[0] == 0:
+        return {}
+
+    z = np.concatenate([x_arr, a_arr], axis=1).astype(np.float32, copy=False)
+    z_dot = np.concatenate([xdot_arr, adot_arr], axis=1).astype(np.float32, copy=False)
+    result = estimate_local_jacobians(
+        z,
+        z_dot,
+        nn_idx,
+        super_window=super_window,
+        ridge_alpha=ridge_alpha,
+        distance_weighted=distance_weighted,
+        j_dot_dt=j_dot_dt,
+    )
+    if result.j_hat.size == 0:
+        return {}
+
+    x_dim = int(x_arr.shape[1])
+    a_dim = int(a_arr.shape[1])
+    j_hat = np.asarray(result.j_hat, dtype=np.float32)
+    j_dot = np.asarray(result.j_dot, dtype=np.float32)
+    j_xa = j_hat[:, :x_dim, x_dim:]
+    j_ax = j_hat[:, x_dim:, :x_dim]
+    j_xa_dot = j_dot[:, :x_dim, x_dim:]
+    j_ax_dot = j_dot[:, x_dim:, :x_dim]
+
+    forward_drive = np.linalg.norm(j_xa.astype(np.float64), axis=(1, 2))
+    reverse_drive = np.linalg.norm(j_ax.astype(np.float64), axis=(1, 2))
+    denom = forward_drive + reverse_drive
+    asymmetry = np.full_like(forward_drive, np.nan, dtype=np.float64)
+    valid = np.isfinite(denom) & (denom > 1e-8)
+    asymmetry[valid] = (forward_drive[valid] - reverse_drive[valid]) / denom[valid]
+    rotational_exchange = np.linalg.norm(
+        j_xa.astype(np.float64) - np.swapaxes(j_ax.astype(np.float64), 1, 2),
+        axis=(1, 2),
+    )
+    metrics = np.stack(
+        [
+            forward_drive.astype(np.float32),
+            reverse_drive.astype(np.float32),
+            asymmetry.astype(np.float32),
+            rotational_exchange.astype(np.float32),
+        ],
+        axis=1,
+    )
+    metric_names = [
+        "forward_drive_fro",
+        "reverse_drive_fro",
+        "directional_asymmetry",
+        "rotational_exchange",
+    ]
+    diagnostics = dict(result.diagnostics)
+    diagnostics.update(
+        {
+            "schema": "mndm.anchor_coupling.v1",
+            "x_dim": x_dim,
+            "anchor_dim": a_dim,
+            "joint_dim": int(x_dim + a_dim),
+            "metric_names": list(metric_names),
+            "forward_drive_median": float(np.nanmedian(forward_drive)) if forward_drive.size else float("nan"),
+            "reverse_drive_median": float(np.nanmedian(reverse_drive)) if reverse_drive.size else float("nan"),
+            "directional_asymmetry_median": float(np.nanmedian(asymmetry)) if asymmetry.size else float("nan"),
+            "rotational_exchange_median": (
+                float(np.nanmedian(rotational_exchange)) if rotational_exchange.size else float("nan")
+            ),
+        }
+    )
+    return {
+        "J_z": j_hat,
+        "J_z_dot": j_dot,
+        "J_xa": j_xa.astype(np.float32),
+        "J_ax": j_ax.astype(np.float32),
+        "J_xa_dot": j_xa_dot.astype(np.float32),
+        "J_ax_dot": j_ax_dot.astype(np.float32),
+        "centers": np.asarray(result.centers, dtype=np.int32),
+        "metrics": metrics.astype(np.float32),
+        "metric_names": metric_names,
+        "diagnostics": diagnostics,
+    }
 
 
 def phase_randomise(x: np.ndarray, seed: Optional[int] = None) -> np.ndarray:

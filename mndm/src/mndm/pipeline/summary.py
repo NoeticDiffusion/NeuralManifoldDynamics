@@ -38,6 +38,7 @@ from .extractors import (
     extract_stage_array,
     load_participant_table,
 )
+from .anchor_state import build_anchor_state_exports
 from .extensions_compute import compute_extensions
 from .regional_mnps import (
     compute_block_jacobian_rows,
@@ -65,6 +66,7 @@ from .summary_events import (
 from .event_alignment import AlignmentConfig, align_events_to_windows
 from .event_annotations import EventTable
 from .state_labels import (
+    build_label_segment_event_table,
     build_within_run_labels,
     summarize_within_run_manifest,
 )
@@ -81,8 +83,15 @@ from .baseline_qc import (
     compute_null_sanity_tests,
 )
 from .robustness_helpers import (
+    STANDARD_GEOMETRY_POLICY_VERSION,
+    STANDARD_GEOMETRY_MAX_JACOBIAN_CONDITION,
+    apply_anchor_coupling_window_policy,
+    apply_standard_jacobian_window_policy,
     compute_dist_summary,
     compute_emmi_metrics,
+    compute_mnps_mnj_sanity,
+    compute_window_time_audit,
+    compute_standard_geometry_contract,
     compute_tau_summary,
     compute_tier2_jacobian_metrics,
     compute_ensemble_summary_for_subject,
@@ -122,6 +131,150 @@ def _stable_hash_array(value: np.ndarray) -> str:
     """Hash an ndarray deterministically for provenance checks."""
     arr = np.ascontiguousarray(value)
     return hashlib.sha256(arr.view(np.uint8)).hexdigest()
+
+
+def _resolve_event_locked_source_kind(event_locked_cfg: Mapping[str, Any]) -> str:
+    """Return normalized event source kind from dataset-level event_locked config."""
+    source_cfg = (
+        event_locked_cfg.get("event_source", {})
+        if isinstance(event_locked_cfg.get("event_source"), Mapping)
+        else {}
+    )
+    kind = str(source_cfg.get("kind", "csv") or "csv").strip().lower()
+    return kind or "csv"
+
+
+def _event_locked_slug_from_csv_path(csv_path: Path) -> str:
+    """Derive legacy channel slug from spindle CSV filename when possible."""
+    marker = "_spindles_yasa_v1_"
+    stem = csv_path.stem
+    if marker not in stem:
+        return ""
+    slug = stem.split(marker, 1)[1].strip().lower()
+    return slug
+
+
+def _safe_filename_token(value: Any) -> str:
+    """Return a conservative token safe for filesystem filenames."""
+    text = str(value).strip()
+    if not text:
+        return ""
+    text = re.sub(r"[\\/:*?\"<>|]+", "_", text)
+    text = re.sub(r"\s+", "_", text)
+    return text.strip("_")
+
+
+def _resolve_event_locked_csv_sources(
+    *,
+    stage_events_path: Optional[str],
+    event_locked_cfg: Mapping[str, Any],
+) -> List[tuple[Path, str]]:
+    """Resolve per-run CSV annotation sources for event-locked export.
+
+    Resolution order:
+    1) ``event_source.source_path`` when configured.
+    2) ``csv_source_glob`` / ``csv_source_globs`` dataset-level hints.
+    3) Sleep-spindle default sibling pattern next to ``*_events.tsv``.
+    """
+    if not stage_events_path:
+        return []
+
+    events_path = Path(str(stage_events_path))
+    events_dir = events_path.parent
+    events_stem = events_path.stem
+    events_core = events_stem[:-7] if events_stem.endswith("_events") else events_stem
+
+    source_cfg = (
+        event_locked_cfg.get("event_source", {})
+        if isinstance(event_locked_cfg.get("event_source"), Mapping)
+        else {}
+    )
+    patterns: List[str] = []
+
+    source_path_raw = str(source_cfg.get("source_path", "") or "").strip()
+    if source_path_raw:
+        patterns.append(source_path_raw)
+
+    glob_one = event_locked_cfg.get("csv_source_glob")
+    if isinstance(glob_one, str) and glob_one.strip():
+        patterns.append(glob_one.strip())
+
+    glob_many = event_locked_cfg.get("csv_source_globs", [])
+    if isinstance(glob_many, Sequence) and not isinstance(glob_many, (str, bytes)):
+        for item in glob_many:
+            text = str(item).strip()
+            if text:
+                patterns.append(text)
+
+    if not patterns:
+        event_types_raw = event_locked_cfg.get("event_types", [])
+        if not isinstance(event_types_raw, list):
+            event_types_raw = [event_types_raw]
+        event_types = {str(v).strip().lower() for v in event_types_raw if str(v).strip()}
+        if "sleep_spindle" in event_types:
+            patterns.append("{events_core}_spindles_yasa_v1_*.csv")
+
+    discovered: List[Path] = []
+    seen: set[str] = set()
+    format_vars = {
+        "events_dir": str(events_dir).replace("\\", "/"),
+        "events_stem": events_stem,
+        "events_core": events_core,
+    }
+
+    for raw_pattern in patterns:
+        try:
+            rendered = str(raw_pattern).format(**format_vars).strip()
+        except Exception:
+            rendered = str(raw_pattern).strip()
+        if not rendered:
+            continue
+
+        candidates: List[Path] = []
+        if any(ch in rendered for ch in "*?[]"):
+            rendered_path = Path(rendered)
+            if rendered_path.is_absolute():
+                parent = rendered_path.parent
+                if parent.exists():
+                    candidates = sorted(parent.glob(rendered_path.name))
+            else:
+                candidates = sorted(events_dir.glob(rendered))
+        else:
+            candidate = Path(rendered)
+            if not candidate.is_absolute():
+                candidate = events_dir / candidate
+            if candidate.exists():
+                candidates = [candidate]
+
+        for candidate in candidates:
+            try:
+                key = str(candidate.resolve())
+            except Exception:
+                key = str(candidate)
+            if key in seen:
+                continue
+            seen.add(key)
+            discovered.append(candidate)
+
+    return [(path, _event_locked_slug_from_csv_path(path)) for path in discovered]
+
+
+def _resolve_meg_mapping_contract(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
+    """Resolve optional MEG shadow-mapping metadata with dataset overrides."""
+    root = config.get("meg_mapping", {}) if isinstance(config, Mapping) else {}
+    if not isinstance(root, Mapping):
+        return {}
+    merged: Dict[str, Any] = {k: root[k] for k in root if k != "datasets"}
+    ds_map = root.get("datasets", {})
+    if dataset_id and isinstance(ds_map, Mapping):
+        ds_cfg = ds_map.get(dataset_id)
+        if isinstance(ds_cfg, Mapping):
+            merged.update(dict(ds_cfg))
+    if not merged:
+        return {}
+    if merged.get("enabled", None) is False:
+        return {}
+    return merged
 
 
 def _resolve_anchor_path(path_raw: Any, *, config: Mapping[str, Any]) -> Optional[Path]:
@@ -416,6 +569,8 @@ def _build_qc_windows_export(
     *,
     sub_frame: pd.DataFrame,
     stage: Optional[np.ndarray],
+    x: np.ndarray,
+    coords_9d: Optional[np.ndarray],
     x_coverage: np.ndarray,
     min_axis_coverage: float,
 ) -> Dict[str, np.ndarray]:
@@ -432,6 +587,14 @@ def _build_qc_windows_export(
     if x_coverage.size:
         coverage_ok = np.all(np.isfinite(x_coverage) & (x_coverage >= float(min_axis_coverage)), axis=1).astype(np.int8)
         out["coverage_ok"] = coverage_ok
+    if np.size(x):
+        out["mnps_3d_valid"] = np.all(np.isfinite(np.asarray(x, dtype=float)), axis=1).astype(np.int8)
+    if coords_9d is not None and np.size(coords_9d):
+        out["coords_9d_valid"] = np.all(np.isfinite(np.asarray(coords_9d, dtype=float)), axis=1).astype(np.int8)
+        if "mnps_3d_valid" in out and len(out["mnps_3d_valid"]) == len(out["coords_9d_valid"]):
+            out["geometry_valid"] = (out["mnps_3d_valid"] & out["coords_9d_valid"]).astype(np.int8)
+    elif "mnps_3d_valid" in out:
+        out["geometry_valid"] = np.asarray(out["mnps_3d_valid"], dtype=np.int8)
     if stage is not None and len(stage) == n_time:
         transitions = np.zeros(n_time, dtype=np.int8)
         if n_time > 1:
@@ -483,14 +646,22 @@ def _resolve_export_contract_preferences(
     export_cfg = proj_cfg.get("export_contracts", {}) if isinstance(proj_cfg, Mapping) else {}
     export_cfg = export_cfg if isinstance(export_cfg, Mapping) else {}
 
-    subject_enabled = bool(export_cfg.get("subject_anchored", True))
+    subject_requested = bool(export_cfg.get("subject_anchored", True))
     cohort_requested = bool(export_cfg.get("cohort_anchored", external_anchor_available))
+    subject_enabled = bool(subject_requested)
     cohort_enabled = bool(cohort_requested and external_anchor_available)
+    skipped_contracts_with_reason: List[Dict[str, str]] = []
 
     if cohort_requested and not external_anchor_available:
         logger.warning(
             "mnps_projection.export_contracts.cohort_anchored=true requested but no external anchor is active; "
             "skipping cohort_anchored export."
+        )
+        skipped_contracts_with_reason.append(
+            {
+                "contract": "cohort_anchored",
+                "reason": "requested_but_no_external_anchor",
+            }
         )
 
     if not subject_enabled and not cohort_enabled:
@@ -500,10 +671,23 @@ def _resolve_export_contract_preferences(
         )
 
     primary_coordinate_contract = "cohort_anchored" if cohort_enabled else "subject_anchored"
+    requested_contracts = []
+    if subject_requested:
+        requested_contracts.append("subject_anchored")
+    if cohort_requested:
+        requested_contracts.append("cohort_anchored")
+    realized_contracts = []
+    if subject_enabled:
+        realized_contracts.append("subject_anchored")
+    if cohort_enabled:
+        realized_contracts.append("cohort_anchored")
     return {
         "subject_anchored": subject_enabled,
         "cohort_anchored": cohort_enabled,
         "primary_coordinate_contract": primary_coordinate_contract,
+        "requested_contracts": requested_contracts,
+        "realized_contracts": realized_contracts,
+        "skipped_contracts_with_reason": skipped_contracts_with_reason,
     }
 
 
@@ -999,6 +1183,8 @@ class DatasetSummaryRunner:
         self._run_errors: List[Dict[str, Any]] = []
         self._stage_mapping_qc_lock = Lock()
         self._stage_mapping_qc_entries: List[Dict[str, Any]] = []
+        self._block_native_qc_lock = Lock()
+        self._block_native_qc_entries: List[Dict[str, Any]] = []
         # Global coverage defaults, with optional dataset-specific overrides
         self.min_seconds = self.ctx.coverage.min_seconds
         self.min_epochs = self.ctx.coverage.min_epochs
@@ -2141,6 +2327,12 @@ class DatasetSummaryRunner:
             "path": None,
             "subjects": 0,
         }
+        block_native_qc_info: Dict[str, Any] = {
+            "schema": "mndm.block_native_qc.v1",
+            "status": "none",
+            "path": None,
+            "subjects": 0,
+        }
         run_fatal_error: Optional[Exception] = None
         try:
             self._prepare_one_shot_anchor(features_df, mnps_dir)
@@ -2178,6 +2370,7 @@ class DatasetSummaryRunner:
             logger.exception("Summarize run failed for %s", self.ds_id)
         finally:
             stage_mapping_qc_info = self._write_stage_mapping_qc_file(mnps_dir)
+            block_native_qc_info = self._write_block_native_qc_file(mnps_dir)
             run_errors_info = self._write_run_errors_file(
                 mnps_dir,
                 total_groupings=len(grouping_items),
@@ -2218,6 +2411,7 @@ class DatasetSummaryRunner:
                         "normalization": self._normalization_report,
                         "normalization_report": normalization_report_info,
                         "stage_mapping_qc": stage_mapping_qc_info,
+                        "block_native_qc": block_native_qc_info,
                         "run_status": run_status,
                         "run_errors": run_errors_info,
                         "fatal_error": fatal_error_summary,
@@ -2314,6 +2508,11 @@ class DatasetSummaryRunner:
         with self._stage_mapping_qc_lock:
             self._stage_mapping_qc_entries.append(dict(entry))
 
+    def _record_block_native_qc_entry(self, entry: Mapping[str, Any]) -> None:
+        """Store one per-subject block-native QC entry in a thread-safe way."""
+        with self._block_native_qc_lock:
+            self._block_native_qc_entries.append(dict(entry))
+
     def _write_stage_mapping_qc_file(self, mnps_dir: Path) -> Dict[str, Any]:
         """Write run-level stage_mapping_qc.json when per-subject entries exist."""
         with self._stage_mapping_qc_lock:
@@ -2385,6 +2584,96 @@ class DatasetSummaryRunner:
             summary["status"] = "write_failed"
             summary["error"] = str(exc)
             logger.exception("Failed to write stage_mapping_qc.json for %s (%s)", self.ds_id, out_path)
+        return summary
+
+    def _write_block_native_qc_file(self, mnps_dir: Path) -> Dict[str, Any]:
+        """Write run-level block_native_qc.json when per-subject entries exist."""
+        with self._block_native_qc_lock:
+            entries = [dict(e) for e in self._block_native_qc_entries]
+
+        summary: Dict[str, Any] = {
+            "schema": "mndm.block_native_qc.v1",
+            "status": "none",
+            "path": None,
+            "subjects": int(len(entries)),
+        }
+        if not entries:
+            return summary
+
+        blocks_total = 0
+        windows_total = 0
+        source_match_total = 0
+        source_total = 0
+        block_stage_counts: Dict[str, int] = {}
+        window_stage_counts: Dict[str, int] = {}
+        block_frequency_counts: Dict[str, int] = {}
+        end_reason_counts: Dict[str, int] = {}
+        mapping_status_counts: Dict[str, int] = {}
+
+        def _merge_counts(target: Dict[str, int], source: Any) -> None:
+            if not isinstance(source, Mapping):
+                return
+            for key, value in source.items():
+                try:
+                    iv = int(value)
+                except Exception:
+                    continue
+                sk = str(key)
+                target[sk] = target.get(sk, 0) + iv
+
+        for row in entries:
+            blocks_total += int(row.get("n_blocks", 0) or 0)
+            windows_total += int(row.get("n_windows", 0) or 0)
+            _merge_counts(block_stage_counts, row.get("block_counts_by_stage"))
+            _merge_counts(window_stage_counts, row.get("window_counts_by_stage"))
+            _merge_counts(block_frequency_counts, row.get("block_counts_by_frequency_hz"))
+            _merge_counts(end_reason_counts, row.get("end_reason_counts"))
+            source_stats = row.get("source_window_index", {})
+            if isinstance(source_stats, Mapping):
+                source_match_total += int(source_stats.get("matched", 0) or 0)
+                source_total += int(source_stats.get("total", 0) or 0)
+            label_cleaning = row.get("label_cleaning", {})
+            if isinstance(label_cleaning, Mapping):
+                _merge_counts(mapping_status_counts, label_cleaning.get("mapping_status_counts"))
+
+        payload = {
+            "schema": "mndm.block_native_qc.v1",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "dataset_id": self.ds_id,
+            "run_dir": str(mnps_dir),
+            "aggregate": {
+                "subjects_total": int(len(entries)),
+                "blocks_total": int(blocks_total),
+                "windows_total": int(windows_total),
+                "source_window_match_total": int(source_match_total),
+                "source_window_total": int(source_total),
+                "source_window_match_fraction": float(source_match_total / source_total) if source_total > 0 else 0.0,
+                "block_counts_by_stage": {str(k): int(v) for k, v in sorted(block_stage_counts.items(), key=lambda kv: kv[0])},
+                "window_counts_by_stage": {str(k): int(v) for k, v in sorted(window_stage_counts.items(), key=lambda kv: kv[0])},
+                "block_counts_by_frequency_hz": {
+                    str(k): int(v) for k, v in sorted(block_frequency_counts.items(), key=lambda kv: kv[0])
+                },
+                "end_reason_counts": {str(k): int(v) for k, v in sorted(end_reason_counts.items(), key=lambda kv: kv[0])},
+                "label_mapping_status_counts": {
+                    str(k): int(v) for k, v in sorted(mapping_status_counts.items(), key=lambda kv: kv[0])
+                },
+            },
+            "subjects": entries,
+        }
+        out_path = mnps_dir / "block_native_qc.json"
+        try:
+            json_writer.write_json_summary(payload, out_path)
+            summary.update(
+                {
+                    "status": "written",
+                    "path": out_path.name,
+                    "aggregate": payload.get("aggregate", {}),
+                }
+            )
+        except Exception as exc:
+            summary["status"] = "write_failed"
+            summary["error"] = str(exc)
+            logger.exception("Failed to write block_native_qc.json for %s (%s)", self.ds_id, out_path)
         return summary
 
     def _write_run_errors_file(self, mnps_dir: Path, *, total_groupings: int) -> Dict[str, Any]:
@@ -3294,6 +3583,8 @@ class SubjectSummaryRunner:
         v2_missing_policy = "renorm"
         v2_all_non_finite_names: list[str] = []
         v2_all_non_finite_count = 0
+        v2_duplicate_pairs: dict[str, str] = {}
+        v2_duplicate_count = 0
         v2_duplicate_constant_pairs: dict[str, str] = {}
         v2_duplicate_constant_count = 0
         if v2_enabled and subcoords_spec:
@@ -3320,11 +3611,14 @@ class SubjectSummaryRunner:
                         coords_9d,
                         coords_9d_names,
                         allow_all_non_finite_columns=True,
+                        allow_duplicate_columns=True,
                         allow_duplicate_constant_columns=True,
                         return_diagnostics=True,
                     )
                     v2_all_non_finite_names = list(coords_9d_diag.get("all_non_finite_names", []) or [])
                     v2_all_non_finite_count = int(coords_9d_diag.get("all_non_finite_count", 0) or 0)
+                    v2_duplicate_pairs = dict(coords_9d_diag.get("duplicate_pairs", {}) or {})
+                    v2_duplicate_count = int(coords_9d_diag.get("duplicate_count", 0) or 0)
                     v2_duplicate_constant_pairs = dict(coords_9d_diag.get("duplicate_constant_pairs", {}) or {})
                     v2_duplicate_constant_count = int(coords_9d_diag.get("duplicate_constant_count", 0) or 0)
                     if v2_all_non_finite_count > 0:
@@ -3334,6 +3628,15 @@ class SubjectSummaryRunner:
                             v2_all_non_finite_count,
                             dataset_label,
                             ", ".join(v2_all_non_finite_names),
+                        )
+                    if v2_duplicate_count > 0:
+                        dup_desc = ", ".join(f"{dst}->{src}" for dst, src in sorted(v2_duplicate_pairs.items()))
+                        logger.warning(
+                            "Stratified MNPS coords_9d has %d exact duplicate subcoordinate(s) for %s: %s. "
+                            "Proceeding in degraded mode and flagging provenance.",
+                            v2_duplicate_count,
+                            dataset_label,
+                            dup_desc,
                         )
                     if v2_duplicate_constant_count > 0:
                         dup_desc = ", ".join(f"{dst}->{src}" for dst, src in sorted(v2_duplicate_constant_pairs.items()))
@@ -3442,6 +3745,7 @@ class SubjectSummaryRunner:
                         coords_9d_anchor,
                         coords_9d_anchor_names,
                         allow_all_non_finite_columns=True,
+                        allow_duplicate_columns=True,
                         allow_duplicate_constant_columns=True,
                         return_diagnostics=True,
                     )
@@ -3484,7 +3788,31 @@ class SubjectSummaryRunner:
             for i, lbl in enumerate(axis_cov_labels)
         }
 
+        def _apply_shared_epoch_mask(mask: np.ndarray) -> None:
+            """Apply a shared time-grid mask across aligned coordinate surfaces."""
+            nonlocal x, x_coverage, x_subject_anchored, x_subject_coverage
+            nonlocal x_cohort_anchored, x_cohort_coverage, sub_frame
+            nonlocal coords_9d, coords_9d_subject_anchored, coords_9d_cohort_anchored
+
+            x = x[mask]
+            x_coverage = x_coverage[mask]
+            if len(x_subject_anchored) == len(mask):
+                x_subject_anchored = x_subject_anchored[mask]
+                x_subject_coverage = x_subject_coverage[mask]
+            if x_cohort_anchored is not None and len(x_cohort_anchored) == len(mask):
+                x_cohort_anchored = x_cohort_anchored[mask]
+            if x_cohort_coverage is not None and len(x_cohort_coverage) == len(mask):
+                x_cohort_coverage = x_cohort_coverage[mask]
+            sub_frame = sub_frame.loc[mask].reset_index(drop=True)
+            if coords_9d is not None and len(coords_9d) == len(mask):
+                coords_9d = coords_9d[mask]
+            if coords_9d_subject_anchored is not None and len(coords_9d_subject_anchored) == len(mask):
+                coords_9d_subject_anchored = coords_9d_subject_anchored[mask]
+            if coords_9d_cohort_anchored is not None and len(coords_9d_cohort_anchored) == len(mask):
+                coords_9d_cohort_anchored = coords_9d_cohort_anchored[mask]
+
         dropped_missing_axis_epochs = 0
+        dropped_geometry_invalid_epochs = 0
         min_axis_coverage = float(proj_cfg.get("min_axis_coverage", 0.3)) if isinstance(proj_cfg, Mapping) else 0.3
         if missing_axis_policy == "nan_mask_v1":
             valid_x = np.all(np.isfinite(x), axis=1)
@@ -3499,22 +3827,7 @@ class SubjectSummaryRunner:
                     missing_axis_policy,
                     min_axis_coverage,
                 )
-                x = x[mask]
-                x_coverage = x_coverage[mask]
-                if len(x_subject_anchored) == len(mask):
-                    x_subject_anchored = x_subject_anchored[mask]
-                    x_subject_coverage = x_subject_coverage[mask]
-                if x_cohort_anchored is not None and len(x_cohort_anchored) == len(mask):
-                    x_cohort_anchored = x_cohort_anchored[mask]
-                if x_cohort_coverage is not None and len(x_cohort_coverage) == len(mask):
-                    x_cohort_coverage = x_cohort_coverage[mask]
-                sub_frame = sub_frame.loc[mask].reset_index(drop=True)
-                if coords_9d is not None and len(coords_9d) == len(mask):
-                    coords_9d = coords_9d[mask]
-                if coords_9d_subject_anchored is not None and len(coords_9d_subject_anchored) == len(mask):
-                    coords_9d_subject_anchored = coords_9d_subject_anchored[mask]
-                if coords_9d_cohort_anchored is not None and len(coords_9d_cohort_anchored) == len(mask):
-                    coords_9d_cohort_anchored = coords_9d_cohort_anchored[mask]
+                _apply_shared_epoch_mask(mask)
             coverage_seconds_measured_post, coverage_method_post = self._estimate_coverage_seconds(sub_frame, dt)
             coverage_seconds_assumed_post = float(len(sub_frame) * dt)
             coverage_seconds_effective_post = (
@@ -3538,6 +3851,60 @@ class SubjectSummaryRunner:
                 logger.warning("Skipping %s: all epochs dropped by missing-axis policy", dataset_label)
                 return
 
+        geometry_contract = compute_standard_geometry_contract(
+            x=x,
+            coords_9d=coords_9d,
+            coords_9d_names=coords_9d_names,
+            primary_requires_coords_9d=bool(str(mde_mode_effective).strip().lower() == "from_v2"),
+        )
+        if v2_duplicate_count > 0:
+            coords_contract = geometry_contract.setdefault("coords_9d", {})
+            if isinstance(coords_contract, Mapping):
+                coords_contract = dict(coords_contract)
+                geometry_contract["coords_9d"] = coords_contract
+            coords_contract["duplicate_pairs"] = dict(v2_duplicate_pairs)
+            coords_contract["duplicate_count"] = int(v2_duplicate_count)
+            coords_contract["duplicate_constant_pairs"] = dict(v2_duplicate_constant_pairs)
+            coords_contract["duplicate_constant_count"] = int(v2_duplicate_constant_count)
+            geometry_contract["status"] = "adjusted"
+        geometry_keep_mask = np.asarray(geometry_contract.pop("_row_keep_mask", np.ones((len(sub_frame),), dtype=bool)), dtype=bool)
+        dropped_geometry_invalid_epochs = int((~geometry_keep_mask).sum())
+        if dropped_geometry_invalid_epochs > 0:
+            logger.warning(
+                "Dropping %d mathematically invalid geometry epochs for %s (policy=%s)",
+                dropped_geometry_invalid_epochs,
+                dataset_label,
+                STANDARD_GEOMETRY_POLICY_VERSION,
+            )
+            _apply_shared_epoch_mask(geometry_keep_mask)
+            geometry_contract["shared_time_grid"]["epochs_retained"] = int(len(sub_frame))
+            geometry_contract["shared_time_grid"]["epochs_dropped"] = int(dropped_geometry_invalid_epochs)
+            geometry_contract["shared_time_grid"]["drop_fraction"] = (
+                float(dropped_geometry_invalid_epochs / max(1, int(geometry_contract["shared_time_grid"].get("epochs_before_policy", 0))))
+            )
+            coverage_seconds_measured_post, coverage_method_post = self._estimate_coverage_seconds(sub_frame, dt)
+            coverage_seconds_assumed_post = float(len(sub_frame) * dt)
+            coverage_seconds_effective_post = (
+                coverage_seconds_measured_post
+                if np.isfinite(coverage_seconds_measured_post) and coverage_seconds_measured_post > 0
+                else coverage_seconds_assumed_post
+            )
+            if len(sub_frame) < min_epochs_eff or coverage_seconds_effective_post < min_seconds_eff:
+                logger.warning(
+                    "Skipping %s after standard geometry invalidity policy (tag=%s): epochs=%d, seconds_effective=%.1f (%s), required_epochs=%d, required_seconds=%.1f",
+                    dataset_label,
+                    coverage_tag,
+                    len(sub_frame),
+                    coverage_seconds_effective_post,
+                    coverage_method_post,
+                    min_epochs_eff,
+                    min_seconds_eff,
+                )
+                return
+            if len(sub_frame) == 0:
+                logger.warning("Skipping %s: all epochs dropped by standard geometry invalidity policy", dataset_label)
+                return
+
         # Time index and derivatives.
         # Prefer feature-epoch midpoints (t_start + t_end) / 2 when available so
         # /time is the true window-center regardless of the mnps.window_sec config.
@@ -3548,6 +3915,14 @@ class SubjectSummaryRunner:
         else:
             time = projection.build_time_index(len(sub_frame), mnps_cfg["window_sec"], mnps_cfg["overlap"])
         window_start, window_end = self._extract_time_bounds(sub_frame, time, mnps_cfg["window_sec"])
+        geometry_contract["time_grid"] = compute_window_time_audit(
+            time=time,
+            window_start=window_start,
+            window_end=window_end,
+            dt_sec_runtime=float(dt),
+            dt_sec_config=float(_cfg_dt),
+            window_sec_config=float(mnps_cfg["window_sec"]),
+        )
         time_reference_result = build_time_reference_for_run(
             config=config if isinstance(config, Mapping) else {},
             dataset_id=self.dataset.ds_id,
@@ -3642,9 +4017,32 @@ class SubjectSummaryRunner:
                 distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                 j_dot_dt=float(dt),
             )
+            jac_res, primary_geometry_jacobian = apply_standard_jacobian_window_policy(
+                jac_res,
+                condition_number_max=STANDARD_GEOMETRY_MAX_JACOBIAN_CONDITION,
+            )
+        else:
+            primary_geometry_jacobian = {
+                "policy_version": STANDARD_GEOMETRY_POLICY_VERSION,
+                "status": "not_available",
+                "windows_raw": 0,
+                "windows_retained": 0,
+                "invalid_windows": 0,
+                "condition_number_threshold": float(STANDARD_GEOMETRY_MAX_JACOBIAN_CONDITION),
+                "invalid_reason_counts": {},
+            }
 
         # Optional Jacobian for v2 coordinates
         jac_res_v2 = None
+        coords_9d_geometry_jacobian = {
+            "policy_version": STANDARD_GEOMETRY_POLICY_VERSION,
+            "status": "not_available",
+            "windows_raw": 0,
+            "windows_retained": 0,
+            "invalid_windows": 0,
+            "condition_number_threshold": float(STANDARD_GEOMETRY_MAX_JACOBIAN_CONDITION),
+            "invalid_reason_counts": {},
+        }
         if v2_enabled and coords_9d is not None and coords_9d_names:
             v2_jac_cfg = v2_cfg.get("jacobian", {}) if isinstance(v2_cfg, Mapping) else {}
             v2_jac_enabled = bool(v2_jac_cfg.get("enabled", True))
@@ -3666,12 +4064,31 @@ class SubjectSummaryRunner:
                         distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                         j_dot_dt=float(dt),
                     )
+                    jac_res_v2, coords_9d_geometry_jacobian = apply_standard_jacobian_window_policy(
+                        jac_res_v2,
+                        condition_number_max=STANDARD_GEOMETRY_MAX_JACOBIAN_CONDITION,
+                    )
                 else:
                     logger.warning(
                         "Skipping v2 Jacobian for %s due to non-finite coords_9d rows "
                         "(degraded v2 coverage).",
                         dataset_label,
                     )
+        geometry_contract["jacobian"] = primary_geometry_jacobian
+        geometry_contract["jacobian_9d"] = coords_9d_geometry_jacobian
+        geometry_contract["status"] = (
+            "adjusted"
+            if (
+                int((geometry_contract.get("shared_time_grid") or {}).get("epochs_dropped", 0)) > 0
+                or bool((geometry_contract.get("mnps_3d") or {}).get("degenerate_axes"))
+                or bool((geometry_contract.get("coords_9d") or {}).get("degenerate_axes"))
+                or int((geometry_contract.get("coords_9d") or {}).get("nonfinite_rows_retained_on_shared_grid", 0)) > 0
+                or str((geometry_contract.get("time_grid") or {}).get("status", "ok")).strip().lower() != "ok"
+                or int((primary_geometry_jacobian or {}).get("invalid_windows", 0)) > 0
+                or int((coords_9d_geometry_jacobian or {}).get("invalid_windows", 0)) > 0
+            )
+            else "ok"
+        )
 
         # Contract invariants: provenance hashes for "inputs used to compute outputs"
         # must match the representation saved to H5.
@@ -3743,7 +4160,7 @@ class SubjectSummaryRunner:
                 metric=mnps_cfg["knn_metric"],
                 whiten=whiten_flag,
             )
-            return jacobian.estimate_local_jacobians(
+            layer_jac = jacobian.estimate_local_jacobians(
                 arr,
                 dot_arr,
                 nn_idx,
@@ -3752,6 +4169,11 @@ class SubjectSummaryRunner:
                 distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                 j_dot_dt=float(dt),
             )
+            layer_jac, _ = apply_standard_jacobian_window_policy(
+                layer_jac,
+                condition_number_max=STANDARD_GEOMETRY_MAX_JACOBIAN_CONDITION,
+            )
+            return layer_jac
 
         anchor_spec = anchor_artifact.get("spec", {}) if isinstance(anchor_artifact, Mapping) else {}
         exported_anchor_spec = anchor_spec if export_cohort_anchored else {}
@@ -4138,6 +4560,24 @@ class SubjectSummaryRunner:
             if isinstance(config, Mapping)
             else {}
         )
+        mnps_3d_manifest_block = {
+            "mode_requested": mde_mode_requested,
+            "mode_effective": mde_mode_effective,
+            "x_definition": x_definition,
+            "from_v2": {
+                "aggregation_requested": mde_from_v2_aggregation_requested,
+                "aggregation": mde_from_v2_aggregation,
+                "legacy_pooling": mde_from_v2_pooling_legacy,
+                "map": m3d_cfg.get("map"),
+                "v1_mapping_source": m3d_cfg.get("v1_mapping_source"),
+                "v1_mapping_input": m3d_cfg.get("v1_mapping"),
+                "v1_mapping_normalized": v1_mapping_normalized,
+                "v1_mapping_matrix": v1_mapping_matrix,
+                "v1_mapping_matrix_rows": v1_mapping_matrix_rows,
+                "v1_mapping_hash": v1_mapping_hash,
+                "fallback_reason": mde_from_v2_reason,
+            },
+        }
         baseline_comparisons = None
         try:
             baseline_comparisons = compute_feature_baseline_comparisons(
@@ -4174,6 +4614,25 @@ class SubjectSummaryRunner:
                 )
         except Exception:
             logger.exception("Failed to compute tier2_jacobian_metrics for %s", dataset_label)
+
+        mnps_mnj_sanity = None
+        try:
+            mnps_mnj_sanity = compute_mnps_mnj_sanity(
+                x=x,
+                x_dot=x_dot,
+                time=time,
+                dt_sec=float(dt),
+                coords_9d=coords_9d,
+                coords_9d_names=coords_9d_names,
+                jacobian=jac_res.j_hat if jac_res is not None else None,
+                jacobian_diagnostics=jac_res.diagnostics if jac_res is not None else None,
+                review_qc_cfg=review_qc_cfg,
+                projection_contract=mnps_3d_manifest_block,
+                file_labels=sub_frame["file"].to_numpy() if "file" in sub_frame.columns else None,
+                derivative_cfg=self.ctx.derivative_cfg,
+            )
+        except Exception:
+            logger.exception("Failed to compute mnps_mnj_sanity for %s", dataset_label)
 
         emmi = None
         try:
@@ -4230,7 +4689,67 @@ class SubjectSummaryRunner:
         features_raw_names = list(feature_export_bundle.get("raw_names", []) or [])
         features_robust_z_values = np.asarray(feature_export_bundle.get("robust_z_values"), dtype=np.float32)
         features_robust_z_names = list(feature_export_bundle.get("robust_z_names", []) or [])
+        features_projection_z_values = np.asarray(feature_export_bundle.get("projection_z_values"), dtype=np.float32)
+        features_projection_z_names = list(feature_export_bundle.get("projection_z_names", []) or [])
         feature_metadata = dict(feature_export_bundle.get("metadata", {}) or {})
+        (
+            anchor_state_export,
+            anchor_state_dot_export,
+            anchor_quality_export,
+            anchor_state_diagnostics,
+        ) = build_anchor_state_exports(
+            features_df=sub_frame,
+            robust_z_values=features_robust_z_values,
+            robust_z_names=features_robust_z_names,
+            time=np.asarray(time, dtype=np.float64),
+            config=config,
+        )
+        anchor_coupling_export: Dict[str, Any] = {}
+        anchor_coupling_policy: Dict[str, Any] = {}
+        anchor_coupling_cfg = (
+            config.get("anchor_coupling", {})
+            if isinstance(config, Mapping) and isinstance(config.get("anchor_coupling", {}), Mapping)
+            else {}
+        )
+        if (
+            anchor_coupling_cfg.get("enabled", False)
+            and isinstance(anchor_state_export, Mapping)
+            and isinstance(anchor_state_dot_export, Mapping)
+            and anchor_state_export.get("values") is not None
+            and anchor_state_dot_export.get("values") is not None
+            and nn_indices is not None
+        ):
+            try:
+                coupling_raw = jacobian.estimate_anchor_coupling(
+                    np.asarray(x, dtype=np.float32),
+                    np.asarray(x_dot, dtype=np.float32),
+                    np.asarray(anchor_state_export.get("values"), dtype=np.float32),
+                    np.asarray(anchor_state_dot_export.get("values"), dtype=np.float32),
+                    np.asarray(nn_indices, dtype=np.int32),
+                    super_window=int(anchor_coupling_cfg.get("super_window", 3) or 3),
+                    ridge_alpha=float(anchor_coupling_cfg.get("ridge_alpha", 1.0) or 1.0),
+                    distance_weighted=bool(anchor_coupling_cfg.get("distance_weighted", False)),
+                    j_dot_dt=float(dt) if np.isfinite(float(dt)) and float(dt) > 0 else None,
+                )
+                anchor_coupling_export, anchor_coupling_policy = apply_anchor_coupling_window_policy(
+                    coupling_raw,
+                    condition_number_max=float(
+                        anchor_coupling_cfg.get(
+                            "condition_number_max",
+                            STANDARD_GEOMETRY_MAX_JACOBIAN_CONDITION,
+                        )
+                    ),
+                    min_windows=int(anchor_coupling_cfg.get("min_windows", 3) or 3),
+                )
+                if anchor_coupling_export:
+                    anchor_coupling_export.setdefault("diagnostics", {})
+                    if isinstance(anchor_coupling_export.get("diagnostics"), Mapping):
+                        anchor_coupling_export["diagnostics"] = {
+                            **dict(anchor_coupling_export.get("diagnostics", {}) or {}),
+                            "policy": anchor_coupling_policy,
+                        }
+            except Exception:
+                logger.exception("Failed to build anchor coupling export for %s", dataset_label)
         feature_names_hash = (
             hashlib.sha256(
                 json.dumps(features_raw_names, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -4323,6 +4842,8 @@ class SubjectSummaryRunner:
         qc_windows_export = _build_qc_windows_export(
             sub_frame=sub_frame,
             stage=stage,
+            x=np.asarray(x, dtype=np.float32),
+            coords_9d=np.asarray(coords_9d, dtype=np.float32) if coords_9d is not None else None,
             x_coverage=np.asarray(x_coverage, dtype=np.float32),
             min_axis_coverage=float(min_axis_coverage),
         )
@@ -4347,17 +4868,40 @@ class SubjectSummaryRunner:
         event_table_schema_version = _decode_text_scalar(event_table_columns.get("_schema_version"))
         normalization_report = dict(getattr(self.dataset, "_normalization_report", {}) or {})
         normalization_report_info = normalization_report.get("report_file", {}) if isinstance(normalization_report, Mapping) else {}
+        mapping_contract = _resolve_meg_mapping_contract(
+            self.ctx.config if isinstance(self.ctx.config, Mapping) else {},
+            self.dataset.ds_id,
+        )
+        mapping_provenance: Dict[str, Any] = {}
+        if mapping_contract:
+            mapping_provenance = {
+                "modality": str(config.get("modality", "")).strip().lower() or "meg",
+                "primary_surface": mapping_contract.get("primary_surface"),
+                "paired_surfaces": list(mapping_contract.get("paired_surfaces", []) or []),
+                "mapping_family": mapping_contract.get("mapping_family"),
+                "mapping_reference": mapping_contract.get("mapping_reference"),
+                "sensor_types": list(mapping_contract.get("sensor_types", []) or []),
+                "feature_combination": mapping_contract.get("feature_combination"),
+                "validation_pilot": dict(mapping_contract.get("validation_pilot", {}) or {}),
+            }
         provenance_export: Dict[str, Any] = {
             "contract": {
                 "export_contract_version": "mndm.eeg_h5_contract.v1",
                 "config_digest_sha256": _stable_hash_mapping(self.ctx.config if isinstance(self.ctx.config, Mapping) else {}),
                 "config_filename": getattr(getattr(self.dataset, "config_path", None), "name", None),
                 "run_manifest_ref": "../run_manifest.json",
+                "geometry_invalidity_policy": STANDARD_GEOMETRY_POLICY_VERSION,
+                "geometry_contract_status": geometry_contract.get("status"),
             },
             "anchoring": {
                 "available_coordinate_layers": available_coordinate_layers,
                 "available_jacobian_layers": available_jacobian_layers,
                 "available_coordinate_contracts": available_coordinate_contracts,
+                "requested_contracts": list(export_contracts.get("requested_contracts", []) or []),
+                "realized_contracts": list(export_contracts.get("realized_contracts", []) or []),
+                "skipped_contracts_with_reason": list(
+                    export_contracts.get("skipped_contracts_with_reason", []) or []
+                ),
                 "primary_coordinate_layer": (
                     "coords_3d_cohort_anchored" if primary_coordinate_layer == "cohort_anchored" else "coords_3d_subject_anchored"
                 ),
@@ -4387,13 +4931,48 @@ class SubjectSummaryRunner:
                 if isinstance(effective_stage_codebook, Mapping) and effective_stage_codebook
                 else None,
             },
+            "anchor_state": anchor_state_diagnostics,
+            "geometry_contract": geometry_contract,
         }
+        if mapping_provenance:
+            provenance_export["mapping"] = mapping_provenance
         regional_mnps_export = _build_regional_dual_contract_export(
             primary_coordinate_contract=primary_coordinate_layer,
             subject_summary=regional_mnps_results_subject if export_subject_anchored else None,
             cohort_summary=regional_mnps_results_cohort if export_cohort_anchored else None,
             anchor_spec=exported_anchor_spec if isinstance(exported_anchor_spec, Mapping) else {},
         )
+
+        # Build per-row source provenance (replaces implicit stacked-half slicing).
+        # The file column encodes which raw file each row was computed from.
+        _row_source_cols: dict = {}
+        if "file" in sub_frame.columns and len(sub_frame) > 0:
+            _raw_files = sub_frame["file"].fillna("").astype(str).to_numpy()
+            def _classify_source(fname: str) -> str:
+                fl = fname.lower()
+                if fl.endswith(".fif") or fl.endswith(".fif.gz"):
+                    return "fif_meeg"
+                if fl.endswith(".set") or fl.endswith(".fdt"):
+                    return "set_eeg"
+                return "unknown"
+            _row_src = np.array([_classify_source(f) for f in _raw_files], dtype=object)
+            _has_meg  = (_row_src == "fif_meeg").astype(np.int8)
+            _has_eeg  = np.ones(len(_raw_files), dtype=np.int8)
+            _has_mag  = _has_meg.copy()
+            _has_grad = _has_meg.copy()
+            _src_fmt  = np.array(
+                ["neuromag_fif" if r == "fif_meeg" else "eeglab_set" if r == "set_eeg" else "unknown"
+                 for r in _row_src], dtype=object
+            )
+            _row_source_cols = {
+                "row_source":    _row_src,
+                "has_meg":       _has_meg,
+                "has_eeg":       _has_eeg,
+                "has_mag":       _has_mag,
+                "has_grad":      _has_grad,
+                "raw_file":      np.array([Path(f).name for f in _raw_files], dtype=object),
+                "source_format": _src_fmt,
+            }
 
         # Build payload
         payload = schema.MNPSPayload(
@@ -4421,15 +5000,22 @@ class SubjectSummaryRunner:
             features_raw_names=features_raw_names,
             features_robust_z_values=features_robust_z_values,
             features_robust_z_names=features_robust_z_names,
+            features_projection_z_values=features_projection_z_values,
+            features_projection_z_names=features_projection_z_names,
             feature_metadata=feature_metadata,
             coordinate_layers=coordinate_layers,
             feature_anchors=(anchor_artifact or {}) if export_cohort_anchored else {},
             jacobian_layers=jacobian_layers,
+            anchor_state=anchor_state_export,
+            anchor_state_dot=anchor_state_dot_export,
+            anchor_quality=anchor_quality_export,
+            anchor_coupling=anchor_coupling_export,
             participant_clinical_meta=participant_clinical_meta,
             provenance=provenance_export,
             coverage=coverage_export,
             qc_windows=qc_windows_export,
             regional_mnps=regional_mnps_export,
+            row_source_columns=_row_source_cols,
             attrs={
                 # Stable identity fields (used downstream for grouping/contrasts).
                 "dataset": self.dataset.ds_id,
@@ -4458,6 +5044,7 @@ class SubjectSummaryRunner:
                 "task": task,
                 "run": run_id,
                 "acq": acq_id,
+                "modality": str(config.get("modality", "")).strip().lower() if isinstance(config, Mapping) else None,
                 "coverage_rule_tag": coverage_tag,
                 "coverage_min_seconds_effective": min_seconds_eff,
                 "coverage_min_epochs_effective": min_epochs_eff,
@@ -4468,6 +5055,7 @@ class SubjectSummaryRunner:
                 "epochs_raw": n_before_any,
                 "epochs_after_qc": n_after_qc,
                 "epochs_after_nan_mask": int(len(sub_frame)),
+                "epochs_after_geometry_policy": int(len(sub_frame)),
                 "mndm_version": "2.1",
                 "export_contract_version": "mndm.eeg_h5_contract.v1",
                 "primary_coordinate_layer": (
@@ -4481,6 +5069,7 @@ class SubjectSummaryRunner:
                 "anchor_hash": (
                     exported_anchor_spec.get("anchor_hash")
                 ),
+                "anchor_state_names": list(anchor_state_export.get("names", []) or []),
                 "x_definition": x_definition,
                 "mde_mode_requested": mde_mode_requested,
                 "mde_mode_effective": mde_mode_effective,
@@ -4501,6 +5090,11 @@ class SubjectSummaryRunner:
                 "normalize_mode": normalize_mode,
                 "missing_axis_policy": missing_axis_policy,
                 "dropped_missing_axis_epochs": dropped_missing_axis_epochs,
+                "geometry_invalidity_policy": STANDARD_GEOMETRY_POLICY_VERSION,
+                "geometry_contract_status": geometry_contract.get("status"),
+                "dropped_geometry_invalid_epochs": dropped_geometry_invalid_epochs,
+                "geometry_jacobian_invalid_windows": int((geometry_contract.get("jacobian") or {}).get("invalid_windows", 0)),
+                "geometry_jacobian_9d_invalid_windows": int((geometry_contract.get("jacobian_9d") or {}).get("invalid_windows", 0)),
                 "weights_hash_direct": _stable_hash_mapping(self.ctx.weights or {}),
                 "subcoords_hash_v2": _stable_hash_mapping(subcoords_spec if isinstance(subcoords_spec, Mapping) else {}),
                 "missing_weighted_feature_rate_direct": missing_rate_direct,
@@ -4515,9 +5109,13 @@ class SubjectSummaryRunner:
                 "min_axis_coverage": float(min_axis_coverage),
                 "v2_missing_policy": v2_missing_policy if v2_enabled and subcoords_spec else None,
                 "coords_9d_allow_all_non_finite_columns": True if v2_enabled and subcoords_spec else False,
-                "coords_9d_degraded_mode": bool(v2_all_non_finite_count > 0 or v2_duplicate_constant_count > 0),
+                "coords_9d_allow_duplicate_columns": True if v2_enabled and subcoords_spec else False,
+                "coords_9d_allow_duplicate_constant_columns": True if v2_enabled and subcoords_spec else False,
+                "coords_9d_degraded_mode": bool(v2_all_non_finite_count > 0 or v2_duplicate_count > 0),
                 "coords_9d_all_non_finite_count": int(v2_all_non_finite_count),
                 "coords_9d_all_non_finite_names": v2_all_non_finite_names if v2_all_non_finite_names else None,
+                "coords_9d_duplicate_count": int(v2_duplicate_count),
+                "coords_9d_duplicate_pairs": v2_duplicate_pairs if v2_duplicate_pairs else None,
                 "coords_9d_duplicate_constant_count": int(v2_duplicate_constant_count),
                 "coords_9d_duplicate_constant_pairs": v2_duplicate_constant_pairs if v2_duplicate_constant_pairs else None,
                 "e_e_construct": entropy_meta.get("construct"),
@@ -4550,6 +5148,17 @@ class SubjectSummaryRunner:
                 "feature_metadata_fields": sorted(feature_metadata.keys()) if feature_metadata else [],
                 "reproducibility_seed": int(reproducibility_policy.get("seed", 42)),
                 "reproducibility_seed_source": str(reproducibility_policy.get("seed_source", "default")),
+                "mapping_family": mapping_provenance.get("mapping_family"),
+                "mapping_reference": mapping_provenance.get("mapping_reference"),
+                "mapping_primary_surface": mapping_provenance.get("primary_surface"),
+                "mapping_paired_surfaces": mapping_provenance.get("paired_surfaces"),
+                "sensor_types": mapping_provenance.get("sensor_types"),
+                "feature_combination": mapping_provenance.get("feature_combination"),
+                "validation_pilot_subjects": (
+                    list((mapping_provenance.get("validation_pilot") or {}).get("subjects", []) or [])
+                    if isinstance(mapping_provenance.get("validation_pilot"), Mapping)
+                    else None
+                ),
                 **(
                     dict(time_reference_result.get("attrs"))
                     if isinstance(time_reference_result.get("attrs"), Mapping)
@@ -4575,6 +5184,14 @@ class SubjectSummaryRunner:
         labels_combined: Dict[str, np.ndarray] = {}
         if within_run_labels.labels:
             labels_combined.update(within_run_labels.labels)
+        for label_col in ("task_state_label", "task_load_label", "task_load_n"):
+            if label_col in sub_frame.columns:
+                try:
+                    values = sub_frame[label_col].to_numpy()
+                    if np.asarray(values).shape == (len(time),):
+                        labels_combined.setdefault(label_col, values)
+                except Exception:
+                    logger.exception("Failed to export label column '%s' for %s", label_col, dataset_label)
         stage_bool_labels = _build_stage_bool_labels(
             stage,
             effective_stage_codebook if isinstance(effective_stage_codebook, Mapping) else {},
@@ -4694,6 +5311,15 @@ class SubjectSummaryRunner:
                 "available_coordinate_contracts": available_coordinate_contracts,
                 "primary_coordinate_contract": primary_coordinate_layer,
             }
+        manifest_extra["coordinate_contracts"] = {
+            "requested_contracts": list(export_contracts.get("requested_contracts", []) or []),
+            "realized_contracts": list(export_contracts.get("realized_contracts", []) or []),
+            "skipped_contracts_with_reason": list(
+                export_contracts.get("skipped_contracts_with_reason", []) or []
+            ),
+            "available_coordinate_contracts": available_coordinate_contracts,
+            "primary_coordinate_contract": primary_coordinate_layer,
+        }
         if stratified_blocks_result is not None:
             if stratified_blocks_result.blocks_manifest:
                 rows_light: list[dict[str, Any]] = []
@@ -4748,24 +5374,10 @@ class SubjectSummaryRunner:
             manifest_extra["fmri_modularity_provisional_frac"] = modularity_provisional_frac
         if labels_mapped:
             manifest_extra["events_mapped"] = sorted(labels_mapped.keys())
-        manifest_extra["mnps_3d"] = {
-            "mode_requested": mde_mode_requested,
-            "mode_effective": mde_mode_effective,
-            "x_definition": x_definition,
-            "from_v2": {
-                "aggregation_requested": mde_from_v2_aggregation_requested,
-                "aggregation": mde_from_v2_aggregation,
-                "legacy_pooling": mde_from_v2_pooling_legacy,
-                "map": m3d_cfg.get("map"),
-                "v1_mapping_source": m3d_cfg.get("v1_mapping_source"),
-                "v1_mapping_input": m3d_cfg.get("v1_mapping"),
-                "v1_mapping_normalized": v1_mapping_normalized,
-                "v1_mapping_matrix": v1_mapping_matrix,
-                "v1_mapping_matrix_rows": v1_mapping_matrix_rows,
-                "v1_mapping_hash": v1_mapping_hash,
-                "fallback_reason": mde_from_v2_reason,
-            },
-        }
+        manifest_extra["mnps_3d"] = mnps_3d_manifest_block
+        manifest_extra["geometry_contract"] = geometry_contract
+        if mnps_mnj_sanity is not None:
+            manifest_extra["mnps_mnj_sanity"] = mnps_mnj_sanity
         manifest_extra["provenance"] = {
             "mnps_9d_definition_version": v2_definition_version,
             "mnps_9d_constructs": mnps_9d_constructs,
@@ -4784,6 +5396,8 @@ class SubjectSummaryRunner:
                 "jacobian_9d_dot_hash_saved": jacobian_9d_dot_hash_saved,
             },
         }
+        if mapping_provenance:
+            manifest_extra["provenance"]["mapping"] = mapping_provenance
         manifest_extra["feature_exports"] = {
             "raw_h5_path": "/features_raw",
             "robust_z_h5_path": "/features_robust_z",
@@ -4792,18 +5406,57 @@ class SubjectSummaryRunner:
             "names_hash": feature_names_hash,
             "metadata_fields": sorted(feature_metadata.keys()) if feature_metadata else [],
         }
+        hrv_feature_names = [str(name) for name in features_raw_names if str(name).startswith("ecg_hrv_")]
+        if hrv_feature_names:
+            features_cfg = config.get("features", {}) if isinstance(config, Mapping) else {}
+            ecg_cfg = features_cfg.get("ecg", {}) if isinstance(features_cfg, Mapping) else {}
+            hrv_cfg = ecg_cfg.get("hrv", {}) if isinstance(ecg_cfg, Mapping) else {}
+            if not isinstance(hrv_cfg, Mapping):
+                hrv_cfg = {}
+            manifest_extra["anchor_hrv_v0_1"] = {
+                "enabled": True,
+                "source": "ecg",
+                "window_sec": float(hrv_cfg.get("superwindow_s", 60.0) or 60.0),
+                "window_mode": str(hrv_cfg.get("window_mode", "centered") or "centered"),
+                "min_nn_intervals": int(hrv_cfg.get("min_nn_intervals", 20) or 20),
+                "min_coverage_fraction": float(hrv_cfg.get("min_coverage_fraction", 0.5) or 0.5),
+                "max_artifact_fraction": float(hrv_cfg.get("max_artifact_fraction", 0.25) or 0.25),
+                "feature_names": hrv_feature_names,
+                "quality_feature_names": [
+                    name
+                    for name in hrv_feature_names
+                    if name.endswith("_quality_score")
+                    or name.endswith("_artifact_fraction")
+                    or name.endswith("_coverage_fraction")
+                    or name.endswith("_nn_count")
+                ],
+                "features_h5_path": "/features_raw",
+            }
+        if anchor_state_diagnostics:
+            manifest_extra["anchor_state"] = {
+                **anchor_state_diagnostics,
+                "h5_paths": {
+                    "anchor_state": "/anchor_state",
+                    "anchor_state_dot": "/anchor_state_dot",
+                    "anchor_quality": "/anchor_quality",
+                },
+            }
+        if anchor_coupling_policy:
+            manifest_extra["anchor_coupling"] = {
+                **anchor_coupling_policy,
+                "path": "/anchor_coupling",
+            }
 
         # Add a clear note indicating that these tier-2 metrics are tentative and belong in the analysis repo
-        if any([tau_summary, tier2_jac, emmi, dist_summary, baseline_comparisons, null_sanity_tests]):
+        if any([tau_summary, tier2_jac, emmi, dist_summary, baseline_comparisons, null_sanity_tests, mnps_mnj_sanity]):
             manifest_extra["_TENTATIVE_NOTE"] = (
-                "Metrics such as baseline_comparisons, null_sanity_tests, tier2_jacobian, "
-                "tier2_emmi, tau_summary, and dist_summary are provided as tentative QA summaries only. "
+                "Metrics such as baseline_comparisons, mnps_mnj_sanity, null_sanity_tests, "
+                "tier2_jacobian, tier2_emmi, tau_summary, and dist_summary are provided as tentative QA summaries only. "
                 "Real statistical verification "
                 "and interpretation must be performed downstream in the analysis repository."
             )
 
         primary_jac_diagnostics = jac_res.diagnostics if jac_res is not None else None
-        manifest = json_writer.build_manifest(dataset_label, payload, primary_jac_diagnostics, manifest_extra)
 
         self._write_qc_files(
             target_dir=target_dir,
@@ -4821,7 +5474,305 @@ class SubjectSummaryRunner:
             tier2_emmi=emmi,
             null_sanity_tests=null_sanity_tests,
             entropy_qc=entropy_qc,
+            geometry_contract=geometry_contract,
+            mnps_mnj_sanity=mnps_mnj_sanity,
         )
+        event_locked_cfg = {}
+        if isinstance(config, Mapping):
+            event_locked_root = config.get("event_locked", {})
+            if isinstance(event_locked_root, Mapping):
+                event_locked_datasets = event_locked_root.get("datasets", {})
+                if isinstance(event_locked_datasets, Mapping):
+                    event_locked_cfg = event_locked_datasets.get(self.dataset.ds_id, {})
+                    if not isinstance(event_locked_cfg, Mapping):
+                        event_locked_cfg = {}
+        event_source_kind = (
+            _resolve_event_locked_source_kind(event_locked_cfg)
+            if isinstance(event_locked_cfg, Mapping)
+            else "csv"
+        )
+        if event_locked_cfg.get("enabled", False):
+            try:
+                from .event_locked_runner import run_event_locked_export
+
+                event_locked_entries: List[Dict[str, Any]] = []
+                base_config = config if isinstance(config, Mapping) else {}
+                legacy_name_parts = [
+                    _safe_filename_token(sub_id or "sub-unknown"),
+                    _safe_filename_token(raw_task or task or ""),
+                    _safe_filename_token(acq_id or ""),
+                    _safe_filename_token(run_id or ""),
+                ]
+                legacy_name_parts = [p for p in legacy_name_parts if p]
+                legacy_event_locked_prefix = "_".join(legacy_name_parts) or "event_locked"
+
+                if event_source_kind == "csv":
+                    csv_sources = _resolve_event_locked_csv_sources(
+                        stage_events_path=stage_events_path,
+                        event_locked_cfg=event_locked_cfg,
+                    )
+                    for csv_path, csv_slug in csv_sources:
+                        out_prefix = target_dir / "event_locked"
+                        if csv_slug:
+                            out_prefix = target_dir / f"{legacy_event_locked_prefix}_event_locked_v1_{csv_slug}"
+                        event_locked_result = run_event_locked_export(
+                            payload=payload,
+                            config=base_config,
+                            dataset_id=self.dataset.ds_id,
+                            source_path=Path(csv_path),
+                            event_table=None,
+                            subject_id=sub_id or "",
+                            session_id=ses_id or "",
+                            run_id=run_id or "",
+                            out_prefix=out_prefix,
+                        )
+                        entry = dict(event_locked_result.manifest_entry)
+                        entry["resolved_source_path"] = str(csv_path)
+                        if csv_slug:
+                            entry["channel_slug"] = csv_slug
+                        event_locked_entries.append(entry)
+
+                elif event_source_kind == "bids_events":
+                    # Direct BIDS events.tsv event-locking.
+                    # Uses the companion *_events.tsv file identified by
+                    # stage_events_path (already resolved per-subject above).
+                    # No derived:task_state_label column required.
+                    bids_events_src = stage_events_path or None
+                    if bids_events_src:
+                        out_prefix = (
+                            target_dir
+                            / f"{legacy_event_locked_prefix}_event_locked_bids_v1"
+                        )
+                        event_locked_result = run_event_locked_export(
+                            payload=payload,
+                            config=base_config,
+                            dataset_id=self.dataset.ds_id,
+                            source_path=Path(bids_events_src),
+                            event_table=None,
+                            subject_id=sub_id or "",
+                            session_id=ses_id or "",
+                            run_id=run_id or "",
+                            out_prefix=out_prefix,
+                        )
+                        entry = dict(event_locked_result.manifest_entry)
+                        entry["resolved_source_path"] = str(bids_events_src)
+                        entry["event_source_kind"] = "bids_events"
+                        event_locked_entries.append(entry)
+                    else:
+                        logger.warning(
+                            "event_locked bids_events: no BIDS events.tsv path resolved for %s",
+                            dataset_label,
+                        )
+
+                elif event_source_kind == "derived_stage_block_end" and stage_events_path:
+                    event_locked_result = run_event_locked_export(
+                        payload=payload,
+                        config=base_config,
+                        dataset_id=self.dataset.ds_id,
+                        source_path=Path(stage_events_path),
+                        event_table=None,
+                        subject_id=sub_id or "",
+                        session_id=ses_id or "",
+                        run_id=run_id or "",
+                        out_prefix=target_dir / "event_locked",
+                    )
+                    event_locked_entries.append(dict(event_locked_result.manifest_entry))
+
+                derived_event_table = None
+                task_state_series = payload.labels.get("task_state_label") if isinstance(payload.labels, Mapping) else None
+                if (
+                    task_state_series is not None
+                    and payload.window_start is not None
+                    and payload.window_end is not None
+                ):
+                    derived_event_table = build_label_segment_event_table(
+                        labels=task_state_series,
+                        window_start=np.asarray(payload.window_start, dtype=np.float64),
+                        window_end=np.asarray(payload.window_end, dtype=np.float64),
+                        source_path=str(stage_events_path or "derived:task_state_label"),
+                        source_label="derived:task_state_label",
+                    )
+                if not event_locked_entries and derived_event_table is not None and len(derived_event_table) > 0:
+                    event_locked_result = run_event_locked_export(
+                        payload=payload,
+                        config=base_config,
+                        dataset_id=self.dataset.ds_id,
+                        source_path=Path(stage_events_path) if stage_events_path else None,
+                        event_table=derived_event_table,
+                        subject_id=sub_id or "",
+                        session_id=ses_id or "",
+                        run_id=run_id or "",
+                        out_prefix=target_dir / "event_locked",
+                    )
+                    entry = dict(event_locked_result.manifest_entry)
+                    entry["derived_from"] = "task_state_label_segments"
+                    event_locked_entries.append(entry)
+
+                if event_locked_entries:
+                    if len(event_locked_entries) == 1:
+                        manifest_extra["event_locked"] = event_locked_entries[0]
+                    else:
+                        manifest_extra["event_locked"] = {
+                            "n_exports": len(event_locked_entries),
+                            "entries": event_locked_entries,
+                        }
+            except Exception as _el_exc:
+                logger.debug("event_locked export skipped: %s", _el_exc)
+        block_native_cfg = {}
+        if isinstance(config, Mapping):
+            block_native_root = config.get("block_native", {})
+            if isinstance(block_native_root, Mapping):
+                block_native_datasets = block_native_root.get("datasets", {})
+                if isinstance(block_native_datasets, Mapping):
+                    block_native_cfg = block_native_datasets.get(self.dataset.ds_id, {})
+                    if not isinstance(block_native_cfg, Mapping):
+                        block_native_cfg = {}
+        # M6 — Block-native payload injection (additive, no-op when disabled)
+        # Must run after payload is built and before manifest/H5 write so that
+        # block-native contract fields and summary sections stay in sync.
+        if stage_events_path or block_native_cfg.get("enabled", False):
+            try:
+                import pandas as _pd
+                from .block_native_config import block_native_dataset_config_from_config
+                from .block_native_export import inject_block_native_into_payload
+                from .event_locked_runner import _resolve_sampling_cfg, _resolve_stage_map
+                _bn_cfg = block_native_dataset_config_from_config(
+                    config if isinstance(config, Mapping) else {},
+                    self.dataset.ds_id,
+                )
+                _events_df_bn = None
+                _block_native_derived_from = None
+                if stage_events_path:
+                    _events_df_bn = _pd.read_csv(
+                        stage_events_path,
+                        sep="\t" if str(stage_events_path).endswith(".tsv") else ",",
+                    )
+                if _bn_cfg.enabled and _bn_cfg.source.use_derived_task_state_segments:
+                    _task_state_series_bn = payload.labels.get("task_state_label") if isinstance(payload.labels, Mapping) else None
+                    if (
+                        _task_state_series_bn is not None
+                        and payload.window_start is not None
+                        and payload.window_end is not None
+                    ):
+                        _derived_event_table_bn = build_label_segment_event_table(
+                            labels=_task_state_series_bn,
+                            window_start=np.asarray(payload.window_start, dtype=np.float64),
+                            window_end=np.asarray(payload.window_end, dtype=np.float64),
+                            source_path=str(stage_events_path or "derived:task_state_label"),
+                            source_label="derived:task_state_label",
+                        )
+                        if len(_derived_event_table_bn) > 0:
+                            _events_df_bn = _pd.DataFrame(
+                                {
+                                    _bn_cfg.source.onset_column: np.asarray(_derived_event_table_bn.onset_sec, dtype=np.float64),
+                                    _bn_cfg.source.duration_column: (
+                                        np.asarray(_derived_event_table_bn.duration_sec, dtype=np.float64)
+                                        if _derived_event_table_bn.duration_sec is not None
+                                        else np.zeros((_derived_event_table_bn.n,), dtype=np.float64)
+                                    ),
+                                    _bn_cfg.source.label_column: (
+                                        np.asarray(_derived_event_table_bn.event_type, dtype=object)
+                                        if _derived_event_table_bn.event_type is not None
+                                        else np.full((_derived_event_table_bn.n,), "", dtype=object)
+                                    ),
+                                }
+                            )
+                            _events_df_bn.attrs["source_path"] = str(_derived_event_table_bn.source_path)
+                            _block_native_derived_from = "task_state_label_segments"
+                if _events_df_bn is None:
+                    raise ValueError("block_native requires either stage events or derived task-state segments.")
+                _bn_manifest = inject_block_native_into_payload(
+                    payload,
+                    events_df=_events_df_bn,
+                    config=config if isinstance(config, Mapping) else {},
+                    dataset_id=self.dataset.ds_id,
+                    subject_id=sub_id or "",
+                    session_id=ses_id or "",
+                    run_id=run_id or "",
+                    sampling_cfg=_resolve_sampling_cfg(
+                        config if isinstance(config, Mapping) else {}, self.dataset.ds_id
+                    ),
+                    stage_map=_resolve_stage_map(
+                        config if isinstance(config, Mapping) else {}, self.dataset.ds_id
+                    ),
+                    output_dir=target_dir,
+                )
+                if isinstance(_bn_manifest, Mapping):
+                    if _bn_manifest.get("n_blocks", 0) or _bn_manifest.get("status") in {"no_blocks", "error"}:
+                        manifest_extra["block_native"] = dict(_bn_manifest)
+                        if _block_native_derived_from:
+                            manifest_extra["block_native"]["derived_from"] = _block_native_derived_from
+
+                    if _bn_manifest.get("n_blocks", 0):
+                        manifest_extra["block_native_coverage"] = {
+                            "raw_stage_label_counts": (
+                                dict(stage_mapping_qc_entry.get("raw_event_label_counts", {}))
+                                if isinstance(stage_mapping_qc_entry, Mapping)
+                                else {}
+                            ),
+                            "recovered_blocks_by_stage": dict(_bn_manifest.get("block_counts_by_stage", {})),
+                            "block_native_windows_by_stage": dict(_bn_manifest.get("window_counts_by_stage", {})),
+                            "block_counts_by_frequency_hz": dict(_bn_manifest.get("block_counts_by_frequency_hz", {})),
+                        }
+
+                        qc_entry = _bn_manifest.get("qc_entry", {})
+                        if isinstance(qc_entry, Mapping):
+                            qc_entry = dict(qc_entry)
+                            qc_entry.update(
+                                {
+                                    "subject": sub_id,
+                                    "session": ses_id,
+                                    "run": run_id,
+                                    "acq": acq_id,
+                                    "task": task,
+                                    "condition": condition,
+                                    "dataset_id": self.dataset.ds_id,
+                                }
+                            )
+                            if isinstance(stage_mapping_qc_entry, Mapping):
+                                raw_label_counts = stage_mapping_qc_entry.get("raw_event_label_counts", {})
+                                cleaned_counts: Dict[str, int] = {}
+                                normalized_counts: Dict[str, int] = {}
+                                if isinstance(raw_label_counts, Mapping):
+                                    for raw_label, raw_count in raw_label_counts.items():
+                                        try:
+                                            count_int = int(raw_count)
+                                        except Exception:
+                                            continue
+                                        cleaned = re.sub(
+                                            r"\s+",
+                                            " ",
+                                            "".join(
+                                                ch if str(ch).isprintable() else " "
+                                                for ch in str(raw_label)
+                                            ),
+                                        ).strip()
+                                        normalized = cleaned.lower()
+                                        if cleaned:
+                                            cleaned_counts[cleaned] = cleaned_counts.get(cleaned, 0) + count_int
+                                        if normalized:
+                                            normalized_counts[normalized] = normalized_counts.get(normalized, 0) + count_int
+                                qc_entry["label_cleaning"] = {
+                                    "raw_event_label_counts": dict(raw_label_counts) if isinstance(raw_label_counts, Mapping) else {},
+                                    "cleaned_event_label_counts": {
+                                        str(k): int(v) for k, v in sorted(cleaned_counts.items(), key=lambda kv: kv[0])
+                                    },
+                                    "normalized_event_label_counts": {
+                                        str(k): int(v) for k, v in sorted(normalized_counts.items(), key=lambda kv: kv[0])
+                                    },
+                                    "mapping_status_counts": (
+                                        dict(stage_mapping_qc_entry.get("mapping_mode_counts", {}))
+                                        if isinstance(stage_mapping_qc_entry.get("mapping_mode_counts", {}), Mapping)
+                                        else {}
+                                    ),
+                                }
+                            manifest_extra["block_native_qc"] = qc_entry
+                            self.dataset._record_block_native_qc_entry(qc_entry)
+            except Exception as _bn_exc:
+                logger.debug("block_native injection skipped: %s", _bn_exc)
+
+        manifest = json_writer.build_manifest(dataset_label, payload, primary_jac_diagnostics, manifest_extra)
+
         write_summary_manifest_and_h5(
             target_dir=target_dir,
             dataset_label=dataset_label,
@@ -4836,7 +5787,6 @@ class SubjectSummaryRunner:
             acq_id=acq_id,
             build_dir_suffix=self._build_dir_suffix,
         )
-
     @staticmethod
     def _apply_fd_censoring(
         sub_frame: pd.DataFrame,
@@ -5276,6 +6226,8 @@ class SubjectSummaryRunner:
         tier2_emmi: Optional[Dict[str, Any]],
         null_sanity_tests: Optional[Dict[str, Any]],
         entropy_qc: Optional[Dict[str, Any]],
+        geometry_contract: Optional[Dict[str, Any]],
+        mnps_mnj_sanity: Optional[Dict[str, Any]],
     ) -> None:
         """Write QC-related JSON files."""
         write_qc_files(
@@ -5295,4 +6247,6 @@ class SubjectSummaryRunner:
             tier2_emmi=tier2_emmi,
             null_sanity_tests=null_sanity_tests,
             entropy_qc=entropy_qc,
+            geometry_contract=geometry_contract,
+            mnps_mnj_sanity=mnps_mnj_sanity,
         )

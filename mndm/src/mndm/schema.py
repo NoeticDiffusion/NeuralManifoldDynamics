@@ -74,6 +74,11 @@ class MNPSPayload:
     features_raw_names: Optional[list[str]] = None
     features_robust_z_values: Optional[np.ndarray] = None
     features_robust_z_names: Optional[list[str]] = None
+    # Transform-aware robust-z: applies each feature's configured pipeline (e.g. log10 →
+    # robust_z → clip) before standardisation.  This correctly standardises physical MEG
+    # power values that would collapse to near-zero in raw-space robust-z.
+    features_projection_z_values: Optional[np.ndarray] = None
+    features_projection_z_names: Optional[list[str]] = None
     # Machine-readable feature metadata shared by the exported feature surfaces.
     feature_metadata: MutableMapping[str, Any] = field(default_factory=dict)
     attrs: MutableMapping[str, Any] = field(default_factory=dict)
@@ -110,6 +115,13 @@ class MNPSPayload:
     # Each layer is a mapping like:
     # {"J_hat": array, "J_dot": array, "centers": array, "attrs": {...}}.
     jacobian_layers: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional Noetic Anchoring Dynamics exports.
+    # These are intentionally separate from `feature_anchors`, which refers to
+    # cohort/external feature scaling for anchored coordinate contracts.
+    anchor_state: MutableMapping[str, Any] = field(default_factory=dict)
+    anchor_state_dot: MutableMapping[str, Any] = field(default_factory=dict)
+    anchor_quality: MutableMapping[str, Any] = field(default_factory=dict)
+    anchor_coupling: MutableMapping[str, Any] = field(default_factory=dict)
     # Optional raw regional signals (e.g. fMRI ROI×time). These are supporting
     # inputs for some regional analyses, but are not the canonical regional
     # output contract exposed to downstream readers.
@@ -130,6 +142,30 @@ class MNPSPayload:
     # label to a dict containing 'mnps' [T,3], 'jacobian' [W,3,3], and
     # optional supporting fields such as 'stratified' and 'metrics'.
     regional_mnps: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional block-native interval table.  When populated, h5_writer writes
+    # these under /blocks/* (one dataset per column).  The columns follow the
+    # StageBlockInterval contract and block-native provenance:
+    # block_id, stage_code, start_sec, end_sec, duration_sec, frequency_hz,
+    # source_event_idx, support_event_count, derived_from, end_reason,
+    # membership_mode, bridge_tail_sec, bridge_tail_cap_sec, is_inferred.
+    block_table_columns: MutableMapping[str, Any] = field(default_factory=dict)
+    # Optional block-native window table.  When populated, h5_writer writes
+    # these under /block_windows/* (one dataset per column).  The columns
+    # follow the BlockWindowRow contract: block_id, window_id_within_block,
+    # stage_code, window_start_sec, window_end_sec, window_center_sec,
+    # relative_time_in_block_sec, distance_to_block_end_sec, relative_pos_0_1,
+    # source_window_index, partition_label, is_post_offset.
+    block_window_table_columns: MutableMapping[str, Any] = field(default_factory=dict)
+    # Per-row source provenance (replaces implicit stacked-half positional slicing).
+    # Written under /row_source/. Standard columns:
+    #   row_source    str  "set_eeg" | "fif_meeg" | "unknown"
+    #   has_meg       int8  1 if the source file contains MEG channels, else 0
+    #   has_eeg       int8  1 if the source file contains EEG channels, else 0
+    #   has_mag       int8  1 if MAG (magnetometer) channels are present, else 0
+    #   has_grad      int8  1 if GRAD (gradiometer) channels are present, else 0
+    #   raw_file      str   basename of the source file for each row
+    #   source_format str   "neuromag_fif" | "eeglab_set" | "unknown"
+    row_source_columns: MutableMapping[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
         """Return a shallow dict representation for serialization."""
@@ -168,6 +204,10 @@ class MNPSPayload:
             "coordinate_layers": dict(self.coordinate_layers),
             "feature_anchors": dict(self.feature_anchors),
             "jacobian_layers": dict(self.jacobian_layers),
+            "anchor_state": dict(self.anchor_state),
+            "anchor_state_dot": dict(self.anchor_state_dot),
+            "anchor_quality": dict(self.anchor_quality),
+            "anchor_coupling": dict(self.anchor_coupling),
             "regions_bold": self.regions_bold,
             "regions_names": list(self.regions_names) if self.regions_names is not None else None,
             "regions_sfreq": self.regions_sfreq,
@@ -177,6 +217,8 @@ class MNPSPayload:
             "coverage": dict(self.coverage),
             "qc_windows": dict(self.qc_windows),
             "regional_mnps": dict(self.regional_mnps),
+            "block_table_columns": dict(self.block_table_columns),
+            "block_window_table_columns": dict(self.block_window_table_columns),
         }
 
 
@@ -381,6 +423,36 @@ def _normalize_coordinate_layers(
     return normalized
 
 
+def _normalize_named_matrix_group(
+    group_payload: MutableMapping[str, Any],
+    *,
+    t_len: int,
+    label: str,
+) -> MutableMapping[str, Any]:
+    """Validate optional named matrix groups like `/anchor_state`."""
+    if not isinstance(group_payload, Mapping) or not group_payload:
+        return {}
+    if "values" not in group_payload:
+        raise ValueError(f"{label} requires 'values'")
+    values = np.asarray(group_payload.get("values"), dtype=np.float32)
+    if values.ndim != 2 or values.shape[0] != t_len:
+        raise ValueError(f"{label}.values must be 2-D and align with time")
+    names_raw = group_payload.get("names")
+    if names_raw is None:
+        names = [f"dim_{idx}" for idx in range(values.shape[1])]
+    else:
+        names = [str(v) for v in names_raw]
+        if len(names) != values.shape[1]:
+            raise ValueError(f"{label}.names length must match values columns")
+    attrs_raw = group_payload.get("attrs", {})
+    attrs = dict(attrs_raw) if isinstance(attrs_raw, Mapping) else {}
+    return {
+        "values": np.ascontiguousarray(values, dtype=np.float32),
+        "names": names,
+        "attrs": attrs,
+    }
+
+
 def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
     """Coerce arrays to canonical dtypes and validate shapes (mutates ``payload`` in place).
 
@@ -450,6 +522,25 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             payload.coordinate_layers,
             t_len=t.shape[0],
         )
+    if payload.anchor_state:
+        payload.anchor_state = _normalize_named_matrix_group(
+            payload.anchor_state,
+            t_len=t.shape[0],
+            label="anchor_state",
+        )
+    if payload.anchor_state_dot:
+        payload.anchor_state_dot = _normalize_named_matrix_group(
+            payload.anchor_state_dot,
+            t_len=t.shape[0],
+            label="anchor_state_dot",
+        )
+    if payload.anchor_quality:
+        payload.anchor_quality = _normalize_named_matrix_group(
+            payload.anchor_quality,
+            t_len=t.shape[0],
+            label="anchor_quality",
+        )
+    payload.anchor_coupling = dict(payload.anchor_coupling) if isinstance(payload.anchor_coupling, Mapping) else {}
     if payload.event_windows:
         payload.event_windows = _normalize_columnar_mapping(
             payload.event_windows,
@@ -474,6 +565,17 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
     )
     payload.provenance = dict(payload.provenance) if isinstance(payload.provenance, Mapping) else {}
     payload.coverage = dict(payload.coverage) if isinstance(payload.coverage, Mapping) else {}
+
+    if payload.block_table_columns:
+        payload.block_table_columns = _normalize_columnar_mapping(
+            payload.block_table_columns,
+            label="block_table_columns",
+        )
+    if payload.block_window_table_columns:
+        payload.block_window_table_columns = _normalize_columnar_mapping(
+            payload.block_window_table_columns,
+            label="block_window_table_columns",
+        )
 
     payload.jacobian = _validate_optional_array("jacobian", payload.jacobian, 3)
     payload.jacobian_dot = _validate_optional_array("jacobian_dot", payload.jacobian_dot, 3)
@@ -559,6 +661,10 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             raise ValueError("coords_9d_names length must match coords_9d columns")
         names = [str(n) for n in payload.coords_9d_names]
         allow_all_non_finite = bool(payload.attrs.get("coords_9d_allow_all_non_finite_columns", False))
+        allow_duplicate_columns = bool(payload.attrs.get("coords_9d_allow_duplicate_columns", False))
+        allow_duplicate_constant = bool(
+            payload.attrs.get("coords_9d_allow_duplicate_constant_columns", allow_duplicate_columns)
+        )
         # Since v2 values are pre-standardized, we only use _normalize_coords_9d for shape/NaN checks and canonical ordering.
         (
             payload.coords_9d,
@@ -568,11 +674,19 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             payload.coords_9d,
             names,
             allow_all_non_finite_columns=allow_all_non_finite,
+            allow_duplicate_columns=allow_duplicate_columns,
+            allow_duplicate_constant_columns=allow_duplicate_constant,
             return_diagnostics=True,
         )
         if coords_9d_diag.get("all_non_finite_names"):
             payload.attrs["coords_9d_all_non_finite_names"] = coords_9d_diag.get("all_non_finite_names")
             payload.attrs["coords_9d_all_non_finite_count"] = int(coords_9d_diag.get("all_non_finite_count", 0))
+        if coords_9d_diag.get("duplicate_pairs"):
+            payload.attrs["coords_9d_duplicate_pairs"] = coords_9d_diag.get("duplicate_pairs")
+            payload.attrs["coords_9d_duplicate_count"] = int(coords_9d_diag.get("duplicate_count", 0))
+        if coords_9d_diag.get("duplicate_constant_pairs"):
+            payload.attrs["coords_9d_duplicate_constant_pairs"] = coords_9d_diag.get("duplicate_constant_pairs")
+            payload.attrs["coords_9d_duplicate_constant_count"] = int(coords_9d_diag.get("duplicate_constant_count", 0))
 
     # Normalize optional raw regional signals (e.g. fMRI ROI×time). These are
     # intentionally decoupled from the MNPS time axis: the BOLD sampling
@@ -596,9 +710,16 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
             raise ValueError(f"regions_sfreq must be convertible to float, got {payload.regions_sfreq!r}") from exc
 
     # Explicit schema marker helps downstream readers avoid silent shape/contract drift.
-    if payload.coordinate_layers or payload.feature_anchors:
-        payload.attrs.setdefault("schema_version", "mnps_tensor_spec_v2_1")
-        payload.attrs.setdefault("mndm_version", "2.1")
+    if (
+        payload.coordinate_layers
+        or payload.feature_anchors
+        or payload.anchor_state
+        or payload.anchor_state_dot
+        or payload.anchor_quality
+        or payload.anchor_coupling
+    ):
+        payload.attrs.setdefault("schema_version", "mnps_tensor_spec_v2_4")
+        payload.attrs.setdefault("mndm_version", "2.4")
     else:
         payload.attrs.setdefault("schema_version", "mnps_tensor_spec_v2")
 
@@ -610,6 +731,7 @@ def _normalize_coords_9d(
     names: Sequence[str],
     *,
     allow_all_non_finite_columns: bool = False,
+    allow_duplicate_columns: bool = False,
     allow_duplicate_constant_columns: bool = False,
     return_diagnostics: bool = False,
 ) -> tuple[np.ndarray, list[str]] | tuple[np.ndarray, list[str], Dict[str, Any]]:
@@ -649,6 +771,7 @@ def _normalize_coords_9d(
     sentinel = np.float32(9.999e9)
     seen: Dict[str, int] = {}
     duplicates: Dict[str, str] = {}
+    duplicate_pairs: Dict[str, str] = {}
     duplicate_constant_pairs: Dict[str, str] = {}
 
     def _is_effectively_constant(col_idx: int) -> bool:
@@ -669,10 +792,15 @@ def _normalize_coords_9d(
         sig = hashlib.sha256(np.ascontiguousarray(col).view(np.uint8)).hexdigest()
         if sig in seen:
             prev_idx = seen[sig]
-            if allow_duplicate_constant_columns and _is_effectively_constant(idx) and _is_effectively_constant(prev_idx):
-                duplicate_constant_pairs[mnps_9d_CANONICAL_ORDER[idx]] = mnps_9d_CANONICAL_ORDER[prev_idx]
+            curr_name = mnps_9d_CANONICAL_ORDER[idx]
+            prev_name = mnps_9d_CANONICAL_ORDER[prev_idx]
+            is_constant_pair = _is_effectively_constant(idx) and _is_effectively_constant(prev_idx)
+            if is_constant_pair:
+                duplicate_constant_pairs[curr_name] = prev_name
+            if allow_duplicate_columns or (allow_duplicate_constant_columns and is_constant_pair):
+                duplicate_pairs[curr_name] = prev_name
             else:
-                duplicates[mnps_9d_CANONICAL_ORDER[idx]] = mnps_9d_CANONICAL_ORDER[prev_idx]
+                duplicates[curr_name] = prev_name
         else:
             seen[sig] = idx
     if duplicates:
@@ -684,6 +812,8 @@ def _normalize_coords_9d(
         diagnostics: Dict[str, Any] = {
             "all_non_finite_names": all_non_finite_names,
             "all_non_finite_count": int(len(all_non_finite_names)),
+            "duplicate_pairs": duplicate_pairs,
+            "duplicate_count": int(len(duplicate_pairs)),
             "duplicate_constant_pairs": duplicate_constant_pairs,
             "duplicate_constant_count": int(len(duplicate_constant_pairs)),
             "finite_count_by_name": {

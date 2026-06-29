@@ -100,10 +100,50 @@ conventional_eeg:
         hjorth_complexity: true
         hjorth_mobility: true
 
+block_native:
+  datasets:
+    ds003506:
+      enabled: false
+      source:
+        # Reinforcement learning task phases: choose phase (free-choice trials)
+        # and match phase (forced-choice trials).
+        # The trigger-enriched event_subtype_role column carries compact
+        # prefix-based family names: choose_* and match_*.
+        kind: "task_phase"
+        label_column: "event_subtype_role"
+        onset_column: "onset"
+        phase_prefixes:
+          choose: "choose_"
+          match: "match_"
+        # Tuned from emitted block-duration distribution (2026-06-04):
+        # p25~352s, median~376s, p90~450s, max~518s.
+        gap_tolerance_sec: 8.0
+        min_block_sec: 60.0
+        max_block_sec: 480.0
+      window_profile:
+        profile: "whole_block"
+        kind: "sliding"
+        window_length_sec: 4.0
+        step_sec: 2.0
+        emit_relative_position: true
+        min_block_sec: 4.0
+        min_windows_per_block: 2
+      export:
+        write_parquet: true
+        write_csv: true
+
 mnps_projection:
   export_contracts:
     subject_anchored: true
     cohort_anchored: true
+  # Ensure cohort_anchored layers are actually emitted by fitting a frozen
+  # anchor from this run's cohort features before summarize starts.
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "ds003506_cohort_auto_v2_1"
+    anchor_source: "ds003506_all_subjects_features_table"
+    scale_method: "iqr"
+    min_subjects: 3
 
 robustness:
   ensembles:

@@ -45,6 +45,26 @@ def _normalize_packs(conventional_cfg: Mapping[str, Any]) -> set[str]:
     return {"tier1"}
 
 
+def _coma_clinical_markers_payload(dataset_id: Optional[str]) -> Dict[str, Any]:
+    """Return explicit availability metadata for non-EEG coma biomarkers."""
+    source_hint = "requires_external_clinical_data"
+    if str(dataset_id or "").strip() == "physionet_icare_2_1":
+        source_hint = "not_present_in_public_icare_2_1_release"
+    marker_payload = {
+        "status": "unavailable",
+        "reason": source_hint,
+    }
+    return {
+        "mode": "eeg_only_proxy",
+        "markers": {
+            "ssep": dict(marker_payload),
+            "nse": dict(marker_payload),
+            "gcs": dict(marker_payload),
+            "s100b": dict(marker_payload),
+        },
+    }
+
+
 def compute_conventional_eeg_summary(
     *,
     sub_frame: pd.DataFrame,
@@ -98,10 +118,13 @@ def compute_conventional_eeg_summary(
             for feature_name, stats in descriptives.items()
         }
 
-    return {
+    payload = {
         "schema_version": "mndm.conventional_eeg.v1",
         "packs": sorted(packs),
         "column_count": int(len(conventional_cols)),
         "columns": sorted(conventional_cols),
         "families": family_payload,
     }
+    if "coma" in packs:
+        payload["clinical_markers"] = _coma_clinical_markers_payload(dataset_id)
+    return payload

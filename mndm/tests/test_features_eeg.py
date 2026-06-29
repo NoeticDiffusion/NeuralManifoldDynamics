@@ -383,3 +383,125 @@ def test_compute_eeg_features_conventional_connectivity_outputs(monkeypatch):
     )
 
 
+def test_compute_eeg_features_conventional_coma_outputs(monkeypatch):
+    """Coma pack should emit suppression/continuity and reactivity proxy columns."""
+    from mndm.features import eeg as eeg_mod
+
+    freqs = np.arange(1.0, 46.0, dtype=float)
+    psd_template = np.ones_like(freqs, dtype=float)
+    psd_template[(freqs >= 1.0) & (freqs <= 4.0)] = 2.0
+    psd_template[(freqs >= 8.0) & (freqs <= 12.0)] = 1.0
+
+    def _fake_psd(data, **kwargs):
+        arr = np.asarray(data)
+        if arr.ndim != 3:
+            raise AssertionError("Expected batched EEG PSD input")
+        tiled = np.tile(psd_template, (arr.shape[0], arr.shape[1], 1))
+        return tiled.astype(float), freqs
+
+    monkeypatch.setattr(eeg_mod, "psd_array_multitaper", _fake_psd)
+
+    rng = np.random.default_rng(2026)
+    sfreq = 250
+    n_channels = 6
+    n_samples = sfreq * 20
+    t = np.arange(n_samples, dtype=float) / float(sfreq)
+    amp = np.where((np.floor(t / 2.0) % 2.0) == 0.0, 0.02, 1.0)
+    eeg_data = (rng.normal(size=(n_channels, n_samples)) * amp[np.newaxis, :]).astype(np.float32)
+    signals = {"signals": {"eeg": eeg_data}, "sfreq": sfreq}
+    config = {
+        "epoching": {"length_s": 4.0, "step_s": 2.0},
+        "features": {
+            "eeg_psd": {"method": "multitaper", "fmin": 1.0, "fmax": 45.0},
+            "eeg_bands": {
+                "delta": [1, 4],
+                "theta": [4, 8],
+                "alpha": [8, 12],
+                "beta": [13, 30],
+                "gamma": [30, 45],
+            },
+        },
+        "conventional_eeg": {
+            "enabled": True,
+            "packs": ["coma"],
+            "export": {"per_epoch_columns": True, "summaries": True},
+            "coma": {
+                "suppression_ratio": True,
+                "burst_suppression_proxy": True,
+                "continuity_proxy": True,
+                "alpha_delta_ratio": True,
+                "reactivity_proxy": {"enabled": True, "clip_at": 5.0},
+            },
+        },
+    }
+
+    out = eeg_mod.compute_eeg_features(signals, config)
+    assert not out.empty
+    expected_cols = [
+        "eeg_conventional_coma_suppression_ratio",
+        "eeg_conventional_coma_continuity_proxy",
+        "eeg_conventional_coma_burst_suppression_proxy",
+        "eeg_conventional_coma_alpha_delta_ratio",
+        "eeg_conventional_coma_reactivity_proxy",
+    ]
+    assert all(col in out.columns for col in expected_cols)
+
+    suppression = out["eeg_conventional_coma_suppression_ratio"].to_numpy(dtype=float)
+    continuity = out["eeg_conventional_coma_continuity_proxy"].to_numpy(dtype=float)
+    burst_proxy = out["eeg_conventional_coma_burst_suppression_proxy"].to_numpy(dtype=float)
+    reactivity = out["eeg_conventional_coma_reactivity_proxy"].to_numpy(dtype=float)
+    ratio = out["eeg_conventional_coma_alpha_delta_ratio"].to_numpy(dtype=float)
+
+    assert np.all(np.isfinite(suppression))
+    assert np.all(np.isfinite(continuity))
+    assert np.all(np.isfinite(burst_proxy))
+    assert np.all(np.isfinite(reactivity))
+    assert np.all(np.isfinite(ratio))
+    assert np.all((suppression >= 0.0) & (suppression <= 1.0))
+    assert np.all((continuity >= 0.0) & (continuity <= 1.0))
+    assert np.all((burst_proxy >= 0.0) & (burst_proxy <= 1.0))
+    assert np.all((reactivity >= 0.0) & (reactivity <= 1.0))
+    assert np.allclose(continuity, 1.0 - suppression, atol=1e-6, rtol=0.0)
+    assert np.allclose(
+        ratio,
+        out["eeg_alpha"].to_numpy(dtype=float) / out["eeg_delta"].to_numpy(dtype=float),
+        equal_nan=True,
+    )
+    assert float(np.nanmax(reactivity)) > 0.0
+
+
+def test_compute_eeg_features_conventional_coma_reactivity_can_be_disabled(monkeypatch):
+    """Disabling coma reactivity proxy should remove the reactivity column."""
+    from mndm.features import eeg as eeg_mod
+
+    freqs = np.arange(1.0, 46.0, dtype=float)
+
+    def _fake_psd(data, **kwargs):
+        arr = np.asarray(data)
+        if arr.ndim != 3:
+            raise AssertionError("Expected batched EEG PSD input")
+        tiled = np.ones((arr.shape[0], arr.shape[1], freqs.size), dtype=float)
+        return tiled, freqs
+
+    monkeypatch.setattr(eeg_mod, "psd_array_multitaper", _fake_psd)
+
+    rng = np.random.default_rng(77)
+    eeg_data = rng.normal(size=(4, 250 * 12)).astype(np.float32)
+    signals = {"signals": {"eeg": eeg_data}, "sfreq": 250}
+    config = {
+        "epoching": {"length_s": 4.0, "step_s": 2.0},
+        "features": {"eeg_psd": {"method": "multitaper", "fmin": 1.0, "fmax": 45.0}},
+        "conventional_eeg": {
+            "enabled": True,
+            "packs": ["coma"],
+            "coma": {
+                "suppression_ratio": True,
+                "reactivity_proxy": {"enabled": False},
+            },
+        },
+    }
+
+    out = eeg_mod.compute_eeg_features(signals, config)
+    assert "eeg_conventional_coma_suppression_ratio" in out.columns
+    assert "eeg_conventional_coma_reactivity_proxy" not in out.columns
+

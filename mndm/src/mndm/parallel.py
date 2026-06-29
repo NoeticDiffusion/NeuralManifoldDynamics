@@ -47,16 +47,100 @@ def _looks_like_git_annex_placeholder(file_path: Path) -> bool:
 def _dedupe_columns(cols: list[str]) -> list[str]:
     """Return a list of unique column names by suffixing duplicates deterministically."""
     seen: Dict[str, int] = {}
+    used: set[str] = set()
     out: list[str] = []
     for c in cols:
         base = str(c)
         n = seen.get(base, 0)
-        if n == 0:
-            out.append(base)
-        else:
-            out.append(f"{base}__dup{n}")
+        candidate = base
+        if candidate in used:
+            n = max(1, n)
+            candidate = f"{base}__dup{n}"
+            while candidate in used:
+                n += 1
+                candidate = f"{base}__dup{n}"
+        out.append(candidate)
+        used.add(candidate)
         seen[base] = n + 1
     return out
+
+
+def _nonmissing_mask(series: pd.Series) -> np.ndarray:
+    """Return a boolean mask for non-missing values across numeric/string columns."""
+    arr = series.to_numpy(copy=False)
+    mask = pd.notna(arr)
+    if getattr(arr, "dtype", None) == object:
+        mask = mask & (np.asarray([str(v).strip() != "" for v in arr], dtype=bool))
+    return np.asarray(mask, dtype=bool)
+
+
+def _series_overlap_equal(left: pd.Series, right: pd.Series) -> bool:
+    """Return True when overlapping non-missing values are equal."""
+    left_mask = _nonmissing_mask(left)
+    right_mask = _nonmissing_mask(right)
+    overlap = left_mask & right_mask
+    if not np.any(overlap):
+        return True
+    left_arr = left.to_numpy(copy=False)[overlap]
+    right_arr = right.to_numpy(copy=False)[overlap]
+    if np.issubdtype(np.asarray(left_arr).dtype, np.number) and np.issubdtype(np.asarray(right_arr).dtype, np.number):
+        return bool(np.allclose(left_arr.astype(float), right_arr.astype(float), equal_nan=True))
+    return bool(np.all(np.asarray([str(v) for v in left_arr], dtype=object) == np.asarray([str(v) for v in right_arr], dtype=object)))
+
+
+def _coalesce_series(series_list: list[pd.Series]) -> pd.Series:
+    """Combine duplicate aligned columns by taking the first non-missing value per row."""
+    merged = series_list[0].copy()
+    merged_arr = merged.to_numpy(copy=True)
+    merged_mask = _nonmissing_mask(merged)
+    for series in series_list[1:]:
+        series_arr = series.to_numpy(copy=False)
+        series_mask = _nonmissing_mask(series)
+        use = (~merged_mask) & series_mask
+        if np.any(use):
+            merged_arr[use] = series_arr[use]
+            merged_mask[use] = True
+    return pd.Series(merged_arr, index=merged.index, name=series_list[0].name)
+
+
+def _coalesce_duplicate_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Collapse duplicate aligned columns when they agree on overlapping values."""
+    if df is None or df.empty or not df.columns.duplicated().any():
+        return df
+
+    out = df.copy()
+    order = list(dict.fromkeys([str(col) for col in out.columns]))
+    for col_name in order:
+        positions = [idx for idx, name in enumerate(out.columns) if str(name) == col_name]
+        if len(positions) <= 1:
+            continue
+        series_list = [out.iloc[:, pos] for pos in positions]
+        if not all(_series_overlap_equal(series_list[0], other) for other in series_list[1:]):
+            continue
+        merged = _coalesce_series(series_list)
+        keep_pos = positions[0]
+        out.iloc[:, keep_pos] = merged.to_numpy(copy=False)
+        keep_mask = np.ones(out.shape[1], dtype=bool)
+        keep_mask[positions[1:]] = False
+        out = out.iloc[:, keep_mask]
+    return out
+
+
+def _drop_staged_resolver_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop previously merged embodiment resolver columns before recomputing them."""
+    if df is None or df.empty:
+        return df
+    drop_cols = [
+        str(col)
+        for col in df.columns
+        if str(col) == "embodied_arousal_proxy"
+        or str(col) == "embodied_arousal_proxy_source"
+        or str(col).startswith("embodied_arousal_proxy__dup")
+        or str(col).startswith("embodied_arousal_proxy_source__dup")
+    ]
+    if not drop_cols:
+        return df
+    return df.drop(columns=drop_cols)
 
 
 def _json_numpy_default(obj: Any) -> Any:
@@ -182,19 +266,27 @@ def _merge_feature_frames(feature_dfs: list[pd.DataFrame]) -> pd.DataFrame:
     else:
         merged = pd.concat(dfs, axis=1, join="outer")
 
+    merged = _coalesce_duplicate_columns(merged)
     # Ensure unique columns for safe JSON export and later downstream reads.
     if merged.columns.duplicated().any():
         merged.columns = _dedupe_columns([str(c) for c in merged.columns])
 
     # Cross-modality resolver for embodiment axis:
-    # prefer ECG RMSSD, else EOG blink-rate, else EEG high-frequency power.
+    # prefer explicit autonomic/pupil signals before falling back to legacy EOG/EEG proxies.
     if len(merged) > 0:
         try:
+            merged = _drop_staged_resolver_columns(merged)
             proxy = np.full(len(merged), np.nan, dtype=np.float64)
             source = np.full(len(merged), "", dtype=object)
             for col_name, source_name in (
                 ("ecg_rmssd", "ecg_rmssd"),
+                ("ecg_hr_bpm", "ecg_hr_bpm"),
+                ("ppg_rate_bpm", "ppg_rate_bpm"),
+                ("ppg_amplitude_mean", "ppg_amplitude_mean"),
+                ("pupil_dilation_velocity", "pupil_dilation_velocity"),
+                ("pupil_diameter_std", "pupil_diameter_std"),
                 ("eog_blink_rate", "eog_blink_rate"),
+                ("meg_highfreq_power_30_45", "meg_highfreq_power_30_45"),
                 ("eeg_highfreq_power_30_45", "eeg_highfreq_power_30_45"),
             ):
                 if col_name not in merged.columns:
@@ -210,6 +302,82 @@ def _merge_feature_frames(feature_dfs: list[pd.DataFrame]) -> pd.DataFrame:
             logger.exception("Failed to compute embodied_arousal_proxy; continuing without resolver feature")
 
     return merged
+
+
+def _get_modality_handlers() -> Dict[str, Any]:
+    """Resolve feature handlers lazily so optional modalities can be added safely."""
+    from .features import ecg, eda, eeg, emg, eog, fmri, meg, resp
+
+    handlers: Dict[str, Any] = {
+        "eeg": eeg.compute_eeg_features,
+        "meg": meg.compute_meg_features,
+        "eog": eog.compute_eog_features,
+        "emg": emg.compute_emg_features,
+        "ecg": ecg.compute_ecg_features,
+        "resp": resp.compute_resp_features,
+        "eda": eda.compute_eda_features,
+        "fmri": fmri.compute_fmri_features,
+    }
+    try:
+        from .features import ppg  # type: ignore
+
+        handlers["ppg"] = ppg.compute_ppg_features
+    except Exception:
+        pass
+    try:
+        from .features import pupil  # type: ignore
+
+        handlers["pupil"] = pupil.compute_pupil_features
+    except Exception:
+        pass
+    return handlers
+
+
+def _build_signal_payload(
+    preprocessed: Any,
+    *,
+    file_path_for_features: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Normalize preprocessed output to the dict consumed by feature extractors."""
+    return {
+        "signals": preprocessed.signals,
+        "sfreq": preprocessed.sfreq,
+        "channels": preprocessed.channels,
+        "dataset_id": preprocessed.meta.get("dataset_id"),
+        "file_path": file_path_for_features or preprocessed.meta.get("file"),
+        "meta": dict(preprocessed.meta or {}),
+    }
+
+
+def _compute_features_from_preprocessed(
+    preprocessed: Any,
+    config: Dict[str, Any],
+    *,
+    file_path_for_features: Optional[str] = None,
+) -> tuple[pd.DataFrame | None, Dict[str, float]]:
+    """Compute and merge per-modality features from one preprocessed payload."""
+    sig_payload = _build_signal_payload(
+        preprocessed,
+        file_path_for_features=file_path_for_features,
+    )
+    feature_dfs: list[pd.DataFrame] = []
+    feature_stage_times: Dict[str, float] = {}
+    mod_handlers = _get_modality_handlers()
+    available_modalities = set(preprocessed.signals.keys())
+    for mod_name, mod_func in mod_handlers.items():
+        if mod_name not in available_modalities:
+            continue
+        t_mod0 = time.perf_counter()
+        mod_features = mod_func(sig_payload, config)
+        feature_stage_times[f"feature_{mod_name}"] = float(time.perf_counter() - t_mod0)
+        if isinstance(mod_features, pd.DataFrame) and len(mod_features) > 0:
+            feature_dfs.append(mod_features)
+    if not feature_dfs:
+        return None, feature_stage_times
+    t_merge0 = time.perf_counter()
+    merged = _merge_feature_frames(feature_dfs)
+    feature_stage_times["merge_modalities"] = float(time.perf_counter() - t_merge0)
+    return merged, feature_stage_times
 
 
 @dataclass
@@ -349,7 +517,6 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
 
         t0 = time.perf_counter()
         from . import preprocess
-        from .features import eeg, eog, emg, ecg, resp, eda, fmri
         
         preprocessed = preprocess.preprocess_file(file_path, config)
         _track_rss()
@@ -365,51 +532,17 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
                         continue
         except Exception:
             pass
-        
-        # Normalize payload to plain dict and include metadata needed for
-        # robustness features (e.g. channel-shift ensembles).
-        sig_payload = {
-            "signals": preprocessed.signals,
-            "sfreq": preprocessed.sfreq,
-            "channels": preprocessed.channels,
-            "dataset_id": preprocessed.meta.get("dataset_id"),
-            # Feature extractors sometimes need to locate sidecars (events/channels)
-            # relative to the raw file path.
-            "file_path": preprocessed.meta.get("file"),
-        }
-        
-        feature_dfs = []
-        feature_stage_times: Dict[str, float] = {}
-        mod_handlers = {
-            "eeg": eeg.compute_eeg_features,
-            "eog": eog.compute_eog_features,
-            "emg": emg.compute_emg_features,
-            "ecg": ecg.compute_ecg_features,
-            "resp": resp.compute_resp_features,
-            "eda": eda.compute_eda_features,
-            "fmri": fmri.compute_fmri_features,
-        }
-        
-        # Only compute features for modalities that exist in the signals
-        available_modalities = set(preprocessed.signals.keys())
-        for mod_name, mod_func in mod_handlers.items():
-            if mod_name in available_modalities:
-                t_mod0 = time.perf_counter()
-                mod_features = mod_func(sig_payload, config)
-                _track_rss()
-                feature_stage_times[f"feature_{mod_name}"] = float(time.perf_counter() - t_mod0)
-                if len(mod_features) > 0:
-                    feature_dfs.append(mod_features)
         t2 = time.perf_counter()
+        merged, feature_stage_times = _compute_features_from_preprocessed(
+            preprocessed,
+            config,
+            file_path_for_features=str(file_path),
+        )
+        _track_rss()
         stage_times.update(feature_stage_times)
-        stage_times["feature_extract_total"] = float(t2 - t1)
-        stage_times["merge_modalities"] = 0.0
-        
-        if feature_dfs:
-            t_merge0 = time.perf_counter()
-            merged = _merge_feature_frames(feature_dfs)
-            _track_rss()
-            stage_times["merge_modalities"] = float(time.perf_counter() - t_merge0)
+        stage_times["feature_extract_total"] = float(time.perf_counter() - t1)
+
+        if merged is not None and len(merged) > 0:
             merged["file"] = str(file_path.name)
             total = float(time.perf_counter() - t0)
             stage_times["worker_total"] = total
@@ -453,6 +586,143 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
     finally:
         # Aggressive cleanup removed as it can trigger crashes during worker shutdown on Windows.
         pass
+
+
+def process_file_bundle(bundle_records: list[Dict[str, Any]], dataset_root: Path, config: Dict[str, Any]) -> WorkerResult:
+    """Process one multimodal recording bundle and merge modality features on epoch_id."""
+    _set_blas_threads()
+
+    from . import preprocess
+
+    stage_times: Dict[str, float] = {}
+    rss_start = _process_rss_gb()
+    rss_peak = rss_start
+
+    def _track_rss() -> None:
+        nonlocal rss_peak
+        r = _process_rss_gb()
+        if r > rss_peak:
+            rss_peak = r
+
+    def _attach_memory_meta(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        out = dict(meta or {})
+        out["worker_rss_gb_start"] = float(rss_start) if rss_start > 0 else None
+        out["worker_rss_gb_peak"] = float(rss_peak) if rss_peak > 0 else None
+        out["worker_rss_gb_delta_peak"] = (
+            float(rss_peak - rss_start) if (rss_start > 0 and rss_peak > 0) else None
+        )
+        return out
+
+    if not bundle_records:
+        return WorkerResult(success=True, file_path="", features_df=None, meta={"skipped": True, "reason": "empty_bundle"})
+
+    preferred = next(
+        (row for row in bundle_records if str(row.get("modality", "")).strip().lower() == "eeg"),
+        bundle_records[0],
+    )
+    representative_rel = str(preferred.get("path", "") or "")
+    representative_path = dataset_root / representative_rel if representative_rel else dataset_root
+    representative_file_name = Path(representative_rel).name if representative_rel else "unknown_bundle"
+    bundle_key = str(preferred.get("bundle_key", "") or "")
+
+    try:
+        merged_bundle_frames: list[pd.DataFrame] = []
+        bundle_modalities: list[str] = []
+        skipped_modalities: list[str] = []
+        preprocess_meta: Dict[str, Any] = {}
+        t0 = time.perf_counter()
+
+        for row in bundle_records:
+            rel = str(row.get("path", "") or "")
+            modality = str(row.get("modality", "") or "").strip().lower()
+            if not rel:
+                continue
+            path = dataset_root / rel
+            if not path.exists():
+                skipped_modalities.append(f"{modality}:missing")
+                continue
+            suffixes = "".join(path.suffixes).lower()
+            if suffixes.endswith((".tsv", ".csv")) and modality in {"beh"}:
+                # Behavioral tables are currently carried for grouping/labels, not feature extraction.
+                skipped_modalities.append(f"{modality}:tabular_pending")
+                continue
+            if suffixes.endswith((".tsv", ".csv")) and modality == "pupil" and path.stem.endswith("_events"):
+                skipped_modalities.append(f"{modality}:events_sidecar")
+                continue
+
+            t_pre0 = time.perf_counter()
+            preprocessed = preprocess.preprocess_file(path, config)
+            stage_times[f"preprocess_{modality or path.suffix.lower().lstrip('.')}"] = float(time.perf_counter() - t_pre0)
+            _track_rss()
+
+            per_file_df, feature_stage_times = _compute_features_from_preprocessed(
+                preprocessed,
+                config,
+                file_path_for_features=str(representative_path),
+            )
+            _track_rss()
+            for key, value in feature_stage_times.items():
+                stage_times[f"{key}_{modality or path.suffix.lower().lstrip('.')}"] = value
+            if per_file_df is None or per_file_df.empty:
+                skipped_modalities.append(f"{modality}:no_features")
+                continue
+            merged_bundle_frames.append(per_file_df)
+            bundle_modalities.append(modality)
+            preprocess_meta[f"{modality}_source_file"] = str(path)
+
+        if merged_bundle_frames:
+            t_merge0 = time.perf_counter()
+            merged = _merge_feature_frames(merged_bundle_frames)
+            stage_times["merge_bundle_modalities"] = float(time.perf_counter() - t_merge0)
+            merged["file"] = representative_file_name
+            merged["bundle_key"] = bundle_key
+            for key in ("subject", "session", "task", "run", "acq", "modality", "datatype"):
+                value = preferred.get(key)
+                if value is not None and value == value:
+                    merged[key] = value
+            total = float(time.perf_counter() - t0)
+            stage_times["worker_total"] = total
+            return WorkerResult(
+                success=True,
+                file_path=str(representative_path),
+                features_df=merged,
+                meta=_attach_memory_meta(
+                    {
+                        **preprocess_meta,
+                        "bundle_key": bundle_key,
+                        "bundle_modalities": bundle_modalities,
+                        "skipped_modalities": skipped_modalities,
+                    }
+                ),
+                timings=stage_times,
+            )
+
+        total = float(time.perf_counter() - t0)
+        stage_times["worker_total"] = total
+        return WorkerResult(
+            success=True,
+            file_path=str(representative_path),
+            features_df=None,
+            meta=_attach_memory_meta(
+                {
+                    "bundle_key": bundle_key,
+                    "bundle_modalities": bundle_modalities,
+                    "skipped_modalities": skipped_modalities,
+                    "skipped": True,
+                    "reason": "no_bundle_features",
+                }
+            ),
+            timings=stage_times,
+        )
+    except Exception as e:
+        logger.exception("Failed to process bundle for %s", representative_file_name)
+        return WorkerResult(
+            success=False,
+            file_path=str(representative_path),
+            error=str(e),
+            meta=_attach_memory_meta({"bundle_key": bundle_key}),
+            timings=stage_times if stage_times else None,
+        )
 
 
 def _format_timing_breakdown(stage_times: Mapping[str, float], total_key: str = "worker_total") -> str:
@@ -531,19 +801,50 @@ def write_qc_json(meta: Optional[Dict[str, Any]], target_dir: Path, file_name: s
         logger.warning("Failed to write QC JSON %s: %s", qc_path, exc)
 
 
-def write_intermediate_json(features_df: pd.DataFrame, target_dir: Path, file_name: str) -> None:
-    """Persist per-file features as JSON for resilience and debugging."""
+def write_intermediate_json(
+    features_df: pd.DataFrame,
+    target_dir: Path,
+    file_name: str,
+    cache_meta: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist per-file features as JSON for resilience and debugging.
+
+    Args:
+        features_df: Per-epoch feature rows.
+        target_dir: Output directory for intermediate JSON files.
+        file_name: Original recording file name (stem used in output name).
+        cache_meta: Optional metadata dict written to a sidecar ``.meta.json``
+            alongside the main JSON.  Recommended fields:
+            ``config_hash`` (str), ``mndm_version`` (str), ``written_at`` (str).
+            Reading code can compare ``config_hash`` against the current config to
+            detect staleness without running ``--force-features``.
+    """
     if features_df is None or len(features_df) == 0:
         logger.info("Skipping intermediate JSON for %s: empty features", file_name)
         return
 
     target_dir.mkdir(parents=True, exist_ok=True)
-    json_path = target_dir / f"{Path(file_name).stem}.json"
+    stem = Path(file_name).stem
+    json_path = target_dir / f"{stem}.json"
     try:
         features_df.to_json(json_path, orient="records")
         logger.info("Wrote intermediate JSON: %s (%d rows)", json_path, len(features_df))
     except Exception as exc:
         logger.warning("Failed to write intermediate JSON %s: %s", json_path, exc)
+        return
+
+    if cache_meta:
+        meta_path = target_dir / f"{stem}.meta.json"
+        try:
+            import datetime as _dt
+            payload = {
+                "written_at": _dt.datetime.utcnow().isoformat() + "Z",
+                **cache_meta,
+            }
+            with meta_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, default=_json_numpy_default)
+        except Exception as exc:
+            logger.warning("Failed to write intermediate meta JSON %s: %s", meta_path, exc)
 
 
 def merge_temp_features(ds_path: Path, io_policy: Optional[Mapping[str, Any]] = None) -> pd.DataFrame:

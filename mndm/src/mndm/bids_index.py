@@ -1,4 +1,4 @@
-"""BIDS index builder for EEG and fMRI datasets.
+"""BIDS index builder for EEG, MEG, and fMRI datasets.
 
 Walks a downloaded dataset root and builds a tabular file index (subject,
 session, task, run, modality, paths to sidecars such as ``*_eeg.json``,
@@ -190,6 +190,34 @@ def _parse_bids_entities_from_stem(stem: str) -> Dict[str, Optional[str]]:
     return entities
 
 
+def _infer_bids_datatype(rel_path: Path) -> Optional[str]:
+    """Infer the BIDS datatype folder from a relative path."""
+    lowered = [str(part).strip().lower() for part in rel_path.parts]
+    for name in ("eeg", "meg", "ecg", "pupil", "beh", "func"):
+        if name in lowered:
+            return "fmri" if name == "func" else name
+    return None
+
+
+def _build_bundle_key(
+    subject: Optional[str],
+    session: Optional[str],
+    task: Optional[str],
+    run: Optional[str],
+    acq: Optional[str],
+) -> str:
+    """Build a stable grouping key for multimodal recordings."""
+    return "|".join(
+        [
+            str(subject or ""),
+            str(session or ""),
+            str(task or ""),
+            str(run or ""),
+            str(acq or ""),
+        ]
+    )
+
+
 def _probe_nwb_index_metadata(nwb_file: Path) -> Dict[str, str]:
     """Return lightweight NWB metadata for file-index provenance."""
     meta = {
@@ -270,7 +298,7 @@ def build_file_index(
     config: Mapping[str, Any] | None = None,
     dataset_id: str | None = None,
 ) -> pd.DataFrame:
-    """Build a file index for EEG and fMRI files under a BIDS dataset root.
+    """Build a file index for EEG/MEG and fMRI files under a BIDS dataset root.
 
     Args:
         dataset_root: Path to the dataset root directory.
@@ -289,10 +317,11 @@ def build_file_index(
     md5_max_bytes = int(64 * 1024 * 1024)
 
     # ------------------------------------------------------------------
-    # EEG files (unchanged behaviour, now with fmri_* fields set to None)
+    # Electrophysiology files. The directory datatype determines whether a file
+    # is treated as EEG, MEG, or ECG in the index.
     # ------------------------------------------------------------------
-    eeg_extensions = [".edf", ".vhdr", ".set", ".bdf", ".hea"]
-    for ext in eeg_extensions:
+    signal_extensions = [".edf", ".vhdr", ".set", ".bdf", ".hea", ".fif"]
+    for ext in signal_extensions:
         for eeg_file in root.rglob(f"*{ext}"):
             try:
                 rel_path = eeg_file.relative_to(root)
@@ -342,11 +371,13 @@ def build_file_index(
             # (e.g. ANPHY `Subjects/EPCTL01/...`).
             if subject is None:
                 subject = _infer_non_bids_subject(parts, eeg_file.stem)
+            datatype = _infer_bids_datatype(rel_path) or "eeg"
+            modality = datatype if datatype in {"eeg", "meg", "ecg"} else "eeg"
 
             # Find sidecars
-            eeg_json = eeg_file.with_suffix(".json")
-            if not eeg_json.exists():
-                eeg_json = None
+            signal_json = eeg_file.with_suffix(".json")
+            if not signal_json.exists():
+                signal_json = None
             # BIDS typically uses per-recording sidecars:
             #   sub-*_task-*_channels.tsv, sub-*_task-*_events.tsv
             # Some datasets may also have legacy "channels.tsv"/"events.tsv" in the folder.
@@ -356,6 +387,8 @@ def build_file_index(
                 base_core = base_stem[:-4]
             elif base_stem.endswith("_ieeg"):
                 base_core = base_stem[:-5]
+            elif base_stem.endswith("_meg"):
+                base_core = base_stem[:-4]
 
             channels_tsv = eeg_file.parent / f"{base_core}_channels.tsv"
             if not channels_tsv.exists():
@@ -386,10 +419,14 @@ def build_file_index(
                     "task": task,
                     "run": run,
                     "acq": acq,
-                    "modality": "eeg",
+                    "modality": modality,
+                    "datatype": datatype,
+                    "bundle_key": _build_bundle_key(subject, session, task, run, acq),
                     "md5": md5_hash,
                     "size": size,
-                    "eeg_json": str(eeg_json.relative_to(root)) if eeg_json else None,
+                    "signal_json": str(signal_json.relative_to(root)) if signal_json else None,
+                    "eeg_json": str(signal_json.relative_to(root)) if (signal_json and modality in {"eeg", "ecg"}) else None,
+                    "meg_json": str(signal_json.relative_to(root)) if (signal_json and modality == "meg") else None,
                     "channels_tsv": str(channels_tsv.relative_to(root)) if channels_tsv else None,
                     "events_tsv": str(events_tsv.relative_to(root)) if events_tsv else None,
                     # fMRI-specific sidecars (not applicable for EEG)
@@ -434,9 +471,19 @@ def build_file_index(
                 "run": entities["run"],
                 "acq": entities["acq"],
                 "modality": "nwb",
+                    "datatype": "nwb",
+                    "bundle_key": _build_bundle_key(
+                        subject,
+                        entities["session"],
+                        entities["task"],
+                        entities["run"],
+                        entities["acq"],
+                    ),
                 "md5": md5_hash,
                 "size": size,
+                "signal_json": None,
                 "eeg_json": None,
+                "meg_json": None,
                 "channels_tsv": None,
                 "events_tsv": None,
                 "fmri_json": None,
@@ -525,15 +572,88 @@ def build_file_index(
                     "run": run,
                     "acq": acq,
                     "modality": "fmri",
+                    "datatype": "func",
+                    "bundle_key": _build_bundle_key(subject, session, task, run, acq),
                     "md5": md5_hash,
                     "size": size,
                     # EEG-specific sidecars (not applicable for fMRI)
+                    "signal_json": None,
                     "eeg_json": None,
+                    "meg_json": None,
                     "channels_tsv": None,
                     "events_tsv": None,
                     # fMRI sidecars
                     "fmri_json": str(bold_json.relative_to(root)) if bold_json else None,
                     "fmri_events_tsv": str(fmri_events.relative_to(root)) if fmri_events else None,
+                }
+            )
+
+    # ------------------------------------------------------------------
+    # Tabular BIDS modalities (pupillometry / behavioral tables)
+    # ------------------------------------------------------------------
+    for ext in (".tsv", ".csv"):
+        for table_file in root.rglob(f"*{ext}"):
+            try:
+                rel_path = table_file.relative_to(root)
+            except ValueError:
+                continue
+            if _should_skip_relpath(rel_path):
+                continue
+            parts = rel_path.parts
+            if "derivatives" in parts:
+                continue
+            datatype = _infer_bids_datatype(rel_path)
+            if datatype not in {"pupil", "beh"}:
+                continue
+            if table_file.stem.endswith("_events") or table_file.stem.endswith("_channels"):
+                # Skip BIDS sidecar tables; they are provenance, not primary signal/behavior data.
+                continue
+            entities = _parse_bids_entities_from_stem(table_file.stem)
+            subject = entities["subject"] or _infer_non_bids_subject(parts, table_file.stem)
+            if subject is None:
+                continue
+            if entities["task"] is None and entities["run"] is None and entities["acq"] is None:
+                # Avoid indexing generic sidecars like participants.tsv/codebooks.
+                continue
+            sidecar_json = table_file.with_suffix(".json")
+            if not sidecar_json.exists():
+                sidecar_json = None
+            events_tsv = table_file.parent / f"{table_file.stem}_events.tsv"
+            if not events_tsv.exists():
+                events_tsv = None
+            try:
+                size = table_file.stat().st_size
+                md5_hash = _maybe_compute_md5(table_file, size_bytes=size, max_bytes=md5_max_bytes)
+            except Exception as e:
+                logger.warning(f"Could not stat {table_file}: {e}")
+                size = 0
+                md5_hash = None
+            records.append(
+                {
+                    "path": str(table_file.relative_to(root)),
+                    "subject": subject,
+                    "session": entities["session"],
+                    "task": entities["task"],
+                    "run": entities["run"],
+                    "acq": entities["acq"],
+                    "modality": datatype,
+                    "datatype": datatype,
+                    "bundle_key": _build_bundle_key(
+                        subject,
+                        entities["session"],
+                        entities["task"],
+                        entities["run"],
+                        entities["acq"],
+                    ),
+                    "md5": md5_hash,
+                    "size": size,
+                    "signal_json": str(sidecar_json.relative_to(root)) if sidecar_json else None,
+                    "eeg_json": str(sidecar_json.relative_to(root)) if sidecar_json else None,
+                    "meg_json": None,
+                    "channels_tsv": None,
+                    "events_tsv": str(events_tsv.relative_to(root)) if events_tsv else None,
+                    "fmri_json": None,
+                    "fmri_events_tsv": None,
                 }
             )
 
@@ -545,9 +665,13 @@ def build_file_index(
         "run",
         "acq",
         "modality",
+        "datatype",
+        "bundle_key",
         "md5",
         "size",
+        "signal_json",
         "eeg_json",
+        "meg_json",
         "channels_tsv",
         "events_tsv",
         "fmri_json",

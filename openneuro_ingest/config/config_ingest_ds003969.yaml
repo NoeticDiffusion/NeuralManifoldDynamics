@@ -1,0 +1,24 @@
+# Download-only config for ds003969 (Meditation vs thinking task).
+# EEG .bdf dataset, 98 subjects, ~54.5 GB, 64 EEG + 11 misc channels (ECG/aux
+# channels live inside the .bdf recordings).
+#
+# Targets the K: received/processed trees.
+#
+# No include_patterns / exclude_patterns: download the FULL dataset (all
+# subjects, all files, derivatives included downstream of the fallback
+# scripts via --include-derivatives). ECG and auxiliary signals are needed
+# by the later mndm/extract pipeline, so nothing is filtered out here.
+#
+# NOTE: This config intentionally only covers the download stage. The
+# ingest/feature/summarize stages are handled by the main config_ingest.yaml
+# (or a future ds003969 entry added there) and are out of scope for this file.
+datasets:
+  - ds003969
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed"
+download:
+  retries: 3
+  datasets:
+    ds003969:
+      # Intentionally empty: pull everything.

@@ -20,6 +20,17 @@ Top-level attributes:
 - **primary_coordinate_layer**: H5 group to use as the primary 3D coordinate layer, e.g. `coords_3d_cohort_anchored`.
 - **primary_coordinate_contract**: `subject_anchored` or `cohort_anchored`.
 - **anchor_id / anchor_hash**: set when cohort/external anchoring is active.
+- **geometry_invalidity_policy / geometry_contract_status**: always-on canonical validity contract for MNPS/MNJ geometry.
+
+## Standard Geometry Invalidity Contract
+
+Canonical MNDM exports now distinguish between:
+
+- **`geometry_contract`**: always-on machine-readable contract for mathematically invalid rows/windows that were dropped or retained as degraded surfaces
+- **`geometry_contract.time_grid`**: always-on realized time-base audit (`dt`, `window_len`, finite/non-positive bound checks)
+- **`mnps_mnj_sanity`**: optional reviewer-facing QA block under `review_qc`, including derivative self-consistency between finite differences and `/mnps_3d_dot`
+
+Use `geometry_contract` to decide whether a subject/run is mathematically valid for downstream MNPS, `coords_9d`, Jacobian, or reachability-style analyses. Invalid geometry is not clamped; rows or Jacobian windows are removed from canonical export and counted under this contract.
 
 Datasets and groups:
 
@@ -55,6 +66,18 @@ Datasets and groups:
   - Anchor identity/source/hash and scale policy.
 - `/feature_anchors/per_feature/*` – arrays of length `K`
   - Per-feature center/scale/quantile/support statistics used by cohort-anchored coordinates.
+- `/anchor_state/values` (optional) – `float32[T, Qa]`
+  - Noetic Anchoring Dynamics aligned anchor-state matrix on the MNPS time grid.
+- `/anchor_state/names` (optional) – `str[Qa]`
+  - Column names for `/anchor_state/values`.
+- `/anchor_state_dot/values` (optional) – `float32[T, Qa]`
+  - Derivative or finite-difference anchor-state matrix aligned to `/time`.
+- `/anchor_quality/values` (optional) – `float32[T, Qq]`
+  - Anchor signal-quality / support matrix aligned to `/time`.
+- `/anchor_quality/names` (optional) – `str[Qq]`
+  - Column names for `/anchor_quality/values`.
+- `/anchor_coupling/*` (optional)
+  - Additive body-brain coupling diagnostics kept separate from canonical `/jacobian/*`.
 - `/z` (optional) – `float32[T, K]`  
   - Embodied signals (e.g. HRV, respiratory phase) aligned to `/time`.
 - `/labels/stage` (optional) – `int8[T]`  
@@ -87,8 +110,9 @@ MNDM 2.1 coordinate contract:
 
 - `subject_anchored` layers preserve the current within-subject/session geometry and are the appropriate input for local trajectory-shape interpretation.
 - `cohort_anchored` layers are computed with a frozen feature anchor and are the preferred layer for clinical group contrasts.
+- `feature_anchors` means cohort/external feature scaling only. It is not the same concept as `/anchor_state`, which represents embodied/interoceptive state aligned to the MNPS grid.
 - The root `primary_coordinate_layer` attr tells downstream code which layer the run declares as primary.
-- `run_manifest.json` exposes capability flags for `feature_anchors`, `coords_3d_subject_anchored`, `coords_3d_cohort_anchored`, `coords_9d_subject_anchored`, and `coords_9d_cohort_anchored`.
+- `run_manifest.json` exposes capability flags for `feature_anchors`, `anchor_state`, `anchor_quality`, `anchor_coupling`, `coords_3d_subject_anchored`, `coords_3d_cohort_anchored`, `coords_9d_subject_anchored`, and `coords_9d_cohort_anchored`.
 
 Stratified (v2) Jacobians (optional):
 

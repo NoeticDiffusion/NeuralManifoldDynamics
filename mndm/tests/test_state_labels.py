@@ -8,12 +8,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "src"))
 
 pytest.importorskip("mne")
 
 import mndm.pipeline.summary as summary_mod
-from mndm.pipeline.state_labels import build_within_run_labels
+from mndm.pipeline.state_labels import build_label_segment_event_table, build_within_run_labels
 from mndm.pipeline.summary import DatasetSummaryRunner, SubjectSummaryRunner
 
 
@@ -285,3 +286,32 @@ def test_interval_table_supports_sleep_like_within_run_stages(tmp_path: Path):
 
     assert result.labels["sleep_stage_v1"].tolist() == ["Wake", "N2"]
     assert result.stage.tolist() == [0, 2]
+
+
+def test_build_label_segment_event_table_merges_contiguous_task_windows():
+    table = build_label_segment_event_table(
+        labels=np.array(["rest", "rest", "listen", "listen", "mem5", None], dtype=object),
+        window_start=np.array([0.0, 4.0, 8.0, 12.0, 16.0, 20.0], dtype=float),
+        window_end=np.array([4.0, 8.0, 12.0, 16.0, 20.0, 24.0], dtype=float),
+        source_path="derived:test",
+        source_label="derived:test",
+    )
+
+    assert table.n == 3
+    assert table.event_type.tolist() == ["rest", "listen", "mem5"]
+    assert np.allclose(table.onset_sec, np.array([0.0, 8.0, 16.0], dtype=float))
+    assert np.allclose(table.duration_sec, np.array([8.0, 8.0, 4.0], dtype=float))
+    assert table.source.tolist() == ["derived:test", "derived:test", "derived:test"]
+
+
+def test_build_label_segment_event_table_decodes_bytes_labels():
+    table = build_label_segment_event_table(
+        labels=np.array([b"listen", b"listen", b"", b"mem5"], dtype=object),
+        window_start=np.array([0.0, 4.0, 8.0, 12.0], dtype=float),
+        window_end=np.array([4.0, 8.0, 12.0, 16.0], dtype=float),
+        source_path="derived:test",
+        source_label="derived:test",
+    )
+
+    assert table.n == 2
+    assert table.event_type.tolist() == ["listen", "mem5"]

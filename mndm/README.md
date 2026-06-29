@@ -4,6 +4,15 @@ MNPS computation pipeline that computes per-epoch features and produces MNPS sum
 
 Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package covers feature extraction, summarization, packing, and structure checks.
 
+**New to the pipeline?** Start here:
+
+| Resource | Purpose |
+|----------|---------|
+| [`../quickstart.ipynb`](../quickstart.ipynb) | Run the full pipeline on synthetic EEG in ≤ 5 min |
+| [`CONFIG_GUIDE.md`](CONFIG_GUIDE.md) | Step-by-step YAML config guide with recipes |
+| [`Command_cheat_sheet.md`](Command_cheat_sheet.md) | All CLI commands in one place |
+| [`Output_variables_guide.md`](Output_variables_guide.md) | Full HDF5 schema and variable reference |
+
 ## Overview
 
 This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajectories with associated Jacobian meta-dynamics, supporting the Noetic Diffusion Theory framework.
@@ -24,7 +33,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - **Stratified MNPS**: Optional 9D subcoordinate chart (m_a, m_e, m_o, d_n, d_l, d_s, e_e, e_s, e_m) for mechanistic decomposition
 - **Jacobian estimation**: Local linear approximations of MNPS dynamics with meta-indices (trace, rotation, anisotropy)
 - **MNPS extensions**: E-Kappa (energetic curvature), RFM (resonant frequency modes), O-Koh (organizational coherence), TIG (temporal integrity grade)
-- **Robustness**: Ensemble variance, split-half reliability, PSD multiverse stability, entropy sanity checks
+- **Robustness**: Ensemble variance, split-half reliability, PSD multiverse stability, entropy sanity checks, and an always-on mathematical invalidity policy for MNPS/MNJ geometry
 - **MNDM 2.1 anchored coordinates**: explicit subject/session-anchored and cohort-anchored coordinate layers, with versioned feature anchors for clinical group comparisons
 - **Resume-friendly**: Interrupted runs can continue from existing artifacts
 - **Optional conventional EEG comparator layer**: YAML-driven Tier 1 qEEG outputs (relative power, slowing ratios, alpha peak, median frequency, spectral edge) beside MNPS
@@ -38,6 +47,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
   - Within-run state labeling for datasets where labels change inside one run, with support for boundary tables, interval tables, and feature-derived stage columns
   - Window start/end (seconds) per MNPS point in HDF5 for clearer time alignment
   - Time Reference v1 for WFDB datasets (clock provenance + anchor-aligned windows under `/extensions/time_reference/*`)
+  - Block-native analysis windows inferred directly from temporal blocks (sliding/tail/partitioned window profiles with relative-position metadata; exported to `/blocks/`, `/block_windows/` HDF5 groups and Parquet/CSV sidecars)
 
 ---
 
@@ -48,6 +58,8 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - Optional: `openneuro-py` (for dataset downloads)
 - Optional: `dandi`, `pynwb` (for DANDI archive access and NWB inputs)
 - Optional: `yasa` (for detector-derived sleep-spindle annotations in downstream event-locked workflows)
+- Optional: `antropy` (for HRV Sample Entropy — `features.ecg.hrv.complexity.enabled`)
+- Optional: `nolds` (for HRV DFA α₁ — `features.ecg.hrv.complexity.enabled`)
 - Optional but recommended for feature storage: `pyarrow`
 
 ---
@@ -183,7 +195,7 @@ changing the MNPS projection weights:
 ```yaml
 conventional_eeg:
   enabled: true
-  packs: ["tier1", "complexity", "connectivity"]
+  packs: ["tier1", "complexity", "connectivity", "coma"]
   export:
     per_epoch_columns: true
     summaries: true
@@ -210,6 +222,24 @@ conventional_eeg:
       wpli: true
     outputs:
       summary_stats: ["mean", "std"]
+  coma:
+    suppression_ratio: true
+    burst_suppression_proxy: true
+    continuity_proxy: true
+    alpha_delta_ratio: true
+    suppression:
+      amplitude_floor: 0.01
+      relative_to_rms: 0.20
+      envelope_smoothing_sec: 0.25
+    reactivity_proxy:
+      enabled: true
+      diff_features:
+        - eeg_conventional_coma_alpha_delta_ratio
+        - eeg_conventional_coma_continuity_proxy
+        - eeg_permutation_entropy
+        - eeg_highfreq_power_30_45
+      eps: 1.0e-6
+      clip_at: 5.0
 ```
 
 For Parkinson-focused EEG analyses, the most common starting subset is usually
@@ -241,6 +271,7 @@ Current generic packs:
 - `tier1`: relative bandpower, slowing ratios, alpha peak, median frequency, spectral edge
 - `complexity`: spectral entropy, permutation entropy, Hjorth complexity, optional Hjorth mobility
 - `connectivity`: summary synchrony features from configured channel pairs, such as coherence, PLV, PLI, wPLI, and optional dPLI/PPC
+- `coma`: ICU/coma-oriented EEG proxies (`suppression_ratio`, `burst_suppression_proxy`, `continuity_proxy`, `alpha_delta_ratio`, `reactivity_proxy`)
 
 Common usage patterns:
 
@@ -272,6 +303,13 @@ conventional_eeg:
   packs: ["connectivity"]
 ```
 
+```yaml
+# ICU/coma EEG-only pack
+conventional_eeg:
+  enabled: true
+  packs: ["coma"]
+```
+
 Current naming pattern:
 
 - `eeg_conventional_relative_*`
@@ -279,6 +317,7 @@ Current naming pattern:
 - `eeg_conventional_peak_*`
 - `eeg_conventional_complexity_*`
 - `eeg_conventional_connectivity_*`
+- `eeg_conventional_coma_*`
 
 Typical connectivity outputs look like:
 
@@ -290,6 +329,9 @@ Implementation note:
 - `tier1` and `complexity` emit per-epoch comparator columns
 - `connectivity` currently emits recording-level synchrony summaries that are
   broadcast across epochs so they can be carried by the same summarize contract
+- `coma` emits EEG-only proxy markers; summarize also writes explicit availability
+  metadata for non-EEG biomarkers (`SSEP`, `NSE`, `GCS`, `S100B`) as unavailable
+  unless an external clinical source is ingested
 
 ### Time Reference v1 (WFDB clocks)
 
@@ -461,7 +503,7 @@ Coordinate layers are now explicit:
 - `/coords_9d_cohort_anchored/*`: cohort-anchored stratified coordinates when both an anchor and `mnps_9d` are available.
 - `/feature_anchors/*`: embedded anchor provenance, including `anchor_id`, `anchor_hash`, source policy, and per-feature center/scale statistics.
 
-Example anchor configuration:
+Example external anchor configuration:
 
 ```yaml
 mnps_projection:
@@ -475,6 +517,27 @@ mnps_projection:
     scale_method: "iqr"   # iqr | mad | qn
     min_subjects: 3
 ```
+
+Example cohort auto-fit configuration (no external anchor JSON):
+
+```yaml
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "ds003490_cohort_auto_v2_1"
+    anchor_source: "ds003490_all_subjects_features_table"
+    scale_method: "iqr"   # iqr | mad | qn
+    min_subjects: 3
+```
+
+Important: `export_contracts.cohort_anchored: true` only requests cohort-layer
+export. Actual cohort-anchored emission also needs an active anchor source via
+one of: `mnps_projection.anchor.enabled` (+ `anchor.path`), config-driven
+`mnps_projection.anchor_auto_fit.enabled: true`, or CLI one-shot
+`--fit-anchor`.
 
 `export_contracts` lets you choose which anchored H5 surfaces are emitted in a
 run. These booleans gate the coordinated export of coordinate layers,
@@ -516,6 +579,20 @@ on-the-fly per downstream group comparison.
 `feature_anchors`, `coords_3d_subject_anchored`,
 `coords_3d_cohort_anchored`, `coords_9d_subject_anchored`, and
 `coords_9d_cohort_anchored`.
+
+### Standard Geometry Invalidity Policy
+
+MNDM now enforces an always-on mathematical invalidity policy for exported geometry.
+This is a standard contract, not a reviewer toggle in YAML.
+
+What this means in practice:
+
+- mathematically invalid `mnps_3d` rows are dropped before kNN and Jacobian estimation
+- `coords_9d` remains a separate validity surface; non-finite 9D rows are recorded explicitly, and they also force row dropping when the active 3D contract is derived from v2 coordinates
+- Jacobian windows with mathematically unusable local geometry are removed from canonical exports rather than clamped
+- the pipeline records this in `summary.json.geometry_contract`, `qc_summary.json.geometry_contract`, HDF5 `/provenance/geometry_contract/*`, and top-level attrs such as `geometry_invalidity_policy`
+
+This policy targets mathematical invalidity, not generic outliers. MNDM does not use “N standard deviations from the mean” as the primary gate for canonical geometry export.
 
 ### Key Sections
 
@@ -774,6 +851,8 @@ The `/regions/*` group is optional supporting input data, mainly for raw fMRI re
 | `/labels/<name>` | (T,) | Additional aligned labels, binary, numeric, or categorical |
 | `/events/*` | varies | Legacy event arrays plus optional columnar event provenance (`onset_sec`, `duration_sec`, `raw_event_label`, `mapped_stage_code`, `mapping_mode`, etc.) |
 | `/event_windows/*` | (R,) per field | Additive explicit event-to-window join contract for event-locked downstream analysis (`event_id`, `window_id`, `event_label`, onset/window bounds, bin labels, exact containing windows) |
+| `/blocks/*` | (B,) per field | Block-native inferred block table (`block_id`, `stage_code`, `start_sec`, `end_sec`, `duration_sec`, `frequency_hz`, `source_event_idx`, `support_event_count`, `derived_from`, `end_reason`); present when `block_native.enabled: true` |
+| `/block_windows/*` | (N,) per field | Block-native analysis window table (`block_id`, `window_id_within_block`, `stage_code`, `block_start_sec`, `block_end_sec`, `block_duration_sec`, `window_start_sec`, `window_end_sec`, `window_center_sec`, `relative_time_in_block_sec`, `distance_to_block_end_sec`, `relative_pos_0_1`, `source_window_index`, `partition_label`, `is_post_offset`); present when `block_native.enabled: true` |
 | `/codebooks/stage/*` | (C,) per field | Explicit stage codebook (`codes`, `labels`, `label_keys`) for self-describing H5 labels |
 | `/participant/clinical_json` | scalar JSON | Additive richer participant/session metadata embedded into H5 |
 | `/coverage/*` | varies | Explicit layer coverage contract, including per-window direct-axis coverage and time-index mappings |
@@ -814,6 +893,80 @@ The `/regions/*` group is optional supporting input data, mainly for raw fMRI re
 }
 ```
 
+Important validity blocks:
+
+- `geometry_contract`: always-on machine-readable contract for dropped invalid epochs, retained coordinate validity, invalid Jacobian-window counts, and the realized `dt/window_len` audit for the exported shared time grid
+- `mnps_mnj_sanity`: optional reviewer-facing QA/sensitivity block under `robustness.review_qc`; this now also includes derivative self-consistency between `diff(mnps_3d)/dt` and `/mnps_3d_dot`, and is not the canonical gate
+
+The canonical interpretation rule is:
+
+- use `geometry_contract` to decide whether exported MNPS / `coords_9d` / Jacobian surfaces are mathematically usable
+- use `mnps_mnj_sanity` for richer reviewer diagnostics and robustified comparison only
+
+---
+
+## Block-Native Window Analysis
+
+Block-native analysis generates windows directly from inferred temporal blocks instead of post-hoc labeling a global MNPS epoch grid. Each window carries relative-position metadata that ties it to its parent block rather than to absolute recording time.
+
+### Block source kinds
+
+| Kind | Suitable for | How blocks are inferred |
+|------|-------------|------------------------|
+| `stage_blocking` | Stimulus-driven designs (photic, auditory) | Reuses the existing `epoching…stage_blocking` event-regex infrastructure |
+| `duration_events` | Explicit resting-state segments (eyes-open/closed, etc.) | Reads event labels + `duration` column directly |
+| `task_phase` | Trial-phase designs with prefix-grouped labels | Groups consecutive events sharing a common label prefix |
+
+### Window profile kinds
+
+| Kind | Description |
+|------|-------------|
+| `sliding` | Overlapping sliding windows across the full block |
+| `tail` | A fixed-length window anchored to the block end |
+| `post_offset` | Named offset bins relative to block end |
+| `partitioned` | Splits each block into named time-fraction segments |
+
+Named profile aliases are also supported for common analysis presets:
+`whole_block`, `early_block`, `mid_block`, `late_block`, `last5`, `tail8`,
+`post_offset_0_8`, `post_offset_8_16`.
+
+### Minimum YAML
+
+```yaml
+block_native:
+  datasets:
+    ds006036:
+      enabled: true
+      source:
+        kind: "stage_blocking"
+        label_column: "value"
+        onset_column: "onset"
+        duration_column: "duration"
+      window_profile:
+        kind: "sliding"
+        window_length_sec: 4.0
+        step_sec: 2.0
+        emit_relative_position: true
+        min_block_sec: 4.0
+        min_windows_per_block: 2
+      export:
+        write_parquet: true
+        write_csv: true
+```
+
+### Outputs
+
+| Artifact | Description |
+|----------|-------------|
+| HDF5 `/blocks/*` | Inferred block table (one row per block with canonical timing fields `start_sec/end_sec/duration_sec`, plus provenance and optional `frequency_hz`) |
+| HDF5 `/block_windows/*` | Window table with full geometry (`relative_time_in_block_sec`, `distance_to_block_end_sec`, `relative_pos_0_1`) and exact join key `source_window_index` |
+| `<subject_dir>/*_block_native.parquet` / `.csv` | Sidecar exports (same data, joinable by `block_id`/`window_id_within_block`) |
+| `run_manifest.json` capability flag | `has_block_native_windows: true`, `h5_with_block_native_windows: N` |
+
+The block-native contract is additive — it is written alongside the standard MNPS HDF5 contract without replacing it.
+`event_locked` remains available; long-term intent is to treat event-locked block-end
+bins as a derived view over canonical block-native intervals.
+
 ---
 
 ## Testing
@@ -835,6 +988,7 @@ The test suite covers feature extraction, MNPS projection, Jacobian estimation, 
 | Feature extraction error | Epoch skipped; logged with traceback |
 | Insufficient epochs | Subject skipped with coverage warning |
 | QC flag failure | Epoch excluded from MNPS projection |
+| Mathematical geometry invalidity | Invalid MNPS rows are dropped before kNN/Jacobian, invalid Jacobian windows are removed from canonical export, and the reasons are written to `geometry_contract` instead of being clamped |
 
 ### Recovery Commands
 

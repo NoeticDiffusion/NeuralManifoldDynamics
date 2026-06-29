@@ -32,6 +32,8 @@ def write_qc_files(
     tier2_emmi: Optional[Dict[str, Any]],
     null_sanity_tests: Optional[Dict[str, Any]],
     entropy_qc: Optional[Dict[str, Any]],
+    geometry_contract: Optional[Dict[str, Any]],
+    mnps_mnj_sanity: Optional[Dict[str, Any]],
 ) -> None:
     """Write QC-related JSON files."""
     qc_rel_path = target_dir / "qc_reliability.json"
@@ -60,6 +62,8 @@ def write_qc_files(
             robust_summary=robust_summary,
             dist_summary=dist_summary,
             entropy_qc=entropy_qc,
+            geometry_contract=geometry_contract,
+            mnps_mnj_sanity=mnps_mnj_sanity,
         )
         if baseline_comparisons is not None:
             qc_summary["baseline_comparisons"] = baseline_comparisons

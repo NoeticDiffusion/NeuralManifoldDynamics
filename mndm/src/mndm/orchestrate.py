@@ -24,6 +24,7 @@ from . import bids_index
 from .file_filters import apply_exclude_file_filters
 from .parallel import (
     merge_temp_features,
+    process_file_bundle,
     process_single_file,
     resolve_feature_io_policy,
     write_intermediate_json,
@@ -48,6 +49,31 @@ class _SummarizeContextWithConfigPath:
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._base, name)
+
+
+def _resolve_multimodal_bundle_config(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
+    """Resolve optional multimodal bundle processing policy for one dataset."""
+    indexing_cfg = config.get("indexing", {}) if isinstance(config, Mapping) else {}
+    bundles_cfg = indexing_cfg.get("multimodal_bundles", {}) if isinstance(indexing_cfg, Mapping) else {}
+    if not isinstance(bundles_cfg, Mapping):
+        return {"enabled": False}
+    resolved = dict(bundles_cfg)
+    ds_map = bundles_cfg.get("datasets", {})
+    if isinstance(ds_map, Mapping):
+        ds_cfg = ds_map.get(ds_id, {})
+        if isinstance(ds_cfg, Mapping):
+            resolved.update(dict(ds_cfg))
+    resolved["enabled"] = bool(resolved.get("enabled", False))
+    group_by = resolved.get("group_by", ["subject", "session", "task", "run", "acq"])
+    if not isinstance(group_by, list) or not group_by:
+        group_by = ["subject", "session", "task", "run", "acq"]
+    resolved["group_by"] = [str(v) for v in group_by]
+    include_modalities = resolved.get("include_modalities", ["eeg", "ecg", "pupil", "beh"])
+    if not isinstance(include_modalities, list) or not include_modalities:
+        include_modalities = ["eeg", "ecg", "pupil", "beh"]
+    resolved["include_modalities"] = [str(v).strip().lower() for v in include_modalities if str(v).strip()]
+    resolved["primary_modality"] = str(resolved.get("primary_modality", "eeg")).strip().lower() or "eeg"
+    return resolved
 
 
 try:
@@ -269,8 +295,16 @@ def cmd_features(
     subject: str | None = None,
     n_jobs: int = 1,
     mem_budget_gb: float = 4.0,
+    force_features: bool = False,
 ) -> int:
-    """Compute features for preprocessed files with parallel processing."""
+    """Compute features for preprocessed files with parallel processing.
+
+    Args:
+        force_features: When True, ignore cached features.parquet and intermediate
+            JSON files and recompute all features from scratch.  Use after updating
+            feature extraction code or config to ensure stale cached values are not
+            carried forward.
+    """
     def _normalize_subject_token(value: Any) -> str:
         """Internal helper: normalize subject token."""
         s = str(value).strip()
@@ -313,6 +347,25 @@ def cmd_features(
         resolved = ResolvedConfig.from_mapping(config, out_dir, data_dir)
         received_dir = resolved.paths.received_dir
         processed_dir = resolved.paths.processed_dir
+
+        # Pre-compute config hash for intermediate JSON sidecar metadata.
+        # This hash is embedded in every .meta.json sidecar written alongside
+        # intermediate JSONs so future runs can detect staleness automatically.
+        try:
+            import json as _json
+            _config_hash = hashlib.sha256(
+                _json.dumps(dict(config), sort_keys=True, ensure_ascii=True, default=str).encode()
+            ).hexdigest()[:16]
+        except Exception:
+            _config_hash = "unknown"
+        try:
+            from . import __version__ as _mndm_version
+        except Exception:
+            _mndm_version = "unknown"
+        _intermediate_cache_meta: dict = {
+            "config_hash": _config_hash,
+            "mndm_version": _mndm_version,
+        }
         def _build_index(ds_id: str, ds_path: Path) -> Optional[pd.DataFrame]:
             """Internal helper: build index."""
             ds_root = bids_index.resolve_dataset_root(config, received_dir, ds_id)
@@ -390,67 +443,136 @@ def cmd_features(
                     excluded_patterns,
                 )
 
+            bundle_cfg = _resolve_multimodal_bundle_config(config, ds_id)
             io_policy = resolve_feature_io_policy(config, ds_path, planned_files=len(index_df))
             already_processed_stems: set[str] = set()
-            features_candidates = [ds_path / "features.parquet", ds_path / "features.csv"]
-            if io_policy.get("read_prefer") == "csv":
-                features_candidates = [ds_path / "features.csv", ds_path / "features.parquet"]
-            existing_features_path = next((p for p in features_candidates if p.exists()), None)
-            if existing_features_path is not None:
-                try:
-                    existing_features = (
-                        pd.read_parquet(existing_features_path)
-                        if existing_features_path.suffix.lower() == ".parquet"
-                        else pd.read_csv(existing_features_path)
-                    )
-                    if "file" in existing_features.columns:
-                        normalized_files = (
-                            existing_features["file"]
-                            .dropna()
-                            .astype(str)
-                            .str.replace("\\", "/", regex=False)
-                            .str.split("/")
-                            .str[-1]
+            if force_features:
+                logger.info(
+                    "--force-features active for %s: skipping cached features.parquet "
+                    "and intermediate JSONs — all files will be re-extracted.",
+                    ds_id,
+                )
+            else:
+                features_candidates = [ds_path / "features.parquet", ds_path / "features.csv"]
+                if io_policy.get("read_prefer") == "csv":
+                    features_candidates = [ds_path / "features.csv", ds_path / "features.parquet"]
+                existing_features_path = next((p for p in features_candidates if p.exists()), None)
+                if existing_features_path is not None:
+                    try:
+                        existing_features = (
+                            pd.read_parquet(existing_features_path)
+                            if existing_features_path.suffix.lower() == ".parquet"
+                            else pd.read_csv(existing_features_path)
                         )
-                        stems = normalized_files.str.rsplit(".", n=1).str[0]
-                        already_processed_stems.update(stems.unique())
+                        if "file" in existing_features.columns:
+                            normalized_files = (
+                                existing_features["file"]
+                                .dropna()
+                                .astype(str)
+                                .str.replace("\\", "/", regex=False)
+                                .str.split("/")
+                                .str[-1]
+                            )
+                            stems = normalized_files.str.rsplit(".", n=1).str[0]
+                            already_processed_stems.update(stems.unique())
+                            logger.info(
+                                "Found %s already processed files in %s",
+                                len(already_processed_stems),
+                                existing_features_path.name,
+                            )
+                    except Exception as e:
+                        logger.warning("Could not read existing features table to skip files: %s", e)
+
+                intermediate_dir = ds_path / "intermediate"
+                if intermediate_dir.exists():
+                    json_stems = {path.stem for path in intermediate_dir.glob("*.json")}
+                    if json_stems:
+                        already_processed_stems.update(json_stems)
                         logger.info(
-                            "Found %s already processed files in %s",
-                            len(already_processed_stems),
-                            existing_features_path.name,
+                            "Found %s intermediate JSON files (will skip duplicates)",
+                            len(json_stems),
                         )
-                except Exception as e:
-                    logger.warning("Could not read existing features table to skip files: %s", e)
 
+            # Always define intermediate_dir regardless of force_features so that
+            # _handle_result (closure) can reference it unconditionally.
             intermediate_dir = ds_path / "intermediate"
-            if intermediate_dir.exists():
-                json_stems = {path.stem for path in intermediate_dir.glob("*.json")}
-                if json_stems:
-                    already_processed_stems.update(json_stems)
-                    logger.info(
-                        "Found %s intermediate JSON files (will skip duplicates)",
-                        len(json_stems),
-                    )
+            intermediate_dir.mkdir(parents=True, exist_ok=True)
 
-            file_tasks = []
+            file_tasks: list[Dict[str, Any]] = []
             skipped_count = 0
-            for _, row in index_df.iterrows():
-                rel = str(row.get("path", "") or "")
-                rel_norm = rel.replace("\\", "/")
-                base = rel_norm.split("/")[-1] if rel_norm else ""
-                if not rel_norm or base.startswith("._") or base.startswith(".") or "/._" in rel_norm:
-                    skipped_count += 1
-                    continue
-
-                file_path = ds_root / rel
-                if file_path.exists():
-                    file_stem = file_path.stem
-                    if file_stem in already_processed_stems:
+            if bundle_cfg.get("enabled", False):
+                include_modalities = set(bundle_cfg.get("include_modalities", []))
+                group_by = [col for col in bundle_cfg.get("group_by", []) if col in index_df.columns]
+                primary_modality = str(bundle_cfg.get("primary_modality", "eeg"))
+                bundle_df = index_df.copy()
+                if "modality" in bundle_df.columns and include_modalities:
+                    bundle_df = bundle_df[
+                        bundle_df["modality"].fillna("").astype(str).str.lower().isin(include_modalities)
+                    ]
+                if not bundle_df.empty and group_by:
+                    for group_key, group_rows in bundle_df.groupby(group_by, dropna=False, sort=False):
+                        group_records = group_rows.to_dict("records")
+                        primary_rows = group_rows[
+                            group_rows["modality"].fillna("").astype(str).str.lower() == primary_modality
+                        ]
+                        representative = (
+                            primary_rows.iloc[0].to_dict()
+                            if len(primary_rows) > 0
+                            else group_rows.iloc[0].to_dict()
+                        )
+                        rel = str(representative.get("path", "") or "")
+                        rel_norm = rel.replace("\\", "/")
+                        base = rel_norm.split("/")[-1] if rel_norm else ""
+                        if not rel_norm or base.startswith("._") or base.startswith(".") or "/._" in rel_norm:
+                            skipped_count += 1
+                            continue
+                        file_path = ds_root / rel
+                        if not file_path.exists():
+                            skipped_count += 1
+                            continue
+                        file_stem = file_path.stem
+                        if file_stem in already_processed_stems:
+                            skipped_count += 1
+                            continue
+                        total_size = int(pd.to_numeric(group_rows.get("size"), errors="coerce").fillna(0).sum())
+                        sub_id = str(representative.get("subject", "") or "unknown")
+                        file_tasks.append(
+                            {
+                                "kind": "bundle",
+                                "path": file_path,
+                                "rel": rel,
+                                "size": total_size,
+                                "sub_id": sub_id,
+                                "records": group_records,
+                                "group_key": group_key,
+                            }
+                        )
+            else:
+                for _, row in index_df.iterrows():
+                    rel = str(row.get("path", "") or "")
+                    rel_norm = rel.replace("\\", "/")
+                    base = rel_norm.split("/")[-1] if rel_norm else ""
+                    if not rel_norm or base.startswith("._") or base.startswith(".") or "/._" in rel_norm:
                         skipped_count += 1
                         continue
-                    file_size = file_path.stat().st_size
-                    sub_id = str(row.get("subject", "") or "unknown")
-                    file_tasks.append((file_path, rel, file_size, sub_id))
+
+                    file_path = ds_root / rel
+                    if file_path.exists():
+                        file_stem = file_path.stem
+                        if file_stem in already_processed_stems:
+                            skipped_count += 1
+                            continue
+                        file_size = file_path.stat().st_size
+                        sub_id = str(row.get("subject", "") or "unknown")
+                        file_tasks.append(
+                            {
+                                "kind": "single",
+                                "path": file_path,
+                                "rel": rel,
+                                "size": file_size,
+                                "sub_id": sub_id,
+                            }
+                        )
 
             if skipped_count > 0:
                 logger.info("Skipped %s already processed files", skipped_count)
@@ -461,16 +583,21 @@ def cmd_features(
 
             # Group by subject and sort alphabetically so each worker handles
             # one complete subject at a time rather than random file ordering.
-            subject_groups: Dict[str, list[tuple[Path, str, int]]] = {}
-            for file_path, rel, file_size, sub_id in file_tasks:
-                subject_groups.setdefault(sub_id, []).append((file_path, rel, file_size))
+            subject_groups: Dict[str, list[Dict[str, Any]]] = {}
+            for task_item in file_tasks:
+                subject_groups.setdefault(str(task_item.get("sub_id", "unknown")), []).append(task_item)
             subject_task_list = sorted(subject_groups.items())  # alphabetical by subject id
 
             # Flatten back to file_tasks without subject for memory estimation
-            file_tasks_flat = [(fp, rel, fs) for _, files in subject_task_list for fp, rel, fs in files]
+            file_tasks_flat = [
+                (Path(task_item["path"]), str(task_item.get("rel", "")), int(task_item.get("size", 0)))
+                for _, files in subject_task_list
+                for task_item in files
+            ]
             n_subjects = len(subject_task_list)
             n_files = len(file_tasks_flat)
-            logger.info("Processing %s subjects (%s files) in alphabetical order", n_subjects, n_files)
+            log_units = "bundles" if bundle_cfg.get("enabled", False) else "files"
+            logger.info("Processing %s subjects (%s %s) in alphabetical order", n_subjects, n_files, log_units)
             file_mem_estimates: Dict[str, Dict[str, Any]] = {}
             for file_path, _, file_size in file_tasks_flat:
                 est_gb_i, model_i = _estimate_peak_ram_per_file(file_path, file_size)
@@ -564,6 +691,7 @@ def cmd_features(
                         res.features_df,
                         intermediate_dir,
                         file_path_obj.name if file_path_obj is not None else "unknown",
+                        cache_meta=_intermediate_cache_meta,
                     )
                     t_intermediate = float(time.perf_counter() - t1)
                     qc_dir = ds_path / "qc_artifacts"
@@ -630,13 +758,22 @@ def cmd_features(
 
             def _process_subject_files(
                 sub_id: str,
-                files: list[tuple[Path, str, int]],
+                files: list[Dict[str, Any]],
                 cfg: dict,
             ) -> list[Any]:
                 """Process all files for one subject sequentially; return list of results."""
                 results_list = []
-                for fp, _rel, _sz in files:
-                    results_list.append(process_single_file(fp, cfg))
+                for task_item in files:
+                    if str(task_item.get("kind", "single")) == "bundle":
+                        results_list.append(
+                            process_file_bundle(
+                                list(task_item.get("records", []) or []),
+                                ds_root,
+                                cfg,
+                            )
+                        )
+                    else:
+                        results_list.append(process_single_file(Path(task_item["path"]), cfg))
                 return results_list
 
             try:
