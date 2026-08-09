@@ -13,9 +13,9 @@ source:
   species: "Mus musculus"
 
 paths:
-  received_dir: "data/dandi/raw/000458"
+  received_dir: "K:/ExternalReceivedDatasets/DANDI/dandi_000458/raw/000458"
   processed_dir: "data/dandi/processed_lfp/000458_551397_probeF_full"
-  dataset_received_dirs: {dandi_000458: "data/dandi/raw/000458"}
+  dataset_received_dirs: {dandi_000458: "K:/ExternalReceivedDatasets/DANDI/dandi_000458/raw/000458"}
 
 preprocess:
   sfreq: 500

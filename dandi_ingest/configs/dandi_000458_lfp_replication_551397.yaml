@@ -7,7 +7,7 @@ dataset:
 
 storage:
   output_root: data/dandi
-  raw_root: data/dandi/raw/000458
+  raw_root: "K:/ExternalReceivedDatasets/DANDI/dandi_000458/raw/000458"
   manifest_root: data/dandi/manifests/000458
   triage_root: data/dandi/triage/000458
 
