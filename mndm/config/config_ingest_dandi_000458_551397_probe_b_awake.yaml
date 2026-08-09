@@ -1,0 +1,4 @@
+version: 2.0
+imports: ["./config_ingest_dandi_000458_551397_lfp_probe_b.yaml"]
+paths: {processed_dir: "data/dandi/processed_lfp/000458_551397_probeB_awake"}
+lfp_state_analysis: {primary_filter: "lfp_interstim_primary", state_column: "lfp_behavioral_state", state_value: "awake"}

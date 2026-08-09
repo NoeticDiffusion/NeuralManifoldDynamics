@@ -192,6 +192,8 @@ def write_cross_session_comparison(
                         if value.endswith(f"__g_{depth}") and pd.api.types.is_numeric_dtype(left[value])
                     }.items()
                     if f"{name}__g_{depth}" in right
+                    and len(left[column].dropna())
+                    and len(right[f"{name}__g_{depth}"].dropna())
                 }
                 for depth in columns
             },

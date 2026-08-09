@@ -2,7 +2,7 @@ import pandas as pd
 import h5py
 import numpy as np
 
-from neuropixel_ingest.lfp_compare import _depth_columns, write_condition_sensitivity
+from neuropixel_ingest.lfp_compare import _depth_columns, write_condition_sensitivity, write_cross_session_comparison
 from neuropixel_ingest.lfp_qc import select_depth_balanced, write_qc_selection_sensitivity, write_selection_from_qc
 
 
@@ -93,3 +93,22 @@ def test_condition_sensitivity_aligns_feature_and_h5_outputs(tmp_path):
     report = write_condition_sensitivity(left_path, right_path, tmp_path / "left.h5", tmp_path / "right.h5", tmp_path / "out.json")
     assert report["n_matched_feature_epochs"] == 2
     assert report["mnps_coordinate_correlations"] == [1.0, 1.0, 1.0]
+
+
+def test_cross_session_comparison_uses_jacobian_spectra(tmp_path):
+    features = pd.DataFrame(
+        {
+            "lfp_interstim_primary": [True, True],
+            "lfp_behavioral_state": ["awake", "awake"],
+            "eeg_delta__g_depth_0": [1.0, 2.0],
+        }
+    )
+    first, second = tmp_path / "first.parquet", tmp_path / "second.parquet"
+    features.to_parquet(first)
+    features.assign(eeg_delta__g_depth_0=[1.5, 2.5]).to_parquet(second)
+    for path in (tmp_path / "first.h5", tmp_path / "second.h5"):
+        with h5py.File(path, "w") as handle:
+            handle["jacobian/J_hat"] = np.repeat(np.eye(3)[None, :, :], 2, axis=0)
+    report = write_cross_session_comparison(first, second, tmp_path / "first.h5", tmp_path / "second.h5", tmp_path / "out.json")
+    assert report["states"]["awake"]["n_epochs_primary"] == 2
+    assert report["jacobian_spectrum"]["wasserstein_by_rank"] == [0.0, 0.0, 0.0]

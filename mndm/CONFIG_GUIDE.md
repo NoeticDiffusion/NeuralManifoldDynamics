@@ -233,6 +233,17 @@ design. Compare feature-level stability by state first; independent MNPS
 normalization can rotate or reflect coordinates, so raw cross-run m/d/e
 coordinate correlations are descriptive only.
 
+### Multi-session LFP replication
+
+Keep sessions in separate `processed_dir` roots and derive a new QC-selection
+artifact for every NWB file. Do not reuse contact indices across sessions.
+For DANDI 000458, session state boundaries come from
+`trials.behavioral_epoch`; pharmacological induction is read from that
+session's `epochs.tags`, never from fixed timestamps. Compare sessions using
+state/depth feature distributions and Jacobian-spectrum summaries rather than
+raw MNPS-coordinate correlations, which are not orientation-identified across
+independent normalizations.
+
 ---
 
 ### `datasets`
