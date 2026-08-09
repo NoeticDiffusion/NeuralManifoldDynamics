@@ -548,11 +548,19 @@ def cmd_features(
                             }
                         )
             else:
+                # In single-file mode, skip tabular-only modalities (beh, pupil events)
+                # that the bundle processor would silently discard.  These files cannot
+                # be opened with mne.io.read_raw and have no feature extractors.
+                _TABULAR_ONLY_MODALITIES = {"beh", "pupil"}
                 for _, row in index_df.iterrows():
                     rel = str(row.get("path", "") or "")
                     rel_norm = rel.replace("\\", "/")
                     base = rel_norm.split("/")[-1] if rel_norm else ""
                     if not rel_norm or base.startswith("._") or base.startswith(".") or "/._" in rel_norm:
+                        skipped_count += 1
+                        continue
+                    row_modality = str(row.get("modality", "") or "").strip().lower()
+                    if row_modality in _TABULAR_ONLY_MODALITIES:
                         skipped_count += 1
                         continue
 
@@ -841,7 +849,11 @@ def cmd_features(
                 logger.warning("Failed files logged to %s (%s failures)", failed_path, len(failed_files))
 
             temp_count = len(list(ds_path.glob("features_*.csv"))) + len(list(ds_path.glob("features_*.parquet")))
-            merged_df = merge_temp_features(ds_path, io_policy=io_policy)
+            merged_df = merge_temp_features(
+                ds_path,
+                io_policy=io_policy,
+                include_existing=not force_features,
+            )
             if len(merged_df) > 0:
                 out_paths = write_merged_features(merged_df, ds_path, io_policy=io_policy)
                 logger.info(

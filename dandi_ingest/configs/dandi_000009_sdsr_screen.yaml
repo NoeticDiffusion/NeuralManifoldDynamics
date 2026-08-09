@@ -1,0 +1,29 @@
+dataset:
+  config_id: dandi_000009_sdsr_screen
+  adapter: generic
+  dandiset_id: "000009"
+  version: "0.220126.1903"
+  target_mndm_dataset_id: dandi_000009
+
+storage:
+  output_root: data/dandi
+  raw_root: data/dandi/raw/000009
+  manifest_root: data/dandi/manifests/000009
+  triage_root: data/dandi/triage/000009
+
+selection:
+  path_filters:
+    - "ogen.nwb"
+  subject_filters: []
+  session_filters: []
+  asset_limit: 12
+
+execution:
+  metadata_only: true
+  streaming_allowed: false
+
+outputs:
+  manifest_json: data/dandi/manifests/000009/dandi_000009_sdsr_screen_manifest.json
+  manifest_csv: data/dandi/manifests/000009/dandi_000009_sdsr_screen_manifest.csv
+  triage_markdown: data/dandi/triage/000009/dandi_000009_sdsr_screen_triage.md
+  probe_json: data/dandi/triage/000009/dandi_000009_sdsr_screen_probe.json

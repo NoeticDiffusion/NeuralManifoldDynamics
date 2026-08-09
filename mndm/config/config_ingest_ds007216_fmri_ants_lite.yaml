@@ -1,0 +1,63 @@
+version: 2.0
+modality: fmri
+
+# ds007216 -- Stage 5 "core" preprocessing condition (proposal_001 /
+# sciencelead/006.md's "Docker-free ANTsPy/nilearn-based approximation",
+# named ants_lite_prep_v1 / ants_lite_prep_custom per science-lead's naming
+# instruction; NOT fMRIPrep, NOT "fMRIPrep-grade").
+#
+# Points mndm at project/scripts/25_ds007216_stage1_ants_lite_prep.py's
+# "minimal" BOLD output (one-shot resample to T1w/MNI, motion-corrected,
+# no nuisance regression baked in -- nuisance/censoring happens at the mndm
+# feature-extraction layer via the FD confound merge, same as every other
+# stage) -- i.e. this is Stage 5 condition 2 ("trusted ANTs/nuisance core"),
+# NOT condition 3 (core+STC) or condition 4/5 (core+SDC[+STC]).
+#
+# Imports the production ds007216 fMRI config unchanged (atlas, epoching,
+# mnps_projection.v1_mapping / mnps_9d / mnps_3d definitions, feature
+# metrics toggles) and overrides only:
+#   - paths.dataset_received_dirs -> ants_lite_prep_v1 derivative root
+#   - paths.processed_dir -> a dedicated root (isolation from lightweight
+#     baseline's J:/processed/openneuro_fmri, same collision-avoidance
+#     rationale as config_ingest_ds007216_fmri_nuisance.yaml)
+#   - indexing.fmri.bold_patterns -> only the "minimal" desc, NOT the
+#     "qcnuisance" desc twin that also lives in the same func/ directory
+#     (see script 25's DERIV_NAME / minimal_stem / nuisance_stem)
+#
+# Confounds naming bridge: script 25 writes
+# "<stem>_desc-confoundsfull_timeseries.tsv" (deliberately non-standard, to
+# avoid colliding with any real fMRIPrep-derivatives naming convention).
+# mndm.pipeline.summary._resolve_confounds_path_for_bold hardcodes
+# "<stem>_desc-confounds_timeseries.tsv" (not config-overridable). Run
+# project/scripts/28_ds007216_stage5_ants_lite_confounds_bridge.py once
+# before summarizing this config -- it adds an additive renamed copy
+# alongside the original, touching nothing Stage 1/2/3 already depend on.
+imports:
+  - "./config_ingest_ds007216_fmri.yaml"
+
+paths:
+  processed_dir: "J:/processed/openneuro_fmri_ants_lite"
+  dataset_received_dirs:
+    ds007216: "K:/ExternalReceivedDatasets/openneuro/received/ds007216/derivatives/ants_lite_prep_v1"
+
+indexing:
+  fmri:
+    bold_patterns:
+      - "*desc-antslitepreminimal_bold.nii.gz"
+    datasets:
+      ds007216:
+        bold_patterns:
+          - "*desc-antslitepreminimal_bold.nii.gz"
+
+metadata_extraction:
+  datasets:
+    ds007216:
+      participants:
+        # ants_lite_prep_v1 sits at the same depth under derivatives/ as
+        # lightweight_norm_v1, so the same "two directories up" override
+        # from the imported production config already applies -- restated
+        # explicitly here for clarity since this key is not a deep-merge-safe
+        # list/scalar in every mndm config loader version.
+        path: "../../participants.tsv"
+      task:
+        from_filename: true

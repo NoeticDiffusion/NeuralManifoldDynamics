@@ -1,0 +1,25 @@
+# Pilot download config for OpenNeuro ds003710.
+#
+# The first pass intentionally downloads one subject plus the dataset-level
+# metadata and APPLESEED code directory. After inspecting the BrainVision
+# sidecars and channels.tsv, use config_ingest_ds003710.yaml for the full
+# dataset download.
+datasets:
+  - ds003710
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed"
+
+download:
+  retries: 3
+  use_uvx: true
+  datasets:
+    ds003710:
+      include_patterns:
+        - "sub-01/**"
+        - "code/**"
+        - "participants.tsv"
+        - "participants.json"
+        - "dataset_description.json"
+        - "README"

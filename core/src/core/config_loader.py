@@ -18,10 +18,18 @@ logger = logging.getLogger(__name__)
 
 
 def _deep_merge_dict(base: Mapping[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
-    """Deep-merge mappings; values in ``override`` win, nested dicts merge recursively."""
+    """Deep-merge mappings; values in ``override`` win, nested dicts merge recursively.
+
+    If a dict in ``override`` contains the special key ``__replace: true``, that
+    dict is used verbatim (replacing the base dict entirely) instead of being
+    merged into it.  The ``__replace`` sentinel key is stripped from the result.
+    """
     out: Dict[str, Any] = dict(base) if isinstance(base, Mapping) else {}
     if not isinstance(override, Mapping):
         return out
+    # Replace-mode: discard base and use override without the sentinel key
+    if override.get("__replace"):
+        return {k: v for k, v in override.items() if k != "__replace"}
     for k, v in override.items():
         if isinstance(v, Mapping) and isinstance(out.get(k), Mapping):
             out[k] = _deep_merge_dict(out.get(k, {}), v)

@@ -2,14 +2,14 @@
 
 Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation for EEG and fMRI workflows.
 
-Current documented release line: **NeuralManifoldDynamics 2.3**.
+Current documented release line: **NeuralManifoldDynamics 2.5.0**.
 
-Version 2.3 keeps the versioned measurement-contract framing introduced in the
-2.1 coordinate-contract release, and extends it with the **Embodied Anchoring
-Principle**: additive embodied/interoceptive exports aligned to the canonical
-MNPS time grid (`anchor_state`, `anchor_quality`, optional `anchor_coupling`,
-and HRV-oriented raw feature surfaces) without redefining the canonical
-`mnps_3d = [m,d,e]` chart.
+Version 2.5.0 keeps the versioned measurement-contract framing introduced in the
+2.1 coordinate-contract release and extended through v2.4. It adds optional
+BDF/Figshare, NWB/Neuropixels/LFP, phase-anchor, sleep-EAP, explicit epoch
+lineage, provenance, and QC-hardening surfaces while preserving the canonical
+`mnps_3d = [m,d,e]` chart and the additive embodied/interoceptive layer
+(`anchor_state`, `anchor_quality`, and optional `anchor_coupling`).
 
 This root README is intentionally high-level. Package-specific usage, schema details, and command references live in each subproject.
 

@@ -12,8 +12,12 @@ __all__ = [
     "ppg",
     "pupil",
     "resp",
+    "cardioresp",
+    "phase_anchor",
+    "sleep_eap",
     "eda",
     "fmri",
+    "ephys",
 ]
 
 

@@ -1,0 +1,21 @@
+version: 2.0
+modality: ephys
+
+imports:
+  - "./config_ingest_common_ephys.yaml"
+
+datasets: ["dandi_000006"]
+
+source:
+  name: "DANDI 000006"
+  platform: "DANDI"
+  format: "NWB"
+  dataset_id: "000006"
+  dataset_name: "Mouse anterior lateral motor cortex in delay response task"
+  url: "https://dandiarchive.org/dandiset/000006"
+
+paths:
+  received_dir: "data/dandi/raw/000006"
+  processed_dir: "data/dandi/processed_ephys/000006"
+  dataset_received_dirs:
+    dandi_000006: "data/dandi/raw/000006"

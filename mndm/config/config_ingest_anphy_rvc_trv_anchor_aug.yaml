@@ -1,0 +1,75 @@
+# config_ingest_anphy_rvc_trv_anchor_aug.yaml
+#
+# ANPHY — RVC anchor-augmented SENSITIVITY surface
+# =================================================
+#
+# !! SENSITIVITY RUN ONLY — NOT THE PRIMARY RVC ENDPOINT !!
+#
+# Imports the primary ANPHY RVC config and overrides e_m to include
+# ecg_hrv_rmssd_ms, producing the "anchor-augmented" coords_9d surface.
+#
+# Purpose:
+#   Test whether the primary RVC geometry result changes when vagal HRV
+#   is embedded inside the geometry itself.  Parallel to the BOAS sensitivity
+#   run (config_ingest_ds005555_rvc_trv_anchor_aug.yaml).
+#
+# Run sequence:
+#   1. Primary run:  config_ingest_anphy_rvc_trv.yaml
+#      → E:/Science_Datasets/ANPHY/processed/        (EEG-only geometry)
+#
+#   2. Sensitivity:  this file
+#      → E:/Science_Datasets/ANPHY/processed_anchor_aug/  (HRV in e_m)
+#
+# Downstream comparison:
+#   Compare coords_9d from run 1 vs run 2 for the same spindle events.
+#   If spindle effect persists → moderation is over and above HRV → geometry.
+#   If weakens → HRV is partly mediating via geometry (important to report).
+#
+# See project/ideas/TRV/ANPHY_qc.md for the design rationale.
+# See project/ideas/TRV/dual_datasets.md for the combined study contract.
+
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_anphy_rvc_trv.yaml"
+
+datasets:
+  - ANPHY
+
+source:
+  dataset_name: "ANPHY sleep dataset — RVC/TRV anchor-augmented sensitivity run"
+  surface_id: "anchor_augmented"
+  coordinate_contract: "rvc_v1_anchor_aug_e_m"
+  anchor_contract: "rvc_v1_anchor_v02_vagal_ocular_sympathetic"
+  dual_surface_pair: "anphy_rvc_trv"
+
+paths:
+  processed_dir: "E:/Science_Datasets/ANPHY/processed_anchor_aug"
+  dataset_received_dirs:
+    ANPHY: "M:/datasets/received/ANPHY/Subjects"
+
+# ── MNPS embodied channels: add HRV ──────────────────────────────────────────
+# Override primary EEG-only embodied channels to include cardiac signals.
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - ecg_hrv_rmssd_ms    # vagal tone (EAP signal, enters geometry here)
+      - eog_blink_rate      # ocular arousal proxy
+      - emg_rms             # chin arousal
+
+# ── MNPS 9D: HRV-augmented e_m ───────────────────────────────────────────────
+# Override e_m to use ecg_hrv_rmssd_ms: the sensitivity / anchor-augmented surface.
+mnps_9d:
+  datasets:
+    ANPHY:
+      subcoords:
+        e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+        # HRV-augmented e_m: sensitivity surface only.
+        # __replace: true prevents deep-merge from inheriting primary e_m keys.
+        e_m: {__replace: true, ecg_hrv_rmssd_ms: 0.8, eeg_hjorth_mobility: 0.2}
+      block_jacobians:
+        enabled: true
+        preset: mde_families_v1
+        csv_output: "stratified_block_jacobians_subjects_anchor_aug.csv"

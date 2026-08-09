@@ -405,6 +405,69 @@ def test_build_feature_export_bundle_exports_all_numeric_features_with_usage_met
     assert bundle["metadata"]["used_by_regional_projection"].tolist() == [0, 1, 0]
     assert bundle["metadata"]["group_label"].tolist() == ["", "frontal", ""]
     assert bundle["metadata"]["backend"].tolist() == ["", "", "numpy"]
+    assert bundle["metadata"]["robust_z_valid"].tolist() == [0, 0, 0]
+    assert bundle["metadata"]["robust_z_invalid_reason"].tolist() == [
+        "insufficient_support",
+        "insufficient_support",
+        "insufficient_support",
+    ]
+
+
+def test_strict_robust_z_sparse_blink_series_defaults_to_nan():
+    """Sparse zero-inflated blink data must not turn into a gigascale z-score."""
+    from mndm.projection import _strict_robust_z_column
+
+    values = np.asarray([0.0, 0.0, 0.0, 0.875], dtype=np.float32)
+    transformed, center, scale, reason = _strict_robust_z_column(values)
+
+    assert np.isnan(transformed).all()
+    assert center == 0.0
+    assert np.isnan(scale)
+    assert reason == "degenerate_scale"
+    assert not np.any(np.abs(transformed[np.isfinite(transformed)]) > 1e6)
+
+
+def test_strict_robust_z_eps_floor_opt_in_reproduces_legacy_sparse_scale():
+    """The explicit legacy mode remains available for historical reproduction."""
+    from mndm.projection import _strict_robust_z_column
+
+    values = np.asarray([0.0, 0.0, 0.0, 0.875], dtype=np.float32)
+    transformed, center, scale, reason = _strict_robust_z_column(
+        values,
+        degenerate_scale_policy="eps_floor",
+    )
+
+    assert center == 0.0
+    assert scale == 1e-9
+    assert transformed[-1] == np.float32(8.75e8)
+    assert reason == "degenerate_scale"
+
+
+def test_build_feature_export_bundle_records_degenerate_robust_z_metadata():
+    """The raw export stays intact while strict robust-z records invalidity."""
+    from mndm.projection import build_feature_export_bundle
+
+    bundle = build_feature_export_bundle(
+        pd.DataFrame({"eog_blink_rate": [0.0, 0.0, 0.0, 0.875]}),
+    )
+
+    assert np.allclose(bundle["raw_values"][:, 0], [0.0, 0.0, 0.0, 0.875])
+    assert np.isnan(bundle["robust_z_values"][:, 0]).all()
+    assert bundle["metadata"]["robust_z_valid"].tolist() == [0]
+    assert bundle["metadata"]["robust_z_invalid_reason"].tolist() == ["degenerate_scale"]
+    assert np.isnan(bundle["metadata"]["robust_z_scale"][0])
+    # The coordinate-only transform keeps its historical clipping contract.
+    assert bundle["projection_z_values"][-1, 0] == np.float32(6.0)
+
+
+def test_build_feature_export_bundle_keeps_large_finite_counts_out_of_int8():
+    """Finite-count provenance must support ordinary long sleep recordings."""
+    from mndm.projection import build_feature_export_bundle
+
+    bundle = build_feature_export_bundle(pd.DataFrame({"eeg_alpha": np.arange(177, dtype=float)}))
+
+    assert bundle["metadata"]["robust_z_finite_count"].dtype == np.int32
+    assert bundle["metadata"]["robust_z_finite_count"].tolist() == [177]
 
 
 def test_derive_mde_from_v2_group_mean():

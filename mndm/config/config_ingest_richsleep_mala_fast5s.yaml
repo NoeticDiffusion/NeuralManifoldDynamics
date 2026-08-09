@@ -1,0 +1,489 @@
+# config_ingest_richsleep_mala_fast5s.yaml
+#
+# RichSleep – FAST-PASS variant for Mål A testing
+# =====================================================================
+#
+# PURPOSE: Enable phase-resolved manifold speed (Mål A) by reducing
+# the feature epoch step from 30 s → 5 s.  This produces ~6–8 coordinate
+# samples per respiratory cycle (4–8 s period), which is the minimum
+# resolution needed to bin manifold speed by respiratory phase.
+#
+# THIS IS A SEPARATE RUN — it does NOT replace or overwrite the primary
+# 30 s config (config_ingest_richsleep_rvc_trv.yaml).
+# Primary config remains frozen; this config adds a new run-root.
+#
+# ── What changes vs primary config ───────────────────────────────────
+#
+#   Primary (30 s)              This config (5 s step, 10 s window)
+#   ─────────────────────       ────────────────────────────────────────
+#   epoching.length_s: 30       epoching.length_s: 10
+#   epoching.step_s: 30         epoching.step_s: 5
+#   stage sampling: on          stage sampling: OFF (all epochs, no balance)
+#   block_native.step_sec: 15   block_native.step_sec: 5
+#   ~1200 epochs / subject      ~8000–9000 epochs / subject (estimated)
+#   surface_id: primary_eeg     surface_id: primary_eeg_only_mala5s
+#   coordinate_contract: rvc_v1_eeg_only_e_m
+#                               coordinate_contract: rvc_v1_eeg_only_mala_5s
+#
+# ── What this enables ─────────────────────────────────────────────────
+#
+#   Mål A (respiratory): binning manifold speed by respiratory phase
+#     · At 5 s step, one respiratory cycle (4–8 s) → 1–2 coordinate pairs
+#     · Requires post-processing in 18_phase_resolved_eap.py (extend it to
+#       join with the new coords_9d at 5 s resolution)
+#     · See project/ideas/EAP_extended/pipeline_changes_for_true_eap.md §Path B
+#
+#   Mål A (cardiac): NOT feasible at 5 s resolution either.
+#     · Cardiac cycle ≈ 0.8 s → needs step_s < 0.2 s
+#     · Standard EEG spectral features are meaningless at sub-second windows
+#     · Accept: cardiac phase-resolved speed requires a fundamentally
+#       different signal representation (e.g. instantaneous power via Morlet)
+#
+# ── Quality warnings ─────────────────────────────────────────────────
+#
+#   Feature degradation at 10 s windows (compared to 30 s):
+#
+#   RELIABLE at 10 s:
+#     - eeg_delta, eeg_theta, eeg_alpha, eeg_beta  (spectral resolution 0.1 Hz)
+#     - eeg_hjorth_mobility, eeg_hjorth_complexity  (time-domain, fine)
+#     - eeg_alpha_theta, eeg_beta_alpha             (ratios, inherit above)
+#     - resp_*   (uses raw signal, not EEG windows)
+#     - ecg_hrv  (superwindow_s: 90 s, independent of epoch step)
+#
+#   DEGRADED at 10 s — treat with caution:
+#     - eeg_gamma  (40–45 Hz; short window reduces SNR)
+#     - eeg_permutation_entropy  (PE needs ≥ 200 samples; at 200 Hz × 10 s
+#                                 = 2000 samples — OK but shorter than ideal)
+#     - eeg_sample_entropy       (needs long sequences; 10 s is borderline)
+#     - cardioresp_coherence     (Welch coherence with short windows is noisy)
+#
+#   UNRELIABLE — disabled in this config:
+#     - ndt_ingest dynamic_fc    (4 s windows inside 10 s epoch: trivial)
+#
+# ── Join contract with 18_phase_resolved_eap.py ──────────────────────
+#
+#   After features + summarize:
+#     features.parquet   → epoch_id, t_start, t_end at 5 s resolution
+#     coords_9d (in H5)  → one value per 5 s epoch
+#
+#   Update 18_phase_resolved_eap.py:
+#     1. Point FEATURES_PARQUET to the new mala_fast5s output path
+#     2. For each 5 s epoch, sample phi_cardiac and phi_resp at t_start + 2.5 s
+#     3. Compute manifold_speed[i] = ‖coord[i] − coord[i−1]‖ (5 s difference)
+#     4. Phase-bin manifold_speed by phi_resp (K=8 bins over [0, 2π))
+#     5. Fit cos model: speed_mean(φ) = a + b·cos(φ − φ₀) per subject
+#
+# ── Surface identity ──────────────────────────────────────────────────
+#
+#   surface_id:          primary_eeg_only_mala5s
+#   coordinate_contract: rvc_v1_eeg_only_mala_5s
+#
+#   IMPORTANT: these coordinates are NOT directly comparable to the
+#   primary 30 s geometry. Do NOT mix in meta-analysis without explicit
+#   cross-resolution calibration. The Mål A analysis is within-surface-only.
+#
+# ── Output location ───────────────────────────────────────────────────
+#
+#   K:/ExternalReceivedDatasets/mndm_rvc_processed/RichSleep_mala_fast5s/
+
+version: 2.0
+modality: eeg
+
+datasets:
+  - RichSleep
+
+source:
+  name: "RichSleep"
+  platform: "Local"
+  format: "edf"
+  dataset_id: "RichSleep"
+  dataset_name: "RichSleep PSG – Mål A fast-pass (5 s epoch step)"
+  url: null
+  # Different surface identity — NOT compatible with primary 30 s geometry.
+  surface_id: "primary_eeg_only_mala5s"
+  coordinate_contract: "rvc_v1_eeg_only_mala_5s"
+  anchor_contract: "rvc_v1_phase_resolved_v01"
+  dual_surface_pair: "richsleep_mala_fast5s"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets"
+  processed_dir: "K:/ExternalReceivedDatasets/mndm_rvc_processed/RichSleep_mala_fast5s"
+  dataset_received_dirs:
+    RichSleep: "K:/ExternalReceivedDatasets/RichSleep/xndata"
+
+# ── Preprocessing ─────────────────────────────────────────────────────
+# Identical to primary config.
+preprocess:
+  sfreq: 200
+  reref: null
+  eeg_bandpass: [1.0, 45.0]
+  notch_hz: 50.0
+
+  channel_typing:
+    enabled: true
+    datasets:
+      RichSleep:
+        rules:
+          - {regex: "^(F3-A2|F4-A1|C3-A2|C4-A1|O1-A2|O2-A1)$", type: "eeg"}
+          - {regex: "^(EOG-L|EOG-R)$", type: "eog"}
+          - {regex: "^Chin$", type: "emg"}
+          - {regex: "^ECG$", type: "ecg"}
+          - {regex: "^(Chest|Abdomen|Airflow)$", type: "resp"}
+          - {regex: "^(R-R|Leg|Snore|SpO2|EtCO2)$", type: "misc"}
+
+# ── Epoching: 10 s window, 5 s step ──────────────────────────────────
+#
+# 10 s window: minimum for EEG spectral resolution (0.1 Hz, covers 0.5–45 Hz).
+# 5 s step: overlapping windows → ~8 000–9 000 epochs per subject (8 h night).
+# Overlap = 5 s (50 %) → manifold speed = ‖coord[i] − coord[i−1]‖ at 5 s lag.
+#
+# Stage sampling DISABLED: we need contiguous temporal coverage for phase
+# binning. Random sampling would break the phase-time correspondence.
+# All epochs are retained, stage balance is not enforced here.
+#
+# Stage labels: still 30 s resolution (annotation files are 30 s).
+# Each 5 s epoch inherits the stage of the enclosing 30 s annotation block.
+epoching:
+  datasets:
+    RichSleep:
+      length_s: 10.0
+      step_s: 5.0
+      sampling:
+        enabled: false   # DISABLED: need contiguous coverage for Mål A
+
+# ── Features ─────────────────────────────────────────────────────────
+features:
+  # Ratio features required by mnps_9d subcoords m_o (beta_alpha) and d_s (alpha_theta).
+  # This standalone config does not import common_eeg.yaml, so ratios must be explicit.
+  ratios: {alpha_theta: ["alpha", "theta"], beta_alpha: ["beta", "alpha"]}
+  eeg:
+    enabled: true
+    datasets:
+      RichSleep:
+        enabled: true
+
+conventional_eeg:
+  enabled: false
+  tier1:
+    relative_bandpower: true
+    ratios: ["alpha_theta", "beta_alpha"]
+
+  # Respiration: unchanged (operates on raw signal, not EEG window length).
+  resp:
+    primary_channel: "Chest"
+    secondary_channels: ["Abdomen", "Airflow"]
+    lowpass_hz: 1.0
+    peak_min_distance_s: 1.5
+    peak_min_prominence_frac: 0.10
+    pause_flatness_frac: 0.05
+    min_breaths: 2
+    min_signal_quality: 0.15
+
+  # ECG: HRV superwindow stays at 90 s.
+  # The 90 s superwindow is independent of epoch step_s — each 10 s epoch
+  # still gets HRV features from the surrounding 90 s context window.
+  # Result: RMSSD is stable; just sampled more frequently than in primary.
+  ecg:
+    hrv:
+      enabled: true
+      superwindow_s: 90.0          # unchanged — independent of epoch step
+      min_nn_intervals: 20
+      min_coverage_fraction: 0.5
+      complexity:
+        enabled: true
+        sampen_order: 2
+        sampen_tolerance_mult: 0.2
+        min_nn_for_sampen: 50
+        dfa_short_nvals_lo: 4
+        dfa_short_nvals_hi: 12
+        min_nn_for_dfa: 16
+
+  eog:
+    filter_low_hz: 0.5
+    filter_high_hz: 10.0
+    filter_order: 3
+    std_mult: 2.5
+    mad_mult: 3.5
+    prominence_mult: 1.0
+    refractory_s: 0.30
+    blink_halfwidth_s: 0.20
+    saccade_filter_low_hz: 1.0
+    saccade_filter_high_hz: 30.0
+    saccade_std_mult: 3.5
+    saccade_refractory_s: 0.30
+    artifact_sat_frac: 0.95
+
+  # cardioresp: coherence_nperseg reduced because each 10 s epoch has fewer
+  # samples (2000 at 200 Hz) than the primary 30 s epoch (6000 samples).
+  # nperseg: 64 → 0.32 s per segment at 200 Hz; still valid for resp band.
+  # WARNING: coherence and RSA estimates will be noisier than in the primary run.
+  cardioresp:
+    resp_band_lo: 0.10
+    resp_band_hi: 0.50
+    ibi_interp_hz: 4.0
+    coherence_nperseg: 32          # reduced from 64 for 10 s windows
+    xcorr_max_lag_s: 5.0           # reduced from 10 s (< epoch length)
+    min_rpeaks: 5
+
+# ── Anchor State ─────────────────────────────────────────────────────
+# Full v0.2 (same as primary), but anchored to more frequent epochs.
+# The per-epoch anchor_index values at 5 s resolution can later be used
+# to check whether anchor state also shows phase-locked modulation.
+anchor_state:
+  enabled: true
+  v2:
+    enabled: true
+
+anchor_coupling:
+  enabled: true
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: false
+  min_windows: 3
+  condition_number_max: 1000000.0
+
+# ── MNPS projection ───────────────────────────────────────────────────
+# IDENTICAL to primary config — same NDT prior, same v1_mapping weights.
+# This ensures that coords_9d values are comparable in the same geometric
+# space as the primary run (despite different temporal resolution).
+mnps_projection:
+  normalize: "robust_z"
+  clip_threshold: 6.0
+  v1_mapping:
+    m:
+      m_a: 0.62
+      m_e: 0.55
+      m_o: 0.45
+    d:
+      d_n: 0.50
+      d_l: 0.82
+      d_s: 0.28
+    e:
+      e_e: 0.85
+      e_s: 0.62
+      e_m: 0.03
+  feature_standardization:
+    default: ["robust_z", "clip"]
+    eeg_delta: ["log10", "robust_z", "clip"]
+    eeg_theta: ["log10", "robust_z", "clip"]
+    eeg_alpha: ["log10", "robust_z", "clip"]
+    eeg_beta:  ["log10", "robust_z", "clip"]
+    eeg_gamma: ["log10", "robust_z", "clip"]
+    eeg_alpha_theta:     ["robust_z", "clip"]
+    eeg_beta_alpha:      ["robust_z", "clip"]
+    eeg_sample_entropy:  ["robust_z", "clip"]
+    eeg_permutation_entropy: ["robust_z", "clip"]
+    eeg_hjorth_complexity:   ["robust_z", "clip"]
+    eeg_hjorth_mobility:     ["robust_z", "clip"]
+  min_axis_coverage: 0.3
+  weights:
+    m: {eeg_theta: 0.35, eeg_delta: 0.25, eeg_alpha: 0.20, eeg_beta: 0.20}
+    d: {eeg_sample_entropy: 0.40, eeg_beta_alpha: 0.30, eeg_gamma: 0.30}
+    e: {eeg_alpha: 0.40, eeg_beta: 0.30, eeg_alpha_theta: 0.30}
+
+mnps_3d:
+  mode: "from_v2"
+  from_v2:
+    aggregation: "fixed_weighted_projection"
+    pooling: "mean"
+    map:
+      m: ["m_a", "m_e", "m_o"]
+      d: ["d_n", "d_l", "d_s"]
+      e: ["e_e", "e_s", "e_m"]
+
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - eog_blink_rate
+
+# ── MNPS 9D: same subcoord definitions as primary ────────────────────
+# IDENTICAL to primary — EEG-only, v2.0, same e_m override.
+mnps_9d:
+  enabled: true
+  definition_version: "2.0"
+  subcoords:
+    m_a: {eeg_delta: -0.5, eeg_theta: -0.5}
+    m_e: {eeg_alpha: -1.0}
+    m_o: {eeg_beta_alpha: 1.0}
+    d_n: {eeg_gamma: 1.0}
+    d_l: {eeg_hjorth_mobility: 1.0}
+    d_s: {eeg_alpha_theta: 1.0}
+    e_e: {eeg_permutation_entropy: 1.0}
+    e_s: {eeg_hjorth_complexity: 1.0}
+    e_m: {embodied_arousal_proxy: 1.0}
+  metric_policies:
+    e_e:
+      preferred: permutation_entropy
+      fallbacks: [spectral_entropy]
+    e_m:
+      preferred: ecg_rmssd
+      fallbacks: [eog_blink_rate]
+  datasets:
+    RichSleep:
+      subcoords:
+        e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+        e_m: {eeg_hjorth_mobility: 0.6, eeg_beta_alpha: 0.4}
+      block_jacobians:
+        enabled: false
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 2
+    groups:
+      frontal:    ["F3-A2", "F4-A1"]
+      central:    ["C3-A2", "C4-A1"]
+      occipital:  ["O1-A2", "O2-A1"]
+  review_qc:
+    baseline_comparisons:
+      enabled: true
+      smoothing_window_epochs: 5    # 5 × 5 s = 25 s (same wall-time as primary 3 × 30 s)
+      max_series_per_family: 6
+    null_sanity_tests:
+      enabled: true
+      seed: 42
+  coverage:
+    datasets:
+      RichSleep:
+        min_seconds: 60
+        min_epochs: 12              # 12 × 5 s = 60 s (same wall-time threshold)
+
+regional_mnps:
+  block_jacobians:
+    enabled: false
+
+# ── Block-native: 5 s step for dense manifold trajectory ─────────────
+# This is the key output for Mål A: dense (t, coord_9d) time series.
+# At 5 s step, manifold_speed = ‖coord[i] − coord[i−1]‖ can be computed
+# in the post-processing script at 5 s temporal resolution.
+# Window remains 10 s (same as feature epoch) for consistency.
+block_native:
+  datasets:
+    RichSleep:
+      enabled: true
+      source:
+        kind: "stage_blocking"
+        label_column: "stage"
+        stage_columns: ["stage"]
+      window_profile:
+        kind: "sliding"
+        window_length_sec: 10.0    # matches epoch length
+        step_sec: 5.0              # dense sampling for Mål A
+        emit_relative_position: true
+        min_block_sec: 30.0        # at least 6 × 5 s epochs per block
+      export:
+        write_parquet: true
+        write_csv: false           # skip CSV (large at 5 s resolution)
+
+# ── Event-locked spindle analysis (Pass A) ───────────────────────────
+# Kept identical to primary config: bins are in seconds, not epoch-steps,
+# so they do not need changing for the 5 s epoch resolution.
+# Event-locked analysis here supplements the Mål A output:
+# at each spindle onset we can look up the surrounding phase trajectory.
+event_locked:
+  datasets:
+    RichSleep:
+      enabled: true
+      profile: "rvc_spindle_v1"
+      event_source:
+        kind: "csv"
+      csv_source_glob: "{events_core}_spindles_yasa_v1_*.csv"
+      event_types: ["sleep_spindle"]
+      stage_filter: ["N2"]
+      reference: "peak"
+      bins:
+        pre_far:   [-30.0, -10.0]
+        pre_near:  [-10.0,   0.0]
+        event:     [  0.0,   3.0]
+        post_near: [  3.0,  10.0]
+        post_far:  [ 10.0,  30.0]
+      exclude_stage_transition_margin_sec: 30.0
+      min_overlap_fraction: 0.0
+      controls:
+        stage: "N2"
+        n_controls_per_event: 3
+        exclusion_margin_sec: 30.0
+        time_of_night_quartile_match: true
+        seed: 42
+      export:
+        write_parquet: true
+        write_csv: false           # skip CSV (large at 5 s resolution)
+        include_coords_9d: true
+        provenance_in_every_row: true
+        event_condition_label: "spindle_event"
+        control_condition_label: "matched_control"
+
+# ── NDT ingest: DISABLED ─────────────────────────────────────────────
+# dynamic_fc at 4 s window inside a 10 s epoch is meaningless.
+# Re-enable only if a separate NDT fast-pass run is warranted.
+ndt_ingest:
+  ingest_version: "1.2"
+  modalities:
+    eeg:
+      enabled: false
+
+# ── Sleep stage annotations ───────────────────────────────────────────
+# Identical to primary: 30 s resolution annotations; each 5 s epoch
+# inherits the stage of the enclosing 30 s annotation block.
+sleep_annotations:
+  datasets:
+    RichSleep:
+      enabled: true
+      search_parent_levels: 0
+      file_globs: ["*_stages.txt"]
+      stage_map:
+        Wake: 0
+        N1:   1
+        N2:   2
+        N3:   3
+        REM:  4
+        Unknown: -1
+
+metadata_extraction:
+  datasets:
+    RichSleep:
+      filename_parse:
+        regex: "(?P<subject>xn\\d{3})"
+        subject_pad: 0
+      group:
+        default: "Healthy"
+      condition:
+        default: "sleep"
+      task:
+        default: "sleep"
+
+# ── Suggested run commands ────────────────────────────────────────────
+#
+# Features (smoke test: 2 subjects):
+#   python -m mndm.cli features \
+#     --config mndm/config/config_ingest_richsleep_mala_fast5s.yaml \
+#     --subjects xn001 xn002 \
+#     --out-dir K:/ExternalReceivedDatasets/mndm_rvc_processed/RichSleep_mala_fast5s \
+#     --workers 4
+#
+# Features (full 24 subjects):
+#   python -m mndm.cli features \
+#     --config mndm/config/config_ingest_richsleep_mala_fast5s.yaml \
+#     --out-dir K:/ExternalReceivedDatasets/mndm_rvc_processed/RichSleep_mala_fast5s \
+#     --workers 4
+#
+# Summarize:
+#   python -m mndm.cli summarize \
+#     --config mndm/config/config_ingest_richsleep_mala_fast5s.yaml \
+#     --out-dir K:/ExternalReceivedDatasets/mndm_rvc_processed/RichSleep_mala_fast5s \
+#     --workers 4
+#
+# After summarize — extend 18_phase_resolved_eap.py:
+#   FEATURES_PARQUET = ".../RichSleep_mala_fast5s/RichSleep/features.parquet"
+#   python project/scripts/18_phase_resolved_eap.py \
+#     --out-dir K:/ExternalReceivedDatasets/RichSleep/phase_resolved_mala_v1
+#
+# ── Expected data volume ─────────────────────────────────────────────
+#
+#   ~8 h night at 5 s step → ~5 760 epochs / subject (no stage sampling)
+#   24 subjects → ~138 000 feature rows
+#   features.parquet: ~30–50 MB (vs ~10 MB for primary)
+#   block_native parquets: ~5 MB / subject × 24 = ~120 MB
+#   Estimated features runtime: ~1.5–2 h (4 workers, IO-bound)
+#   Estimated summarize runtime: ~1–2 h

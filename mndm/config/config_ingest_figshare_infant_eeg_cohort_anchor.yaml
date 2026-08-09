@@ -1,0 +1,21 @@
+# Cohort-anchored overlay for the Figshare infant EEG BDF archive.
+#
+# Retains subject-anchored coordinates and Jacobians as the primary contract for
+# within-child dynamics. The additional cohort-anchored layers are a frozen,
+# subject-balanced reference frame for secondary between-child/age analyses.
+# The anchor pools all QC-eligible children and visits; it does not create
+# experimental conditions from the source BDF Status channel.
+imports:
+  - "./config_ingest_figshare_infant_eeg.yaml"
+
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "figshare_infant_eeg_global_cohort_all_visits_iqr_v2_1"
+    anchor_source: "figshare_infant_eeg_all_subjects_all_visits_features"
+    cohort_filter: "all usable rows after summarize QC filters; TD25v4 excluded from age analyses"
+    scale_method: "iqr"
+    min_subjects: 3

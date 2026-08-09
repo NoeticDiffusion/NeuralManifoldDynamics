@@ -12,13 +12,33 @@ preprocess:
           - {regex: "^[0-9]+$", type: "eeg"}
       ds005555:
         # BOAS sleep EDFs use prefixed channel names like "PSG_F3" and "HB_1".
+        # Full PSG channel typing: 6-lead EEG, single EOG, chin EMG, 3 respiratory belts/thermistor.
+        # NOTE: resp channels (PSG_THER/THOR/ABD) feed anchor_state only (not primary geometry).
         rules:
+          # ── EEG (6-lead 10-20 sleep montage) ───────────────────────────────────
           - {regex: "^PSG_(F3|F4|C3|C4|O1|O2)$", type: "eeg"}
+          # ── EOG (single unipolar EOG → ocular_stability_index) ──────────────────
+          - {regex: "^PSG_EOG$", type: "eog"}
+          # ── EMG (chin → sympathetic_index) ──────────────────────────────────────
+          - {regex: "^PSG_EMG$", type: "emg"}
+          # ── Respiration (anchor_state.resp_anchor_index only) ───────────────────
+          - {regex: "^PSG_THOR$", type: "resp"}
+          - {regex: "^PSG_ABD$", type: "resp"}
+          - {regex: "^PSG_THER$", type: "resp"}
+          # ── Headband EEG (kept separate from PSG) ───────────────────────────────
           - {regex: "^HB_(1|2)$", type: "eeg"}
+          # ── Catch-all: remaining PSG/headband channels → misc ───────────────────
           - {prefix: "PSG_", type: "misc"}
-          - {prefix: "HB_", type: "misc"}
+          - {prefix: "HB_",  type: "misc"}
       ds005505:
         # HBN-EEG releases often use dense EEG caps with numbered channels.
         rules:
           - {regex: "^E[0-9]+$", type: "eeg"}
           - {regex: "^EEG[0-9]+$", type: "eeg"}
+      ds007216:
+        # EEG-fMRI harmonization pilot (Bergen_CWreg derivative). No BIDS
+        # channels.tsv ships with the derivative, so MNE's EEGLAB reader would
+        # otherwise type ECG/CWL1-4 as "eeg" by default.
+        rules:
+          - {regex: "(?i)^ECG$", type: "ecg"}        # single ECG channel
+          - {regex: "(?i)^CWL[1-4]$", type: "misc"}  # carbon-wire-loop refs; already regressed out, not physiological

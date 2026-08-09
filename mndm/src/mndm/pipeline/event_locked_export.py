@@ -37,6 +37,9 @@ Optional columns (present when payload tensors are available)
 ``coords_9d_finite``,
 ``event_onset_sec``, ``event_duration_sec``, ``event_source``,
 ``event_type``, ``event_channel``, ``event_confidence``,
+``event_metadata_json`` (JSON blob of any CSV columns outside the standard
+EventTable schema, e.g. ds004587's ``illusion_strength``/``type``/``correct``/
+``rt``/``block_number``/``trial_number``),
 ``match_rank``, ``match_distance``, ``matched_event_id``
 
 Design contract
@@ -367,6 +370,19 @@ def _event_meta(table: Optional[EventTable], ev_idx: int) -> Dict[str, Any]:
             "event_type": "",
             "event_channel": "",
             "event_confidence": np.nan,
+            "event_peak_sec": np.nan,
+            "event_frequency_hz": np.nan,
+            "event_amplitude": np.nan,
+            "event_sigma_power": np.nan,
+            "event_sigma_power_z_n2": np.nan,
+            "event_so_onset_sec": np.nan,
+            "event_so_upstate_sec": np.nan,
+            "event_so_amplitude": np.nan,
+            "event_so_phase_at_spindle_peak": np.nan,
+            "event_so_spindle_latency_sec": np.nan,
+            "event_so_spindle_coupling_score": np.nan,
+            "event_so_partner_missing": np.nan,
+            "event_metadata_json": "",
         }
     return {
         "event_onset_sec": float(table.onset_sec[ev_idx]),
@@ -375,6 +391,23 @@ def _event_meta(table: Optional[EventTable], ev_idx: int) -> Dict[str, Any]:
         "event_type": str(table.event_type[ev_idx]) if table.event_type is not None else "",
         "event_channel": str(table.channel[ev_idx]) if table.channel is not None else "",
         "event_confidence": float(table.confidence[ev_idx]) if table.confidence is not None else np.nan,
+        "event_peak_sec": float(table.peak_sec[ev_idx]) if table.peak_sec is not None else np.nan,
+        "event_frequency_hz": float(table.frequency_hz[ev_idx]) if table.frequency_hz is not None else np.nan,
+        "event_amplitude": float(table.amplitude[ev_idx]) if table.amplitude is not None else np.nan,
+        "event_sigma_power": float(table.sigma_power[ev_idx]) if table.sigma_power is not None else np.nan,
+        "event_sigma_power_z_n2": float(table.sigma_power_z_n2[ev_idx]) if table.sigma_power_z_n2 is not None else np.nan,
+        "event_so_onset_sec": float(table.so_onset_sec[ev_idx]) if table.so_onset_sec is not None else np.nan,
+        "event_so_upstate_sec": float(table.so_upstate_sec[ev_idx]) if table.so_upstate_sec is not None else np.nan,
+        "event_so_amplitude": float(table.so_amplitude[ev_idx]) if table.so_amplitude is not None else np.nan,
+        "event_so_phase_at_spindle_peak": float(table.so_phase_at_spindle_peak[ev_idx]) if table.so_phase_at_spindle_peak is not None else np.nan,
+        "event_so_spindle_latency_sec": float(table.so_spindle_latency_sec[ev_idx]) if table.so_spindle_latency_sec is not None else np.nan,
+        "event_so_spindle_coupling_score": float(table.so_spindle_coupling_score[ev_idx]) if table.so_spindle_coupling_score is not None else np.nan,
+        "event_so_partner_missing": float(table.so_partner_missing[ev_idx]) if table.so_partner_missing is not None else np.nan,
+        # Any CSV columns not recognized by the standard EventTable schema
+        # (e.g. ds004587's illusion_strength/type/correct/rt/block_number/
+        # trial_number) are folded here as a JSON string by
+        # ``load_event_table_from_csv`` rather than dropped.
+        "event_metadata_json": str(table.metadata_json[ev_idx]) if table.metadata_json is not None else "",
     }
 
 

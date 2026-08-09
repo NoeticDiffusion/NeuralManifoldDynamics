@@ -1,0 +1,5 @@
+version: 2.0
+imports: ["./config_ingest_dandi_000458_lfp_probe_b_full.yaml"]
+paths: {processed_dir: "data/dandi/processed_lfp/000458_probeB_contacts8_median"}
+preprocess:
+  reref: "median_within_probe"

@@ -67,6 +67,43 @@ def test_dataset_runner_subject_filter(dummy_ctx):
     assert filtered["file"].iloc[0].startswith("sub-001")
 
 
+def test_dataset_runner_subject_filter_accepts_variable_bids_padding(dummy_ctx):
+    """Numeric subject filters should match BIDS labels with different padding."""
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", "01", "subject")
+    frame = pd.DataFrame(
+        {
+            "file": [
+                "sub-01_ses-01_task-rest_eeg.set",
+                "sub-02_ses-01_task-rest_eeg.set",
+            ]
+        }
+    )
+
+    filtered = runner._apply_subject_filter(frame)
+
+    assert filtered is not None
+    assert len(filtered) == 1
+    assert filtered["file"].iloc[0].startswith("sub-01")
+
+
+def test_dataset_runner_grouping_accepts_variable_bids_padding(dummy_ctx):
+    """Summary grouping must preserve numeric subject matching after filtering."""
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", "01", "subject")
+    frame = pd.DataFrame(
+        {
+            "file": [
+                "sub-01_ses-01_task-rest_eeg.set",
+                "sub-02_ses-01_task-rest_eeg.set",
+            ]
+        }
+    )
+
+    groups = runner._build_groupings(frame)
+
+    assert len(groups) == 1
+    assert groups[0][0][0] == "sub-01"
+
+
 def test_dataset_runner_subject_filter_non_bids_filename_regex(dummy_ctx):
     """Subject filter should work for non-BIDS filenames via filename_parse."""
     dummy_ctx.config = {
@@ -574,6 +611,10 @@ def test_dataset_runner_keeps_jacobian_hashes_stable_across_n_jobs(dummy_ctx, mo
 
 def test_subject_runner_exports_reproducibility_provenance(dummy_ctx, monkeypatch, tmp_path):
     """Test subject runner exports reproducibility provenance."""
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "anchor_state": {"enabled": True},
+    }
     runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
     runner.participants_df = pd.DataFrame()
     monkeypatch.setattr(runner, "participant_meta_for", lambda _sub_id: {})
@@ -596,6 +637,8 @@ def test_subject_runner_exports_reproducibility_provenance(dummy_ctx, monkeypatc
             "epoch_id": np.arange(6, dtype=int),
             "t_start": np.arange(0, 18, 3, dtype=float),
             "t_end": np.arange(4, 22, 3, dtype=float),
+            "ecg_hr_bpm": np.linspace(60.0, 70.0, 6),
+            "ecg_rmssd": np.linspace(40.0, 30.0, 6),
         }
     )
     x = np.array(
@@ -614,7 +657,27 @@ def test_subject_runner_exports_reproducibility_provenance(dummy_ctx, monkeypatc
     monkeypatch.setattr(summary_mod, "extract_mapped_metadata", lambda *_args, **_kwargs: {"group": None, "condition": "rest", "task": "rest"})
     monkeypatch.setattr(summary_mod, "build_dataset_label", lambda **_kwargs: "ds001:sub-001:rest_rest")
     monkeypatch.setattr(summary_mod.projection, "project_features_with_coverage", lambda *args, **kwargs: (x, np.ones_like(x, dtype=np.float32), {}))
-    monkeypatch.setattr(summary_mod.projection, "build_feature_export_bundle", lambda *args, **kwargs: {"raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "raw_names": [], "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "robust_z_names": [], "metadata": {}})
+    monkeypatch.setattr(
+        summary_mod.projection,
+        "build_feature_export_bundle",
+        lambda *args, **kwargs: {
+            "raw_values": sub_frame[["ecg_hr_bpm", "ecg_rmssd"]].to_numpy(dtype=np.float32),
+            "raw_names": ["ecg_hr_bpm", "ecg_rmssd"],
+            "robust_z_values": np.column_stack(
+                [
+                    np.linspace(-1.0, 1.0, len(sub_frame), dtype=np.float32),
+                    np.linspace(1.0, -1.0, len(sub_frame), dtype=np.float32),
+                ]
+            ),
+            "robust_z_names": ["ecg_hr_bpm", "ecg_rmssd"],
+            "projection_z_values": np.zeros((len(sub_frame), 2), dtype=np.float32),
+            "projection_z_names": ["ecg_hr_bpm", "ecg_rmssd"],
+            "metadata": {
+                "robust_z_valid": np.ones(2, dtype=np.int8),
+                "robust_z_invalid_reason": np.asarray(["", ""], dtype=object),
+            },
+        },
+    )
     monkeypatch.setattr(summary_mod, "extract_stage_array", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(subject_runner, "_infer_stage_from_bids_events", lambda *_args, **_kwargs: (None, None, None, None))
     monkeypatch.setattr(summary_mod, "extract_embodied_array", lambda *_args, **_kwargs: None)
@@ -659,6 +722,8 @@ def test_subject_runner_exports_reproducibility_provenance(dummy_ctx, monkeypatc
     repro = manifest["provenance"]["reproducibility"]
     assert repro["seed"] == 42
     assert repro["jacobian_hash_saved"] == payload.attrs["jacobian_hash_saved"]
+    assert manifest["anchor_state_validation"]["status"] == "ok"
+    assert manifest["anchor_state_validation"]["guard_policy_version"] == "mndm.anchor_guard.v1"
 
 
 def test_subject_runner_exports_meg_mapping_provenance(dummy_ctx, monkeypatch, tmp_path):

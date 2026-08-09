@@ -17,8 +17,8 @@ from .. import projection
 logger = logging.getLogger(__name__)
 
 
-def extract_eeg_group_feature_frames(sub_frame: pd.DataFrame) -> Dict[str, pd.DataFrame]:
-    """Build per-group EEG feature frames from `__g_<group>` suffixed columns."""
+def extract_group_feature_frames(sub_frame: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    """Build per-group electrophysiology frames from ``__g_<group>`` columns."""
     if sub_frame is None or sub_frame.empty:
         return {}
     suffix_re = re.compile(r"^(?P<base>.+)__g_(?P<group>[A-Za-z0-9_]+)$")
@@ -47,7 +47,12 @@ def extract_eeg_group_feature_frames(sub_frame: pd.DataFrame) -> Dict[str, pd.Da
     return out
 
 
-def build_precomputed_eeg_group_trajectories(
+def extract_eeg_group_feature_frames(sub_frame: pd.DataFrame) -> Dict[str, pd.DataFrame]:
+    """Backward-compatible alias for EEG callers."""
+    return extract_group_feature_frames(sub_frame)
+
+
+def build_precomputed_group_trajectories(
     group_frames: Mapping[str, pd.DataFrame],
     axis_weights: Mapping[str, Mapping[str, float]],
     config: Mapping[str, Any],
@@ -61,7 +66,7 @@ def build_precomputed_eeg_group_trajectories(
     coerce_v1_mapping_to_v2_subcoords: Callable[[Mapping[str, Any], Mapping[str, Any]], Dict[str, Dict[str, float]]],
     align_v2_subcoords: Callable[[np.ndarray, List[str], List[str]], np.ndarray],
 ) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
-    """Build per-group MNPS/v2 trajectories from grouped EEG feature frames."""
+    """Build per-group MNPS/v2 trajectories from grouped feature frames."""
     network_mnps: Dict[str, np.ndarray] = {}
     network_stratified: Dict[str, np.ndarray] = {}
     if not group_frames:
@@ -128,10 +133,40 @@ def build_precomputed_eeg_group_trajectories(
                                 network_mnps[group_label] = np.asarray(x_net_v2[:, :3], dtype=np.float32)
                         except Exception:
                             logger.exception(
-                                "derive_mde_from_v2 failed for EEG group %s; retaining direct-feature result",
+                                "derive_mde_from_v2 failed for electrophysiology group %s; retaining direct-feature result",
                                 group_label,
                             )
     return network_mnps, network_stratified
+
+
+def build_precomputed_eeg_group_trajectories(
+    group_frames: Mapping[str, pd.DataFrame],
+    axis_weights: Mapping[str, Mapping[str, float]],
+    config: Mapping[str, Any],
+    proj_cfg: Mapping[str, Any],
+    normalize_mode: Optional[str],
+    subcoords_spec: Mapping[str, Any],
+    v2_enabled: bool,
+    external_anchor: Optional[Mapping[str, Any]] = None,
+    *,
+    resolve_mnps_3d_cfg: Callable[[Mapping[str, Any]], Dict[str, Any]],
+    coerce_v1_mapping_to_v2_subcoords: Callable[[Mapping[str, Any], Mapping[str, Any]], Dict[str, Dict[str, float]]],
+    align_v2_subcoords: Callable[[np.ndarray, List[str], List[str]], np.ndarray],
+) -> Tuple[Dict[str, np.ndarray], Dict[str, np.ndarray]]:
+    """Backward-compatible EEG wrapper around generic group projection."""
+    return build_precomputed_group_trajectories(
+        group_frames=group_frames,
+        axis_weights=axis_weights,
+        config=config,
+        proj_cfg=proj_cfg,
+        normalize_mode=normalize_mode,
+        subcoords_spec=subcoords_spec,
+        v2_enabled=v2_enabled,
+        external_anchor=external_anchor,
+        resolve_mnps_3d_cfg=resolve_mnps_3d_cfg,
+        coerce_v1_mapping_to_v2_subcoords=coerce_v1_mapping_to_v2_subcoords,
+        align_v2_subcoords=align_v2_subcoords,
+    )
 
 
 def build_precomputed_network_trajectories(
@@ -352,11 +387,11 @@ def compute_regional_context(
         )
 
     modality = str(config.get("modality", "")).strip().lower() if isinstance(config, Mapping) else ""
-    if modality == "eeg":
-        eeg_group_frames = extract_eeg_group_feature_frames(sub_frame)
-        if eeg_group_frames:
-            eeg_mnps, eeg_stratified = build_precomputed_eeg_group_trajectories(
-                group_frames=eeg_group_frames,
+    if modality in {"eeg", "meg"}:
+        group_frames = extract_group_feature_frames(sub_frame)
+        if group_frames:
+            group_mnps, group_stratified = build_precomputed_group_trajectories(
+                group_frames=group_frames,
                 axis_weights=axis_weights,
                 config=config,
                 proj_cfg=proj_cfg,
@@ -368,8 +403,8 @@ def compute_regional_context(
                 coerce_v1_mapping_to_v2_subcoords=coerce_v1_mapping_to_v2_subcoords,
                 align_v2_subcoords=align_v2_subcoords,
             )
-            network_mnps.update(eeg_mnps)
-            network_stratified.update(eeg_stratified)
+            network_mnps.update(group_mnps)
+            network_stratified.update(group_stratified)
 
     if network_mnps:
         regional_mnps_results = compute_all_regional_mnps(

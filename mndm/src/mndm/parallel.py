@@ -306,7 +306,7 @@ def _merge_feature_frames(feature_dfs: list[pd.DataFrame]) -> pd.DataFrame:
 
 def _get_modality_handlers() -> Dict[str, Any]:
     """Resolve feature handlers lazily so optional modalities can be added safely."""
-    from .features import ecg, eda, eeg, emg, eog, fmri, meg, resp
+    from .features import ecg, eda, eeg, emg, eog, ephys, fmri, meg, resp
 
     handlers: Dict[str, Any] = {
         "eeg": eeg.compute_eeg_features,
@@ -317,6 +317,7 @@ def _get_modality_handlers() -> Dict[str, Any]:
         "resp": resp.compute_resp_features,
         "eda": eda.compute_eda_features,
         "fmri": fmri.compute_fmri_features,
+        "ephys": ephys.compute_ephys_features,
     }
     try:
         from .features import ppg  # type: ignore
@@ -328,6 +329,18 @@ def _get_modality_handlers() -> Dict[str, Any]:
         from .features import pupil  # type: ignore
 
         handlers["pupil"] = pupil.compute_pupil_features
+    except Exception:
+        pass
+    try:
+        from .features import cardioresp  # type: ignore
+
+        handlers["cardioresp"] = cardioresp.compute_cardioresp_features
+    except Exception:
+        pass
+    try:
+        from .features import phase_anchor  # type: ignore
+
+        handlers["phase_anchor"] = phase_anchor.compute_phase_anchor_features
     except Exception:
         pass
     return handlers
@@ -364,9 +377,25 @@ def _compute_features_from_preprocessed(
     feature_stage_times: Dict[str, float] = {}
     mod_handlers = _get_modality_handlers()
     available_modalities = set(preprocessed.signals.keys())
+    # Multi-modal handlers that synthesise features from two or more raw channels.
+    # Keyed by handler name; value is the set of ALL required modalities.
+    # An empty set means the handler always runs and decides internally based on config.
+    _MULTIMODAL_REQUIRED: Dict[str, set] = {
+        "cardioresp": {"ecg", "resp"},
+        # phase_anchor: gracefully handles missing ECG/resp; uses phase_anchor.enabled
+        # to skip computation when not configured.  Requires at least "eeg" to have
+        # something to anchor to (all three target datasets have EEG).
+        "phase_anchor": {"eeg"},
+    }
     for mod_name, mod_func in mod_handlers.items():
-        if mod_name not in available_modalities:
-            continue
+        required = _MULTIMODAL_REQUIRED.get(mod_name)
+        if required is not None:
+            # Multi-modal: activate only when ALL required channels are present.
+            if not required.issubset(available_modalities):
+                continue
+        else:
+            if mod_name not in available_modalities:
+                continue
         t_mod0 = time.perf_counter()
         mod_features = mod_func(sig_payload, config)
         feature_stage_times[f"feature_{mod_name}"] = float(time.perf_counter() - t_mod0)
@@ -799,6 +828,26 @@ def write_qc_json(meta: Optional[Dict[str, Any]], target_dir: Path, file_name: s
         logger.info("Wrote QC JSON: %s", qc_path)
     except Exception as exc:
         logger.warning("Failed to write QC JSON %s: %s", qc_path, exc)
+        return
+
+    unit_qc = meta.get("nwb_unit_qc") if isinstance(meta, Mapping) else None
+    if isinstance(unit_qc, Mapping):
+        units_qc_path = target_dir / f"{stem}_units_qc.json"
+        payload = {
+            "schema": "neuropixel_ingest.units_qc.v1",
+            **dict(unit_qc),
+            "regions": meta.get("nwb_regions_present", []),
+            "probes": meta.get("nwb_probe_ids", []),
+            "anatomy_coverage": meta.get("nwb_anatomy_coverage", {}),
+        }
+        try:
+            with units_qc_path.open("w", encoding="utf-8") as f:
+                json.dump(payload, f, indent=2, default=_json_numpy_default)
+            geometry = meta.get("nwb_probe_geometry", [])
+            if geometry:
+                pd.DataFrame(geometry).to_parquet(target_dir / f"{stem}_probe_geometry.parquet", index=False)
+        except Exception as exc:
+            logger.warning("Failed to write units QC sidecar for %s: %s", file_name, exc)
 
 
 def write_intermediate_json(
@@ -847,7 +896,12 @@ def write_intermediate_json(
             logger.warning("Failed to write intermediate meta JSON %s: %s", meta_path, exc)
 
 
-def merge_temp_features(ds_path: Path, io_policy: Optional[Mapping[str, Any]] = None) -> pd.DataFrame:
+def merge_temp_features(
+    ds_path: Path,
+    io_policy: Optional[Mapping[str, Any]] = None,
+    *,
+    include_existing: bool = True,
+) -> pd.DataFrame:
     """Merge temporary per-file feature exports under ``ds_path`` into one table.
 
     Args:
@@ -887,11 +941,11 @@ def merge_temp_features(ds_path: Path, io_policy: Optional[Mapping[str, Any]] = 
     if not features_path.exists() and read_prefer == "parquet" and features_csv.exists():
         features_path = features_csv
 
-    if not temp_files and not features_path.exists():
+    if not temp_files and (not include_existing or not features_path.exists()):
         return pd.DataFrame()
 
     dfs = []
-    if features_path.exists():
+    if include_existing and features_path.exists():
         try:
             existing_df = _read_feature_table(features_path)
             if not existing_df.empty:

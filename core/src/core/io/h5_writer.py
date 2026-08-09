@@ -685,6 +685,8 @@ def write_h5(
             _create_dataset(h5, "window_start", payload.window_start)
         if payload.window_end is not None:
             _create_dataset(h5, "window_end", payload.window_end)
+        if getattr(payload, "epoch_id", None) is not None:
+            _create_dataset(h5, "epoch_id", payload.epoch_id)
 
         if payload.events:
             events_grp = h5.require_group("events")

@@ -1,0 +1,41 @@
+# Cohort-anchored overlay for ds003710 — APPLESEED Example Dataset.
+#
+# This imports the validated ds003710 EEG/event configuration and adds one
+# global frozen feature anchor. The exported H5 files will contain both:
+#   - subject_anchored layers for within-infant/session dynamics
+#   - cohort_anchored layers for comparisons across developmental timepoints
+#
+# The developmental strata are metadata labels, not event/stage codes:
+# sessions 1 and 2 are separate 4-month test/retest visits, session 3 is the
+# approximately 8-month visit, and session 4 is the approximately 12-month
+# visit. Raw age-in-days fields remain available from participants.tsv.
+#
+# The auto-fit anchor is pooled across all available recordings. It is a
+# descriptive global reference frame; age-stratified inferential analyses
+# should account for repeated recordings per infant and the missing
+# longitudinal visits for sub-09 and sub-11.
+imports:
+  - "./config_ingest_ds003710.yaml"
+
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "ds003710_global_cohort_all_timepoints_iqr_v2_1"
+    anchor_source: "ds003710_all_subjects_all_timepoints_features"
+    scale_method: "iqr"
+    min_subjects: 3
+
+metadata_extraction:
+  datasets:
+    ds003710:
+      condition:
+        # These are developmental/reliability strata for summaries. They do
+        # not replace the raw BIDS session or the event trial_type labels.
+        session_map:
+          ses-1: "age_4m_test"
+          ses-2: "age_4m_retest"
+          ses-3: "age_8m"
+          ses-4: "age_12m"

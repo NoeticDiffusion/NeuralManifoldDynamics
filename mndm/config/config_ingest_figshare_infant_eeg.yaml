@@ -1,0 +1,154 @@
+version: 2.0
+modality: eeg
+
+# Figshare 5598814 — infant EEG BDF archive.
+#
+# Non-BIDS BioSemi recordings mapped using the public reanalysis repository:
+# https://github.com/nschawor/eeg-infants-exponent
+# Companion developmental metadata are Figshare 6994946.v2.  The adapter keeps
+# all raw BDFs but marks TD25v4 as ineligible for age-dependent analyses.
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - figshare_infant_eeg
+
+source:
+  name: "Figshare infant EEG data"
+  platform: "Figshare"
+  format: "BioSemi BDF (non-BIDS)"
+  dataset_id: "figshare_infant_eeg"
+  dataset_name: "Infant longitudinal EEG with Bayley assessments"
+  dataset_version: "5598814.v1 + 6994946.v2"
+  doi: "10.6084/m9.figshare.5598814.v1"
+  url: "https://doi.org/10.6084/m9.figshare.5598814.v1"
+  acknowledgement: "Xiao, Smith, and collaborators; mapping/QC metadata from nschawor/eeg-infants-exponent."
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/figshare"
+  processed_dir: "J:/processed/figshare"
+  dataset_received_dirs:
+    figshare_infant_eeg: "K:/ExternalReceivedDatasets/figshare/infant EEG data"
+
+preprocess:
+  # 512 -> 256 is exact. TD1v2 is 2048 Hz and is also resampled to 256 Hz.
+  sfreq: 256
+  sfreq_candidates: [256]
+  notch_hz: null
+  eeg_bandpass: [0.3, 30]
+  reref: "average"
+  ica:
+    enabled: false
+
+  # General non-BIDS BDF adapter policy. It selects the active BioSemi-32
+  # bank rather than retaining repeated flat banks, auxiliaries, or Status.
+  bdf_adapter:
+    enabled: true
+    mapping_path: "K:/ExternalReceivedDatasets/figshare/infant EEG data/metadata/subject_list.csv"
+    mapping_key_column: "old_id"
+    mapping_subject_session_column: "subject_id"
+    mapping_subject_column: "subject"
+    mapping_session_column: "session"
+    subject_pad: 2
+    session_pad: 2
+    filename_regex: "^TD(?P<subject>\\d+)v(?P<session>\\d+)(?:_noFC6)?\\.bdf$"
+    task: "mixed_rest_reaching"
+    channel_selection: {mode: "first_n", n_channels: 32}
+    canonical_channel_names:
+      ["Fp1", "AF3", "F7", "F3", "FC1", "FC5", "T7", "C3",
+       "CP1", "CP5", "P7", "P3", "Pz", "PO3", "O1", "Oz",
+       "O2", "PO4", "P4", "P8", "CP6", "CP2", "C4", "T8",
+       "FC6", "FC2", "F4", "F8", "AF4", "Fp2", "Fz", "Cz"]
+    montage: "biosemi32"
+    bad_channels_path: "K:/ExternalReceivedDatasets/figshare/infant EEG data/metadata/bad_channels.csv"
+    bad_channels_key_column: "subject_id"
+    bad_channels_column: "bad_channels"
+    interpolate_bads: true
+    # Publicly curated artifact intervals from the companion reanalysis. They
+    # are BAD_ masks only, not rest/reaching/non-reaching task labels. Windows
+    # touching one are excluded before EEG feature extraction.
+    bad_segments_dir: "K:/ExternalReceivedDatasets/figshare/infant EEG data/metadata/bad_segments"
+    bad_segments_key_column: "subject_id"
+    bad_segments_filename_template: "{subject_id}_annotations.csv"
+    mask_bad_segments: true
+    recording_crops:
+      # Public reanalysis cropped this atypically long source recording.
+      TD12v1: {start_sec: 0, stop_sec: 412}
+
+epoching:
+  length_s: 8.0
+  step_s: 4.0
+
+features:
+  eeg_psd: {method: "multitaper", bandwidth: null}
+  # Infant-specific bands used by the published study, retained alongside the
+  # common MNDM bands inherited from config_ingest_common_eeg.yaml.
+  eeg_bands:
+    infant_theta: [3, 6]
+    infant_alpha: [6, 9]
+    delta: [1, 4]
+    theta: [4, 8]
+    alpha: [8, 12]
+    beta: [13, 30]
+  ratios: {alpha_theta: ["infant_alpha", "infant_theta"]}
+
+conventional_eeg:
+  enabled: true
+  packs: ["tier1", "complexity", "connectivity"]
+  export: {per_epoch_columns: true, summaries: true}
+  connectivity:
+    bands:
+      - {name: infant_theta, f_low: 3.0, f_high: 6.0}
+      - {name: infant_alpha, f_low: 6.0, f_high: 9.0}
+    windows: {length_sec: 2.0, step_sec: 1.0}
+    roi_pairs:
+      - {name: F4_P4, channels: ["F4", "P4"]}
+      - {name: F8_P4, channels: ["F8", "P4"]}
+      - {name: frontal_central, channels: ["Fz", "Cz"]}
+      - {name: central_parietal, channels: ["Cz", "Pz"]}
+    metrics: {coherence: true, plv: false, pli: false, wpli: false, dpli: false, ppc: false}
+    outputs: {summary_stats: ["mean", "std"]}
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "AF3", "F7", "F3", "FC1", "FC5", "Fz", "F4", "F8", "AF4", "Fp2"]
+      central: ["FC1", "FC5", "C3", "Cz", "C4", "FC6", "FC2"]
+      parietal_occipital: ["CP1", "CP5", "P7", "P3", "Pz", "PO3", "O1", "Oz", "O2", "PO4", "P4", "P8", "CP6", "CP2"]
+
+regional_mnps:
+  enabled: true
+  stratified: {enabled: true}
+  block_jacobians: {enabled: false}
+
+mnps_9d:
+  block_jacobians: {enabled: false}
+
+metadata_extraction:
+  datasets:
+    figshare_infant_eeg:
+      filename_parse:
+        regex: "^TD(?P<subject>\\d+)v(?P<session>\\d+)(?:_noFC6)?\\.bdf$"
+        subject_pad: 2
+      participants:
+        path: "metadata/derived/participants.tsv"
+      sessions:
+        path: "metadata/derived/sessions.tsv"
+      group: {default: "TD"}
+      condition:
+        # The raw Status channel does not yield reliable condition markers, so
+        # visits are the only auditable within-subject strata at ingest time.
+        session_map:
+          ses-01: "visit_01"
+          ses-02: "visit_02"
+          ses-03: "visit_03"
+          ses-04: "visit_04"
+          ses-05: "visit_05"
+          ses-06: "visit_06"
+        default: "mixed_rest_reaching"
+      task: {default: "mixed_rest_reaching"}
+
+summarize:
+  allow_group_collisions: false

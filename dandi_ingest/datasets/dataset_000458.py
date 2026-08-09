@@ -145,6 +145,9 @@ class Dataset000458Adapter:
 
     def _role_for_record(self, record: AssetRecord) -> str:
         haystack = f"{record.path} {record.metadata}".lower()
+        measured = _variable_measured_names(record)
+        if "lfp" in measured:
+            return "lfp_ephys_smoke"
         if "eeg" in haystack and ("isoflurane" in haystack or "anesthesia" in haystack):
             return "eeg_state_contrast"
         if "eeg" in haystack:
@@ -170,4 +173,25 @@ class Dataset000458Adapter:
         if record.path.lower().endswith(".nwb"):
             score += 1
             reasons.append("nwb")
+        measured = _variable_measured_names(record)
+        if "lfp" in measured:
+            score += 50
+            reasons.append("variableMeasured:LFP")
+        if "units" in measured:
+            score += 15
+            reasons.append("variableMeasured:Units")
         return score, reasons
+
+
+def _variable_measured_names(record: AssetRecord) -> set[str]:
+    """Normalize DANDI variableMeasured entries without assuming one schema version."""
+    raw = record.metadata.get("variableMeasured", [])
+    names: set[str] = set()
+    if not isinstance(raw, list):
+        return names
+    for item in raw:
+        if isinstance(item, dict):
+            names.add(str(item.get("name", "")).strip().lower())
+        else:
+            names.add(str(item).strip().lower())
+    return names

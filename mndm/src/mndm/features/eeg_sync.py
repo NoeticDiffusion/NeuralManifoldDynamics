@@ -45,7 +45,14 @@ def compute_eeg_synchrony_features(
     channel_names: Sequence[str] | None,
     config: Mapping[str, object] | None,
 ) -> Dict[str, float]:
-    """Return summary features for configured bands and ROI pairs."""
+    """Return summary features for configured bands and ROI pairs.
+
+    Non-finite samples partition a recording into independent clean segments.
+    Each segment is filtered separately and only its internal windows contribute
+    to the recording-level summaries. This preserves artifact-mask boundaries
+    instead of allowing one BAD_ interval to contaminate a full-recording
+    bandpass operation or bridging windows across the gap.
+    """
 
     if eeg_data.ndim != 2:
         raise ValueError("eeg_data must be 2-D (n_channels, n_samples)")
@@ -74,28 +81,44 @@ def compute_eeg_synchrony_features(
 
     win_len = max(int(round(win_len_sec * sfreq)), 1)
     win_step = max(int(round(win_step_sec * sfreq)), 1)
-    windows = _sliding_windows(eeg_data.shape[1], win_len, win_step)
-    if windows and isinstance(max_windows, (int, float)) and int(max_windows) > 0:
-        windows = _subsample_windows(windows, int(max_windows))
-    if not windows:
+    clean_segments = _finite_segments(eeg_data)
+    if not clean_segments:
         return {}
 
     features: Dict[str, float] = {}
     for band in bands:
-        filtered = _bandpass(eeg_data, sfreq, band.f_low, band.f_high)
-        phases = np.angle(hilbert(filtered, axis=1))
-
         for pair in pairs:
-            values = _compute_metrics_for_pair(
-                filtered[pair.idx1],
-                filtered[pair.idx2],
-                phases[pair.idx1],
-                phases[pair.idx2],
-                sfreq=sfreq,
-                windows=windows,
-                metrics=metrics_cfg,
-            )
-            for metric_name, series in values.items():
+            metric_series: Dict[str, List[np.ndarray]] = {}
+            for segment in clean_segments:
+                windows = _sliding_windows(segment.shape[1], win_len, win_step)
+                if windows and isinstance(max_windows, (int, float)) and int(max_windows) > 0:
+                    windows = _subsample_windows(windows, int(max_windows))
+                if not windows:
+                    continue
+                try:
+                    filtered = _bandpass(segment, sfreq, band.f_low, band.f_high)
+                except ValueError:
+                    logger.debug(
+                        "Skipping short clean synchrony segment (%d samples) for %s",
+                        segment.shape[1],
+                        band.name,
+                    )
+                    continue
+                phases = np.angle(hilbert(filtered, axis=1))
+                values = _compute_metrics_for_pair(
+                    filtered[pair.idx1],
+                    filtered[pair.idx2],
+                    phases[pair.idx1],
+                    phases[pair.idx2],
+                    sfreq=sfreq,
+                    windows=windows,
+                    metrics=metrics_cfg,
+                )
+                for metric_name, series in values.items():
+                    if series.size:
+                        metric_series.setdefault(metric_name, []).append(series)
+            for metric_name, series_parts in metric_series.items():
+                series = np.concatenate(series_parts)
                 key_prefix = f"eeg_sync_{band.name}_{pair.name}_{metric_name}"
                 for stat in summary_stats:
                     val = _reduce_stat(series, stat)
@@ -103,6 +126,19 @@ def compute_eeg_synchrony_features(
                         features[f"{key_prefix}_{stat}"] = val
 
     return features
+
+
+def _finite_segments(eeg_data: np.ndarray) -> List[np.ndarray]:
+    """Split a channel-by-time recording into contiguous all-finite segments."""
+    valid_samples = np.isfinite(eeg_data).all(axis=0)
+    if not bool(valid_samples.any()):
+        return []
+    boundaries = np.flatnonzero(np.diff(np.r_[False, valid_samples, False]))
+    return [
+        eeg_data[:, int(start) : int(stop)]
+        for start, stop in zip(boundaries[::2], boundaries[1::2])
+        if stop > start
+    ]
 
 
 @dataclass

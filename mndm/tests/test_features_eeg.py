@@ -383,6 +383,27 @@ def test_compute_eeg_features_conventional_connectivity_outputs(monkeypatch):
     )
 
 
+def test_synchrony_connectivity_uses_clean_segments_around_bad_mask():
+    """A BAD_ NaN gap must not poison recording-level synchrony summaries."""
+    from mndm.features.eeg_sync import compute_eeg_synchrony_features
+
+    sfreq = 128.0
+    data = np.random.default_rng(17).normal(size=(2, int(20 * sfreq)))
+    data[:, int(8 * sfreq) : int(9 * sfreq)] = np.nan
+    config = {
+        "bands": [{"name": "infant_theta", "f_low": 3.0, "f_high": 6.0}],
+        "windows": {"length_sec": 2.0, "step_sec": 1.0},
+        "roi_pairs": [{"name": "F4_P4", "channels": ["F4", "P4"]}],
+        "metrics": {"coherence": True},
+        "outputs": {"summary_stats": ["mean", "std"]},
+    }
+
+    result = compute_eeg_synchrony_features(data, sfreq, ["F4", "P4"], config)
+
+    assert np.isfinite(result["eeg_sync_infant_theta_F4_P4_coh_mean"])
+    assert np.isfinite(result["eeg_sync_infant_theta_F4_P4_coh_std"])
+
+
 def test_compute_eeg_features_conventional_coma_outputs(monkeypatch):
     """Coma pack should emit suppression/continuity and reactivity proxy columns."""
     from mndm.features import eeg as eeg_mod

@@ -46,6 +46,97 @@ def test_preprocess_file_ecg_notch_skips_empty_data_or_ica_path(tmp_path: Path):
     assert result.signals["ecg"].shape[1] == len(times)
 
 
+def test_preprocess_file_eda_channel_native_gsr_type(tmp_path: Path):
+    """EDA/GSR channels typed with MNE's native "gsr" type survive pruning and are collected."""
+    mne = pytest.importorskip("mne")
+
+    from mndm.preprocess import preprocess_file
+
+    sfreq = 100.0
+    times = np.arange(0, 4.0, 1.0 / sfreq)
+    data = np.vstack(
+        [
+            np.sin(2 * np.pi * 8.0 * times),   # EEG-like
+            2.0 + 0.1 * np.sin(2 * np.pi * 0.05 * times),  # EDA-like (slow drift)
+            0.01 * np.sin(2 * np.pi * 0.2 * times),        # unrelated misc channel
+        ]
+    )
+    info = mne.create_info(
+        ch_names=["Cz", "EDA", "Sync"],
+        sfreq=sfreq,
+        ch_types=["eeg", "gsr", "misc"],
+    )
+    raw = mne.io.RawArray(data, info)
+
+    ds_dir = tmp_path / "dsEDA" / "sub-001" / "eeg"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    file_path = ds_dir / "sub-001_task-rest_eeg.fif"
+    raw.save(file_path, overwrite=True)
+
+    result = preprocess_file(
+        file_path,
+        {
+            "datasets": ["dsEDA"],
+            "preprocess": {
+                "sfreq": sfreq,
+                "notch_hz": None,
+            },
+        },
+    )
+
+    assert "eda" in result.signals
+    assert result.signals["eda"].shape[1] == len(times)
+    assert result.channels.get("eda") == ["EDA"]
+    # The unrelated "Sync" misc channel must not be swept up into "eda".
+    assert "Sync" not in result.channels.get("eda", [])
+
+
+def test_preprocess_file_eda_channel_legacy_misc_name_fallback(tmp_path: Path):
+    """A dataset that (legacy-style) types EDA as "misc" is still picked up by name.
+
+    Regression guard: "misc"-typed channels are dropped by the pre-resample
+    channel prune for plain EEG recordings unless matched by the name-based
+    fallback, since MNE has no native EDA type in older configs.
+    """
+    mne = pytest.importorskip("mne")
+
+    from mndm.preprocess import preprocess_file
+
+    sfreq = 100.0
+    times = np.arange(0, 4.0, 1.0 / sfreq)
+    data = np.vstack(
+        [
+            np.sin(2 * np.pi * 8.0 * times),
+            2.0 + 0.1 * np.sin(2 * np.pi * 0.05 * times),
+        ]
+    )
+    info = mne.create_info(
+        ch_names=["Cz", "GSR1"],
+        sfreq=sfreq,
+        ch_types=["eeg", "misc"],
+    )
+    raw = mne.io.RawArray(data, info)
+
+    ds_dir = tmp_path / "dsEDALegacy" / "sub-001" / "eeg"
+    ds_dir.mkdir(parents=True, exist_ok=True)
+    file_path = ds_dir / "sub-001_task-rest_eeg.fif"
+    raw.save(file_path, overwrite=True)
+
+    result = preprocess_file(
+        file_path,
+        {
+            "datasets": ["dsEDALegacy"],
+            "preprocess": {
+                "sfreq": sfreq,
+                "notch_hz": None,
+            },
+        },
+    )
+
+    assert "eda" in result.signals
+    assert result.channels.get("eda") == ["GSR1"]
+
+
 def test_preprocess_file_meg_fif_extracts_meg_and_eeg_channels(tmp_path: Path):
     """Neuromag-style FIF files can expose both MEG and EEG channels to the pipeline."""
     mne = pytest.importorskip("mne")

@@ -1,0 +1,16 @@
+dataset:
+  dataset_id: dandi_000006
+  dandiset_id: "000006"
+  name: "Mouse ALM delay response"
+
+read:
+  quality_policy: all
+  min_firing_rate_hz: null
+  min_presence_ratio: null
+  max_isi_violations_ratio: null
+
+binning:
+  bin_sec: 0.05
+  smoothing_sigma_sec: 0.05
+  time_start_sec: null
+  time_stop_sec: null

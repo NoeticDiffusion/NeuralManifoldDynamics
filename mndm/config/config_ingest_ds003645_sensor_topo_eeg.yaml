@@ -1,0 +1,56 @@
+version: 1.0
+modality: eeg
+
+# EEG-specific projection companion to the frozen matched sensor-topography
+# contract. The imported config keeps the identical BIDS selection, preprocessing
+# and six EEG/MEG sector definitions; this file changes only the MNPS projection
+# to the EEG contract.
+imports:
+  - "./config_ingest_ds003645_sensor_topo_pilot.yaml"
+
+datasets:
+  - ds003645
+
+source:
+  dataset_id: ds003645
+  dataset_name: Wakeman-Henson simultaneous MEEG sensor-topography
+
+mnps_projection:
+  feature_standardization:
+    __replace: true
+    default: ["robust_z", "clip"]
+    eeg_delta: ["log10", "robust_z", "clip"]
+    eeg_theta: ["log10", "robust_z", "clip"]
+    eeg_alpha: ["log10", "robust_z", "clip"]
+    eeg_beta: ["log10", "robust_z", "clip"]
+    eeg_gamma: ["log10", "robust_z", "clip"]
+    eeg_alpha_theta: ["robust_z", "clip"]
+    eeg_beta_alpha: ["robust_z", "clip"]
+    eeg_permutation_entropy: ["robust_z", "clip"]
+    eeg_sample_entropy: ["robust_z", "clip"]
+    eeg_hjorth_mobility: ["robust_z", "clip"]
+    eeg_hjorth_complexity: ["robust_z", "clip"]
+
+mnps_9d:
+  datasets:
+    ds003645:
+      __replace: true
+      subcoords:
+        m_a: {eeg_delta: -0.5, eeg_theta: -0.5}
+        m_e: {eeg_alpha: -1.0}
+        m_o: {eeg_beta_alpha: 1.0}
+        d_n: {eeg_gamma: 1.0}
+        d_l: {eeg_hjorth_mobility: 1.0}
+        d_s: {eeg_alpha_theta: 1.0}
+        e_e: {eeg_permutation_entropy: 1.0}
+        e_s: {eeg_hjorth_complexity: 1.0}
+        # EEG has no MEG-only sample-entropy contract. Use the common
+        # embodied/arousal proxy supplied by the EEG configuration.
+        e_m: {embodied_arousal_proxy: 1.0}
+      metric_policies:
+        e_e:
+          preferred: eeg_permutation_entropy
+          fallbacks: [eeg_spectral_entropy]
+        e_m:
+          preferred: embodied_arousal_proxy
+          fallbacks: [ecg_rmssd, eog_blink_rate]

@@ -23,6 +23,7 @@ Dependencies
 from __future__ import annotations
 
 import logging
+import hashlib
 from dataclasses import dataclass
 from functools import lru_cache
 import os
@@ -30,9 +31,10 @@ from pathlib import Path
 import re
 import tempfile
 import time
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 from uuid import uuid4
 
+from .bdf_adapter import apply_bdf_adapter_policy, interpolate_configured_bdf_bads
 from .reproducibility import resolve_component_seed
 
 # Disable numba JIT to avoid long import stalls on Windows/venv
@@ -330,6 +332,183 @@ def _apply_truescan_128_channel_renaming(raw: "mne.io.BaseRaw", dataset_id: Opti
         raw.set_channel_types(eog_type_map, on_unit_change="ignore")
 
     raw.rename_channels(rename_map)
+
+
+# -----------------------------------------------------------------------------
+# Physio TSV injection
+# -----------------------------------------------------------------------------
+
+def _inject_physio_tsv_channels(
+    raw: "mne.io.BaseRaw",
+    eeg_file_path: Path,
+    physio_cfg: Mapping[str, Any],
+) -> None:
+    """Inject physiological channels from a BIDS *_physio.tsv.gz file into raw.
+
+    The BioPac (or similar) physiological recording is stored separately from
+    the EEG file in BIDS, typically under sub-*/ses-*/beh/*_physio.tsv.gz with
+    a companion *_physio.json that lists column names and sampling frequency.
+
+    Strategy ``beh_sibling`` (default): replace the modality folder (e.g. "eeg")
+    with "beh" in the EEG file's parent path, then substitute the suffix
+    ``_eeg.*`` with ``_physio``.
+
+    Config keys (under ``preprocess.datasets.<id>.physio_tsv_inject``):
+      enabled: bool
+      path_strategy: "beh_sibling" (default)
+      sampling_frequency: float  # fallback if physio.json is absent
+      channels:
+        - {column: "ECG A, X, ECG2-R", name: "ECG", type: "ecg", unit: "V"}
+        - {column: "RSP A, X, RSP2-R", name: "RESP",  type: "resp", unit: "AU"}
+        - {column: "EDA, Y, PPGED-R",  name: "EDA",   type: "gsr", unit: "uS"}
+    """
+    if not physio_cfg.get("enabled", False):
+        return
+
+    strategy = str(physio_cfg.get("path_strategy", "beh_sibling")).lower()
+    channel_specs: List[Mapping[str, Any]] = list(physio_cfg.get("channels", []) or [])
+    if not channel_specs:
+        logger.debug("physio_tsv_inject: no channels specified; skipping")
+        return
+
+    # --- locate the physio file ---
+    physio_tsv: Optional[Path] = None
+    physio_json: Optional[Path] = None
+
+    if strategy == "beh_sibling":
+        eeg_dir = eeg_file_path.parent
+        beh_dir = eeg_dir.parent / "beh"
+        # Derive the physio stem: strip the last suffix extension then replace
+        # "_eeg" suffix (or whatever modality suffix) with "_physio".
+        stem = eeg_file_path.stem
+        # Remove multi-extension suffix like ".set", ".vhdr", ".edf"
+        for ext in (".set", ".vhdr", ".edf", ".bdf", ".fif"):
+            if stem.endswith(ext):
+                stem = stem[: -len(ext)]
+                break
+        # Replace modality tag at end (e.g. _eeg, _meg, _ieeg) with _physio
+        physio_stem = re.sub(r"_eeg$|_meg$|_ieeg$|_ecog$", "_physio", stem)
+        if physio_stem == stem:
+            # No modality tag found — just append _physio
+            physio_stem = stem + "_physio"
+        candidate_tsv = beh_dir / (physio_stem + ".tsv.gz")
+        candidate_json = beh_dir / (physio_stem + ".json")
+        if candidate_tsv.exists():
+            physio_tsv = candidate_tsv
+            physio_json = candidate_json if candidate_json.exists() else None
+        else:
+            logger.info(
+                "physio_tsv_inject: physio file not found at %s; skipping",
+                candidate_tsv,
+            )
+            return
+    else:
+        logger.warning("physio_tsv_inject: unknown path_strategy '%s'; skipping", strategy)
+        return
+
+    # --- read metadata ---
+    fallback_sfreq = float(physio_cfg.get("sampling_frequency", 1000.0) or 1000.0)
+    physio_sfreq = fallback_sfreq
+    json_columns: List[str] = []
+    if physio_json is not None:
+        try:
+            import json as _json
+            meta = _json.loads(physio_json.read_text(encoding="utf-8"))
+            physio_sfreq = float(meta.get("SamplingFrequency", fallback_sfreq))
+            json_columns = list(meta.get("Columns", []) or [])
+        except Exception as e:
+            logger.warning("physio_tsv_inject: failed to read physio.json (%s); using fallback sfreq=%.0f", e, fallback_sfreq)
+
+    # --- read TSV ---
+    # BIDS convention: *_physio.tsv.gz files have NO header row.
+    # Column names always come from the companion *_physio.json "Columns" field.
+    try:
+        phys_df = pd.read_csv(physio_tsv, sep="\t", header=None, compression="gzip")
+        if json_columns and len(json_columns) == phys_df.shape[1]:
+            phys_df.columns = json_columns
+        else:
+            # Fallback: use generic column names
+            phys_df.columns = [f"col_{i}" for i in range(phys_df.shape[1])]
+            if json_columns:
+                logger.warning(
+                    "physio_tsv_inject: column count mismatch (json=%d, tsv=%d) for %s; using generic names",
+                    len(json_columns), phys_df.shape[1], physio_tsv.name,
+                )
+    except Exception as e:
+        logger.warning("physio_tsv_inject: failed to read %s (%s); skipping", physio_tsv, e)
+        return
+
+    # --- extract and inject requested channels ---
+    eeg_sfreq = raw.info["sfreq"]
+    eeg_n_times = raw.n_times
+
+    injected: List[str] = []
+    ch_types: Dict[str, str] = {}
+    arrays: List[np.ndarray] = []
+    ch_names_new: List[str] = []
+    ch_units: Dict[str, str] = {}
+
+    for spec in channel_specs:
+        col = str(spec.get("column", ""))
+        ch_name = str(spec.get("name", col))
+        ch_type = str(spec.get("type", "misc")).lower()
+        ch_unit = str(spec.get("unit", "AU"))
+
+        if col not in phys_df.columns:
+            # Try case-insensitive match
+            col_lower = {c.lower(): c for c in phys_df.columns}
+            col = col_lower.get(col.lower(), "")
+        if not col or col not in phys_df.columns:
+            logger.debug("physio_tsv_inject: column '%s' not found in %s; skipping channel %s", spec.get("column"), physio_tsv.name, ch_name)
+            continue
+        if ch_name in raw.ch_names:
+            logger.debug("physio_tsv_inject: channel '%s' already exists in raw; skipping injection", ch_name)
+            continue
+
+        signal = phys_df[col].to_numpy(dtype=np.float64, na_value=0.0)
+
+        # Resample from physio_sfreq to eeg_sfreq
+        if abs(physio_sfreq - eeg_sfreq) > 0.5:
+            try:
+                from scipy.signal import resample_poly
+                from math import gcd
+                ratio_num = int(round(eeg_sfreq))
+                ratio_den = int(round(physio_sfreq))
+                g = gcd(ratio_num, ratio_den)
+                signal = resample_poly(signal, ratio_num // g, ratio_den // g).astype(np.float64)
+            except Exception as e:
+                logger.warning("physio_tsv_inject: resampling failed for %s (%s); using nearest-sample fallback", ch_name, e)
+                indices = np.round(np.linspace(0, len(signal) - 1, int(len(signal) * eeg_sfreq / physio_sfreq))).astype(int)
+                indices = np.clip(indices, 0, len(signal) - 1)
+                signal = signal[indices]
+
+        # Align length to EEG (pad with zeros or trim)
+        if len(signal) < eeg_n_times:
+            signal = np.pad(signal, (0, eeg_n_times - len(signal)))
+        elif len(signal) > eeg_n_times:
+            signal = signal[:eeg_n_times]
+
+        arrays.append(signal)
+        ch_names_new.append(ch_name)
+        ch_types[ch_name] = ch_type
+        ch_units[ch_name] = ch_unit
+        injected.append(ch_name)
+
+    if not arrays:
+        logger.info("physio_tsv_inject: no matching columns found in %s; skipping", physio_tsv.name)
+        return
+
+    # Build an MNE Info and RawArray for the new channels, then add to raw
+    try:
+        new_info = mne.create_info(ch_names_new, sfreq=eeg_sfreq, ch_types=[ch_types[n] for n in ch_names_new])
+        new_raw = mne.io.RawArray(np.vstack(arrays), new_info, verbose=False)
+        raw.add_channels([new_raw], force_update_info=True)
+        logger.info(
+            "physio_tsv_inject: injected %d channels from %s (%s) into raw (physio_sfreq=%.0f→%.0f Hz)",
+            len(injected), physio_tsv.name, injected, physio_sfreq, eeg_sfreq,
+        )
+    except Exception as e:
+        logger.warning("physio_tsv_inject: failed to add channels to raw (%s); skipping", e)
 
 
 def _patch_edf_startdate_if_invalid(edf_path: Path) -> Optional[Path]:
@@ -1162,6 +1341,11 @@ def _resolve_dataset_preprocess_policy(
     if "channel_rename" in ds_cfg:
         val = ds_cfg.get("channel_rename")
         policy["channel_rename"] = str(val) if val is not None else None
+    # Pass through any remaining dataset-specific keys (e.g. physio_tsv_inject)
+    # so callers can retrieve them without modifying this function for each new key.
+    for key, val in ds_cfg.items():
+        if key not in policy:
+            policy[key] = val
     return policy
 
 
@@ -1295,6 +1479,27 @@ def _find_nwb_electrical_series(nwbfile: Any, nwb_cfg: Mapping[str, Any]) -> Tup
     return candidates[0]
 
 
+def _resolve_nwb_channel_selection(nwb_cfg: Mapping[str, Any]) -> tuple[list[int] | None, dict[str, Any]]:
+    """Resolve a versioned LFP channel-selection artifact before data loading."""
+    selection_cfg = nwb_cfg.get("channel_selection", {})
+    if not isinstance(selection_cfg, Mapping):
+        return None, {}
+    path_value = selection_cfg.get("artifact_path")
+    if not path_value:
+        return None, {}
+    path = Path(str(path_value))
+    if not path.exists():
+        raise FileNotFoundError(f"Configured NWB channel-selection artifact does not exist: {path}")
+    import json
+
+    artifact = json.loads(path.read_text(encoding="utf-8"))
+    selected = artifact.get("selected_channels", [])
+    indices = [int(row["channel_index"]) for row in selected if isinstance(row, Mapping) and "channel_index" in row]
+    if not indices:
+        raise ValueError(f"NWB channel-selection artifact selected no channels: {path}")
+    return sorted(set(indices)), artifact
+
+
 def _nwb_series_sfreq(series: Any) -> float:
     rate = getattr(series, "rate", None)
     if rate is not None:
@@ -1335,8 +1540,28 @@ def _nwb_series_channel_names(series: Any, n_channels: int) -> List[str]:
     return unique
 
 
-def _nwb_data_to_channels_by_samples(series: Any) -> np.ndarray:
-    data = np.asarray(series.data[:], dtype=float)
+def _nwb_data_to_channels_by_samples(
+    series: Any,
+    *,
+    start_sample: int | None = None,
+    stop_sample: int | None = None,
+    max_channels: int | None = None,
+    channel_indices: Sequence[int] | None = None,
+) -> np.ndarray:
+    """Load an ElectricalSeries, optionally bounding time/channel memory use."""
+    source = series.data
+    sample_slice = slice(max(0, start_sample or 0), stop_sample)
+    if getattr(source, "ndim", 2) == 1:
+        data = np.asarray(source[sample_slice], dtype=float)
+    else:
+        columns: Any
+        if channel_indices is not None:
+            columns = np.asarray(list(channel_indices), dtype=int)
+        elif max_channels:
+            columns = slice(0, max_channels)
+        else:
+            columns = slice(None)
+        data = np.asarray(source[sample_slice, columns], dtype=float)
     conversion = getattr(series, "conversion", None)
     if conversion is not None:
         try:
@@ -1358,6 +1583,38 @@ def _nwb_data_to_channels_by_samples(series: Any) -> np.ndarray:
     else:
         raise ValueError(f"Expected 1D or 2D ElectricalSeries data, got shape {data.shape}.")
     return data
+
+
+def _nwb_chunked_downsample(
+    series: Any,
+    *,
+    source_sfreq: float,
+    target_sfreq: float,
+    channel_indices: Sequence[int],
+    chunk_sec: float,
+    start_sample: int = 0,
+    stop_sample: int | None = None,
+) -> np.ndarray:
+    """Read selected channels in bounded chunks, downsampling before concatenation."""
+    from scipy.signal import resample_poly
+
+    total_samples = int(series.data.shape[0])
+    stop = min(total_samples, stop_sample) if stop_sample is not None else total_samples
+    ratio = float(source_sfreq) / float(target_sfreq)
+    if not np.isclose(ratio, round(ratio)):
+        raise ValueError("NWB chunked downsampling requires an integer source/target rate ratio.")
+    down = int(round(ratio))
+    chunk_samples = max(down, int(round(chunk_sec * source_sfreq / down)) * down)
+    chunks: list[np.ndarray] = []
+    for first in range(start_sample, stop, chunk_samples):
+        part = _nwb_data_to_channels_by_samples(
+            series,
+            start_sample=first,
+            stop_sample=min(stop, first + chunk_samples),
+            channel_indices=channel_indices,
+        )
+        chunks.append(resample_poly(part, up=1, down=down, axis=1).astype(np.float64, copy=False))
+    return np.concatenate(chunks, axis=1) if chunks else np.empty((len(channel_indices), 0), dtype=np.float64)
 
 
 def _nwb_unit_to_microvolt_factor(unit: Any, *, scale_to_microvolts: bool) -> float:
@@ -1389,7 +1646,7 @@ def _wfdb_channel_type(name: str) -> str:
     if "resp" in ch or "thor" in ch or "abd" in ch:
         return "resp"
     if "eda" in ch or "gsr" in ch:
-        return "misc"
+        return "gsr"
     return "eeg"
 
 
@@ -1457,9 +1714,12 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
 
     crop_cfg = _resolve_crop_config(config, dataset_id)
     if crop_cfg:
-        tmin = float(crop_cfg.get("start_sec", 0) or 0.0)
+        # NWB data were sliced before materialisation, so crop relative to the
+        # in-memory segment rather than applying start_sec twice.
+        tmin = 0.0
         tmax_val = crop_cfg.get("stop_sec", None)
-        tmax = float(tmax_val) if tmax_val is not None else None
+        start_val = float(crop_cfg.get("start_sec", 0) or 0.0)
+        tmax = float(tmax_val) - start_val if tmax_val is not None else None
         try:
             raw.crop(tmin=max(tmin, 0.0), tmax=tmax)
         except Exception as exc:
@@ -1525,10 +1785,83 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     return PreprocessedSignals(signals={"eeg": eeg_values}, sfreq=float(raw.info["sfreq"]), channels=channels, meta=meta)
 
 
+def _preprocess_nwb_units(
+    file_path: Path,
+    *,
+    dataset_id: str,
+    nwb_cfg: Mapping[str, Any],
+) -> PreprocessedSignals:
+    """Turn an NWB Units table into a binned population-rate matrix."""
+    try:
+        from neuropixel_ingest.binning import bin_spike_times
+        from neuropixel_ingest.contracts import EphysReadConfig
+        from neuropixel_ingest.nwb_units import read_session_bundle
+    except ImportError as exc:
+        raise RuntimeError(
+            "NWB Units preprocessing requires the repository's neuropixel_ingest package."
+        ) from exc
+
+    units_cfg = nwb_cfg.get("units", {})
+    units_cfg = units_cfg if isinstance(units_cfg, Mapping) else {}
+    read_cfg = EphysReadConfig(
+        quality_policy=str(units_cfg.get("quality_policy", "all")),
+        min_firing_rate_hz=units_cfg.get("min_firing_rate_hz"),
+        min_presence_ratio=units_cfg.get("min_presence_ratio"),
+        max_isi_violations_ratio=units_cfg.get("max_isi_violations_ratio"),
+    )
+    bundle = read_session_bundle(file_path, read_cfg, dataset_id=dataset_id)
+    spike_times = bundle.spike_times()
+    if not spike_times:
+        raise RuntimeError(f"NWB Units table has no readable spike trains: {file_path}")
+    bin_sec = float(units_cfg.get("rate_bin_sec", 0.05))
+    rates, bin_centers = bin_spike_times(
+        spike_times,
+        bin_sec=bin_sec,
+        start_sec=units_cfg.get("time_start_sec"),
+        stop_sec=units_cfg.get("time_stop_sec"),
+        smoothing_sigma_sec=units_cfg.get("smoothing_sigma_sec"),
+    )
+    channels = {
+        "ephys": [
+            str(value) for value in bundle.units.get("unit_id", pd.Series(range(rates.shape[0]))).tolist()
+        ]
+    }
+    geometry = bundle.probe_geometry
+    raw_locations = bundle.units.get("location_raw", pd.Series(dtype=object))
+    acronyms = bundle.units.get("location_acronym", pd.Series(dtype=object))
+    probe_ids = geometry.get("probe_id", pd.Series(dtype=object)) if not geometry.empty else pd.Series(dtype=object)
+    anatomy_coverage = {
+        "location_raw": float(pd.Series(raw_locations).notna().mean()) if len(raw_locations) else 0.0,
+        "location_acronym": float(pd.Series(acronyms).notna().mean()) if len(acronyms) else 0.0,
+        "depth_um": float(bundle.units.get("depth_um", pd.Series(dtype=float)).notna().mean())
+        if "depth_um" in bundle.units
+        else 0.0,
+    }
+    return PreprocessedSignals(
+        signals={"ephys": rates},
+        sfreq=1.0 / bin_sec,
+        channels=channels,
+        meta={
+            "file": str(file_path),
+            "dataset_id": dataset_id,
+            "source_format": "NWB",
+            "nwb_signal_kind": "units_rate",
+            "nwb_unit_count": int(rates.shape[0]),
+            "nwb_rate_bin_sec": bin_sec,
+            "nwb_rate_times_sec": bin_centers.tolist(),
+            "nwb_trial_count": int(len(bundle.trials)),
+            "nwb_quality_policy": read_cfg.quality_policy,
+            "nwb_unit_qc": dict(bundle.unit_qc),
+            "nwb_regions_present": sorted(str(value) for value in pd.Series(acronyms).dropna().unique()),
+            "nwb_probe_ids": sorted(str(value) for value in pd.Series(probe_ids).dropna().unique()),
+            "nwb_anatomy_coverage": anatomy_coverage,
+            "nwb_probe_geometry": geometry.to_dict(orient="records"),
+        },
+    )
+
+
 def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
-    """Preprocess a continuous NWB ElectricalSeries into the existing EEG feature contract."""
-    if mne is None:
-        raise RuntimeError("mne is required for NWB preprocessing but is not installed.")
+    """Preprocess NWB continuous ephys as EEG or Units as population rates."""
     try:
         from pynwb import NWBHDF5IO
     except ImportError as exc:
@@ -1539,13 +1872,49 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
     preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
     nwb_cfg = _resolve_nwb_config(config, dataset_id)
     source_cfg = config.get("source", {}) if isinstance(config, Mapping) else {}
+    units_cfg = nwb_cfg.get("units", {}) if isinstance(nwb_cfg, Mapping) else {}
+    if isinstance(units_cfg, Mapping) and bool(units_cfg.get("enabled", False)):
+        return _preprocess_nwb_units(file_path, dataset_id=dataset_id, nwb_cfg=nwb_cfg)
+    if mne is None:
+        raise RuntimeError("mne is required for continuous NWB preprocessing but is not installed.")
 
     with NWBHDF5IO(str(file_path), "r", load_namespaces=True) as io:
         nwbfile = io.read()
         series_path, series = _find_nwb_electrical_series(nwbfile, nwb_cfg)
         original_sfreq = _nwb_series_sfreq(series)
-        data = _nwb_data_to_channels_by_samples(series)
-        channel_names = _nwb_series_channel_names(series, data.shape[0])
+        crop_cfg = _resolve_crop_config(config, dataset_id)
+        nwb_start = float(crop_cfg.get("start_sec", 0) or 0.0) if crop_cfg else 0.0
+        nwb_stop_value = crop_cfg.get("stop_sec") if crop_cfg else None
+        nwb_stop = float(nwb_stop_value) if nwb_stop_value is not None else None
+        max_channels_value = nwb_cfg.get("max_channels")
+        max_channels = int(max_channels_value) if max_channels_value is not None else None
+        channel_indices, selection_artifact = _resolve_nwb_channel_selection(nwb_cfg)
+        streamed_sfreq = nwb_cfg.get("streaming_sfreq")
+        if channel_indices is not None and streamed_sfreq is not None:
+            streamed_sfreq = float(streamed_sfreq)
+            data = _nwb_chunked_downsample(
+                series,
+                source_sfreq=original_sfreq,
+                target_sfreq=streamed_sfreq,
+                channel_indices=channel_indices,
+                chunk_sec=float(nwb_cfg.get("chunk_sec", 60.0) or 60.0),
+                start_sample=int(round(nwb_start * original_sfreq)),
+                stop_sample=int(round(nwb_stop * original_sfreq)) if nwb_stop is not None else None,
+            )
+            original_sfreq = streamed_sfreq
+        else:
+            data = _nwb_data_to_channels_by_samples(
+                series,
+                start_sample=int(round(nwb_start * original_sfreq)),
+                stop_sample=int(round(nwb_stop * original_sfreq)) if nwb_stop is not None else None,
+                max_channels=max_channels,
+                channel_indices=channel_indices,
+            )
+        channel_names = (
+            [f"lfp_ch{index:03d}" for index in channel_indices]
+            if channel_indices is not None
+            else _nwb_series_channel_names(series, data.shape[0])
+        )
         nwb_unit = getattr(series, "unit", None)
         nwb_conversion = getattr(series, "conversion", None)
         nwb_offset = getattr(series, "offset", None)
@@ -1560,7 +1929,6 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
     raw = mne.io.RawArray(data, info, verbose=False)
 
     preprocess_timings: Dict[str, float] = {}
-    crop_cfg = _resolve_crop_config(config, dataset_id)
     if crop_cfg:
         tmin = float(crop_cfg.get("start_sec", 0) or 0.0)
         tmax_val = crop_cfg.get("stop_sec", None)
@@ -1587,10 +1955,14 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
         raw.filter(l_freq=eeg_bandpass[0], h_freq=eeg_bandpass[1], verbose=False)
 
     reref = preprocess_cfg.get("reref", None) if isinstance(preprocess_cfg, Mapping) else None
+    reref_mode = str(reref).strip().lower() if reref is not None else "native"
     eeg_picks = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
-    if str(reref).lower() == "average" and len(eeg_picks) > 0:
+    if reref_mode == "average" and len(eeg_picks) > 0:
         eeg_data = raw.get_data(picks=eeg_picks)
         raw._data[eeg_picks, :] = eeg_data - np.mean(eeg_data, axis=0, keepdims=True)  # type: ignore[attr-defined]
+    elif reref_mode in {"median", "median_within_probe"} and len(eeg_picks) > 0:
+        eeg_data = raw.get_data(picks=eeg_picks)
+        raw._data[eeg_picks, :] = eeg_data - np.median(eeg_data, axis=0, keepdims=True)  # type: ignore[attr-defined]
 
     scale_to_microvolts = bool(nwb_cfg.get("scale_to_microvolts", True))
     unit_factor = _nwb_unit_to_microvolt_factor(nwb_unit, scale_to_microvolts=scale_to_microvolts)
@@ -1598,6 +1970,17 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
     channels = {"eeg": [raw.ch_names[i] for i in eeg_picks]}
     preprocess_timings["total"] = float(time.perf_counter() - t_pre0)
 
+    selection_path_value = (
+        nwb_cfg.get("channel_selection", {}).get("artifact_path")
+        if isinstance(nwb_cfg.get("channel_selection", {}), Mapping)
+        else None
+    )
+    selection_hash = None
+    if selection_path_value:
+        try:
+            selection_hash = hashlib.sha256(Path(str(selection_path_value)).read_bytes()).hexdigest()
+        except OSError:
+            selection_hash = None
     meta: Dict[str, Any] = {
         "file": str(file_path),
         "dataset_id": dataset_id,
@@ -1612,6 +1995,21 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
         "nwb_offset": float(nwb_offset) if nwb_offset is not None else None,
         "nwb_scale_to_microvolts": scale_to_microvolts,
         "nwb_unit_to_output_factor": float(unit_factor),
+        "nwb_reref_mode": reref_mode,
+        "nwb_reref_channel_count": len(eeg_picks),
+        "lfp_channel_selection": {
+            "artifact_path": str(selection_path_value) if selection_path_value else None,
+            "artifact_sha256": selection_hash,
+            "n_selected": len(channel_indices) if channel_indices is not None else None,
+            "probe_id": selection_artifact.get("probe_id") if selection_artifact else None,
+            "selection_schema": selection_artifact.get("schema") if selection_artifact else None,
+            "ensemble_groups": selection_artifact.get("ensemble_groups", {}) if selection_artifact else {},
+        },
+        "artifact": {
+            "method": "lfp_streaming_qc_v1" if selection_artifact else None,
+            "bad_eeg_channels": [],
+            "bad_eeg_reasons": {},
+        },
         "original_sfreq": float(original_sfreq),
         "target_sfreq_resolved": float(raw.info["sfreq"]),
         "sfreq_policy": sfreq_policy,
@@ -1750,6 +2148,18 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                 pass
 
     assert raw is not None
+    bdf_adapter_meta: Dict[str, Any] = {"applied": False}
+    if suffixes.endswith(".bdf"):
+        try:
+            bdf_adapter_meta = apply_bdf_adapter_policy(
+                raw,
+                file_path,
+                config,
+                dataset_id_hint,
+            )
+        except Exception:
+            logger.exception("BDF adapter policy failed for %s", file_path.name)
+            raise
     original_sfreq = float(raw.info["sfreq"])
     target_sfreq, sfreq_policy = _resolve_target_sfreq(
         original_sfreq=original_sfreq,
@@ -1810,6 +2220,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
 
     # Load only the cropped data
     raw.load_data(verbose=False)
+    interpolate_configured_bdf_bads(raw, bdf_adapter_meta)
     preprocess_timings["load_and_crop"] = float(time.perf_counter() - t_load0)
 
     # Dataset-specific channel renaming (must happen early so later feature extraction
@@ -1833,6 +2244,16 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         _apply_channel_typing(raw, dataset_id, config)
     except Exception:
         logger.exception("Failed to apply channel typing rules for %s; continuing with MNE defaults", dataset_id)
+
+    # Inject physiological channels from a companion BIDS *_physio.tsv.gz file,
+    # if configured under preprocess.datasets.<id>.physio_tsv_inject.
+    physio_inject_cfg = (dataset_preprocess_policy.get("physio_tsv_inject") or {}) if isinstance(dataset_preprocess_policy, Mapping) else {}
+    if physio_inject_cfg.get("enabled"):
+        try:
+            _inject_physio_tsv_channels(raw, file_path, physio_inject_cfg)
+        except Exception:
+            logger.exception("physio_tsv_inject raised an unexpected error; continuing without physio channels")
+
     preprocess_timings["channel_prep"] = float(time.perf_counter() - t_channel_prep0)
 
     # Keep only biologically relevant channels before expensive resampling.
@@ -1840,7 +2261,9 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     t_pick0 = time.perf_counter()
     try:
         if source_datatype == "ecg":
-            keep_picks = mne.pick_types(raw.info, eeg=True, ecg=True, eog=True, emg=True, resp=True, bio=True, misc=True)
+            keep_picks = mne.pick_types(
+                raw.info, eeg=True, ecg=True, eog=True, emg=True, resp=True, bio=True, misc=True, gsr=True
+            )
         elif source_datatype == "meg":
             keep_picks = mne.pick_types(
                 raw.info,
@@ -1852,6 +2275,8 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                 emg=True,
                 resp=True,
                 bio=True,
+                gsr=True,
+                misc=True,
             )
         else:
             keep_picks = mne.pick_types(
@@ -1864,6 +2289,8 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                 ecog=True,
                 resp=True,
                 bio=True,
+                gsr=True,
+                misc=True,
             )
         n_total = len(raw.ch_names)
         n_keep = int(len(keep_picks))
@@ -2241,7 +2668,25 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         else np.array([], dtype=int)
     )
     if len(eeg_chans) > 0:
-        modality_signals["eeg"] = raw.get_data(picks=eeg_chans) * 1e6
+        bad_segments_cfg = bdf_adapter_meta.get("bad_segments", {}) if isinstance(bdf_adapter_meta, Mapping) else {}
+        mask_bad_segments = bool(
+            isinstance(bad_segments_cfg, Mapping)
+            and bad_segments_cfg.get("enabled")
+            and bad_segments_cfg.get("available")
+        )
+        if mask_bad_segments:
+            # Preserve the source time grid and mark BAD_ samples as NaN. The
+            # EEG extractor rejects every window touching a non-finite sample,
+            # avoiding synthetic adjacency across omitted artifact intervals.
+            eeg_values = raw.get_data(picks=eeg_chans, reject_by_annotation="NaN")
+            bad_sample_mask = ~np.isfinite(eeg_values).all(axis=0)
+            bad_segments_cfg = dict(bad_segments_cfg)
+            bad_segments_cfg["masked_samples"] = int(bad_sample_mask.sum())
+            bad_segments_cfg["masked_duration_sec"] = float(bad_sample_mask.sum() / raw.info["sfreq"])
+            bdf_adapter_meta["bad_segments"] = bad_segments_cfg
+        else:
+            eeg_values = raw.get_data(picks=eeg_chans)
+        modality_signals["eeg"] = eeg_values * 1e6
         channels_dict["eeg"] = [raw.ch_names[i] for i in eeg_chans]
 
     # MEG
@@ -2296,6 +2741,21 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     if ppg_chans:
         modality_signals["ppg"] = raw.get_data(picks=ppg_chans)
         channels_dict["ppg"] = [raw.ch_names[i] for i in ppg_chans]
+    # EDA / GSR: prefer MNE's native "gsr" channel type (available since
+    # MNE >= 1.6). Also match by name among any remaining/misc-typed
+    # channels for datasets whose config still types EDA as "misc" — this
+    # keeps the extractor dataset-agnostic without requiring every config
+    # to be migrated to the native type immediately.
+    eda_chans = list(mne.pick_types(raw.info, gsr=True))
+    if not eda_chans:
+        eda_chans = [
+            idx
+            for idx, ch_name in enumerate(raw.ch_names)
+            if re.search(r"(?i)(eda|gsr)", str(ch_name))
+        ]
+    if eda_chans:
+        modality_signals["eda"] = raw.get_data(picks=eda_chans)
+        channels_dict["eda"] = [raw.ch_names[i] for i in eda_chans]
     preprocess_timings["collect_modalities"] = float(time.perf_counter() - t_collect0)
     preprocess_timings["total"] = float(time.perf_counter() - t_pre0)
 
@@ -2318,6 +2778,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             "tmax": float(crop_window_info[1]) if (crop_window_info is not None and crop_window_info[1] is not None) else None,
         },
         "artifact": artifact_meta,
+        "bdf_adapter": bdf_adapter_meta,
         "eeg_csd": {
             "enabled": bool(eeg_csd_cfg.get("enabled", False)),
             "applied": bool(csd_applied),
@@ -2342,6 +2803,111 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         channels=channels_dict,
         meta=meta,
     )
+
+
+_DEFAULT_NUISANCE_COLUMNS: Tuple[str, ...] = (
+    "trans_x",
+    "trans_y",
+    "trans_z",
+    "rot_x",
+    "rot_y",
+    "rot_z",
+    "wm_mean",
+    "csf_mean",
+    "wm_pc1",
+    "wm_pc2",
+    "wm_pc3",
+    "csf_pc1",
+    "csf_pc2",
+    "csf_pc3",
+)
+
+
+def _apply_fmri_nuisance_regression(
+    region_array: np.ndarray,
+    bold_path: Path,
+    nuisance_cfg: Mapping[str, Any],
+    tr: float,
+) -> np.ndarray:
+    """Regress lightweight motion + WM/CSF nuisance confounds out of regional BOLD.
+
+    Looks for an "extended confounds" TSV next to `bold_path`, following the
+    same "<bold-stem-minus-_bold><suffix>" convention as the existing
+    FD-only confounds file (see mndm.pipeline.summary._resolve_confounds_path_for_bold
+    and project/scripts/11_ds007216_fmri_lightweight_norm.py). On any failure
+    to locate/parse the confounds file, logs a warning and returns
+    `region_array` unchanged rather than failing the whole preprocessing run.
+    """
+    suffix = str(nuisance_cfg.get("confounds_suffix", "_desc-confoundsextended_timeseries.tsv"))
+    columns = list(nuisance_cfg.get("columns") or _DEFAULT_NUISANCE_COLUMNS)
+
+    bold_name = bold_path.name
+    bold_base = bold_name.replace(".nii.gz", "").replace(".nii", "")
+    conf_name = f"{bold_base[:-5]}{suffix}" if bold_base.endswith("_bold") else f"{bold_base}{suffix}"
+    conf_path = bold_path.parent / conf_name
+
+    if not conf_path.exists():
+        logger.warning(
+            "Nuisance regression enabled but confounds file not found at %s; skipping for %s",
+            conf_path,
+            bold_name,
+        )
+        return region_array
+
+    try:
+        conf_df = pd.read_csv(conf_path, sep="\t")
+    except Exception as exc:
+        logger.warning("Failed to read nuisance confounds %s: %s; skipping", conf_path, exc)
+        return region_array
+
+    use_cols = [c for c in columns if c in conf_df.columns]
+    missing = [c for c in columns if c not in conf_df.columns]
+    if missing:
+        logger.warning("Nuisance confounds %s missing columns %s; using available subset", conf_path, missing)
+    if not use_cols:
+        logger.warning("No usable nuisance confound columns in %s; skipping regression", conf_path)
+        return region_array
+
+    conf_values = conf_df[use_cols].to_numpy(dtype=float)
+    n_times = region_array.shape[1]
+    if conf_values.shape[0] != n_times:
+        n = min(conf_values.shape[0], n_times)
+        logger.warning(
+            "Nuisance confounds length %d != n_times %d for %s; truncating to %d",
+            conf_values.shape[0],
+            n_times,
+            bold_name,
+            n,
+        )
+        conf_values = conf_values[:n]
+        region_array = region_array[:, :n]
+
+    # nilearn.signal.clean requires finite confound values; the extended
+    # confounds TSV can contain a leading NaN for near-zero-variance motion
+    # frames (see script 21) or short leading/trailing PCA edge effects.
+    conf_values = pd.DataFrame(conf_values).ffill().bfill().fillna(0.0).to_numpy()
+
+    try:
+        from nilearn.signal import clean as nilearn_clean
+
+        cleaned = nilearn_clean(
+            region_array.T,
+            confounds=conf_values,
+            detrend=True,
+            standardize=False,
+            t_r=tr if tr and np.isfinite(tr) and tr > 0 else None,
+        )
+    except Exception as exc:
+        logger.warning("nilearn.signal.clean failed for %s: %s; skipping nuisance regression", bold_name, exc)
+        return region_array
+
+    logger.info(
+        "Applied nuisance regression to %s using columns %s (n_times=%d)",
+        bold_name,
+        use_cols,
+        region_array.shape[1],
+    )
+    return cleaned.T.astype(np.float32)
 
 
 def preprocess_fmri(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
@@ -2491,6 +3057,17 @@ def preprocess_fmri(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         raise ValueError(f"No non-empty atlas regions found for {file_path}")
 
     region_array = np.stack(region_ts, axis=0)  # [n_regions, n_times]
+
+    # Optional lightweight motion + WM/CSF nuisance regression (config-gated;
+    # see project/scripts/21_ds007216_fmri_confounds_extract.py for the
+    # extended-confounds TSV producer). Runs before the bandpass filter below
+    # so that confound-related variance is removed prior to any temporal
+    # filtering, mirroring standard fMRIPrep-adjacent ordering.
+    nuisance_cfg = fmri_cfg.get("nuisance_regression")
+    if isinstance(nuisance_cfg, Mapping) and bool(nuisance_cfg.get("enabled", False)):
+        region_array = _apply_fmri_nuisance_regression(
+            region_array, file_path, nuisance_cfg, tr
+        )
 
     # Optional temporal bandpass on regional time series
     bandpass = fmri_cfg.get("bandpass")

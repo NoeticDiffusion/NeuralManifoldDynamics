@@ -1,0 +1,21 @@
+# Download-only config for ds004511.
+# EEG dataset (TruScan 128-ch, 3000 Hz) + BioPac physiological signals
+# (ECG, RSP, EDA, EMG at 4000 Hz in beh/*_physio.tsv.gz).
+# 44 subjects, 3 tasks: GG (gambling), CC (cognitive control), Rest.
+#
+# Note: physiological signals are NOT embedded in the EEG file — they live
+# in separate *_physio.tsv.gz files under sub-*/ses-*/beh/.  The mndm
+# physio_tsv_inject preprocess step handles the injection at feature time.
+#
+# Targets K: received tree (17.9 TB free; ample space).
+datasets:
+  - ds004511
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed"
+download:
+  retries: 3
+  datasets:
+    ds004511:
+      # Pull everything: EEG, beh (physio), events, participants.tsv.
+      # No filtering: we need the _physio.tsv.gz files which live under beh/.

@@ -1257,3 +1257,42 @@ def load_participant_table(
             merged.attrs["source_format"] = "merged_participants_and_extra_tables"
 
     return merged
+
+
+def load_session_table(
+    received_dir: Path,
+    dataset_id: str,
+    config: Optional[Mapping[str, Any]] = None,
+) -> Optional[pd.DataFrame]:
+    """Load an optional per-session metadata table for non-BIDS sources.
+
+    Configure ``metadata_extraction.datasets.<id>.sessions.path`` with a TSV
+    or CSV containing ``participant_id`` and ``session_id``.  Unlike
+    participant tables, this preserves repeated recordings and is joined by
+    the summary runner only for its matching subject/session output.
+    """
+    metadata_spec = (config.get("metadata_extraction", {}) if isinstance(config, Mapping) else {}) or {}
+    per_ds = (metadata_spec.get("datasets", {}) or {}).get(dataset_id, {}) if isinstance(metadata_spec, Mapping) else {}
+    sessions_cfg = per_ds.get("sessions", {}) if isinstance(per_ds, Mapping) else {}
+    if not isinstance(sessions_cfg, Mapping) or not sessions_cfg.get("path"):
+        return None
+    dataset_root = _resolve_dataset_root_for_participants(received_dir, dataset_id, config)
+    raw_path = Path(str(sessions_cfg["path"]))
+    path = raw_path if raw_path.is_absolute() else dataset_root / raw_path
+    if not path.exists():
+        logger.warning("Configured sessions path not found for %s: %s", dataset_id, path)
+        return None
+    try:
+        frame = pd.read_csv(path, sep="\t" if path.suffix.lower() == ".tsv" else ",")
+    except Exception as exc:
+        logger.warning("Failed to load sessions table %s: %s", path, exc)
+        return None
+    required = {"participant_id", "session_id"}
+    if missing := required.difference(frame.columns):
+        logger.warning("Sessions table %s lacks columns: %s", path, sorted(missing))
+        return None
+    frame = frame.copy()
+    frame["participant_id"] = frame["participant_id"].astype(str)
+    frame["session_id"] = frame["session_id"].astype(str)
+    frame.attrs["source_path"] = str(path)
+    return frame

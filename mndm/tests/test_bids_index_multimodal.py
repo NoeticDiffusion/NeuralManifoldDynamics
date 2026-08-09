@@ -65,3 +65,40 @@ def test_build_file_index_detects_meg_fif_with_meg_sidecars(tmp_path: Path):
     assert row["meg_json"].endswith("_meg.json")
     assert row["channels_tsv"].endswith("_channels.tsv")
     assert row["events_tsv"].endswith("_events.tsv")
+
+
+def test_build_file_index_detects_ctf_ds_recordings(tmp_path: Path):
+    """CTF MEG recordings (``*_meg.ds`` directories) are indexed once each.
+
+    CTF stores each recording as a directory ending in ``.ds`` that itself
+    contains internal sub-directories also ending in ``.ds`` (e.g. ``hz.ds``);
+    only the outer recording directory should be indexed.
+    """
+    from mndm.bids_index import build_file_index
+
+    dataset_root = tmp_path / "ds003568"
+    meg_dir = dataset_root / "sub-24295" / "meg"
+    ds_dir = meg_dir / "sub-24295_task-rest_run-1_meg.ds"
+    ds_dir.mkdir(parents=True)
+    (ds_dir / "sub-24295_task-rest_run-1_meg.meg4").write_bytes(b"\x00" * 1024)
+    (ds_dir / "sub-24295_task-rest_run-1_meg.res4").write_bytes(b"\x00" * 512)
+    (ds_dir / "hz.ds").mkdir()  # internal CTF sub-directory; must be skipped
+    (ds_dir / "hz.ds" / "hz.meg4").write_bytes(b"\x00" * 256)
+    (meg_dir / "sub-24295_task-rest_run-1_meg.json").write_text("{}", encoding="utf-8")
+    (meg_dir / "sub-24295_task-rest_run-1_channels.tsv").write_text("name\ttype\nMLC11\tMEGMAG\n", encoding="utf-8")
+    (meg_dir / "sub-24295_task-rest_run-1_events.tsv").write_text("onset\tduration\ttrial_type\n0\t1\trest\n", encoding="utf-8")
+
+    index_df = build_file_index(dataset_root, config={"datasets": ["ds003568"]}, dataset_id="ds003568")
+
+    assert len(index_df) == 1
+    row = index_df.iloc[0]
+    assert row["modality"] == "meg"
+    assert row["datatype"] == "meg"
+    assert row["subject"] == "24295"
+    assert row["task"] == "rest"
+    assert row["run"] == "1"
+    assert str(row["path"]).endswith("sub-24295_task-rest_run-1_meg.ds")
+    assert row["meg_json"].endswith("_meg.json")
+    assert row["channels_tsv"].endswith("_channels.tsv")
+    assert row["events_tsv"].endswith("_events.tsv")
+    assert row["size"] == 1024 + 512 + 256  # all .ds dir contents, incl. hz.ds

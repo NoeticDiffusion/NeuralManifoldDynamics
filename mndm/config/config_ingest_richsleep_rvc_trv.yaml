@@ -1,0 +1,631 @@
+# config_ingest_richsleep_rvc_trv.yaml
+#
+# RichSleep – Rhythmic Variance Control / TRN-VG proxy analysis
+# =====================================================================
+#
+# RichSleep is a 24-subject overnight PSG dataset with 18 physiological
+# channels at 200 Hz.  It is used as a VERIFICATION dataset for the
+# dual-dataset (BOAS + ANPHY) RVC/TRV study because it is the first
+# dataset in the series to have BOTH cardiac (ECG) and respiratory
+# (Chest/Abdomen/Airflow) anchor signals simultaneously.
+#
+# This makes it uniquely capable of:
+#   1.  Replicating BOAS respiratory EAP findings (resp_anchor_index)
+#   2.  Replicating ANPHY cardiac EAP findings  (vagal_index)
+#   3.  Computing cardiorespiratory coupling for the first time across
+#       the three-dataset series (cardioresp_coherence is non-NaN here)
+#   4.  Running both EAP arms simultaneously in a single dataset
+#
+# ── Channel inventory ────────────────────────────────────────────────
+#
+#   Channel(s)       Type   Status   Notes
+#   ─────────────────────────────────────────────────────────────────
+#   F3-A2, F4-A1     EEG    ✓ yes   Frontal (linked mastoid ref)
+#   C3-A2, C4-A1     EEG    ✓ yes   Central (linked mastoid ref)
+#   O1-A2, O2-A1     EEG    ✓ yes   Occipital (linked mastoid ref)
+#   EOG-L, EOG-R     EOG    ✓ yes   Two channels → saccade + blink
+#   Chin             EMG    ✓ yes   Chin muscle → sympathetic_index
+#   ECG              ECG    ✓ yes   Raw cardiac → ecg_hrv_rmssd_ms
+#   R-R              misc   ~ store  Pre-derived RR (encoding unclear)
+#   Chest            RESP   ✓ yes   Primary resp (std 0.36 mV, best SNR)
+#   Abdomen          RESP   ✓ yes   Secondary resp (std 0.24 mV)
+#   Airflow          RESP   ~ weak  Low amplitude (std 0.021 mV); tertiary
+#   SpO2             misc   ~ store  0–100 valid; constant EtCO2 excluded
+#   Leg              misc   ~ store  Leg movement
+#   Snore            misc   ~ store  Acoustic snoring signal
+#   EtCO2            misc   ✗ flat  Constant 0.183 in xn001 (dead channel?)
+#   ─────────────────────────────────────────────────────────────────
+#
+#   Active anchor components (v0.2) — both arms present (unique in series):
+#     sympathetic_index         → emg_rms (Chin)                    ✓
+#     vagal_index               → ecg_hrv_rmssd_ms (ECG)            ✓  ← NEW vs BOAS
+#     resp_anchor_index         → resp_regular_index, resp_depth_idx ✓  ← NEW vs ANPHY
+#     ocular_stability_index    → eog_eye_stability, -eog_blink_rate ✓
+#     cardioresp_anchor_index   → cardioresp_coherence (ECG+Chest)  ✓  ← FIRST TIME
+#     anchor_index_v02          = nanmean(vagal, resp, sympathetic,
+#                                         ocular, cardioresp)
+#
+# ── Dual-surface geometry contract ───────────────────────────────────
+#
+#   PRIMARY surface (this config):  EEG-only geometry
+#     · coords_9d primary endpoint; e_m = EEG proxy only
+#     · NO body signals in coords_9d/e_m
+#     · ECG + Chest OUTSIDE primary geometry; IN anchor_state sidecars
+#     · Used for: Pass A (spindles), Pass B (stage curriculum), meta-analysis
+#
+#   SENSITIVITY surface (see config_ingest_richsleep_rvc_trv_anchor_aug.yaml):
+#     · e_m overridden with resp_regular_index + ecg_hrv_rmssd_ms
+#     · Used to test whether geometry changes when anchors enter chart
+#
+#   ANCHOR STATE (this config, always separate):
+#     · Full v0.2 anchor with dual-arm: vagal + respiratory + cardioresp
+#     · Pre-event anchor context: pre_far [-30, -10] s (same as BOAS/ANPHY)
+#     · Used as EAP moderator in Pass C:
+#         ∆geometry_primary ~ spindle_event × resp_pre_context
+#         ∆geometry_primary ~ spindle_event × vagal_pre_context
+#         ∆geometry_primary ~ spindle_event × cardioresp_coherence_pre_context
+#
+#   Surface identity (must match BOAS + ANPHY for meta-analysis):
+#     surface_id:           primary_eeg_only
+#     coordinate_contract:  rvc_v1_eeg_only_e_m
+#     anchor_contract:      rvc_v1_anchor_v02_dual_arm_cardioresp
+#
+# ── Analysis passes ──────────────────────────────────────────────────
+#
+#   Pass A  Event-locking (spindle vs matched non-spindle N2)
+#           → Verify RVC geometry shift replicates from BOAS/ANPHY
+#           → Spindle CSVs from YASA; run 16_yasa_spindle_detection.py
+#             after the features step (channel: C3-A2, 200 Hz, no resample)
+#
+#   Pass B  Stage curriculum (Wake / N1 / N2 / N3 / REM)
+#           → N1 available here and in ANPHY; BOAS lacks N1 annotations
+#
+#   Pass C  Dual-arm EAP moderation (unique to RichSleep):
+#           → ∆geometry ~ spindle_event × resp_pre_context   (BOAS arm)
+#           → ∆geometry ~ spindle_event × vagal_pre_context  (ANPHY arm)
+#           → ∆geometry ~ spindle_event × cardioresp_coherence (new arm)
+#           → Partial replication of both BOAS and ANPHY moderation effects
+#             would provide convergent cross-dataset evidence for EAP-RVC
+#
+# ── Annotation format ────────────────────────────────────────────────
+#
+#   Non-BIDS dataset.  Annotations were converted from xlsx to text by:
+#     project/scripts/17_richsleep_ann_to_stages.py
+#   Output: K:/ExternalReceivedDatasets/RichSleep/xndata/xnXXX_stages.txt
+#   Format: <label> <onset_sec> <duration_sec>  (30 s epochs)
+#   Labels: Wake / N1 / N2 / N3 / REM
+#
+#   xn001 annotation peculiarity: high N1 count (37% vs typical <20%).
+#   xn017: only 2 REM epochs — may have poor sleep architecture.
+#   Both subjects are retained for Pass A/B analysis but flagged.
+#
+# ── Data paths ───────────────────────────────────────────────────────
+#
+#   Raw EDFs: K:/ExternalReceivedDatasets/RichSleep/xndata/xnXXX.edf
+#   Annotation files: K:/ExternalReceivedDatasets/RichSleep/xndata/xnXXX_stages.txt
+#   Processed output: K:/ExternalReceivedDatasets/mndm_rvc_processed/RichSleep/
+
+version: 2.0
+modality: eeg
+
+# No imports – this is a standalone non-BIDS config.
+
+datasets:
+  - RichSleep
+
+source:
+  name: "RichSleep"
+  platform: "Local"
+  format: "edf"
+  dataset_id: "RichSleep"
+  dataset_name: "RichSleep PSG – RVC/TRV verification run"
+  url: null
+  # Run-gate #1: Surface identity (matches BOAS + ANPHY primary for meta-analysis)
+  surface_id: "primary_eeg_only"
+  coordinate_contract: "rvc_v1_eeg_only_e_m"
+  anchor_contract: "rvc_v1_anchor_v02_dual_arm_cardioresp"
+  dual_surface_pair: "richsleep_rvc_trv"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets"
+  processed_dir: "K:/ExternalReceivedDatasets/mndm_rvc_processed"
+  dataset_received_dirs:
+    RichSleep: "K:/ExternalReceivedDatasets/RichSleep/xndata"
+
+# ── Preprocessing ────────────────────────────────────────────────────
+# Data is already at 200 Hz — no resampling needed.
+# Reference: data already uses linked mastoid (e.g. F3-A2 = F3 ref A2).
+# Average re-reference is disabled (reref: null) to preserve linked mastoid.
+# Bandpass 1–45 Hz (standard sleep EEG band).
+# Notch: 50 Hz (European mains; China uses 50 Hz).
+preprocess:
+  sfreq: 200
+  reref: null
+  eeg_bandpass: [1.0, 45.0]
+  notch_hz: 50.0
+
+  # ── Channel typing ────────────────────────────────────────────────
+  # MNE reads all 18 channels as "eeg" from the EDF.
+  # Retype to correct physiological categories so the feature extractors
+  # (cardioresp, resp, eog, emg, ecg) can find their channels.
+  channel_typing:
+    enabled: true
+    datasets:
+      RichSleep:
+        rules:
+          # EEG: 6-channel linked mastoid PSG montage
+          - {regex: "^(F3-A2|F4-A1|C3-A2|C4-A1|O1-A2|O2-A1)$", type: "eeg"}
+          # EOG: two channels → saccade + blink detection both active
+          - {regex: "^(EOG-L|EOG-R)$", type: "eog"}
+          # EMG: chin muscle → sympathetic_index ✓
+          - {regex: "^Chin$", type: "emg"}
+          # ECG: raw cardiac signal → ecg_hrv_rmssd_ms ✓
+          - {regex: "^ECG$", type: "ecg"}
+          # Respiratory: Chest (primary, best SNR), Abdomen (secondary),
+          # Airflow (tertiary, low amplitude ~0.15 mV but non-zero)
+          - {regex: "^(Chest|Abdomen|Airflow)$", type: "resp"}
+          # Misc: store but exclude from primary analysis
+          # R-R: unclear encoding (might be RR interval or ECG derivative)
+          # SpO2: 0–100 valid; Leg: movement; Snore: acoustic; EtCO2: flat
+          - {regex: "^(R-R|Leg|Snore|SpO2|EtCO2)$", type: "misc"}
+
+# ── Epoching: 30 s AASM windows ──────────────────────────────────────
+epoching:
+  datasets:
+    RichSleep:
+      length_s: 30.0
+      step_s: 30.0
+      sampling:
+        enabled: true
+        method: "stage_stratified_blocks"
+        stage_columns: ["stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+        target_minutes:
+          Wake: 20
+          N1:   15
+          N2:   20
+          N3:   20
+          REM:  20
+        # block_minutes: 2 (= 4 consecutive 30s epochs = 2 minutes minimum run).
+        # Reduced from 5 because RichSleep staging is more fragmented than BOAS
+        # (xn001 max N2 run = 9 epochs; block_minutes: 5 yields 0 N2 samples).
+        block_minutes: 2
+        seed: 42
+
+# ── Features ─────────────────────────────────────────────────────────
+features:
+  # EEG: standard spectral + connectivity features.
+  # Ratios must be explicit here — this is a standalone config with no imports from
+  # common_eeg.yaml. Without this, eeg_alpha_theta and eeg_beta_alpha are not produced.
+  ratios: {alpha_theta: ["alpha", "theta"], beta_alpha: ["beta", "alpha"]}
+  eeg:
+    enabled: true
+    datasets:
+      RichSleep:
+        enabled: true
+
+conventional_eeg:
+  enabled: false
+  tier1:
+    relative_bandpower: true
+    ratios: ["alpha_theta", "beta_alpha"]
+
+  # Respiration: Chest (primary, best SNR) + Abdomen + Airflow
+  # resp_regular_index and resp_depth_index → resp_anchor_index in anchor_state
+  resp:
+    primary_channel: "Chest"
+    secondary_channels: ["Abdomen", "Airflow"]
+    lowpass_hz: 1.0
+    peak_min_distance_s: 1.5
+    peak_min_prominence_frac: 0.10
+    pause_flatness_frac: 0.05
+    min_breaths: 2
+    min_signal_quality: 0.15
+
+  # ECG: HRV superwindow for robust beat-to-beat interval estimation.
+  # Both vagal_index (ecg_hrv_rmssd_ms) and HRV complexity are computed.
+  ecg:
+    hrv:
+      enabled: true
+      superwindow_s: 90.0          # 4.5 × 20 s epochs; ≥75 beats at 50 bpm
+      min_nn_intervals: 20
+      min_coverage_fraction: 0.5
+      complexity:
+        enabled: true
+        sampen_order: 2
+        sampen_tolerance_mult: 0.2
+        min_nn_for_sampen: 50
+        dfa_short_nvals_lo: 4
+        dfa_short_nvals_hi: 12
+        min_nn_for_dfa: 16
+
+  # EOG: two channels (EOG-L + EOG-R) → both blink and saccade features
+  # Saccade rate is active during N1, Wake, REM; suppressed in N2/N3.
+  eog:
+    filter_low_hz: 0.5
+    filter_high_hz: 10.0
+    filter_order: 3
+    std_mult: 2.5
+    mad_mult: 3.5
+    prominence_mult: 1.0
+    refractory_s: 0.30
+    blink_halfwidth_s: 0.20
+    saccade_filter_low_hz: 1.0
+    saccade_filter_high_hz: 30.0
+    saccade_std_mult: 3.5
+    saccade_refractory_s: 0.30
+    artifact_sat_frac: 0.95
+
+  # Cardiorespiratory coupling: ECG + Chest BOTH present.
+  # All cardioresp metrics are expected to be non-NaN (first time in series).
+  # cardioresp_coherence → cardioresp_anchor_index in anchor_state v0.2
+  cardioresp:
+    resp_band_lo: 0.10
+    resp_band_hi: 0.50
+    ibi_interp_hz: 4.0
+    coherence_nperseg: 64
+    xcorr_max_lag_s: 10.0
+    min_rpeaks: 5              # met (ECG present) → cardioresp features non-NaN
+
+# ── Anchor State ─────────────────────────────────────────────────────
+# Full dual-arm anchor state v0.2:
+#   vagal_index         ✓ (ECG present)
+#   resp_anchor_index   ✓ (Chest/Abdomen present)
+#   cardioresp_anchor_index ✓ (FIRST TIME — ECG + RESP both present)
+#   sympathetic_index   ✓ (Chin EMG present)
+#   ocular_stability    ✓ (EOG-L + EOG-R present)
+#   anchor_index_v02    = nanmean(vagal, resp, sympathetic, ocular, cardioresp)
+# ── Phase Anchor (Mål B / C) ──────────────────────────────────────────────
+# Computes per-epoch cardiac and respiratory phase, HEP amplitude, and heart/
+# respiratory rate.  ECG + Chest resp both present in RichSleep → full output.
+# Columns added to features.parquet: phi_cardiac_mean, phi_resp_mean,
+#   rr_interval_ms, hr_bpm, resp_rate_bpm, inhale_fraction, hep_amplitude,
+#   n_rpeaks_in_epoch, pa_cardiac_quality, pa_resp_quality
+phase_anchor:
+  enabled: true
+  ecg_bipolar: false              # single ECG channel — no differential
+  frontal_eeg_channels: ["F3-A2", "F4-A1"]   # confirmed frontal channels in EDF
+  hep_window_lo_s: 0.200
+  hep_window_hi_s: 0.600
+  resp_bandpass_lo_hz: 0.10
+  resp_bandpass_hi_hz: 0.50
+  chunk_minutes: 5                # 5-min chunks for NeuroKit2 on whole-night ECG
+  min_rpeaks_epoch: 5
+  min_rpeaks_hep: 3
+
+#
+# Pre-event anchor context (science lead gate #3):
+#   primary predictor:  anchor averaged over pre_far [-30, -10] s
+#   sensitivity:        anchor in anchor-augmented config (centered)
+anchor_state:
+  enabled: true
+  v2:
+    enabled: true
+
+anchor_coupling:
+  enabled: true
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: false
+  min_windows: 3
+  condition_number_max: 1000000.0
+
+# ── MNPS projection (NDT theoretical prior) ──────────────────────────────────
+# Explicit copy of config_ingest_common_eeg.yaml → mnps_projection block.
+# Required here because RichSleep has no imports chain.
+#
+# The primary geometry path is:
+#   1. Compute 9D subcoords from feature columns (mnps_9d.subcoords below)
+#   2. Project 9D → 3D MDE via v1_mapping (NDT theoretical prior)
+#   3. mnps_3d.mode = "from_v2" + aggregation = "fixed_weighted_projection"
+#
+# This is identical to the BOAS + ANPHY primary run geometry.
+# DO NOT change v1_mapping weights without updating all three dataset configs.
+mnps_projection:
+  normalize: "robust_z"
+  clip_threshold: 6.0
+  # Matches the common EEG feature-export guardrail for this standalone config.
+  feature_export:
+    degenerate_scale_policy: "nan"
+    degenerate_scale_eps: 1.0e-9
+    min_finite_count: 3
+  # Fixed linear projection P: V2(9D) → V1(3D).
+  # NDT theoretical prior — same weights as BOAS and ANPHY via common_eeg.yaml.
+  v1_mapping:
+    m:
+      m_a: 0.62   # Arousal / Slow-wave dominance
+      m_e: 0.55   # Engagement / Alpha-desynchronization
+      m_o: 0.45   # Organization / Beta-Alpha ratio
+    d:
+      d_n: 0.50   # Network binding / Gamma power
+      d_l: 0.82   # Local dispersion / Hjorth Mobility
+      d_s: 0.28   # Spectral shift
+    e:
+      e_e: 0.85   # Non-linear Complexity / Entropy
+      e_s: 0.62   # Spectral Flatness / Hjorth Complexity
+      e_m: 0.03   # Embodiment (tertiary; EEG-only in primary run)
+  feature_standardization:
+    default: ["robust_z", "clip"]
+    eeg_delta: ["log10", "robust_z", "clip"]
+    eeg_theta: ["log10", "robust_z", "clip"]
+    eeg_alpha: ["log10", "robust_z", "clip"]
+    eeg_beta:  ["log10", "robust_z", "clip"]
+    eeg_gamma: ["log10", "robust_z", "clip"]
+    eeg_alpha_theta:     ["robust_z", "clip"]
+    eeg_beta_alpha:      ["robust_z", "clip"]
+    eeg_sample_entropy:  ["robust_z", "clip"]
+    eeg_permutation_entropy: ["robust_z", "clip"]
+    eeg_hjorth_complexity:   ["robust_z", "clip"]
+    eeg_hjorth_mobility:     ["robust_z", "clip"]
+  min_axis_coverage: 0.3
+  # Flat direct-feature weights kept as provenance fallback (v1_mapping overrides these).
+  weights:
+    m: {eeg_theta: 0.35, eeg_delta: 0.25, eeg_alpha: 0.20, eeg_beta: 0.20}
+    d: {eeg_sample_entropy: 0.40, eeg_beta_alpha: 0.30, eeg_gamma: 0.30}
+    e: {eeg_alpha: 0.40, eeg_beta: 0.30, eeg_alpha_theta: 0.30}
+
+# Force 9D → 3D derivation (same as BOAS/ANPHY via common_eeg.yaml).
+mnps_3d:
+  mode: "from_v2"
+  from_v2:
+    aggregation: "fixed_weighted_projection"
+    pooling: "mean"
+    map:
+      m: ["m_a", "m_e", "m_o"]
+      d: ["d_n", "d_l", "d_s"]
+      e: ["e_e", "e_s", "e_m"]
+
+# ── MNPS embodied channels ───────────────────────────────────────────
+# !! EEG-ONLY in primary run !!
+# Neither resp nor ECG signals enter the primary embodied dimension.
+# eog_blink_rate retained: it is NOT the primary EAP moderator for RichSleep,
+# so it does not cause anchor contamination.
+# emg_rms excluded: sympathetic_index uses it; keep independent.
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - eog_blink_rate       # ocular arousal proxy (non-body-anchor EAP dim)
+
+# ── MNPS 9D: EEG-only primary geometry ──────────────────────────────
+# Global subcoords: v2.0 template (identical to common_eeg.yaml versions["2.0"]).
+# Required because RichSleep has no imports chain. BOAS and ANPHY inherit
+# the same definitions via config_ingest_common_eeg.yaml → versions["2.0"].
+# Dataset-level overrides (e_s, e_m) are identical to BOAS and ANPHY RVC configs.
+#
+# v2.0 vs v1.2 changes: m_a uses delta+theta (not theta+eog), d_n=gamma (not beta_alpha),
+#   d_l=hjorth_mobility (not alpha_theta), d_s=alpha_theta (not gamma), m_o=beta_alpha.
+#
+# RVC override rationale for e_m:
+#   Base v2.0 (common_eeg.yaml): e_m = embodied_arousal_proxy (cardiac embodiment)
+#   RVC primary:                  e_m = eeg_hjorth_mobility:0.6, eeg_beta_alpha:0.4
+#   Reason: cardiac signals excluded from PRIMARY geometry to avoid anchor contamination.
+mnps_9d:
+  enabled: true
+  # Active version contract — MUST match common_eeg.yaml versions["2.0"].
+  # RichSleep has no imports chain, so we replicate the v2.0 subcoord template
+  # directly here. BOAS and ANPHY resolve these identically via the versioned
+  # template in common_eeg.yaml when definition_version="2.0" is set.
+  definition_version: "2.0"
+  subcoords:
+    # ── v2.0 subcoord definitions (identical to common_eeg.yaml versions["2.0"]) ──
+    # M: macrostates (arousal, engagement, organization)
+    m_a: {eeg_delta: -0.5, eeg_theta: -0.5}    # Arousal: slow-wave dominance (neg = awake)
+    m_e: {eeg_alpha: -1.0}                       # Engagement: alpha desync
+    m_o: {eeg_beta_alpha: 1.0}                   # Organization: beta/alpha ratio
+    # D: dynamics/dispersion (network, local, spectral)
+    d_n: {eeg_gamma: 1.0}                        # Network binding: gamma power
+    d_l: {eeg_hjorth_mobility: 1.0}              # Local dispersion: Hjorth Mobility
+    d_s: {eeg_alpha_theta: 1.0}                  # Spectral shift: alpha/theta
+    # E: entropy/energy/embodiment
+    e_e: {eeg_permutation_entropy: 1.0}          # Complexity: permutation entropy
+    e_s: {eeg_hjorth_complexity: 1.0}            # Spectral flatness (overridden at dataset level)
+    e_m: {embodied_arousal_proxy: 1.0}           # Embodiment (overridden at dataset level)
+  metric_policies:
+    e_e:
+      preferred: permutation_entropy
+      fallbacks: [spectral_entropy]
+    e_m:
+      preferred: ecg_rmssd
+      fallbacks: [eog_blink_rate]
+  datasets:
+    RichSleep:
+      subcoords:
+        # RVC-specific overrides (EEG-only primary — same as BOAS ds005555 and ANPHY):
+        e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+        e_m: {eeg_hjorth_mobility: 0.6, eeg_beta_alpha: 0.4}  # NO ecg_rmssd in primary
+      block_jacobians:
+        enabled: false   # disabled – re-enable for MDE analysis
+        preset: mde_families_v1
+        csv_output: "stratified_block_jacobians_subjects.csv"
+
+# ── Regional MNPS ────────────────────────────────────────────────────
+# Only 6 EEG channels; frontal / central / occipital ensembles.
+# Block Jacobians disabled.
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 2
+    groups:
+      frontal:    ["F3-A2", "F4-A1"]
+      central:    ["C3-A2", "C4-A1"]
+      occipital:  ["O1-A2", "O2-A1"]
+  review_qc:
+    baseline_comparisons:
+      enabled: true
+      smoothing_window_epochs: 3
+      max_series_per_family: 6
+    null_sanity_tests:
+      enabled: true
+      seed: 42
+  coverage:
+    datasets:
+      RichSleep:
+        min_seconds: 60
+        min_epochs: 20
+
+regional_mnps:
+  block_jacobians:
+    enabled: false   # disabled – re-enable for MDE analysis
+
+# ── Event-locked spindle analysis (Pass A) ───────────────────────────
+# Same bin structure and control scheme as BOAS + ANPHY (harmonized contract).
+#
+# Spindle CSVs must be generated first using:
+#   project/scripts/16_yasa_spindle_detection.py
+# Parameters: C3-A2 channel, 200 Hz (no resample), sigma 12–15 Hz, N2 only.
+# Expected output: K:/ExternalReceivedDatasets/RichSleep/xndata/<sub>_spindles_yasa_v1_*.csv
+#
+# Primary endpoint: spindle_event vs matched_control in EEG-only coords_9d.
+# Pass C downstream: resp_pre_context × vagal_pre_context × event_type interaction.
+event_locked:
+  datasets:
+    RichSleep:
+      enabled: true
+      profile: "rvc_spindle_v1"
+      event_source:
+        kind: "csv"
+      csv_source_glob: "{events_core}_spindles_yasa_v1_*.csv"
+      event_types: ["sleep_spindle"]
+      stage_filter: ["N2"]
+      reference: "peak"
+      bins:
+        pre_far:   [-30.0, -10.0]
+        pre_near:  [-10.0,   0.0]
+        event:     [  0.0,   3.0]
+        post_near: [  3.0,  10.0]
+        post_far:  [ 10.0,  30.0]
+      exclude_stage_transition_margin_sec: 30.0
+      min_overlap_fraction: 0.0
+      controls:
+        stage: "N2"
+        n_controls_per_event: 3
+        exclusion_margin_sec: 30.0
+        time_of_night_quartile_match: true
+        seed: 42
+      export:
+        write_parquet: true
+        write_csv: true
+        include_coords_9d: true
+        provenance_in_every_row: true
+        event_condition_label: "spindle_event"
+        control_condition_label: "matched_control"
+
+# ── Block-native stage windows (Pass B) ─────────────────────────────
+# All 5 AASM stages available (Wake / N1 / N2 / N3 / REM).
+# Note: xn017 has only 2 REM epochs → may produce insufficient REM windows;
+# this subject will be excluded from REM stage analysis automatically by
+# min_block_sec = 60.0.
+block_native:
+  datasets:
+    RichSleep:
+      enabled: true
+      source:
+        kind: "stage_blocking"
+        label_column: "stage"
+        stage_columns: ["stage"]
+      window_profile:
+        kind: "sliding"
+        window_length_sec: 30.0
+        step_sec: 15.0
+        emit_relative_position: true
+        min_block_sec: 60.0        # at least 2 full 30 s epochs per block
+      export:
+        write_parquet: true
+        write_csv: true
+
+# ── NDT ingest ───────────────────────────────────────────────────────
+ndt_ingest:
+  ingest_version: "1.2"
+  modalities:
+    eeg:
+      enabled: true
+      datasets:
+        RichSleep:
+          synchrony:    {enabled: false}
+          complexity:   {enabled: false}
+          dynamic_fc:
+            enabled: true
+            window_length_sec: 4.0
+            step_sec: 1.0
+            max_windows: 64
+            retain_matrices: false
+            summary:
+              variance: true
+          graph_metrics: {enabled: false}
+
+# ── Sleep stage annotations ──────────────────────────────────────────
+# Non-BIDS dataset.  Annotation files generated by:
+#   project/scripts/17_richsleep_ann_to_stages.py
+# Format: <label> <onset_sec> <duration_sec>  (space-separated, 30 s epochs)
+# Labels: Wake / N1 / N2 / N3 / REM
+# Files sit in same directory as the EDF files (search_parent_levels: 0).
+sleep_annotations:
+  datasets:
+    RichSleep:
+      enabled: true
+      search_parent_levels: 0
+      file_globs: ["*_stages.txt"]
+      stage_map:
+        Wake: 0
+        N1:   1
+        N2:   2
+        N3:   3
+        REM:  4
+        Unknown: -1
+
+# ── Metadata extraction ──────────────────────────────────────────────
+# Subject ID extracted from filename stem: xnXXX → subject = "xnXXX"
+# The _infer_non_bids_subject fallback handles this automatically, but
+# we provide an explicit regex to ensure consistent zero-padded IDs.
+metadata_extraction:
+  datasets:
+    RichSleep:
+      filename_parse:
+        regex: "(?P<subject>xn\\d{3})"
+        subject_pad: 0
+      group:
+        default: "Healthy"
+      condition:
+        default: "sleep"
+      task:
+        default: "sleep"
+
+# ── Pre-run anchor availability audit (science lead gate #2) ─────────
+# Run after features step; confirm per dataset:
+#   subject_n                     RichSleep: 24
+#   valid_primary_geometry_n      epochs with qc_ok_eeg = True
+#   valid_anchor_context_n        epochs with ecg_hrv_rmssd_ms AND
+#                                   resp_regular_index not NaN
+#   valid_geometry_and_anchor_n   both valid simultaneously
+#
+# Expected:
+#   - All 24 subjects should have valid ECG HRV (ECG present throughout)
+#   - Chest resp coverage near 100% (strong signal)
+#   - Airflow may have high NaN rate (low amplitude) — use Chest for primary
+#   - xn017 REM coverage will be minimal (2 epochs)
+#
+# Python snippet (after features step):
+#   df = pd.read_parquet(
+#       'K:/ExternalReceivedDatasets/mndm_rvc_processed/RichSleep/'
+#       'RichSleep/features.parquet')
+#   geom_ok = df.query('qc_ok_eeg == True')
+#   anchor_ok = df.dropna(subset=['ecg_hrv_rmssd_ms', 'resp_regular_index'])
+#   both_ok = geom_ok[geom_ok.index.isin(anchor_ok.index)]
+#   print(len(geom_ok), len(anchor_ok), len(both_ok))
+
+# ── Known data notes ─────────────────────────────────────────────────
+# [1] Airflow channel (xn001): very low amplitude (std ~0.021 mV vs Chest ~0.36 mV).
+#     Chest and Abdomen are the primary resp channels.
+#     resp_regular_index is derived from Chest (primary_channel: "Chest").
+# [2] EtCO2 channel: constant 0.183 in xn001 → likely dead.  Typed as misc.
+# [3] R-R channel: physical encoding unclear (stored in volts, range ±3.2 mV,
+#     which does not map directly to RR intervals in seconds).
+#     Typed as misc; raw ECG channel is used for HRV extraction.
+# [4] xn001 annotation: 37% N1 (vs typical <20%) → staging idiosyncrasy.
+#     Subject retained for analysis; N1 epochs excluded from spindle analysis.
+# [5] xn017: 2 REM epochs only.  Subject excluded from REM stage analysis
+#     by min_block_sec cutoff; included in all other analyses.
+# [6] Linked mastoid reference (e.g. F3-A2): average re-referencing disabled
+#     (preprocess.reref: null) to preserve the original linked mastoid montage.

@@ -36,6 +36,28 @@ def test_merge_temp_features_dedupes_by_file_epoch_id(tmp_path: Path):
     assert float(row1["feat"]) == 20.0
 
 
+def test_merge_temp_features_can_exclude_stale_merged_table(tmp_path: Path):
+    """Forced extraction must rebuild only from freshly written per-file shards."""
+    from mndm.parallel import merge_temp_features
+
+    ds_path = tmp_path / "forced"
+    ds_path.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(
+        [
+            {"file": "a.edf", "epoch_id": 0, "feat": 10.0},
+            {"file": "a.edf", "epoch_id": 1, "feat": 20.0},
+        ]
+    ).to_csv(ds_path / "features.csv", index=False)
+    pd.DataFrame(
+        [{"file": "a.edf", "epoch_id": 0, "feat": 99.0}]
+    ).to_csv(ds_path / "features_hash1.csv", index=False)
+
+    merged = merge_temp_features(ds_path, include_existing=False)
+
+    assert len(merged) == 1
+    assert float(merged.iloc[0]["feat"]) == 99.0
+
+
 def test_merge_temp_features_fallback_drop_duplicates_without_keys(tmp_path: Path):
     """Test merge temp features fallback drop duplicates without keys."""
     from mndm.parallel import merge_temp_features

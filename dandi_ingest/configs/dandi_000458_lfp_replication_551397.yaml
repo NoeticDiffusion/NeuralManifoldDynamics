@@ -1,0 +1,29 @@
+dataset:
+  config_id: dandi_000458_lfp_replication_551397
+  adapter: dataset_000458
+  dandiset_id: "000458"
+  version: draft
+  target_mndm_dataset_id: dandi_000458
+
+storage:
+  output_root: data/dandi
+  raw_root: data/dandi/raw/000458
+  manifest_root: data/dandi/manifests/000458
+  triage_root: data/dandi/triage/000458
+
+selection:
+  path_filters:
+    - "sub-551397/sub-551397_ses-20210211_behavior+ecephys.nwb"
+  subject_filters: ["551397"]
+  session_filters: []
+  asset_limit: 1
+
+execution:
+  metadata_only: false
+  streaming_allowed: false
+
+outputs:
+  manifest_json: data/dandi/manifests/000458/dandi_000458_lfp_replication_551397_manifest.json
+  manifest_csv: data/dandi/manifests/000458/dandi_000458_lfp_replication_551397_manifest.csv
+  triage_markdown: data/dandi/triage/000458/dandi_000458_lfp_replication_551397_triage.md
+  probe_json: data/dandi/triage/000458/dandi_000458_lfp_replication_551397_probe.json

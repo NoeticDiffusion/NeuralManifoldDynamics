@@ -136,6 +136,12 @@ meg_mapping:
       require_similarity_drop: true
       min_drop_abs: 0.10
 
+# Opt-in measurement QC only. This does not modify /mnps_3d and sector names
+# must never be interpreted as cortical labels or as EEG-MEG harmonization.
+sensor_topography_qc:
+  enabled: false
+  sensor_topography_contract: {}
+
 robustness:
   ensembles:
     enabled: true

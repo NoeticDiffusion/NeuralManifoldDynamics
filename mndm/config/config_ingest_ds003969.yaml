@@ -38,9 +38,10 @@ imports:
 # (ppg|pleth|pulse|photopleth) and, failing that, falls back to ALL `bio`-type
 # channels.  The channel is named "Plet" (no "h"), so the name regex does NOT
 # match and the bio fallback is used.  Therefore Plet is typed `bio` (so it is
-# picked as PPG) while GSR1/GSR2/Temp are typed `misc` (so the bio fallback does
-# not grab them as PPG).  An EDA extractor + `bio` typing for GSR is a future
-# step.
+# picked as PPG) while GSR1/GSR2/Temp are typed `misc`/`gsr` (so the bio
+# fallback does not grab them as PPG).  GSR1/GSR2 are typed with MNE's native
+# `gsr` type so features/eda.py picks them up automatically (see
+# features.eda below); Temp stays `misc` (no temperature extractor yet).
 
 datasets:
   - ds003969
@@ -66,9 +67,12 @@ indexing:
     enabled: true
     group_by: ["subject", "session", "task", "run", "acq"]
     primary_modality: "eeg"
-    # ECG (EXG7) and PPG (Plet) are co-recorded in the Biosemi .bdf.
-    # GSR/Resp/Temp are typed but have no feature extractor yet.
-    include_modalities: ["eeg", "ecg", "ppg"]
+    # All modalities co-recorded in the single Biosemi .bdf.  The BIDS index
+    # has one row per recording (modality "eeg"); the channel_typing rules
+    # below assign ECG/EOG/RESP/bio roles within that file.
+    # Adding resp/eog/cardioresp here is declarative; functionally the filter
+    # operates on the BIDS index modality column (always "eeg" for BDF files).
+    include_modalities: ["eeg", "ecg", "ppg", "resp", "eog"]
 
 preprocess:
   eeg_csd:
@@ -79,12 +83,22 @@ preprocess:
     min_eeg_channels: 16
     on_error: "warn"
 
-  # EOG regression using the dedicated EOG channels (EXG1-4, typed eog below).
-  # Lighter than ICA and sufficient for a 98-subject continuous-recording dataset.
-  # ECG (EXG7) is left in the raw so features.ecg HRV extraction sees the true
-  # cardiac signal (no ICA ECG removal).
+  # ICA artifact removal.  ds003969 has 4 dedicated EOG channels (EXG1-4 typed
+  # eog) — ideal for ICA; no proxy channels needed.  ECG components are detected
+  # via EXG7 (auto-detected through ecg channel type).  ICA is applied to EEG
+  # channels only; EXG7 itself is untouched so HRV/resp feature extractors see
+  # the true physiological signals.
   artifacts:
-    method: "eog_reg"
+    method: "ica"
+    ica_n_components: 20
+    ica_method: "fastica"
+    ica_random_state: 42
+    ica_fit_highpass_hz: 1.0
+    eog_proxy_channels: []       # EXG1-4 are typed eog; no proxy needed
+    ica_eog_threshold: 3.0
+    ecg_channel: null            # auto-detect EXG7 via ecg channel type
+    ica_ecg_threshold: 3.0
+    ica_max_components_to_remove: 5
 
   # Biosemi auxiliary channel typing.  Dataset rules run before the generic
   # default_rules; first match wins.  Use anchored regex so EXG1 is not matched
@@ -110,9 +124,9 @@ preprocess:
           - {regex: "(?i)^EXG6$", type: "misc"}  # M2 right mastoid
           # EXG8 = defective-Fp1 replacement electrode; misc until a rename step
           - {regex: "(?i)^EXG8$", type: "misc"}  # Fp1 replacement (see NOTE)
-          # EDA / GSR: typed misc (no EDA extractor yet; avoid PPG bio fallback)
-          - {regex: "(?i)^GSR1$", type: "misc"}  # EDA
-          - {regex: "(?i)^GSR2$", type: "misc"}  # EDA
+          # EDA / GSR: native MNE "gsr" type -> picked up by features/eda.py.
+          - {regex: "(?i)^GSR1$", type: "gsr"}  # EDA
+          - {regex: "(?i)^GSR2$", type: "gsr"}  # EDA
           # Temperature: misc (no extractor; avoid PPG bio fallback)
           - {regex: "(?i)^Temp$", type: "misc"}  # temperature
           # Ergometer inputs: misc
@@ -154,8 +168,58 @@ features:
         dfa_short_nvals_hi: 12
         min_nn_for_dfa: 16
 
+  # Respiration v0.1 — Resp channel confirmed as respiration belt (BIDS: Resp).
+  # Meditation blocks are typically 10+ minutes, well within the regime where
+  # long-window respiration features (rate, regularity, depth) are meaningful.
+  resp:
+    lowpass_hz: 1.0              # cut above 1 Hz; breathing is 0.1-0.5 Hz
+    peak_min_distance_s: 1.5     # ~40 bpm max; meditation breathing is slower
+    peak_min_prominence_frac: 0.15
+    pause_flatness_frac: 0.05
+    min_breaths: 2
+    min_signal_quality: 0.20
+
+  # OcularState v0.1 — four EXG channels typed as EOG.
+  # EXG1/EXG2 = HEOG (left/right eye corner), EXG3/EXG4 = VEOG.
+  # Detection thresholds are intentionally generous because meditation
+  # subjects have fewer blinks and slower eye movements than typical tasks.
+  eog:
+    filter_low_hz: 0.5
+    filter_high_hz: 10.0
+    filter_order: 3
+    std_mult: 2.0
+    mad_mult: 3.5
+    prominence_mult: 0.8
+    refractory_s: 0.25
+    blink_halfwidth_s: 0.15
+    saccade_filter_low_hz: 1.0
+    saccade_filter_high_hz: 30.0
+    saccade_std_mult: 2.5
+    saccade_refractory_s: 0.15
+    artifact_sat_frac: 0.95
+
+  # Cardiorespiratory Coupling v0.1 — requires both ECG (EXG7) and Resp.
+  # Respiration band 0.1-0.5 Hz covers the full meditation breathing range.
+  cardioresp:
+    resp_band_lo: 0.10
+    resp_band_hi: 0.50
+    ibi_interp_hz: 4.0
+    coherence_nperseg: 64      # shorter than default; epochs here are 8 s
+    xcorr_max_lag_s: 8.0
+    min_rpeaks: 5
+
+  # EDA/GSR: tonic SCL + phasic SCR events from GSR1 (typed "gsr" above).
+  eda:
+    enabled: true
+
 anchor_state:
   enabled: true
+  # AnchorState v0.2 — adds resp_anchor_index, ocular_stability_index,
+  # cardioresp_anchor_index, and the global anchor_index_v02 composite.
+  # All v0.1 columns (sympathetic_index, vagal_index, vascular_index,
+  # pupil_arousal_index, anchor_index) are preserved verbatim.
+  v2:
+    enabled: true
 
 anchor_coupling:
   enabled: true
@@ -208,3 +272,11 @@ metadata_extraction:
           med2: "meditation"
           think1: "thinking"
           think2: "thinking"
+
+# allow_group_collisions is required because task normalization merges two source
+# files (med1breath + med2 → meditation; think1 + think2 → thinking) into a single
+# output HDF5 per subject.  Without this flag the collision guardrail would refuse
+# to proceed.  The merging is intentional: both recordings of the same condition
+# are concatenated into one combined summary (≈300 epochs instead of ≈150).
+summarize:
+  allow_group_collisions: true

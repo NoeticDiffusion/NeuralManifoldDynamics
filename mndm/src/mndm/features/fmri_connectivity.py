@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from typing import Dict, Mapping, Tuple
 
 import numpy as np
 from scipy.signal import butter, filtfilt
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,10 +68,27 @@ def _parse_config(config: Mapping[str, object] | None) -> ConnectivityConfig:
 
 
 def _bandpass(data: np.ndarray, sfreq: float, f_low: float, f_high: float, order: int = 4) -> np.ndarray:
-    """Internal helper: bandpass."""
+    """Internal helper: bandpass.
+
+    filtfilt's default edge padding requires ``n_times > 3 * ntaps`` (ntaps =
+    2*order+1 for a band filter). Short epochs (e.g. ~20-45 samples at
+    TR=2s, as in ds007216) can violate this for order=4; degrade the filter
+    order to whatever the epoch length can support rather than raising, and
+    skip filtering entirely (return raw data) only if even order=1 does not
+    fit -- this is a v2.5 Stage 2 ALFF/fALFF exposure fix (sciencelead/0004.md)."""
     nyq = sfreq / 2.0
     if not (0 < f_low < f_high < nyq):
         return data
-    b, a = butter(order, [f_low / nyq, f_high / nyq], btype="band")
+    n_times = data.shape[1] if data.ndim == 2 else data.shape[-1]
+    eff_order = order
+    while eff_order >= 1 and n_times <= 3 * (2 * eff_order + 1):
+        eff_order -= 1
+    if eff_order < 1:
+        logger.warning(
+            "Epoch too short (%d samples) for any stable bandpass order; returning unfiltered data",
+            n_times,
+        )
+        return data
+    b, a = butter(eff_order, [f_low / nyq, f_high / nyq], btype="band")
     return filtfilt(b, a, data, axis=1)
 

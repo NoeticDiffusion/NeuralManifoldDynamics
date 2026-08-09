@@ -52,6 +52,10 @@ Datasets and groups:
   - Feature names aligned to `/features_robust_z/values`.
 - `/features_robust_z/metadata/*` – arrays of length `K`  
   - Same per-feature metadata layout as `/features_raw/metadata/*`.
+  - Guarded exports include `robust_z_valid`, `robust_z_invalid_reason`, and
+    `robust_z_finite_count`. With the default `nan` policy, insufficient
+    support or a MAD-degenerate scale yields an all-NaN strict robust-z column.
+    `features_projection_z` and coordinate contracts remain separate.
 - `/coords_3d_subject_anchored/values` – `float32[T, 3]`
   - Subject/session-anchored 3D coordinates for within-subject geometry.
 - `/coords_3d_subject_anchored/names` – `str[3]`
@@ -76,6 +80,10 @@ Datasets and groups:
   - Anchor signal-quality / support matrix aligned to `/time`.
 - `/anchor_quality/names` (optional) – `str[Qq]`
   - Column names for `/anchor_quality/values`.
+  - The backward-compatible `mndm.anchor_quality.v1` contract may have
+    `quality_surface = "v2"` attrs and additive `<anchor>_eligible`,
+    `<anchor>_valid`, and `anchor_valid_fraction` columns. Invalid guarded
+    components/composites are represented as `NaN` in `/anchor_state/values`.
 - `/anchor_coupling/*` (optional)
   - Additive body-brain coupling diagnostics kept separate from canonical `/jacobian/*`.
 - `/z` (optional) – `float32[T, K]`  
@@ -210,6 +218,12 @@ Key sections:
 - **jacobian** – high-level info about the primary Jacobian tensor (window count, presence of centres).
 - **coords_9d** (optional) – present when Stratified MNPS v2 is enabled and successfully computed.
 - **feature_exports** (optional) – present when H5 embeds `/features_raw/*` and `/features_robust_z/*`.
+  Includes `robust_z_guard` with the strict-export policy, minimum support,
+  scale floor, and policy version.
+- **anchor_state_validation** (optional) – per-anchor finite count, IQR,
+  maximum absolute magnitude, max/IQR, invalid count, warnings, thresholds,
+  and the guard-policy version. It is warning-only unless configured as
+  blocking for smoke/CI.
 - **meta_indices_v2** (optional) – same meta-indices as above, but computed from the Stratified Jacobian (`/jacobian_9D/J_hat`).
 - **jacobian_9D** (optional) – high-level info about the Stratified Jacobian tensor.
 - **jacobian_9D_cross_partials** (optional) – present when `mnps_v2.save_cross_partials.enabled=true`:
@@ -226,6 +240,47 @@ Key sections:
 
 ---
 
+## Cross-Modal Interpretation Note (MEG vs EEG)
+
+MEG and EEG share the NMD coordinate contract, but individual subcoordinates may not
+have identical sign semantics across modalities.
+
+In ds003645 (Wakeman-Henson face perception, simultaneous MEEG, 18 subjects):
+
+- **Hjorth mobility** (`d`-family): MEG shows a fixed face < scrambled direction across
+  all 18 subjects. EEG polarity is variable — 14/18 subjects show the opposite sign to
+  MEG, and the inversion is consistent across MAG sensors, GRAD sensors, EEG-from-FIF,
+  and EEG-from-.set. It survives QC filtering.
+
+- **Hjorth complexity** (`d`-family): MEG shows a fixed face > scrambled direction across
+  all 18 subjects. EEG polarity is again variable.
+
+The d-family inversion has been validated as a **modality-specific signal-space
+difference**, not an artifact. The most likely cause is the contrast between
+reference-free MEG field measurement and scalp-referenced EEG potentials, combined
+with volume conduction mixing in EEG.
+
+**Therefore, cross-modal comparison should:**
+
+1. Prioritize **modality-internal validity** (does MEG separate the task within itself?).
+2. Use **family-level diagnostics** (m-, d-, e-family separately) rather than a single
+   aggregate cosine.
+3. Apply **null-controlled convergence** (label-shuffle and wrong-run nulls) rather than
+   raw sign equality.
+4. Not assume that Hjorth mobility/complexity have the same directional semantics in MEG
+   and EEG.
+
+**Current status (ds003645, `meg_shadow_v0_usable`):**
+
+| Claim | Status |
+|-------|--------|
+| MEG engineering readiness | 0.9419 — production-ready |
+| MEG-internal task separation | 15/18 subjects (p < 0.10) |
+| EEG-MEG convergence | 0.4786 — weak; d-family diverges |
+| d-family inversion | Validated modality-specific finding |
+
+---
+
 ## Notes
 
 - Keep keys stable across datasets to simplify downstream analysis.
@@ -233,5 +288,39 @@ Key sections:
   - Discover the presence/absence of Stratified MNPS v2 and Stratified Jacobians.
   - Read basic MNPS configuration and meta-indices without opening the HDF5 file.
   - Access robustness and QC metadata for filtering and weighting subjects in downstream MNPS/MNJ analyses.
+
+---
+
+## Sleep-EAP Phase 2 extension contracts
+
+The RichSleep Phase 2 overlay may add two independent, versioned extension
+groups. Neither is aligned to the MNPS epoch grid or part of the coordinate
+contract.
+
+- `/extensions/phase_continuous_v1`: columnar continuous phase data with
+  `timestamp_sec`, `phi_cardiac`, `phi_resp`, and quality/validity columns.
+  Manifest fields under `phase_continuous` report the source sidecar, contract,
+  sample count, and embedding status.
+- `/extensions/non_event_risk_v1`: columnar risk timestamps with subject,
+  stage, time-of-night quartile, phase values, selection seed, and exclusion
+  margin. Manifest fields under `non_event_risk` record the contract, source
+  sidecar, row count, and embedding status.
+
+`event_phase_v3` is a Parquet sidecar contract rather than a mandatory H5
+group. It augments the catalog-filtered v2 event-phase rows with raw-EEG sigma
+strength, YASA provenance, and SO-spindle relationship columns. Missing SO
+partners are explicitly represented by NaN metrics plus a missing-partner flag.
+
+`event_phase_n3_so_v1` and `event_phase_rem_theta_v1` are separate Parquet
+contracts. The N3-SO table has one N3-gated detector event per row and samples
+SO, cardiac, and respiratory phases at trough and up-state reference points.
+The REM-theta table has one scored REM epoch per row and samples theta and
+autonomic phase at its 30-s midpoint. Both retain NaN for unavailable
+autonomic phase and record explicit validity/QC flags. Neither schema permits
+spindle-strength, sigma, or SO-spindle-pairing columns.
+
+These products make phase and endogenous event-strength variables available for
+downstream qz(t)/bqg and hazard analyses; they do not themselves test or
+validate those models.
 
 

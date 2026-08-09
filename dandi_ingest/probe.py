@@ -31,6 +31,15 @@ def probe_local_asset(record: AssetRecord, *, raw_root: Path) -> ProbeSummary:
 
         with h5py.File(local_path, "r") as handle:
             top_level_groups = tuple(sorted(str(key) for key in handle.keys()))
+            electrical_series = _probe_electrical_series_h5(handle)
+            if electrical_series:
+                metadata["electrical_series"] = electrical_series
+            units_summary = _probe_table_h5(handle, "/units")
+            if units_summary:
+                metadata["units_summary"] = units_summary
+            electrodes_summary = _probe_table_h5(handle, "/general/extracellular_ephys/electrodes")
+            if electrodes_summary:
+                metadata["electrodes_summary"] = electrodes_summary
     except Exception as exc:  # pragma: no cover - probe should degrade gracefully
         metadata["hdf5_probe_error"] = str(exc)
 
@@ -128,3 +137,80 @@ def _infer_modality_hints(
     if "emg" in search_space:
         hints.append("emg")
     return tuple(dict.fromkeys(hints))
+
+
+def _probe_electrical_series_h5(handle) -> list[dict[str, object]]:
+    """Enumerate nested ElectricalSeries-like HDF5 groups without loading data."""
+    results: list[dict[str, object]] = []
+
+    def visit(name, obj) -> None:
+        if not hasattr(obj, "keys") or "data" not in obj:
+            return
+        has_timing = "rate" in obj or "timestamps" in obj or "starting_time" in obj
+        has_electrodes = "electrodes" in obj or "electrical" in name.lower() or "lfp" in name.lower()
+        if not (has_timing and has_electrodes):
+            return
+        data = obj["data"]
+        unit = _h5_scalar_text(obj.get("unit"))
+        conversion = _h5_scalar_number(obj.get("conversion"))
+        starting_time = obj.get("starting_time")
+        rate = _h5_scalar_number(obj.get("rate"))
+        if rate is None and starting_time is not None:
+            rate = _h5_attribute_number(starting_time.attrs, "rate") or _h5_scalar_number(starting_time)
+        results.append(
+            {
+                "path": "/" + name.strip("/"),
+                "shape": [int(value) for value in data.shape],
+                "n_channels": int(data.shape[-1]) if len(data.shape) > 1 else 1,
+                "sampling": "rate" if "rate" in obj else ("timestamps" if "timestamps" in obj else "unknown"),
+                "rate_hz": rate,
+                "unit": unit,
+                "conversion": conversion,
+            }
+        )
+
+    handle.visititems(visit)
+    return sorted(results, key=lambda entry: str(entry["path"]))
+
+
+def _probe_table_h5(handle, path: str) -> dict[str, object]:
+    table = handle.get(path)
+    if table is None or not hasattr(table, "keys"):
+        return {}
+    row_count = None
+    for key in ("id", "spike_times_index"):
+        if key in table:
+            row_count = int(len(table[key]))
+            break
+    return {"columns": sorted(str(key) for key in table.keys()), "row_count": row_count}
+
+
+def _h5_scalar_number(dataset) -> float | None:
+    if dataset is None:
+        return None
+    try:
+        import numpy as np
+
+        value = np.asarray(dataset[()]).reshape(-1)[0]
+        return float(value)
+    except Exception:
+        return None
+
+
+def _h5_scalar_text(dataset) -> str | None:
+    if dataset is None:
+        return None
+
+
+def _h5_attribute_number(attributes, name: str) -> float | None:
+    try:
+        return float(attributes[name])
+    except (KeyError, TypeError, ValueError):
+        return None
+    try:
+        value = dataset[()]
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return str(value)
+    except Exception:
+        return None

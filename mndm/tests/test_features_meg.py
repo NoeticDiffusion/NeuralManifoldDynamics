@@ -92,3 +92,49 @@ def test_compute_meg_features_can_split_families_from_combined_meg_names_only():
     assert "meg_mag_alpha" in out.columns
     assert "meg_grad_alpha" in out.columns
     assert "meg_alpha" in out.columns
+
+
+def test_compute_meg_features_exports_mag_helmet_groups_without_changing_global_surface():
+    """Configured MAG helmet groups should emit suffixed features only."""
+    from mndm.features.meg import compute_meg_features
+
+    sfreq = 100.0
+    times = np.arange(0.0, 12.0, 1.0 / sfreq, dtype=np.float32)
+    names = ["MLF11", "MLF12", "MRF11", "MRF12", "MLO11", "MLO12"]
+    signals = {
+        "signals": {
+            "meg_mag": np.vstack(
+                [
+                    np.sin(2 * np.pi * freq * times)
+                    for freq in (6.0, 8.0, 10.0, 12.0, 14.0, 16.0)
+                ]
+            ),
+        },
+        "channels": {"meg_mag": names},
+        "sfreq": sfreq,
+        "dataset_id": "ds003568",
+    }
+    config = {
+        "epoching": {"length_s": 6.0, "step_s": 3.0},
+        "features": {},
+        "robustness": {
+            "meg_ensembles": {
+                "enabled": True,
+                "sensor_family": "mag",
+                "min_channels": 3,
+                "groups": {
+                    "anterior": names[:3],
+                    "posterior": names[3:],
+                    "too_small": names[:2],
+                },
+            },
+        },
+    }
+
+    out = compute_meg_features(signals, config)
+
+    assert "meg_alpha" in out.columns
+    assert "meg_alpha__g_anterior" in out.columns
+    assert "meg_alpha__g_posterior" in out.columns
+    assert "meg_alpha__g_too_small" not in out.columns
+    assert np.all(np.isfinite(out["meg_alpha__g_anterior"].to_numpy(dtype=float)))

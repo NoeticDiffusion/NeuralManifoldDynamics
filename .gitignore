@@ -137,6 +137,9 @@ celerybeat.pid
 # Environments
 .env
 .envrc
+
+# License files (may contain personal credentials)
+freesurfer.txt
 .venv
 env/
 venv/
@@ -227,3 +230,6 @@ data/dandi/*
 project/articles/*
 .smoke_processed/*
 project/preprocessing/*
+project/
+logs/
+results/

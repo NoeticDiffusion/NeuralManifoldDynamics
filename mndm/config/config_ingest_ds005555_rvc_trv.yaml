@@ -1,0 +1,477 @@
+# config_ingest_ds005555_rvc_trv.yaml
+#
+# ds005555 (BOAS) — Rhythmic Variance Control / TRN-VG proxy analysis
+# =====================================================================
+#
+# Two-cohort study partner: ANPHY (cardiac arm) ↔ BOAS (respiratory arm)
+# See project/ideas/TRV/dual_datasets.md for the combined study design.
+#
+# ── Dual-surface geometry contract ───────────────────────────────────────────
+#
+#   PRIMARY surface  (this config):  EEG-only geometry
+#     → coords_9d primary endpoint; e_m = EEG proxy only
+#     → resp features kept entirely OUTSIDE primary geometry
+#     → used for: spindle-locked geometry, stage curriculum, meta-analysis
+#
+#   SENSITIVITY surface (see config_ingest_ds005555_rvc_trv_anchor_aug.yaml):
+#     → e_m overridden with resp_regular_index
+#     → used only to test whether geometry is sensitive to anchoring
+#
+#   ANCHOR STATE (this config, always separate):
+#     → resp_anchor_index = f(resp_regular_index, resp_depth_index)
+#     → ocular_stability_index = f(eog_eye_stability)
+#     → anchor_index_v02 = nanmean(resp_anchor, ocular)
+#     → used as EAP moderator in Pass C regression:
+#         Δgeometry_primary ~ spindle_event × resp_pre_context
+#
+#   This separation prevents anchor contamination of the primary geometry
+#   endpoint. (See project/ideas/TRV/ANPHY_qc.md for the design rationale.)
+#
+# ── EAP CHANNEL AUDIT (BOAS PSG system, Micromed) ────────────────────────────
+#
+#   Channel       Type   Status   Notes
+#   ──────────────────────────────────────────────────────────────────────────
+#   PSG_F3..O2    EEG    ✅ yes   6-lead 10-20 sleep EEG
+#   PSG_EOG       EOG    ✅ yes   single unipolar channel (blinks only; no saccade)
+#   PSG_EMG       EMG    ✅ yes   chin muscle (arousal marker / sympathetic proxy)
+#   PSG_THOR      RESP   ✅ yes   thoracic belt — primary resp signal
+#   PSG_ABD       RESP   ✅ yes   abdominal belt — secondary / cross-validation
+#   PSG_THER      RESP   ✅ yes   nasal thermistor / airflow proxy
+#   ──────────────────────────────────────────────────────────────────────────
+#   ECG / EKG     ECG    ❌ absent  vagal_index = NaN
+#   Pulse / PPG   bio    ❌ absent  vascular_index = NaN
+#   SpO2          misc   ❌ absent
+#   Pupil         pupil  ❌ n/a     sleep study
+#   ──────────────────────────────────────────────────────────────────────────
+#
+#   Active anchor (v0.2):
+#     resp_anchor_index       ✅ (resp_regular_index, resp_depth_index)
+#     ocular_stability_index  ✅ (eog_eye_stability, -eog_blink_rate)
+#     vagal_index             NaN (no ECG)
+#     vascular_index          NaN (no PPG)
+#     anchor_index_v02        = nanmean(resp, ocular)  ✅
+#
+#   cardioresp module: runs but produces NaN (no ECG).
+#     Null slot preserved: will auto-populate if BOAS adds ECG in future.
+#
+# ── Harmonized analysis contract (matches ANPHY) ─────────────────────────────
+#
+#   Spindle detector  YASA v0.6+  sigma band 12-15 Hz  N2 only
+#   Event bins        pre_far [-30,-10]  pre_near [-10,0]  event [0,3]
+#                     post_near [3,10]   post_far [10,30]  (seconds from peak)
+#   Controls          matched non-spindle N2; 3 per event; quartile-of-night
+#   Geometry          EEG-only coords_9d (e_m = EEG proxy; no body signals)
+#   Anchor            anchor_state v0.2; separate from geometry
+#   Covariates        sigma_power, artifact_quality, time_of_night, stage_depth
+#   Nulls             pseudo-events, time-shifted, label permutation
+#   Reporting         effect sizes + 95 % CI per dataset → meta-analysis
+#
+# ── Analysis passes ──────────────────────────────────────────────────────────
+#
+#   Pass A  Event-locking (spindle vs matched non-spindle N2)
+#           → event_locked section; spindle CSVs from YASA
+#
+#   Pass B  Stage curriculum (Wake / N2 / N3 / REM block geometry)
+#           → block_native section; 30 s sliding windows per stage
+#
+#   Pass C  EAP × RVC moderation (BOAS = respiratory arm)
+#           → anchor_state v0.2 gives resp_pre_context per epoch
+#           → regression: Δgeometry_primary ~ spindle_event × resp_pre_context
+#           → primary predictor: pre-event window (pre_far bin)
+#           → sensitivity: centered HRV window (anchor_augmented config)
+
+version: 1.2
+modality: eeg
+
+# ── Run-gate metadata (science lead check #1) ─────────────────────────────────
+# Written into run_manifest.json → source.dataset_name and manifest.extra.
+# Used to distinguish primary vs sensitivity H5 outputs during meta-analysis.
+# surface_id and coordinate_contract must match across BOAS + ANPHY primary runs.
+#
+# Pre-run gates (confirm before starting full ingest):
+#   [✓] Body signals NOT in coords_9d/e_m  (features.resp → anchor_state only)
+#   [✓] Body signals IN anchor_state.*       (anchor_state.v2.enabled: true)
+#   [✓] Body signals IN event_locked rows    (provenance_in_every_row: true)
+#   [✓] Body signals IN /features_raw H5     (features.resp section enabled)
+#   [?] Primary anchor availability audit   (run before full ingest; see below)
+#   [?] Matched-control coverage audit       (run after spindle CSVs are ready)
+#
+# Surface identity:
+#   surface_id:             primary_eeg_only
+#   coordinate_contract:    rvc_v1_eeg_only_e_m
+#   anchor_contract:        rvc_v1_anchor_v02_resp_ocular
+#
+# Pre-event anchor context (check #3):
+#   resp_pre_context = resp_regular_index averaged over pre_far [-30,-10] bin
+#   NOT centered; causal direction only.
+#   Export both pre_far and centered via two downstream passes:
+#     primary predictor:   anchor in pre_far rows  (provenance_in_every_row tags bin)
+#     sensitivity:         anchor in event rows (centered)
+
+imports:
+  - "./config_ingest_ds005555.yaml"
+
+datasets:
+  - ds005555
+
+exclude-files:
+  - "_acq-headband_"
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds005555"
+  dataset_name: "The Bitbrain Open Access Sleep (BOAS) dataset — RVC/TRV run"
+  dataset_version: "1.1.1"
+  doi: "10.18112/openneuro.ds005555.v1.1.1"
+  url: "https://openneuro.org/datasets/ds005555"
+  # Run-gate #1: Surface identity metadata (machine-readable in run_manifest.json)
+  surface_id: "primary_eeg_only"
+  coordinate_contract: "rvc_v1_eeg_only_e_m"
+  anchor_contract: "rvc_v1_anchor_v02_resp_ocular"
+  dual_surface_pair: "boas_rvc_trv"
+
+paths:
+  received_dir: "E:/Science_Datasets/openneuro/received"
+  received_dir_fallbacks:
+    - "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  dataset_received_dirs:
+    ds005555: "K:/ExternalReceivedDatasets/openneuro/received/ds005555"
+
+# ── Channel typing ────────────────────────────────────────────────────────────
+# Promote PSG respiratory channels misc → resp so the resp extractor finds them.
+# PSG_EOG and PSG_EMG are already typed by the base config or BIDS sidecar.
+preprocess:
+  channel_typing:
+    enabled: true
+    datasets:
+      ds005555:
+        rules:
+          # PSG EEG (6-lead 10-20 sleep montage)
+          - {regex: "^PSG_(F3|F4|C3|C4|O1|O2)$", type: "eeg"}
+          # Single unipolar EOG (blinks; no saccade from single channel)
+          - {regex: "^PSG_EOG$", type: "eog"}
+          # Chin EMG (arousal proxy / sympathetic index)
+          - {regex: "^PSG_EMG$", type: "emg"}
+          # ── Respiratory signals ──────────────────────────────────────────────
+          # Thoracic belt: best quality for rate, regularity, RSA coupling proxy
+          - {regex: "^PSG_THOR$", type: "resp"}
+          # Abdominal belt: secondary channel for cross-validation
+          - {regex: "^PSG_ABD$", type: "resp"}
+          # Nasal thermistor / airflow (waveform shape differs from belt)
+          - {regex: "^PSG_THER$", type: "resp"}
+          # Remaining PSG and headband channels → misc (excluded from analysis)
+          - {prefix: "PSG_", type: "misc"}
+          - {prefix: "HB_",  type: "misc"}
+
+  crop:
+    datasets:
+      ds005555:
+        start_sec: 0
+        stop_sec: null
+
+# ── Epoching: 30 s AASM windows ──────────────────────────────────────────────
+epoching:
+  datasets:
+    ds005555:
+      length_s: 30.0
+      step_s: 30.0
+      sampling:
+        enabled: true
+        method: "stage_stratified_blocks"
+        stage_columns: ["stage_hum", "stage_ai", "stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+        target_minutes:
+          Wake: 20
+          N2:   20
+          N3:   20
+          REM:  20
+        block_minutes: 5
+        seed: 42
+
+# ── Features ──────────────────────────────────────────────────────────────────
+
+features:
+  # Respiration (BOAS: PSG_THOR thoracic belt, PSG_ABD abdominal, PSG_THER thermistor).
+  #
+  # !! ANCHOR-ONLY SIGNAL !!
+  # Resp features feed into anchor_state.resp_anchor_index (EAP moderator),
+  # NOT into the primary geometry coordinates.  The downstream regression:
+  #     Δgeometry_primary ~ spindle_event × resp_pre_context
+  # requires that resp_regular_index does NOT appear in e_m of the primary run.
+  # (See mnps_9d section below and anchor_augmented config for the sensitivity run.)
+  #
+  # Sleep breathing: 12-20 bpm (0.2-0.33 Hz); arousals up to 30 bpm.
+  # 30 s epoch → 3-10 breath cycles: adequate for rate, regularity, depth.
+  #
+  # Output features used as EAP anchor context:
+  #   resp_rate_bpm           instantaneous breathing rate
+  #   resp_regular_index      cycle-to-cycle consistency [0,1]  ← primary anchor
+  #   resp_depth_index        amplitude relative to recording mean [0,1]
+  #   resp_slowing_index      rate deceleration proxy
+  resp:
+    lowpass_hz: 1.0
+    peak_min_distance_s: 1.5
+    peak_min_prominence_frac: 0.10
+    pause_flatness_frac: 0.05
+    min_breaths: 2
+    min_signal_quality: 0.15
+
+  # EOG: single PSG_EOG channel.
+  # No separate HEOG/VEOG pair → saccade detection disabled (high threshold).
+  # Blink rate and eye-stability contribute to ocular_stability_index.
+  #
+  # EOG roles (per dual_datasets.md / ANPHY_qc.md):
+  #   artifact_index    ← high blink rate → epoch-quality flag
+  #   ocular_stability  ← EAP anchor component (v0.2)
+  #   REM/wake marker   ← downstream covariate (stage exclusion)
+  eog:
+    filter_low_hz: 0.5
+    filter_high_hz: 10.0
+    filter_order: 3
+    std_mult: 2.5
+    mad_mult: 3.5
+    prominence_mult: 1.0
+    refractory_s: 0.35
+    blink_halfwidth_s: 0.20
+    saccade_filter_low_hz: 1.0
+    saccade_filter_high_hz: 30.0
+    saccade_std_mult: 5.0         # high = effectively disabled for single-channel
+    saccade_refractory_s: 0.35
+    artifact_sat_frac: 0.95
+
+  # Cardiorespiratory coupling.
+  # ECG absent in BOAS → all cardioresp_* columns = NaN.
+  # Null slot preserved: auto-populates if BOAS adds ECG in a future release.
+  cardioresp:
+    resp_band_lo: 0.10
+    resp_band_hi: 0.50
+    ibi_interp_hz: 4.0
+    coherence_nperseg: 64
+    xcorr_max_lag_s: 10.0
+    min_rpeaks: 5                 # will not be met (no ECG) → qc_ok_cardioresp = False
+
+# ── Anchor State ──────────────────────────────────────────────────────────────
+# Separate from primary geometry. Used ONLY as EAP moderator in Pass C.
+#
+# v0.1: sympathetic_index = NaN (no ECG), vagal_index = NaN, anchor_index = NaN
+# v0.2: resp_anchor_index ✅, ocular_stability_index ✅
+#       anchor_index_v02 = nanmean(resp_anchor, ocular) ← Pass C predictor
+#
+# ── Phase Anchor (Mål B / C) ──────────────────────────────────────────────
+# BOAS has PSG_THOR respiratory belt but NO ECG.
+# → Cardiac columns (phi_cardiac_mean, rr_interval_ms, hr_bpm,
+#     hep_amplitude, pa_cardiac_quality, n_rpeaks_in_epoch) → NaN
+# → Respiratory columns fully populated: phi_resp_mean, resp_rate_bpm,
+#     inhale_fraction, pa_resp_quality
+phase_anchor:
+  enabled: true
+  ecg_bipolar: false              # irrelevant — ECG absent in BOAS
+  frontal_eeg_channels: ["F3", "F4"]    # BIDS channel names after preprocessing
+  hep_window_lo_s: 0.200
+  hep_window_hi_s: 0.600
+  resp_bandpass_lo_hz: 0.10
+  resp_bandpass_hi_hz: 0.50
+  chunk_minutes: 5
+  min_rpeaks_epoch: 5
+  min_rpeaks_hep: 3
+
+# For the primary moderation model use the PRE-EVENT resp context:
+#   resp_pre_context  = resp_regular_index averaged over the pre_far bin window
+# This avoids reverse-causation: we're asking whether a well-anchored respiratory
+# state BEFORE the spindle predicts stronger geometry reconfiguration.
+anchor_state:
+  enabled: true
+  v2:
+    enabled: true
+
+anchor_coupling:
+  enabled: true
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: false
+  min_windows: 3
+  condition_number_max: 1000000.0
+
+# ── MNPS embodied channels ────────────────────────────────────────────────────
+# !! EEG-ONLY in primary run !!
+# Resp features are EXCLUDED from the primary embodied dimension to prevent
+# anchor contamination of the geometry endpoint (see dual-surface contract above).
+# The anchor_augmented config enables resp in embodied for the sensitivity run.
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - eog_blink_rate          # ocular arousal proxy (non-resp EAP dimension)
+
+# ── MNPS 9D: EEG-only primary geometry ───────────────────────────────────────
+# !! CRITICAL DESIGN CHOICE !!
+# e_m must NOT use resp_regular_index in the primary config because
+# resp_anchor_index (derived from resp_regular_index) is the Pass C moderator.
+# Putting resp in e_m would make:
+#   Δgeometry_that_contains_resp ~ spindle_event × resp_anchor
+# partly circular, weakening the moderation claim.
+#
+# EEG-only proxy for e_m:
+#   eeg_hjorth_mobility  — Hjorth mobility tracks signal "bandwidth" change;
+#                          sensitive to state shifts across sleep stages.
+#   eeg_beta_alpha       — beta/alpha ratio captures wake-like intrusions in NREM.
+# This is the same EEG-only proxy used in the harmonized ANPHY config.
+#
+# For the resp-augmented sensitivity surface, see:
+#   config_ingest_ds005555_rvc_trv_anchor_aug.yaml
+mnps_9d:
+  datasets:
+    ds005555:
+      subcoords:
+        # Entropy family — EEG proxies only
+        e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+        # Mobility / denoising-bandwidth — EEG proxy only (no resp, no ECG)
+        e_m: {eeg_hjorth_mobility: 0.6, eeg_beta_alpha: 0.4}
+      block_jacobians:
+        enabled: false   # disabled for primary RVC/TRV run — re-enable for MDE analysis
+        preset: mde_families_v1
+        csv_output: "stratified_block_jacobians_subjects.csv"
+
+# ── Regional MNPS overrides ───────────────────────────────────────────────────
+# Block Jacobians disabled for primary RVC/TRV run (re-enable for MDE analysis).
+regional_mnps:
+  block_jacobians:
+    enabled: false   # disabled — re-enable for MDE family analysis
+
+# ── Event-locked spindle analysis (Pass A) ────────────────────────────────────
+# Harmonized contract with ANPHY (same bins, same controls, same sigma band).
+#
+# Spindle CSVs: YASA v0.6+, sigma 12-15 Hz, N2 restriction.
+# Detector provenance exported per-event (see export.provenance_in_every_row).
+#
+# PRIMARY endpoint:
+#   spindle_event_minus_matched_control:
+#     Δd, Δd_s, Δd_n, Δd_l (EEG-only coords_9d)
+#     Δreachability: tube_d_eff, tube_log_det
+#     ΔMNJ: rotation_norm, frobenius_norm, spectral_radius
+#
+# SECONDARY / moderation endpoint (Pass C downstream):
+#   resp_pre_context (anchor_state in pre_far bin) × event_type interaction
+#   → needs pre-event anchor context window flagged in export rows
+event_locked:
+  datasets:
+    ds005555:
+      enabled: true
+      profile: "rvc_spindle_v1"
+      event_source:
+        kind: "csv"
+      csv_source_glob: "{events_core}_spindles_yasa_v1_*.csv"
+      event_types: ["sleep_spindle"]
+      stage_filter: ["N2"]
+      reference: "peak"
+      bins:
+        pre_far:   [-30.0, -10.0]
+        pre_near:  [-10.0,   0.0]
+        event:     [  0.0,   3.0]
+        post_near: [  3.0,  10.0]
+        post_far:  [ 10.0,  30.0]
+      exclude_stage_transition_margin_sec: 30.0
+      min_overlap_fraction: 0.0
+      controls:
+        stage: "N2"
+        n_controls_per_event: 3
+        exclusion_margin_sec: 30.0
+        time_of_night_quartile_match: true
+        seed: 42
+      export:
+        write_parquet: true
+        write_csv: true
+        include_coords_9d: true
+        provenance_in_every_row: true
+        event_condition_label: "spindle_event"
+        control_condition_label: "matched_control"
+
+# ── Block-native stage windows (Pass B) ───────────────────────────────────────
+# Stage-curriculum: geometry per stage block, overlapping 30 s / 15 s step.
+# Tests whether RVC modulates the landscape differently across stages.
+# Note: BOAS has Wake/N2/N3/REM (no N1 annotations); ANPHY has N1 too.
+block_native:
+  datasets:
+    ds005555:
+      enabled: true
+      source:
+        kind: "stage_blocking"
+        label_column: "stage"
+        stage_columns: ["stage_hum", "stage_ai", "stage"]
+      window_profile:
+        kind: "sliding"
+        window_length_sec: 30.0
+        step_sec: 15.0
+        emit_relative_position: true
+        min_block_sec: 60.0
+      export:
+        write_parquet: true
+        write_csv: true
+
+# ── NDT ingest ────────────────────────────────────────────────────────────────
+ndt_ingest:
+  ingest_version: "1.2"
+  modalities:
+    eeg:
+      enabled: true
+      datasets:
+        ds005555:
+          synchrony:    {enabled: false}
+          complexity:   {enabled: false}
+          dynamic_fc:
+            enabled: true
+            window_length_sec: 4.0
+            step_sec: 1.0
+            max_windows: 64
+            retain_matrices: false
+            summary:
+              variance: true
+          graph_metrics: {enabled: false}
+
+# ── Sigma-power residualization surface (science lead check #5) ──────────────
+# Export sigma band power per epoch so the downstream regression can test:
+#   geometry_delta ~ event_type + sigma_power + detector_features
+# This answers: "do MNPS/reachability/MNJ add beyond the spindle detector's
+# own spectral feature space?"  Required before claiming geometry adds new info.
+# sigma_power is already captured in eeg_gamma and the 30–45 Hz band.
+# No additional config required: eeg_highfreq_power_30_45 (12–15 Hz spindle
+# band proxy from the EEG features) is available from the EEG feature set.
+# Annotate here that this residualization must be run before final reporting.
+
+# ── Robustness ────────────────────────────────────────────────────────────────
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal:             ["F3", "F4"]
+      central:             ["C3", "C4"]
+      parietal_occipital:  ["O1", "O2"]
+  review_qc:
+    baseline_comparisons:
+      enabled: true
+      smoothing_window_epochs: 3
+      max_series_per_family: 6
+    null_sanity_tests:
+      enabled: true
+      seed: 42
+  coverage:
+    datasets:
+      ds005555:
+        min_seconds: 60
+        min_epochs: 20
+
+# ── Metadata extraction ───────────────────────────────────────────────────────
+metadata_extraction:
+  datasets:
+    ds005555:
+      group:
+        default: "Healthy"
+      task:
+        from_filename: true
+        normalize:
+          Sleep: "sleep"

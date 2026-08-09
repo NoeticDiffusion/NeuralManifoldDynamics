@@ -282,6 +282,35 @@ class TestAnchorAndLabelExports:
         assert row["task_state_label"] == "rest"
         assert row["task_load_n"] == pytest.approx(0.0)
 
+    def test_event_locked_rows_preserve_invalid_anchor_as_nan_with_quality_flag(self):
+        """Guarded anchor invalidity must reach event-locked rows unchanged."""
+        from mndm.pipeline.event_locked_export import build_event_locked_table
+
+        payload = _make_payload()
+        payload.anchor_state = {
+            "values": np.full((len(payload.time), 1), np.nan, dtype=np.float32),
+            "names": ["anchor_index"],
+        }
+        payload.anchor_state_dot = {
+            "values": np.full((len(payload.time), 1), np.nan, dtype=np.float32),
+            "names": ["anchor_index"],
+        }
+        payload.anchor_quality = {
+            "values": np.zeros((len(payload.time), 1), dtype=np.float32),
+            "names": ["anchor_index_valid"],
+        }
+
+        rows = build_event_locked_table(
+            payload=payload,
+            alignment=_make_alignment(payload, _make_event_table()),
+            controls=_make_controls(payload, _make_event_table()),
+            event_table=_make_event_table(),
+        )
+        row = rows[0]
+        assert np.isnan(row["anchor_index"])
+        assert np.isnan(row["anchor_index_dot"])
+        assert row["anchor_index_valid_quality"] == pytest.approx(0.0)
+
     def test_control_rows_have_no_event_metadata(self):
         from mndm.pipeline.event_locked_export import build_event_locked_table
 

@@ -34,6 +34,11 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - **Jacobian estimation**: Local linear approximations of MNPS dynamics with meta-indices (trace, rotation, anisotropy)
 - **MNPS extensions**: E-Kappa (energetic curvature), RFM (resonant frequency modes), O-Koh (organizational coherence), TIG (temporal integrity grade)
 - **Robustness**: Ensemble variance, split-half reliability, PSD multiverse stability, entropy sanity checks, and an always-on mathematical invalidity policy for MNPS/MNJ geometry
+- **Preprocessing robustness**:
+  - Automatic bad-channel detection (flat / high-variance / decorrelated) with optional RANSAC interpolation
+  - ICA-based eye-movement and cardiac artifact removal (`preprocess.artifacts.method: "ica"`); supports explicit EOG/ECG channels or frontopolar proxy channels (e.g. Fp1/Fp2) when no dedicated EOG electrodes are present
+  - ECG QRS polarity auto-detection (P99 vs P01 comparison before R-peak detection)
+  - HRV superwindow contamination reporting — per-superwindow stage-overlap fractions flagged automatically when `events.tsv` is present
 - **MNDM 2.1 anchored coordinates**: explicit subject/session-anchored and cohort-anchored coordinate layers, with versioned feature anchors for clinical group comparisons
 - **Resume-friendly**: Interrupted runs can continue from existing artifacts
 - **Optional conventional EEG comparator layer**: YAML-driven Tier 1 qEEG outputs (relative power, slowing ratios, alpha peak, median frequency, spectral edge) beside MNPS
@@ -48,6 +53,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
   - Window start/end (seconds) per MNPS point in HDF5 for clearer time alignment
   - Time Reference v1 for WFDB datasets (clock provenance + anchor-aligned windows under `/extensions/time_reference/*`)
   - Block-native analysis windows inferred directly from temporal blocks (sliding/tail/partitioned window profiles with relative-position metadata; exported to `/blocks/`, `/block_windows/` HDF5 groups and Parquet/CSV sidecars)
+  - **Phase anchor (EAP Mål B/C)**: optional per-epoch extractor (`phase_anchor.enabled: true`) computing cardiac phase (linear RR interpolation), respiratory phase (Hilbert transform), HEP amplitude (200–600 ms post-R), heart rate, respiratory rate, and inhale fraction; results land directly in `features.parquet` alongside EEG features so the `summarize` event-locked pipeline picks them up automatically; supports RichSleep (full), ANPHY (cardiac arm; resp → NaN), and BOAS (respiratory arm; cardiac → NaN)
 
 ---
 
@@ -58,9 +64,13 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - Optional: `openneuro-py` (for dataset downloads)
 - Optional: `dandi`, `pynwb` (for DANDI archive access and NWB inputs)
 - Optional: `yasa` (for detector-derived sleep-spindle annotations in downstream event-locked workflows)
+- Optional: `neurokit2` (for ECG R-peak detection/HRV — `features.ecg.hrv.enabled` — and EDA tonic/phasic decomposition — `features.eda`; also used by `phase_anchor` for R-peak detection; a scipy-only fallback is used when not installed)
 - Optional: `antropy` (for HRV Sample Entropy — `features.ecg.hrv.complexity.enabled`)
 - Optional: `nolds` (for HRV DFA α₁ — `features.ecg.hrv.complexity.enabled`)
+- Optional: `pyprep` (for RANSAC-based bad-channel detection — `preprocess.bad_channels.method: ransac`)
 - Optional but recommended for feature storage: `pyarrow`
+
+> **ICA** uses MNE's built-in ICA implementation (FastICA/Infomax/Picard via scikit-learn) and requires no additional package beyond the core `mne` dependency.
 
 ---
 
@@ -1024,6 +1034,51 @@ This pipeline implements the data preparation layer for:
 - **Meta-Noetic Jacobian (MNJ)**: Second-order dynamics capturing how the rules of change themselves vary
 
 See `docs/articles/` for theoretical foundations.
+
+---
+
+## Multi-Modal Interpretation Note (MEG vs EEG)
+
+MEG and EEG share the NMD coordinate contract and can both export MNPS trajectories,
+Jacobians, and 9D stratified coordinates. However, **individual subcoordinates may not
+have identical sign semantics across modalities**, and cross-modal comparison requires
+specific interpretation guidelines.
+
+### d-family (Hjorth mobility and complexity)
+
+In ds003645 (Wakeman-Henson simultaneous MEEG, 18 subjects), a robust modality-specific
+divergence was observed for Hjorth parameters:
+
+| Measure              | MEG direction (all 18 subjects) | EEG direction (majority)    |
+|----------------------|----------------------------------|------------------------------|
+| Hjorth mobility      | face < scrambled (negative)      | face > scrambled (positive)  |
+| Hjorth complexity    | face > scrambled (positive)      | face < scrambled (negative)  |
+
+This inversion is **validated as modality-specific**, not artifactual:
+- Both MAG and GRAD sensors show the same MEG polarity.
+- EEG-from-FIF and EEG-from-.set agree with each other.
+- The inversion survives QC (artifact-clean window filtering).
+- No run-level noise explains it.
+
+The most likely explanation: MEG measures reference-free magnetic field complexity
+(lower mobility = more structured field dynamics during face processing), while EEG
+is affected by reference montage, volume conduction, and scalp mixing.
+
+**Cross-modal comparison guidelines:**
+1. Prioritise **modality-internal validity** (does MEG separate the task within itself?).
+2. Use **family-level diagnostics** (`m`-, `d`-, `e`-family separately).
+3. Apply **null-controlled convergence** (label-shuffle / wrong-run nulls).
+4. Do not assume Hjorth mobility/complexity have the same directional semantics in MEG and EEG.
+5. Report **two separate readiness scores**: MEG engineering readiness and EEG–MEG convergence.
+
+### ds003645 status
+
+| Claim                       | Score  | Status              |
+|-----------------------------|--------|---------------------|
+| MEG engineering readiness   | 0.9419 | Production-ready    |
+| MEG-internal task separation| 15/18  | Strong              |
+| EEG-MEG convergence         | 0.4786 | Weak (d-family diverges) |
+| Config label                | `ds003645_meg_shadow_v0_usable` | Frozen |
 
 ---
 

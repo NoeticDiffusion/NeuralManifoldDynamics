@@ -170,6 +170,14 @@ def _perform_openneuro_download(
 
     logger.info("Using openneuro-py CLI via: %s", " ".join(cli_prefix))
     try:
+        # The ingest command is normally launched with openneuro_ingest/src on
+        # PYTHONPATH so that this package can import `core`.  If that variable
+        # leaks into uvx, the child executable imports this repository's local
+        # `openneuro` package instead of the isolated openneuro-py package and
+        # fails with `No module named openneuro._cli`.
+        child_env = os.environ.copy()
+        if use_uvx:
+            child_env.pop("PYTHONPATH", None)
         subprocess.run(
             cmd,
             capture_output=True,
@@ -177,6 +185,7 @@ def _perform_openneuro_download(
             encoding="utf-8",
             errors="replace",
             check=True,
+            env=child_env,
         )
     except subprocess.CalledProcessError as proc_err:
         stdout = proc_err.stdout or ""

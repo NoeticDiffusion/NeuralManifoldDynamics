@@ -1,0 +1,52 @@
+version: 2.0
+modality: fmri
+
+# ds007216 -- NMD-fMRI v2.5 "semantic swap" mapping calibration test.
+#
+# See project/scripts/16_ds007216_fmri_v25_remap_eval.py's module docstring
+# for the full rationale. Short version: the production mnps_9d mapping
+# (config_ingest_ds007216_fmri.yaml -> config_ingest_common_fmri.yaml) is
+# already a genuinely stratified 9-feature mapping, contrary to the
+# science-lead-reviewed scaffold template. This config tests ONE cheap,
+# already-computed-columns-only tweak on top of it:
+#   - m_o: fmri_modularity -> fmri_kuramoto_global  (synchrony *level* fits
+#     "coordination/mobility" better than a segregation measure)
+#   - d_n: fmri_variance_global -> fmri_modularity  (segregation is
+#     canonically a dispersion/integration-segregation measure; also drops
+#     fmri_variance_global, which is near-duplicate of e_e's fmri_signal_power)
+#   - d_s: fmri_kuramoto_global -> fmri_kuramoto_global_std  (already computed,
+#     unused anywhere; the genuine dispersion companion of the level stat
+#     that used to sit here)
+#
+# NOT a new candidate dataset -- imports the real ds007216 fMRI config
+# verbatim (same received-data paths, same preprocessing, same features)
+# and only overrides mnps_9d subcoords. Intended to be run with
+# `mndm.cli resummarize` against a *copy* of the already-cached
+# features.parquet (see diary), so no BOLD/feature re-extraction is needed
+# -- this is a projection-only recompute.
+#
+# IMPORTANT (see diary #167 / mndm/src/mndm/tools/projection_replay.py):
+# the final 3D mnps_3d is NOT a group-mean of mnps_9d.subcoords -- it is
+# built from mnps_projection.v1_mapping (a legacy raw-feature-name-keyed
+# 3-axis weighting), coerced onto whichever subcoord happens to contain
+# each named feature. Moving/removing a feature from subcoords without
+# updating v1_mapping to match silently drops every epoch (nan_mask_v1
+# coverage gate). v1_mapping is therefore overridden below to stay
+# consistent with the swapped subcoords, using __replace so the override
+# is a clean replacement rather than a merge with the base weights.
+imports:
+  - "./config_ingest_ds007216_fmri.yaml"
+
+mnps_9d:
+  versions:
+    "2.0":
+      subcoords:
+        m_o: {__replace: true, fmri_kuramoto_global: 1.0}
+        d_n: {__replace: true, fmri_modularity: 1.0}
+        d_s: {__replace: true, fmri_kuramoto_global_std: 1.0}
+
+mnps_projection:
+  v1_mapping:
+    m: {__replace: true, fmri_FC_mean: 0.7, fmri_kuramoto_global: 0.3}
+    d: {__replace: true, fmri_modularity: 1.0}
+    e: {__replace: true, fmri_signal_power: 1.0}

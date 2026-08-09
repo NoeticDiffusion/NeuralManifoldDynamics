@@ -1,0 +1,14 @@
+version: 2.0
+modality: fmri
+
+# Throwaway validation config: points config_ingest_ds007216_fmri_fmriprep_final_test.yaml
+# at the already-complete single-subject smoke-test output (sub-001) instead of the
+# full 8-subject batch destination, purely to validate the indexing/confounds/feature
+# pipeline before the full batch finishes. Not used for any real analysis.
+imports:
+  - "./config_ingest_ds007216_fmri_fmriprep_final_test.yaml"
+
+paths:
+  processed_dir: "J:/processed/openneuro_fmri_fmriprep_smoke_check"
+  dataset_received_dirs:
+    ds007216: "K:/ExternalReceivedDatasets/openneuro/received/ds007216/derivatives/fmriprep_final_test_smoke"

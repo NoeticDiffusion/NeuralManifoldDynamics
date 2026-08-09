@@ -29,3 +29,5 @@ neuroCombat==0.2.12
 antropy==0.1.9
 nolds==0.6.3
 neurokit2>=0.2.13
+pyedflib==0.1.38
+statsmodels>=0.14.1

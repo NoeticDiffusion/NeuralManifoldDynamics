@@ -1,0 +1,8 @@
+version: 2.0
+imports: ["./config_ingest_dandi_000458_lfp_probe_f_full.yaml"]
+paths: {processed_dir: "data/dandi/processed_lfp/000458_probeF_contacts4_native"}
+preprocess:
+  reref: null
+  nwb:
+    channel_selection:
+      artifact_path: "data/dandi/processed_lfp/000458_full/qc_artifacts/sub-551399_ses-20210128_behavior+ecephys_probeF_lfp_channel_selection_contacts4_native.json"

@@ -1,0 +1,83 @@
+# config_ingest_ds005555_rvc_trv_anchor_aug.yaml
+#
+# ds005555 (BOAS) — RVC anchor-augmented SENSITIVITY surface
+# ===========================================================
+#
+# !! SENSITIVITY RUN ONLY — NOT THE PRIMARY RVC ENDPOINT !!
+#
+# This overlay imports the primary RVC config and overrides e_m to include
+# resp_regular_index, producing the "anchor-augmented" coords_9d surface.
+#
+# Purpose:
+#   Test whether the primary RVC geometry result is robust to including
+#   the respiratory anchor signal in the geometry itself.  If the spindle
+#   event effect persists (or strengthens) when resp is inside e_m, that
+#   is consistent but not independent evidence.  If it weakens, it suggests
+#   the primary effect is driven partly by resp → geometry correlation.
+#
+# Run sequence:
+#   1. Primary run:  config_ingest_ds005555_rvc_trv.yaml
+#      → E:/Science_Datasets/openneuro/processed/  (EEG-only geometry)
+#
+#   2. Sensitivity:  this file
+#      → E:/Science_Datasets/openneuro/processed_anchor_aug/  (resp in e_m)
+#
+# Downstream comparison:
+#   Compare coords_9d from run 1 vs run 2 for the same spindle events.
+#   Large divergence → resp is driving geometry; report in sensitivity section.
+#   Small divergence → resp moderation is over and above geometry contribution.
+#
+# Comparison table in article:
+#   | Endpoint            | Primary (EEG-only e_m) | Sensitivity (resp in e_m) |
+#   | spindle main effect | β₁ ± SE                | β₁' ± SE                 |
+#   | × resp moderation   | β₂ ± SE                | β₂' ± SE (reduced)       |
+#
+# See project/ideas/TRV/ANPHY_qc.md for the design rationale.
+# See project/ideas/TRV/dual_datasets.md for the combined study contract.
+
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_rvc_trv.yaml"
+
+datasets:
+  - ds005555
+
+source:
+  dataset_name: "BOAS — RVC/TRV anchor-augmented sensitivity run"
+  surface_id: "anchor_augmented"
+  coordinate_contract: "rvc_v1_anchor_aug_e_m"
+  anchor_contract: "rvc_v1_anchor_v02_resp_ocular"
+  dual_surface_pair: "boas_rvc_trv"
+
+paths:
+  # Write to a separate processed directory to avoid overwriting primary run.
+  processed_dir: "E:/Science_Datasets/openneuro/processed_anchor_aug"
+
+# ── MNPS embodied channels: add resp ─────────────────────────────────────────
+# Override the primary config's EEG-only embodied channels to include resp.
+# This makes the embodied dimension of coords_9d partially carry resp signal.
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - resp_regular_index    # respiratory regularity (EAP signal, in geometry here)
+      - resp_depth_index      # breathing amplitude
+      - eog_blink_rate        # ocular arousal proxy
+
+# ── MNPS 9D: resp-augmented e_m ──────────────────────────────────────────────
+# Override e_m to use resp_regular_index (the EAP anchor for BOAS).
+# This produces the sensitivity / anchor-augmented coords_9d surface.
+mnps_9d:
+  datasets:
+    ds005555:
+      subcoords:
+        e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+        # Resp-augmented e_m: sensitivity surface only.
+        # __replace: true prevents deep-merge from inheriting primary e_m keys.
+        e_m: {__replace: true, resp_regular_index: 0.7, eeg_beta_alpha: 0.3}
+      block_jacobians:
+        enabled: true
+        preset: mde_families_v1
+        csv_output: "stratified_block_jacobians_subjects_anchor_aug.csv"

@@ -20,6 +20,7 @@ from .eeg import (
     _run_multitaper_psd_safely,
     psd_array_multitaper,
 )
+from .. import ensembles
 
 logger = logging.getLogger(__name__)
 
@@ -465,6 +466,72 @@ def _combine_sensor_family_features(frame: pd.DataFrame, families: Sequence[str]
     return combined
 
 
+def _compute_meg_group_features(
+    signals: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    sfreq: float,
+    meta: Sequence[tuple[int, int, int]],
+    dataset_id: Optional[str],
+) -> pd.DataFrame:
+    """Compute config-defined helmet-group features from one MEG family.
+
+    These are sensor-topographic aggregates, not source-localized cortical
+    regions.  Groups intentionally use their own ``meg_ensembles`` config so
+    that EEG 10-20 groups under ``robustness.ensembles`` cannot accidentally
+    be applied to MEG channel names.
+    """
+    robustness_cfg = config.get("robustness", {}) if isinstance(config, Mapping) else {}
+    groups_cfg = robustness_cfg.get("meg_ensembles", {}) if isinstance(robustness_cfg, Mapping) else {}
+    if not isinstance(groups_cfg, Mapping) or not bool(groups_cfg.get("enabled", False)):
+        return pd.DataFrame()
+
+    family_name = str(groups_cfg.get("sensor_family", "mag")).strip().lower()
+    if family_name not in {"mag", "grad", "meg"}:
+        logger.warning("Unsupported MEG ensemble sensor_family=%r; expected mag, grad, or meg", family_name)
+        return pd.DataFrame()
+
+    signal_map = signals.get("signals", {}) if isinstance(signals, Mapping) else {}
+    channels_map = signals.get("channels", {}) if isinstance(signals, Mapping) else {}
+    data_key = "meg" if family_name == "meg" else f"meg_{family_name}"
+    group_data = signal_map.get(data_key)
+    group_channels = channels_map.get(data_key, [])
+    if not isinstance(group_data, np.ndarray) or group_data.ndim != 2 or not group_data.size:
+        logger.warning("MEG ensembles requested %s but no matching sensor data were available", data_key)
+        return pd.DataFrame()
+    if not isinstance(group_channels, Sequence) or isinstance(group_channels, (str, bytes)):
+        return pd.DataFrame()
+
+    min_channels = max(1, int(groups_cfg.get("min_channels", 3) or 3))
+    group_defs = ensembles.realize_ensemble_groups(groups_cfg, dataset_id, [str(name) for name in group_channels])
+    if not group_defs:
+        return pd.DataFrame()
+
+    features_cfg = config.get("features", {}) if isinstance(config, Mapping) else {}
+    group_frames: list[pd.DataFrame] = []
+    for group in group_defs:
+        if len(group.indices) < min_channels:
+            logger.warning(
+                "Skipping MEG helmet group %s: %d channels resolved, minimum is %d",
+                group.safe_name,
+                len(group.indices),
+                min_channels,
+            )
+            continue
+        group_frame = _compute_sensor_family_features(
+            group_data[np.asarray(group.indices, dtype=int), :],
+            sfreq,
+            meta,
+            features_cfg=features_cfg if isinstance(features_cfg, Mapping) else {},
+            prefix="meg",
+        )
+        if group_frame.empty:
+            continue
+        group_frame = group_frame.rename(columns={col: f"{col}__g_{group.safe_name}" for col in group_frame.columns})
+        group_frames.append(group_frame)
+    return pd.concat(group_frames, axis=1) if group_frames else pd.DataFrame()
+
+
 def compute_meg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) -> pd.DataFrame:
     """Compute minimal MEG shadow features with MAG/GRAD diagnostics."""
     family_arrays = _resolve_meg_family_arrays(signals)
@@ -514,4 +581,13 @@ def compute_meg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     combined_df = _combine_sensor_family_features(out, used_families)
     if not combined_df.empty:
         out = pd.concat([out, combined_df], axis=1)
+    group_df = _compute_meg_group_features(
+        signals,
+        config,
+        sfreq=sfreq,
+        meta=meta,
+        dataset_id=str(dataset_id) if dataset_id is not None else None,
+    )
+    if not group_df.empty:
+        out = pd.concat([out, group_df], axis=1)
     return out

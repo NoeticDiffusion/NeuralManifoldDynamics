@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from typing import Any
 from urllib.parse import quote
-from urllib.request import urlopen
+from urllib.request import Request, urlopen
 
 from dandi_ingest.contracts import AssetRecord
 
@@ -131,14 +131,37 @@ class DandiClient:
         if not record.download_url:
             raise RuntimeError(f"No direct download URL is available for {record.path}.")
         tmp_path = local_path.with_suffix(local_path.suffix + ".part")
-        if tmp_path.exists():
-            tmp_path.unlink()
-        with urlopen(record.download_url) as response, tmp_path.open("wb") as handle:
-            while True:
-                chunk = response.read(8 * 1024 * 1024)
-                if not chunk:
-                    break
-                handle.write(chunk)
+        existing = tmp_path.stat().st_size if tmp_path.exists() else 0
+        expected_size = int(record.size) if record.size is not None else None
+        block_size = 256 * 1024 * 1024
+        while expected_size is None or existing < expected_size:
+            request = Request(record.download_url)
+            if expected_size is None:
+                request.add_header("Range", f"bytes={existing}-")
+            else:
+                end = min(existing + block_size - 1, expected_size - 1)
+                request.add_header("Range", f"bytes={existing}-{end}")
+            with urlopen(request, timeout=120) as response:
+                status = int(getattr(response, "status", 200) or 200)
+                resumed = existing > 0 and status == 206
+                mode = "ab" if resumed else "wb"
+                written = 0
+                with tmp_path.open(mode) as handle:
+                    while True:
+                        chunk = response.read(8 * 1024 * 1024)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+                        written += len(chunk)
+            if written <= 0:
+                raise RuntimeError(f"Download returned no content for {record.path}.")
+            existing = tmp_path.stat().st_size
+            if status != 206 or expected_size is None:
+                break
+        if expected_size is not None and existing < expected_size:
+            raise RuntimeError(
+                f"Incomplete download for {record.path}: {existing} of {expected_size} bytes."
+            )
         tmp_path.replace(local_path)
 
 

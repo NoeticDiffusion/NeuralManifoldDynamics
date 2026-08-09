@@ -63,6 +63,11 @@ python -m mndm.cli prerequisite-check --dataset ds003490
 # Compute per-epoch features
 python -m mndm.cli features --dataset ds003490
 
+# Force re-extraction — discard cached intermediate JSONs.
+# Required after changing preprocessing settings (e.g. enabling ICA,
+# bad-channel detection, or notch/bandpass parameters).
+python -m mndm.cli features --dataset ds003490 --force-features
+
 # Summarize (MNPS + Jacobians)
 python -m mndm.cli summarize --dataset ds003490
 
@@ -72,11 +77,35 @@ python -m mndm.cli summarize --dataset ds003944 --fit-anchor
 # Run features -> summarize in one command
 python -m mndm.cli all --dataset ds003490
 
+# Non-BIDS BioSemi BDF collection: validate mapping/channel policy first.
+# Start from mndm/config/bdf_config_ingest_template.yaml.
+python -m mndm.cli prerequisite-check --dataset my_bdf_dataset `
+  --config mndm/config/config_ingest_my_bdf_dataset.yaml
+
+# Run a mapped subject smoke test, then summarize it.
+python -m mndm.cli features --dataset my_bdf_dataset `
+  --config mndm/config/config_ingest_my_bdf_dataset.yaml `
+  --subject 01 --n-jobs 1 --force-features
+python -m mndm.cli summarize --dataset my_bdf_dataset `
+  --config mndm/config/config_ingest_my_bdf_dataset.yaml `
+  --subject 01 --h5-mode subject --n-jobs 1
+
+# Run the complete BDF archive after the smoke test is accepted.
+python -m mndm.cli all --dataset my_bdf_dataset `
+  --config mndm/config/config_ingest_my_bdf_dataset.yaml `
+  --n-jobs 2 --mem-budget-gb 8 --force-features
+
 # Run features -> one-shot cohort-anchored summarize
 python -m mndm.cli all --dataset ds003944 --fit-anchor
 
 # Re-run summarize only
 python -m mndm.cli resummarize --dataset ds003490
+
+# Verify MEG physical-unit transform replay against one exported H5.
+python -m mndm.cli meg-transform-replay --h5 path/to/sub-001.h5 --dataset ds003645 --config mndm/config/config_ingest_ds003645.yaml
+
+# Optional report-only frozen-sector QC (requires sensor_topography_qc.enabled).
+python -m mndm.cli sensor-topography-qc --h5 path/to/sub-001.h5 --dataset ds003645 --config mndm/config/config_ingest_ds003645.yaml --out reports/sub-001_sensor_topography_qc.json
 
 # Pack a run into a single H5
 python -m mndm.cli pack --dataset ds003490
@@ -236,6 +265,14 @@ analysis can select the intended primary coordinate layer without guessing.
 | Parquet warnings | Ensure `pyarrow` is installed in `.venv` |
 | Missing features | Check `failed_files.txt` for errors |
 | First run fails early | Run `python -m mndm.cli prerequisite-check --dataset <ds>` |
+| Changed preprocessing config, results unchanged | Re-run `features --force-features` to discard cached intermediate JSONs |
+| ICA did not run | Confirm `preprocess.artifacts.method: "ica"` (not `preprocess.ica`); look for `Applied ICA` in logs |
+| No components excluded by ICA | Check `eog_proxy_channels` name spelling; lower `ica_eog_threshold` / `ica_ecg_threshold` |
+| MNE warning: n_components too high | Reduce `ica_n_components` or use a variance fraction such as `0.995` |
+| Bad-channel count unexpectedly high | Tighten `var_high_factor` / `corr_thresh` under `robustness.bad_channels` |
+| phi_cardiac_mean / phi_resp_mean missing | Phase anchor disabled by default. Add phase_anchor.enabled: true to YAML and re-run features. |
+| Phase anchor R-peak detection very slow | Normal for whole-night ECG. Processed in 5-min chunks; install neurokit2. |
+| hep_amplitude all NaN but cardiac phase populated | frontal_eeg_channels mismatch -- verify channel names against EDF/BIDS header. |
 
 ---
 

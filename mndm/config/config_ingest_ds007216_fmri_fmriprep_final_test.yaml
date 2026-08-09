@@ -1,0 +1,55 @@
+version: 2.0
+modality: fmri
+
+# ds007216 -- `fmriprep_final_test` (diary #184, authorized 2026-07-08,
+# closed immediately on the Docker infrastructure constraint that session;
+# re-opened 2026-07-31 once Docker Desktop + a FreeSurfer license became
+# available). This is REAL fMRIPrep (25.2.5), run via
+# project/scripts/31_ds007216_fmriprep_build_smoke_bids.py (single-subject
+# smoke test) and project/scripts/32_ds007216_fmriprep_build_full_bids.py
+# (full 8-subject frozen-cohort batch) against a patched BIDS copy with
+# fieldmap `IntendedFor` populated (the raw ds007216 sidecars ship without
+# it -- diary #184's blocking metadata gap).
+#
+# fMRIPrep flags used: --fs-no-reconall (volumetric-only; no surface
+# analysis needed downstream), --output-spaces MNI152NLin6Asym:res-2
+# (matches the Schaefer2018 FSL-MNI-2mm atlas grid already used by every
+# other ds007216 fMRI condition). Only ExperienceSampling BOLD runs were
+# copied into the patched input (GradCPT excluded -- unused downstream).
+#
+# Unlike ants_lite_prep_v1 (config_ingest_ds007216_fmri_ants_lite.yaml),
+# fMRIPrep's default confounds filename
+# ("<stem>_desc-confounds_timeseries.tsv") already matches
+# mndm.pipeline.summary._resolve_confounds_path_for_bold's hardcoded
+# lookup -- no confounds-naming bridge script is needed for this condition.
+#
+# Imports the production ds007216 fMRI config unchanged (atlas, epoching,
+# mnps_projection.v1_mapping / mnps_9d / mnps_3d definitions, feature
+# metrics toggles) and overrides only paths/indexing/participants lookup.
+imports:
+  - "./config_ingest_ds007216_fmri.yaml"
+
+paths:
+  processed_dir: "J:/processed/openneuro_fmri_fmriprep_final_test"
+  dataset_received_dirs:
+    ds007216: "K:/ExternalReceivedDatasets/openneuro/received/ds007216/derivatives/fmriprep_final_test"
+
+indexing:
+  fmri:
+    bold_patterns:
+      - "*space-MNI152NLin6Asym_res-2_desc-preproc_bold.nii.gz"
+    datasets:
+      ds007216:
+        bold_patterns:
+          - "*space-MNI152NLin6Asym_res-2_desc-preproc_bold.nii.gz"
+
+metadata_extraction:
+  datasets:
+    ds007216:
+      participants:
+        # fmriprep_final_test sits at the same depth under derivatives/ as
+        # ants_lite_prep_v1/lightweight_norm_v1 -- same "two directories up"
+        # override as config_ingest_ds007216_fmri_ants_lite.yaml.
+        path: "../../participants.tsv"
+      task:
+        from_filename: true

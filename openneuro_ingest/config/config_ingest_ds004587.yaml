@@ -1,0 +1,25 @@
+# Download-only config for ds004587 (IllusionGameEEG_data).
+#
+# ds004587 — 64-channel EEG + ECG + PPG + respiration (BrainVision) from
+# 103 healthy participants during visual-illusion perception (task IG) and
+# an 8-minute eyes-closed resting-state recording. CC0. ~219 GB / 1605 files.
+# Downloaded in full (all subjects, all files) so the mndm embodied-anchoring
+# ingest pipeline has the raw EEG plus the physiological channels it needs.
+#
+# Targets the K: received/processed trees (same parent as ds003969 / ds007216 /
+# ds003568).
+#
+# NOTE: This config intentionally only covers the download stage. The
+# ingest/feature/summarize stages are handled by a separate mndm ingest config
+# and are out of scope for this file.
+datasets:
+  - ds004587
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed"
+download:
+  retries: 3
+  use_uvx: true
+  datasets:
+    ds004587:
+      # Intentionally empty: pull everything.

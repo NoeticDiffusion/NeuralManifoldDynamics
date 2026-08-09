@@ -1,0 +1,33 @@
+# Download-only config for ds007216
+# (A multi-session simultaneous EEG-fMRI dataset with online experience sampling).
+#
+# Simultaneous EEG-fMRI, 24 healthy adults, 2 sessions each (~1h20m per subject),
+# 4 fMRI runs/session (1 GradCPT + 3 rs-ES). Components: simultaneous EEG-fMRI
+# (BrainVision, 31 cortical + 4 CWL + 1 ECG channel), 3T Siemens Prisma
+# MPRAGE/BOLD/fieldmap MRI, behavioral responses, experience-sampling ratings,
+# mental-health surveys. BIDS.
+#
+# This is a large multimodal dataset (EEG + fMRI + derivatives). All files are
+# needed: the EEG-fMRI alignment study requires both modalities plus the CWL
+# artifact-correction channels, ECG, TR markers, and experience-sampling tables.
+#
+# Targets the K: received/processed trees (same parent as ds003969).
+#
+# No include_patterns / exclude_patterns: download the FULL dataset (all
+# subjects, all files, derivatives included downstream of the fallback scripts
+# via --include-derivatives).
+#
+# NOTE: This config intentionally only covers the download stage. The
+# ingest/feature/summarize stages (EEG-fMRI alignment, ECG/CWL typing) are out
+# of scope for this file and will be configured separately.
+datasets:
+  - ds007216
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed"
+download:
+  retries: 3
+  use_uvx: true
+  datasets:
+    ds007216:
+      # Intentionally empty: pull everything.

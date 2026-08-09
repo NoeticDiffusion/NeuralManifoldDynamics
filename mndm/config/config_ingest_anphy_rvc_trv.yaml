@@ -1,0 +1,542 @@
+# config_ingest_anphy_rvc_trv.yaml
+#
+# ANPHY (27 healthy subjects, local HD-EEG sleep)
+# — Rhythmic Variance Control / TRN-VG proxy analysis
+# =====================================================================
+#
+# Purpose:  NDT Tier-1 RVC analysis + EAP × RVC moderation pass.
+#           Parallel dataset to ds005555 (BOAS) — complementary EAP coverage.
+#           See project/ideas/TRV/ and project/diary/153_* for the full plan.
+#
+# Two-cohort study partner: BOAS (respiratory arm) ↔ ANPHY (cardiac arm)
+# See project/ideas/TRV/dual_datasets.md for the combined study design.
+#
+# ── Dual-surface geometry contract ───────────────────────────────────────────
+#
+#   PRIMARY surface  (this config):  EEG-only geometry
+#     → coords_9d primary endpoint; e_m = EEG proxy only (no HRV)
+#     → ecg_hrv_rmssd_ms kept entirely OUTSIDE primary geometry
+#     → used for: spindle-locked geometry, stage curriculum, meta-analysis
+#
+#   SENSITIVITY surface (see config_ingest_anphy_rvc_trv_anchor_aug.yaml):
+#     → e_m overridden with ecg_hrv_rmssd_ms
+#     → used only to test whether geometry is sensitive to vagal anchoring
+#
+#   ANCHOR STATE (this config, always separate):
+#     → vagal_index = f(ecg_hrv_rmssd_ms)
+#     → ocular_stability_index = f(eog stability)
+#     → sympathetic_index = f(emg_rms)
+#     → used as EAP moderator in Pass C:
+#         Δgeometry_primary ~ spindle_event × vagal_pre_context
+#
+#   This separation prevents anchor contamination of the primary geometry
+#   endpoint. (See project/ideas/TRV/ANPHY_qc.md for the design rationale.)
+#
+# Inherits the base ANPHY config and extends it with:
+#   • Explicit channel typing for all non-EEG PSG channels
+#   • Full HRV superwindow (the legacy run used simple sdnn/rmssd only)
+#   • EOG saccade features (two EOG channels: HEOG + VEOG)
+#   • AnchorState v0.2 with vagal + ocular components (separate from geometry)
+#   • Event-locked spindle analysis (N2, harmonized bins with BOAS)
+#   • Block-native stage windows for stage-level RVC curriculum
+#   • MNPS 9D e_m = EEG-only proxy (HRV in anchor_aug sensitivity config only)
+#
+# ── EAP CHANNEL AUDIT (ANPHY, n=27, 1000 Hz HD-EEG, Biosemi ActiveTwo) ───────
+#
+#   Channel(s)         Type     Status   Notes
+#   ──────────────────────────────────────────────────────────────────────────
+#   ~73 EEG leads      EEG      ✅ yes   Extended 10-10 HD montage
+#   ECG1, ECG2         ECG      ✅ yes   Bipolar ECG (chest electrodes)
+#                                        vagal_index = f(ecg_hrv_rmssd_ms) ✅
+#   EOG1, EOG2         EOG      ✅ yes   HEOG + VEOG (or lateral + sub-orbital)
+#                                        blink_rate ✅  saccade proxy ✅
+#   SO1, SO2           EOG      ✅ yes   Supra-orbital EOG (above eye)
+#                                        typed eog; improves blink detection
+#   ChEMG1, ChEMG2     EMG      ✅ yes   Chin EMG → sympathetic_index ✅
+#   LLEG+, LLEG-       EMG      ✅ yes   Left leg EMG (periodic limb movements)
+#   RLEG+, RLEG-       EMG      ✅ yes   Right leg EMG
+#   ZY1, ZY2           EMG      ✅ yes   Zygomatic facial EMG (arousal marker)
+#   ──────────────────────────────────────────────────────────────────────────
+#   Respiration        RESP     ❌ absent  No thoracic/abdominal belt or airflow
+#                                         resp_anchor_index = NaN
+#   PPG / Pulse        bio      ❌ absent  No plethysmograph channel
+#                                         vascular_index = NaN
+#   SpO2               misc     ❌ absent
+#   Pupil              pupil    ❌ n/a     Sleep study
+#   ──────────────────────────────────────────────────────────────────────────
+#
+#   Active anchor components (v0.1):
+#     sympathetic_index   ← emg_rms (ChEMG)                        ✅
+#     vagal_index         ← ecg_hrv_rmssd_ms (ECG bipolar)         ✅  ← NEW
+#     vascular_index      ← NaN (no PPG)
+#     pupil_index         ← NaN (sleep study)
+#     anchor_index_v01    = nanmean(sympathetic, vagal)             ✅
+#
+#   Active anchor components (v0.2):
+#     resp_anchor_index        ← NaN (no respiratory channel)
+#     ocular_stability_index   ← eog_eye_stability, -blink_rate    ✅
+#     cardioresp_anchor_index  ← NaN (no RESP channel for RSA)
+#     anchor_index_v02         = nanmean(vagal, sympathetic, ocular) ✅
+#
+#   cardioresp module:  ECG present but NO RESP → coherence/RSA = NaN.
+#                       Documented as null slot (will auto-populate if RESP added).
+#
+# ── COMPLEMENTARITY WITH BOAS (ds005555) ─────────────────────────────────────
+#
+#   BOAS:   RESP ✅, ECG ❌ → resp_anchor_index ✅,  vagal_index ❌
+#   ANPHY:  ECG  ✅, RESP ❌ → vagal_index ✅,  resp_anchor_index ❌
+#
+#   Together: the two datasets provide non-overlapping EAP coverage across
+#   the respiratory and cardiac arms of the anchoring signal.
+#   This is useful for a meta-analysis or cross-dataset RVC moderation:
+#     BOAS:  RVC geometry ~ spindle × resp_anchor
+#     ANPHY: RVC geometry ~ spindle × vagal_anchor
+#   If both effects replicate in their respective datasets, the EAP × RVC
+#   moderation hypothesis receives convergent support from independent signals.
+#
+# ── Analysis plan reference ──────────────────────────────────────────────────
+#
+#   Pass A  Event-locking (spindle vs matched non-spindle N2)
+#           → event_locked section; spindle CSVs from YASA or DETOKS detector
+#
+#   Pass B  Block-level stage curriculum (Wake / N1 / N2 / N3 / REM geometry)
+#           → block_native section; 20 s sliding windows per stage
+#
+#   Pass C  EAP × RVC moderation
+#           → anchor_index = nanmean(vagal_index, ocular_stability_index)
+#           → Δgeometry ~ spindle_event × vagal_index (vagal arm of EAP)
+#           → e_m in MNPS 9D uses ecg_hrv_rmssd_ms (now available)
+#
+# ── Legacy run note ──────────────────────────────────────────────────────────
+#
+#   The first ANPHY run (2026-03-09) used the legacy ECG extractor (simple
+#   sdnn/rmssd) without the HRV superwindow module.  The processed H5 files
+#   at E:/Science_Datasets/ANPHY/processed/ contain ecg_sdnn and ecg_rmssd
+#   (both non-NaN, computed at epoch level without superwindows).
+#
+#   This config enables features.ecg.hrv.enabled: true, which replaces the
+#   epoch-level metrics with the superwindow-based:
+#     ecg_hrv_rmssd_ms    (target: ~40-80 ms for healthy sleep)
+#     ecg_hrv_sdnn_ms
+#     ecg_hrv_hr_mean_bpm
+#     ecg_hrv_pnn50
+#   and adds HRV nonlinear complexity (sampen, dfa_alpha1).
+#   A fresh ANPHY run is needed to populate these columns.
+#   Raw EDFs are at: M:\datasets\received\ANPHY\Subjects\
+#   Config path (raw):     M:\datasets\received\ANPHY\Subjects
+#   Config path (processed): E:\Science_Datasets\ANPHY\processed
+
+version: 2.0
+modality: eeg
+
+# ── Run-gate metadata (science lead check #1) ─────────────────────────────────
+# Surface identity (must match across ANPHY + BOAS primary runs):
+#   surface_id:             primary_eeg_only
+#   coordinate_contract:    rvc_v1_eeg_only_e_m
+#   anchor_contract:        rvc_v1_anchor_v02_vagal_ocular_sympathetic
+#
+# Pre-run gates:
+#   [✓] ecg_hrv_rmssd_ms NOT in coords_9d/e_m  (EEG-only e_m)
+#   [✓] ecg_hrv_rmssd_ms IN anchor_state.*       (anchor_state.v2.enabled: true)
+#   [✓] ecg_hrv_rmssd_ms IN event_locked rows    (provenance_in_every_row: true)
+#   [✓] ecg_hrv_rmssd_ms IN /features_raw H5     (features.ecg.hrv.enabled: true)
+#   [?] Primary anchor availability audit   (run before full ingest; see below)
+#   [?] Matched-control coverage audit       (run after spindle CSVs are ready)
+#
+# Pre-event anchor context (check #3):
+#   vagal_pre_context = ecg_hrv_rmssd_ms averaged over pre_far [-30,-10] bin
+#   Primary predictor: causal direction (pre-event only).
+#   Sensitivity: centered HRV window (anchor_aug config).
+#
+# ── Anchor availability audit (science lead check #2) ────────────────────────
+# Before full ingest, confirm per-dataset:
+#   subject_n                     ANPHY: 27
+#   valid_primary_geometry_n      # epochs with qc_ok_eeg = True
+#   valid_anchor_context_n        # epochs with qc_ok_ecg = True AND ecg_hrv_rmssd_ms not NaN
+#   valid_geometry_and_anchor_n   # epochs valid for both
+# Run this Python snippet after features:
+#   df = pd.read_csv('E:/Science_Datasets/ANPHY/processed/ANPHY/features.csv')
+#   geom_ok = df.query('qc_ok_eeg == True')
+#   anchor_ok = df.dropna(subset=['ecg_hrv_rmssd_ms'])
+#   both_ok = geom_ok[geom_ok.index.isin(anchor_ok.index)]
+#   print(len(geom_ok), len(anchor_ok), len(both_ok))
+
+imports:
+  - "./config_ingest_anphy.yaml"
+
+datasets:
+  - ANPHY
+
+source:
+  name: "ANPHY"
+  platform: "Local BIDS"
+  format: "BIDS"
+  dataset_id: "ANPHY"
+  dataset_name: "ANPHY sleep dataset — RVC/TRV run"
+  url: null
+  # Run-gate #1: Surface identity metadata (machine-readable in run_manifest.json)
+  surface_id: "primary_eeg_only"
+  coordinate_contract: "rvc_v1_eeg_only_e_m"
+  anchor_contract: "rvc_v1_anchor_v02_vagal_ocular_sympathetic"
+  dual_surface_pair: "anphy_rvc_trv"
+
+paths:
+  processed_dir: "E:/Science_Datasets/ANPHY/processed"
+  dataset_received_dirs:
+    ANPHY: "M:/datasets/received/ANPHY/Subjects"
+
+# ── Channel typing ────────────────────────────────────────────────────────────
+# ANPHY EDF files are recorded with Biosemi ActiveTwo.  MNE reads them with
+# all channels typed `eeg` (EDF+ does not store channel types).  We need
+# explicit rules to pull ECG, EOG, and EMG channels out of the `eeg` pool.
+#
+# Channel naming (from direct EDF inspection, EPCTL01 - fixed.edf):
+#   ECG1, ECG2     — bipolar chest ECG (standard PSG placement)
+#   EOG1, EOG2     — horizontal / vertical EOG (lateral canthi or under-eye)
+#   SO1, SO2       — supra-orbital (above the eye; blink-sensitive)
+#   ChEMG1/2       — chin EMG (standard AASM arousal detection)
+#   LLEG+/-, RLEG+ — left/right leg EMG (PLM detection)
+#   RLEG-          — right leg EMG (differential pair)
+#   ZY1, ZY2       — zygomatic EMG (facial arousal / REM movement proxy)
+#
+# Notes:
+#   • SO1/SO2 are typed eog (not eeg): they capture eye movements from above
+#     and improve blink amplitude estimates in the PSG context.
+#   • ZY1/ZY2 are typed emg: zygomatic movements are facial arousal proxies.
+#   • LLEG / RLEG pairs are typed emg: used for periodic limb movement (PLM).
+#     PLM events during N2 confound spindle detection; the EMG channel allows
+#     downstream QC flagging of PLM-contaminated spindle windows.
+preprocess:
+  channel_typing:
+    enabled: true
+    datasets:
+      ANPHY:
+        rules:
+          # ── ECG ─────────────────────────────────────────────────────────────
+          # Bipolar leads; either channel alone captures QRS.
+          # The ECG extractor will use the first matched channel by default.
+          - {regex: "^ECG[12]$", type: "ecg"}
+          # ── EOG (horizontal / vertical) ─────────────────────────────────────
+          # EOG1 = horizontal (lateral canthus); EOG2 = vertical (sub-orbital).
+          # With two channels, saccade proxy (HEOG) and blink detection (VEOG)
+          # are both meaningful.
+          - {regex: "^EOG[12]$", type: "eog"}
+          # ── Supra-orbital EOG ───────────────────────────────────────────────
+          # SO1/SO2 lie directly above the eyes; they pick up blink potentials
+          # from above.  Type as eog so the blink detector can pool them with
+          # EOG1/EOG2 or use them as independent blink channels.
+          - {regex: "^SO[12]$", type: "eog"}
+          # ── Chin EMG ────────────────────────────────────────────────────────
+          # AASM-standard submental EMG; used for REM/NREM staging and arousal.
+          - {regex: "^ChEMG[12]$", type: "emg"}
+          # ── Leg EMG (PLM monitoring) ─────────────────────────────────────────
+          # Left and right tibialis anterior or similar PLM electrodes.
+          - {regex: "^LLEG[+-]$", type: "emg"}
+          - {regex: "^RLEG[+-]$", type: "emg"}
+          # ── Zygomatic EMG ────────────────────────────────────────────────────
+          # ZY = zygomatic (cheek muscle); active during facial movements,
+          # arousal, and emotional responses.
+          - {regex: "^ZY[12]$", type: "emg"}
+
+# ── Epoching: 20 s windows matching base ANPHY config ───────────────────────
+# Inherit the 20s / 10s profile from the base config.  The spindle overlay
+# will provide the 6s / 2s profile for event-locked windows.
+epoching:
+  datasets:
+    ANPHY:
+      length_s: 20.0
+      step_s: 10.0
+      sampling:
+        enabled: true
+        method: "stage_stratified_blocks"
+        stage_columns: ["stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+        target_minutes:
+          Wake: 30
+          N1:   15
+          N2:   30
+          N3:   30
+          REM:  30
+        block_minutes: 5
+        seed: 42
+
+# ── Features ──────────────────────────────────────────────────────────────────
+
+features:
+  # Full HRV superwindow — the key EAP upgrade relative to the first ANPHY run.
+  #
+  # ANPHY epochs are 20 s (shorter than the typical 60 s HRV window).
+  # Use a 90 s superwindow (4-5 epochs) to capture at least ~100 NN intervals
+  # per superwindow (typical HR in sleep: 50-70 bpm → 75-105 beats/90s).
+  #
+  # Outputs added (not present in legacy run):
+  #   ecg_hrv_rmssd_ms      vagal tone (primary EAP carrier)
+  #   ecg_hrv_sdnn_ms       overall HRV
+  #   ecg_hrv_hr_mean_bpm   mean heart rate per window
+  #   ecg_hrv_pnn50         proportion of successive differences > 50 ms
+  #   ecg_hrv_sampen        HRV Sample Entropy (complexity)
+  #   ecg_hrv_dfa_alpha1    short-range DFA α₁ (fractal scaling of HRV)
+  ecg:
+    hrv:
+      enabled: true
+      superwindow_s: 90.0        # 4.5 × 20 s epochs; ≥75 beats at 50 bpm
+      min_nn_intervals: 20
+      min_coverage_fraction: 0.5
+      # Nonlinear HRV complexity for deeper EAP characterization.
+      # These metrics are sensitive to vagal withdrawal during arousal / REM onset.
+      complexity:
+        enabled: true
+        sampen_order: 2
+        sampen_tolerance_mult: 0.2
+        min_nn_for_sampen: 50
+        dfa_short_nvals_lo: 4
+        dfa_short_nvals_hi: 12
+        min_nn_for_dfa: 16
+
+  # EOG: with two channels (EOG1 + EOG2), both blink and saccade features
+  # are meaningful.  Default settings apply.
+  # Saccade proxy (HEOG): active during N1, wake, and REM; suppressed in N2/N3.
+  # Blink rate: high in wake, near-zero in NREM/REM.
+  eog:
+    filter_low_hz: 0.5
+    filter_high_hz: 10.0
+    filter_order: 3
+    std_mult: 2.5
+    mad_mult: 3.5
+    prominence_mult: 1.0
+    refractory_s: 0.30
+    blink_halfwidth_s: 0.20
+    saccade_filter_low_hz: 1.0
+    saccade_filter_high_hz: 30.0
+    saccade_std_mult: 3.5
+    saccade_refractory_s: 0.30
+    artifact_sat_frac: 0.95
+
+  # Cardiorespiratory coupling: ECG present, RESP absent → all cardioresp
+  # features will be NaN.  Included as a null slot for completeness and
+  # to auto-populate if a future ANPHY version adds respiratory channels.
+  cardioresp:
+    resp_band_lo: 0.10
+    resp_band_hi: 0.50
+    ibi_interp_hz: 4.0
+    coherence_nperseg: 64
+    xcorr_max_lag_s: 10.0
+    min_rpeaks: 5              # will be met (ECG present) but RSA = NaN (no RESP)
+
+# ── Anchor State ──────────────────────────────────────────────────────────────
+# v0.1 components:
+#   sympathetic_index   ← emg_rms (ChEMG; present)                       ✅
+#   vagal_index         ← ecg_hrv_rmssd_ms (after HRV superwindow)        ✅  NEW
+#   vascular_index      ← NaN (no PPG)
+#   pupil_index         ← NaN (sleep study)
+#   anchor_index_v01    = nanmean(sympathetic, vagal)                      ✅
+#
+# v0.2 additions:
+#   resp_anchor_index        ← NaN (no respiratory channel)
+#   ocular_stability_index   ← eog_eye_stability, -eog_blink_rate          ✅
+#   cardioresp_anchor_index  ← NaN (ECG present, RESP absent)
+#   anchor_index_v02         = nanmean(vagal, sympathetic, ocular)          ✅
+
+# ── Phase Anchor (Mål B / C) ──────────────────────────────────────────────
+# ANPHY has bipolar ECG (ECG1, ECG2) but NO respiratory channel.
+# → Cardiac columns fully populated: phi_cardiac_mean, rr_interval_ms,
+#     hr_bpm, hep_amplitude, pa_cardiac_quality, n_rpeaks_in_epoch
+# → Respiratory columns (phi_resp_mean, resp_rate_bpm, inhale_fraction,
+#     pa_resp_quality) → NaN
+phase_anchor:
+  enabled: true
+  ecg_bipolar: true               # ECG1 − ECG2 bipolar difference used for peaks
+  frontal_eeg_channels: ["Fp1", "Fp2", "F3", "F4", "Fz"]   # frontal group for HEP
+  hep_window_lo_s: 0.200
+  hep_window_hi_s: 0.600
+  resp_bandpass_lo_hz: 0.10
+  resp_bandpass_hi_hz: 0.50
+  chunk_minutes: 5
+  min_rpeaks_epoch: 5
+  min_rpeaks_hep: 3
+
+anchor_state:
+  enabled: true
+  v2:
+    enabled: true
+
+anchor_coupling:
+  enabled: true
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: false
+  min_windows: 3
+  condition_number_max: 1000000.0
+
+# ── MNPS embodied channels ────────────────────────────────────────────────────
+# !! EEG-ONLY in primary run !!
+# ecg_hrv_rmssd_ms is EXCLUDED from the primary embodied dimension to prevent
+# anchor contamination (see dual-surface contract in dual_datasets.md /
+# ANPHY_qc.md).  If vagal_index is the Pass C EAP moderator, putting
+# ecg_hrv_rmssd_ms in e_m makes the regression partly circular:
+#   Δgeometry_that_contains_RMSSD ~ spindle_event × RMSSD
+# The anchor_augmented sensitivity config carries the HRV-augmented surface.
+#
+# eog_blink_rate is retained: it is NOT the primary EAP moderator for ANPHY
+# (that role belongs to vagal_index), so it does not cause contamination.
+# emg_rms is excluded: sympathetic_index uses emg_rms; keeping it out of
+# primary geometry preserves independence for the sympathetic moderation term.
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - eog_blink_rate       # ocular arousal proxy (non-cardiac EAP dimension)
+
+# ── MNPS 9D: EEG-only primary geometry ───────────────────────────────────────
+# !! CRITICAL DESIGN CHOICE !!
+# e_m must NOT use ecg_hrv_rmssd_ms in the primary config because
+# vagal_index (derived from ecg_hrv_rmssd_ms) is the Pass C EAP moderator.
+# Using the same signal in both geometry and moderator weakens the claim.
+#
+# EEG-only proxy (same as BOAS primary, for cross-dataset comparability):
+#   eeg_hjorth_mobility  — signal bandwidth proxy; state-sensitive
+#   eeg_beta_alpha       — wake-like intrusions in NREM
+#
+# For the HRV-augmented sensitivity surface, see:
+#   config_ingest_anphy_rvc_trv_anchor_aug.yaml
+mnps_9d:
+  datasets:
+    ANPHY:
+      subcoords:
+        # Entropy family — EEG proxies only
+        e_s: {eeg_alpha_theta: 0.5, eeg_gamma: 0.5}
+        # Mobility / denoising-bandwidth — EEG proxy only (no HRV, no resp)
+        e_m: {eeg_hjorth_mobility: 0.6, eeg_beta_alpha: 0.4}
+      block_jacobians:
+        enabled: false   # disabled for primary RVC/TRV run — re-enable for MDE analysis
+        preset: mde_families_v1
+        csv_output: "stratified_block_jacobians_subjects.csv"
+
+# ── Event-locked spindle analysis (Pass A) ────────────────────────────────────
+# Same bin structure as BOAS RVC config.
+# Spindle CSVs from YASA or DETOKS detector (N2 stage only).
+event_locked:
+  datasets:
+    ANPHY:
+      enabled: true
+      profile: "rvc_spindle_v1"
+      event_source:
+        kind: "csv"
+      csv_source_glob: "{events_core}_spindles_yasa_v1_*.csv"
+      event_types: ["sleep_spindle"]
+      stage_filter: ["N2"]
+      reference: "peak"
+      bins:
+        pre_far:   [-30.0, -10.0]
+        pre_near:  [-10.0,   0.0]
+        event:     [  0.0,   3.0]
+        post_near: [  3.0,  10.0]
+        post_far:  [ 10.0,  30.0]
+      exclude_stage_transition_margin_sec: 30.0
+      min_overlap_fraction: 0.0
+      controls:
+        stage: "N2"
+        n_controls_per_event: 3
+        exclusion_margin_sec: 30.0
+        time_of_night_quartile_match: true
+        seed: 42
+      export:
+        write_parquet: true
+        write_csv: true
+        include_coords_9d: true
+        provenance_in_every_row: true
+        event_condition_label: "spindle_event"
+        control_condition_label: "matched_control"
+
+# ── Block-native stage windows (Pass B) ───────────────────────────────────────
+# Stage-curriculum analysis: geometry per sleep stage.
+# Tests whether RVC modulates the landscape differently across Wake/N1/N2/N3/REM.
+# ANPHY includes N1 (unlike BOAS AASM staging) → richer stage resolution.
+block_native:
+  datasets:
+    ANPHY:
+      enabled: true
+      source:
+        kind: "stage_blocking"
+        label_column: "stage"
+        stage_columns: ["stage"]
+      window_profile:
+        kind: "sliding"
+        window_length_sec: 20.0
+        step_sec: 10.0
+        emit_relative_position: true
+        min_block_sec: 40.0     # at least 2 full epochs per block
+      export:
+        write_parquet: true
+        write_csv: true
+
+# ── NDT ingest ────────────────────────────────────────────────────────────────
+ndt_ingest:
+  ingest_version: "1.2"
+  modalities:
+    eeg:
+      enabled: true
+      datasets:
+        ANPHY:
+          synchrony:    {enabled: false}
+          complexity:   {enabled: false}
+          dynamic_fc:
+            enabled: true
+            window_length_sec: 4.0
+            step_sec: 1.0
+            max_windows: 64
+            retain_matrices: false
+            summary:
+              variance: true
+          graph_metrics: {enabled: false}
+
+# ── Regional MNPS overrides ───────────────────────────────────────────────────
+# Block Jacobians disabled for primary RVC/TRV run (re-enable for MDE analysis).
+# The base ANPHY config enables them by default; override here.
+regional_mnps:
+  block_jacobians:
+    enabled: false   # disabled — re-enable for MDE family analysis
+
+# ── Robustness ────────────────────────────────────────────────────────────────
+# Inherit HD-EEG regional groups from base config.
+# Override coverage for the RVC run (short spindle windows, dense sampling).
+robustness:
+  coverage:
+    datasets:
+      ANPHY:
+        min_seconds: 40
+        min_epochs: 10
+  review_qc:
+    baseline_comparisons:
+      enabled: true
+      smoothing_window_epochs: 3
+      max_series_per_family: 6
+    null_sanity_tests:
+      enabled: true
+      seed: 42
+
+# ── Sleep annotations ─────────────────────────────────────────────────────────
+# ANPHY uses .txt sidecar files for stage labels (not BIDS events.tsv).
+# Inherit from base config.
+sleep_annotations:
+  datasets:
+    ANPHY:
+      enabled: true
+      search_parent_levels: 1
+      file_globs: ["*.txt", "*.ann"]
+      stage_map: {W: 0, N1: 1, N2: 2, N3: 3, REM: 4, R: 4, L: -1}
+
+# ── Metadata ──────────────────────────────────────────────────────────────────
+metadata_extraction:
+  datasets:
+    ANPHY:
+      filename_parse:
+        regex: "(?P<subject>EPCTL\\d+)"
+        subject_pad: 0
+      group:
+        default: "Healthy"
+      condition:
+        default: "sleep"
+      task:
+        default: "sleep"

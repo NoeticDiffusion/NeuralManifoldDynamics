@@ -1,0 +1,81 @@
+# RichSleep Sleep-EAP Phase 2 overlay.
+#
+# This configuration intentionally imports the frozen RVC/TRV primary surface
+# while writing into an isolated processed root.  It adds data products only:
+# neither coords_9d nor the primary EEG-only geometry contract is changed.
+imports:
+  - "./config_ingest_richsleep_rvc_trv.yaml"
+
+paths:
+  processed_dir: "K:/ExternalReceivedDatasets/mndm_rvc_processed_phase2"
+
+source:
+  phase_eap_contract: "rvc_v1_phase_resolved_v03"
+  phase_continuous_contract: "phase_continuous_v1"
+  non_event_risk_contract: "non_event_risk_v1"
+  slow_oscillation_contract: "slow_oscillation_v1"
+  event_phase_n3_so_contract: "event_phase_n3_so_v1"
+  event_phase_rem_theta_contract: "event_phase_rem_theta_v1"
+
+sleep_eap_phase2:
+  enabled: true
+  event_phase_contract: "rvc_v1_phase_resolved_v03"
+  phase_continuous_contract: "phase_continuous_v1"
+  non_event_risk_contract: "non_event_risk_v1"
+  slow_oscillation_contract: "slow_oscillation_v1"
+  event_phase_n3_so_contract: "event_phase_n3_so_v1"
+  event_phase_rem_theta_contract: "event_phase_rem_theta_v1"
+  datasets:
+    RichSleep:
+      enabled: true
+  sigma:
+    band_hz: [12.0, 15.0]
+    window_sec: 2.0
+    reference_stage: "N2"
+  slow_oscillation:
+    band_hz: [0.3, 1.25]
+    include_stages: ["N2", "N3"]
+    min_peak_to_peak_uv: 40.0
+    min_duration_sec: 0.8
+    max_duration_sec: 2.0
+    partner_tolerance_sec: 2.0
+  rem_theta:
+    band_hz: [4.0, 8.0]
+    stage: "REM"
+
+phase_continuous:
+  enabled: true
+  contract: "phase_continuous_v1"
+  sample_hz: 10.0
+  sidecar_dir: "K:/ExternalReceivedDatasets/RichSleep/phase_continuous_v1"
+  datasets:
+    RichSleep:
+      enabled: true
+
+non_event_risk:
+  enabled: true
+  contract: "non_event_risk_v1"
+  sidecar_dir: "K:/ExternalReceivedDatasets/RichSleep/non_event_risk_v1"
+  seed: 42
+  stage_filter: ["N2"]
+  exclusion_margin_sec: 30.0
+  n_per_event: 3
+  datasets:
+    RichSleep:
+      enabled: true
+
+event_locked:
+  datasets:
+    RichSleep:
+      # The inherited v1 event profile remains available; Phase 2 products
+      # are versioned sidecars and must never overwrite it.
+      phase2_contract: "rvc_v1_phase_resolved_v03"
+      profile: "rvc_spindle_v3"
+      csv_source_glob: "{events_core}_spindles_yasa_v3_*.csv"
+      n3_slow_oscillation_profile:
+        stage_filter: ["N3"]
+        event_types: ["slow_oscillation"]
+        sidecar_contract: "event_phase_n3_so_v1"
+      rem_theta_profile:
+        stage_filter: ["REM"]
+        sidecar_contract: "event_phase_rem_theta_v1"

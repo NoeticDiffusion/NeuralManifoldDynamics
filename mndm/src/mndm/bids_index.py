@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Mapping, Optional
 
 import pandas as pd
 
+from .bdf_adapter import parse_bdf_entities
+
 logger = logging.getLogger(__name__)
 
 
@@ -367,6 +369,22 @@ def build_file_index(
                 elif part.startswith("acq-"):
                     acq = part[4:]
 
+            # Non-BIDS BDF collections may declare a reusable adapter policy
+            # with a mapping table and/or named-group filename regex.  Apply it
+            # before the generic fallback so source-provided session labels win.
+            if eeg_file.suffix.lower() == ".bdf":
+                adapter_entities = parse_bdf_entities(
+                    eeg_file,
+                    config or {},
+                    dataset_id,
+                    dataset_root=root,
+                )
+                subject = adapter_entities.get("subject") or subject
+                session = adapter_entities.get("session") or session
+                task = adapter_entities.get("task") or task
+                run = adapter_entities.get("run") or run
+                acq = adapter_entities.get("acq") or acq
+
             # Non-BIDS fallback: infer subject token from path segments/file stem
             # (e.g. ANPHY `Subjects/EPCTL01/...`).
             if subject is None:
@@ -434,6 +452,93 @@ def build_file_index(
                     "fmri_events_tsv": None,
                 }
             )
+
+    # ------------------------------------------------------------------
+    # CTF MEG recordings. CTF stores each recording as a directory ending
+    # in ``*_meg.ds`` (containing ``.meg4``/``.res4``/``.acq``/...), not a
+    # single signal file, so the extension loop above misses them. Treat
+    # each ``.ds`` directory as one MEG signal entry.
+    # ------------------------------------------------------------------
+    for ds_dir in root.rglob("*.ds"):
+        if not ds_dir.is_dir():
+            continue
+        # CTF recordings contain internal sub-directories that also end in
+        # ``.ds`` (e.g. ``hz.ds``); skip those so each recording is indexed
+        # once, at the outer ``*_meg.ds`` level.
+        if any(parent.name.endswith(".ds") for parent in ds_dir.parents):
+            continue
+        try:
+            rel_path = ds_dir.relative_to(root)
+        except ValueError:
+            continue
+        if _should_skip_relpath(rel_path):
+            continue
+        parts = rel_path.parts
+        if "derivatives" in parts:
+            continue
+
+        stem = ds_dir.stem  # "..._meg" (.ds stripped)
+        stem_parts = stem.split("_")
+        subject = session = task = run = acq = None
+        for part in stem_parts:
+            if part.startswith("sub-"):
+                subject = part[4:]
+            elif part.startswith("ses-"):
+                session = part[4:]
+            elif part.startswith("task-"):
+                task = part[5:]
+            elif part.startswith("run-"):
+                run = part[4:]
+            elif part.startswith("acq-"):
+                acq = part[4:]
+        if subject is None:
+            subject = _infer_non_bids_subject(parts, stem)
+        datatype = _infer_bids_datatype(rel_path) or "meg"
+        modality = "meg"
+
+        base_core = stem[:-4] if stem.endswith("_meg") else stem
+        signal_json = ds_dir.parent / f"{base_core}_meg.json"
+        if not signal_json.exists():
+            signal_json = ds_dir.with_suffix(".json")
+            if not signal_json.exists():
+                signal_json = None
+        channels_tsv = ds_dir.parent / f"{base_core}_channels.tsv"
+        if not channels_tsv.exists():
+            channels_tsv = None
+        events_tsv = ds_dir.parent / f"{base_core}_events.tsv"
+        if not events_tsv.exists():
+            events_tsv = None
+
+        # Size = recursive sum of the .ds directory contents; md5 skipped
+        # (multi-GB binary blobs; size is the integrity signal here).
+        try:
+            size = sum(f.stat().st_size for f in ds_dir.rglob("*") if f.is_file())
+        except Exception as e:
+            logger.warning(f"Could not size {ds_dir}: {e}")
+            size = 0
+
+        records.append(
+            {
+                "path": str(ds_dir.relative_to(root)),
+                "subject": subject,
+                "session": session,
+                "task": task,
+                "run": run,
+                "acq": acq,
+                "modality": modality,
+                "datatype": datatype,
+                "bundle_key": _build_bundle_key(subject, session, task, run, acq),
+                "md5": None,
+                "size": size,
+                "signal_json": str(signal_json.relative_to(root)) if signal_json else None,
+                "eeg_json": None,
+                "meg_json": str(signal_json.relative_to(root)) if signal_json else None,
+                "channels_tsv": str(channels_tsv.relative_to(root)) if channels_tsv else None,
+                "events_tsv": str(events_tsv.relative_to(root)) if events_tsv else None,
+                "fmri_json": None,
+                "fmri_events_tsv": None,
+            }
+        )
 
     # ------------------------------------------------------------------
     # NWB files (DANDI/local NWB source assets)

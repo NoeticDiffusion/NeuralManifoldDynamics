@@ -1,0 +1,23 @@
+# Download-only config for ds003568 (MEG).
+#
+# ds003568 — MEG dataset on OpenNeuro. Downloaded in full (all subjects, all
+# files, derivatives included downstream of the fallback scripts via
+# --include-derivatives) so the mndm MEG ingest pipeline has the raw MEG plus
+# any derivatives and metadata it needs.
+#
+# Targets the K: received/processed trees (same parent as ds003969 / ds007216).
+#
+# NOTE: This config intentionally only covers the download stage. The
+# ingest/feature/summarize stages are handled by a separate mndm ingest config
+# and are out of scope for this file.
+datasets:
+  - ds003568
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed"
+download:
+  retries: 3
+  use_uvx: true
+  datasets:
+    ds003568:
+      # Intentionally empty: pull everything.

@@ -987,7 +987,15 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     robustness_cfg = config.get("robustness", {}) if isinstance(config, dict) else {}
     ensembles_cfg = robustness_cfg.get("ensembles", {}) if isinstance(robustness_cfg, dict) else {}
     group_defs: List[ensembles.EnsembleGroupDef] = []
-    if isinstance(ensembles_cfg, Mapping) and ensembles_cfg.get("enabled", False) and eeg_channels:
+    payload_meta = signals.get("meta", {}) if isinstance(signals, Mapping) else {}
+    lfp_selection = payload_meta.get("lfp_channel_selection", {}) if isinstance(payload_meta, Mapping) else {}
+    lfp_groups = lfp_selection.get("ensemble_groups", {}) if isinstance(lfp_selection, Mapping) else {}
+    if isinstance(lfp_groups, Mapping) and lfp_groups and eeg_channels:
+        try:
+            group_defs = ensembles.realize_ensemble_groups({"groups": lfp_groups}, dataset_id, eeg_channels)
+        except Exception:
+            logger.exception("Failed to resolve LFP depth ensembles; continuing without ensembles")
+    elif isinstance(ensembles_cfg, Mapping) and ensembles_cfg.get("enabled", False) and eeg_channels:
         try:
             group_defs = ensembles.realize_ensemble_groups(ensembles_cfg, dataset_id, eeg_channels)
         except Exception:
@@ -1054,6 +1062,29 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
 
     if not meta_all:
         return pd.DataFrame()
+
+    # BDF BAD_ annotations are represented as NaNs in the preprocessing
+    # payload. Reject whole windows touching them instead of concatenating
+    # clean samples around an artifact gap into a synthetic epoch.
+    bdf_meta = payload_meta.get("bdf_adapter", {}) if isinstance(payload_meta, Mapping) else {}
+    bad_segments_meta = bdf_meta.get("bad_segments", {}) if isinstance(bdf_meta, Mapping) else {}
+    if isinstance(bad_segments_meta, Mapping) and bad_segments_meta.get("enabled") and bad_segments_meta.get("available"):
+        valid_samples = np.isfinite(eeg_data).all(axis=0)
+        invalid_prefix = np.concatenate(([0], np.cumsum((~valid_samples).astype(np.int64))))
+        original_count = len(meta_all)
+        meta_all = [
+            item
+            for item in meta_all
+            if int(invalid_prefix[item[2]] - invalid_prefix[item[1]]) == 0
+        ]
+        dropped = original_count - len(meta_all)
+        if dropped:
+            logger.info(
+                "Rejected %d/%d EEG epochs touching BDF BAD_ segments for %s",
+                dropped,
+                original_count,
+                Path(str(raw_file_path)).name if raw_file_path else "recording",
+            )
 
     sampling_cfg = epoch_selection.resolve_epoching_sampling_cfg(config, dataset_id)
     chosen_meta: List[tuple[int, int, int]] = meta_all

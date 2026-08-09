@@ -6,6 +6,7 @@ import sys
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from mndm.pipeline.regional_mnps import (
@@ -18,6 +19,7 @@ from mndm.pipeline.regional_mnps import (
     compute_regional_mnps_for_network,
     summary_to_dataframe_rows,
 )
+from mndm.pipeline.summary_regional import extract_group_feature_frames
 
 
 def _fake_mnps(n: int = 120) -> np.ndarray:
@@ -112,6 +114,26 @@ class TestComputeAllRegionalMNPS:
         )
         assert summary.n_networks == 3
         assert set(summary.results) == {"DMN", "FPN", "SAL"}
+
+
+class TestGroupedElectrophysiologyFrames:
+    def test_extract_group_frames_is_modality_agnostic(self):
+        """MEG and EEG-style suffixed features use the same group frame path."""
+        frame = pd.DataFrame(
+            {
+                "epoch_id": [0, 1],
+                "meg_alpha": [1.0, 2.0],
+                "meg_alpha__g_anterior": [3.0, 4.0],
+                "meg_alpha__g_posterior": [5.0, 6.0],
+            }
+        )
+
+        groups = extract_group_feature_frames(frame)
+
+        assert set(groups) == {"anterior", "posterior"}
+        assert groups["anterior"]["meg_alpha"].tolist() == [3.0, 4.0]
+        assert groups["posterior"]["meg_alpha"].tolist() == [5.0, 6.0]
+        assert "meg_alpha__g_anterior" not in groups["anterior"]
 
 
 class TestSummaryToDataframeRows:

@@ -28,6 +28,7 @@ import pandas as pd
 from core.bids import parse_subject_session, parse_subject_session_task_run_acq
 from .context import SummarizeContext
 from .. import bids_index
+from ..bdf_adapter import parse_bdf_entities
 from ..file_filters import apply_exclude_file_filters
 from .extractors import (
     build_dataset_label,
@@ -37,8 +38,13 @@ from .extractors import (
     extract_mapped_metadata,
     extract_stage_array,
     load_participant_table,
+    load_session_table,
 )
-from .anchor_state import build_anchor_state_exports
+from .anchor_state import (
+    build_anchor_state_exports,
+    resolve_anchor_validation_policy,
+    validate_anchor_state_exports,
+)
 from .extensions_compute import compute_extensions
 from .regional_mnps import (
     compute_block_jacobian_rows,
@@ -77,6 +83,7 @@ from .summary_utils import (
     extract_time_bounds,
 )
 from .time_reference import build_time_reference_for_run
+from .phase_continuous_export import build_phase2_extensions_for_run
 from .conventional_summary import compute_conventional_eeg_summary
 from .baseline_qc import (
     compute_feature_baseline_comparisons,
@@ -145,12 +152,12 @@ def _resolve_event_locked_source_kind(event_locked_cfg: Mapping[str, Any]) -> st
 
 
 def _event_locked_slug_from_csv_path(csv_path: Path) -> str:
-    """Derive legacy channel slug from spindle CSV filename when possible."""
-    marker = "_spindles_yasa_v1_"
+    """Derive channel slug from versioned spindle CSV filenames when possible."""
     stem = csv_path.stem
-    if marker not in stem:
+    match = re.search(r"_spindles_yasa_v\d+_", stem, flags=re.IGNORECASE)
+    if match is None:
         return ""
-    slug = stem.split(marker, 1)[1].strip().lower()
+    slug = stem[match.end() :].strip().lower()
     return slug
 
 
@@ -168,6 +175,8 @@ def _resolve_event_locked_csv_sources(
     *,
     stage_events_path: Optional[str],
     event_locked_cfg: Mapping[str, Any],
+    fallback_search_dirs: Optional[List[Path]] = None,
+    subject_id: Optional[str] = None,
 ) -> List[tuple[Path, str]]:
     """Resolve per-run CSV annotation sources for event-locked export.
 
@@ -175,9 +184,92 @@ def _resolve_event_locked_csv_sources(
     1) ``event_source.source_path`` when configured.
     2) ``csv_source_glob`` / ``csv_source_globs`` dataset-level hints.
     3) Sleep-spindle default sibling pattern next to ``*_events.tsv``.
+
+    When ``stage_events_path`` is None (e.g. stage comes from features CSV, not
+    a BIDS events.tsv), the function falls back to ``fallback_search_dirs`` if
+    provided.  Each directory in that list is searched with the same glob
+    patterns, but ``{events_dir}`` / ``{events_stem}`` / ``{events_core}``
+    format variables are not available (only wildcard-based patterns work).
+
+    ``subject_id`` (optional, e.g. ``"sub-xn001"`` or ``"xn001"``) is used in
+    the fallback path to narrow ``{events_core}``/``{events_stem}`` wildcards to
+    the specific subject rather than matching all subjects in a flat directory.
+    This prevents the all-subjects glob + last-wins overwrite that caused the
+    RichSleep xn024-for-all spindle catalog substitution bug (diary 182).
     """
     if not stage_events_path:
-        return []
+        if not fallback_search_dirs:
+            return []
+        # Fallback path: search provided dirs using wildcard-only patterns
+        fallback_discovered: List[Path] = []
+        seen_fb: set[str] = set()
+        # Collect patterns from config (same logic as main path)
+        source_cfg_fb = (
+            event_locked_cfg.get("event_source", {})
+            if isinstance(event_locked_cfg.get("event_source"), Mapping)
+            else {}
+        )
+        fb_patterns: List[str] = []
+        sp_fb = str(source_cfg_fb.get("source_path", "") or "").strip()
+        if sp_fb and any(ch in sp_fb for ch in "*?[]"):
+            fb_patterns.append(sp_fb)
+        g1_fb = event_locked_cfg.get("csv_source_glob")
+        if isinstance(g1_fb, str) and g1_fb.strip():
+            fb_patterns.append(g1_fb.strip())
+        gm_fb = event_locked_cfg.get("csv_source_globs", [])
+        if isinstance(gm_fb, Sequence) and not isinstance(gm_fb, (str, bytes)):
+            fb_patterns.extend(str(x).strip() for x in gm_fb if str(x).strip())
+        if not fb_patterns:
+            et_fb = event_locked_cfg.get("event_types", [])
+            if not isinstance(et_fb, list):
+                et_fb = [et_fb]
+            if "sleep_spindle" in {str(v).strip().lower() for v in et_fb if str(v).strip()}:
+                fb_patterns.append("*_spindles_yasa_v1_*.csv")
+        for fb_dir in fallback_search_dirs:
+            if not isinstance(fb_dir, Path) or not fb_dir.is_dir():
+                continue
+            for raw_pat in fb_patterns:
+                # Replace format variables with wildcards so the pattern
+                # still matches files even when events_core is unknown.
+                # Skip patterns anchored to {events_dir} as they assume an
+                # absolute directory path we don't have.
+                if "{events_dir}" in raw_pat:
+                    continue
+                # When a subject_id is known, narrow {events_core} / {events_stem}
+                # to the bare subject ID (strip "sub-" prefix) so the fallback
+                # glob only matches that subject's CSV files.  Without this, a
+                # flat directory containing all subjects' CSVs would be fully
+                # enumerated for every subject and the last-sorted file would
+                # overwrite all outputs (root cause of diary 182 xn024 bug).
+                _subj_bare = (
+                    str(subject_id).removeprefix("sub-").strip()
+                    if subject_id else ""
+                )
+                _core_token = _subj_bare if _subj_bare else "*"
+                pat_wildcarded = (
+                    raw_pat
+                    .replace("{events_core}", _core_token)
+                    .replace("{events_stem}", _core_token)
+                )
+                # Collapse consecutive wildcards introduced by the replacement
+                while "**" in pat_wildcarded:
+                    pat_wildcarded = pat_wildcarded.replace("**", "*")
+                pat_wildcarded = pat_wildcarded.lstrip("/\\")
+                if any(ch in pat_wildcarded for ch in "*?[]"):
+                    for cand in sorted(fb_dir.glob(pat_wildcarded)):
+                        key = str(cand.resolve())
+                        if key not in seen_fb:
+                            seen_fb.add(key)
+                            fallback_discovered.append(cand)
+                else:
+                    # Literal pattern — try as direct child of search dir
+                    cand = fb_dir / pat_wildcarded
+                    if cand.exists():
+                        key = str(cand.resolve())
+                        if key not in seen_fb:
+                            seen_fb.add(key)
+                            fallback_discovered.append(cand)
+        return [(p, _event_locked_slug_from_csv_path(p)) for p in fallback_discovered]
 
     events_path = Path(str(stage_events_path))
     events_dir = events_path.parent
@@ -1230,6 +1322,7 @@ class DatasetSummaryRunner:
                 self.coverage_rule_source = f"external:{self.ds_id}"
 
         self.participants_df: Optional[pd.DataFrame] = None
+        self.sessions_df: Optional[pd.DataFrame] = None
         self.index_df: Optional[pd.DataFrame] = None
         summarize_cfg = self.config.get("summarize", {}) if isinstance(self.config, Mapping) else {}
         if not isinstance(summarize_cfg, Mapping):
@@ -1239,6 +1332,7 @@ class DatasetSummaryRunner:
         self.qc_policy = str(summarize_cfg.get("qc_policy", "eeg_only")).strip().lower() or "eeg_only"
         self.grouping_collision_info: Dict[str, Any] = {"count": 0, "merged_extra_files": 0, "examples": []}
         self._participant_meta_map: Dict[str, Dict[str, Any]] = {}
+        self._session_meta_map: Dict[tuple[str, str], Dict[str, Any]] = {}
         self._file_entity_cache: Dict[str, tuple[str, Optional[str], Optional[str], Optional[str], Optional[str]]] = {}
         self._index_paths_by_basename: Dict[str, List[str]] = {}
         self._normalization_report: Dict[str, Any] = {
@@ -1266,6 +1360,26 @@ class DatasetSummaryRunner:
             return subject, session, task, run, acq
 
         try:
+            # Reuse the indexed BDF adapter mapping during summarize.  Feature
+            # rows store a source filename, so grouping must not fall back to a
+            # lossy filename regex when the dataset declares an explicit map.
+            bdf_entities = parse_bdf_entities(
+                Path(str(file_name)),
+                self.config,
+                self.ds_id,
+                dataset_root=self._dataset_root(),
+            )
+            if bdf_entities.get("subject"):
+                subject = f"sub-{str(bdf_entities['subject'])}"
+                session_raw = bdf_entities.get("session")
+                session = f"ses-{session_raw}" if session_raw else session
+                task = str(bdf_entities["task"]) if bdf_entities.get("task") else task
+                run_raw = bdf_entities.get("run")
+                run = f"run-{run_raw}" if run_raw else run
+                acq_raw = bdf_entities.get("acq")
+                acq = f"acq-{acq_raw}" if acq_raw else acq
+                return subject, session, task, run, acq
+
             md_spec = self.config.get("metadata_extraction", {}) if isinstance(self.config, Mapping) else {}
             ds_spec = (md_spec.get("datasets", {}) or {}).get(self.ds_id, {}) if isinstance(md_spec, Mapping) else {}
             parse_cfg = ds_spec.get("filename_parse", {}) if isinstance(ds_spec, Mapping) else {}
@@ -2295,6 +2409,8 @@ class DatasetSummaryRunner:
         ds_path = self.processed_dir / self.ds_id
         self.participants_df = load_participant_table(self.received_dir, self.ds_id, self.config)
         self._build_participant_meta_map()
+        self.sessions_df = load_session_table(self.received_dir, self.ds_id, self.config)
+        self._build_session_meta_map()
         self.index_df = self._read_index(ds_path)
         self._build_index_basename_cache()
 
@@ -2953,6 +3069,21 @@ class DatasetSummaryRunner:
         except Exception:
             self._participant_meta_map = {}
 
+    def _build_session_meta_map(self) -> None:
+        """Build O(1) session metadata lookup by participant/session IDs."""
+        self._session_meta_map = {}
+        if self.sessions_df is None or self.sessions_df.empty:
+            return
+        try:
+            for _, row in self.sessions_df.iterrows():
+                participant = str(row.get("participant_id", "")).strip()
+                session = str(row.get("session_id", "")).strip()
+                if participant and session:
+                    self._session_meta_map[(participant, session)] = row.to_dict()
+        except Exception:
+            logger.exception("Failed to build session metadata lookup for %s", self.ds_id)
+            self._session_meta_map = {}
+
     def _build_index_basename_cache(self) -> None:
         """Build O(1) basename -> relative-path list cache from file_index."""
         self._index_paths_by_basename = {}
@@ -3072,6 +3203,25 @@ class DatasetSummaryRunner:
                 self.ds_id,
                 excluded_patterns,
             )
+        lfp_state_cfg = self.config.get("lfp_state_analysis", {}) if isinstance(self.config, Mapping) else {}
+        if isinstance(lfp_state_cfg, Mapping):
+            primary_filter = lfp_state_cfg.get("primary_filter")
+            if primary_filter:
+                if primary_filter not in features_df:
+                    raise ValueError(f"Configured LFP state filter column is missing: {primary_filter!r}")
+                features_df = features_df.loc[features_df[primary_filter].fillna(False).astype(bool)].copy()
+            state_value = lfp_state_cfg.get("state_value")
+            state_column = str(lfp_state_cfg.get("state_column", "lfp_behavioral_state"))
+            if state_value is not None:
+                if state_column not in features_df:
+                    raise ValueError(f"Configured LFP state column is missing: {state_column!r}")
+                features_df = features_df.loc[features_df[state_column].eq(str(state_value))].copy()
+            if primary_filter or state_value is not None:
+                logger.info(
+                    "Applied LFP state analysis filter for %s: %d retained rows",
+                    self.ds_id,
+                    len(features_df),
+                )
         if features_df.empty:
             logger.warning(f"Features dataframe empty for {self.ds_id}")
             return None
@@ -3094,6 +3244,27 @@ class DatasetSummaryRunner:
                 self._file_entity_cache[file_name] = self._parse_file_entities(file_name)
         parsed_subjects = file_series.map(lambda f: self._file_entity_cache.get(f, ("sub-unknown", None, None, None, None))[0])
         mask = parsed_subjects == self.subject_filter
+
+        # BIDS datasets are not required to use a fixed zero-padding width
+        # (e.g. ``sub-01`` and ``sub-001``).  The CLI normalizes numeric
+        # requests to ``sub-001`` for compatibility with the common case, so
+        # fall back to numeric equivalence when the exact label is absent.
+        if not bool(mask.any()) and self.subject_filter is not None:
+            requested_token = str(self.subject_filter).removeprefix("sub-")
+            if requested_token.isdigit():
+                requested_numeric = str(int(requested_token))
+
+                def _numeric_subject_token(value: Any) -> Optional[str]:
+                    token = str(value).removeprefix("sub-")
+                    return str(int(token)) if token.isdigit() else None
+
+                numeric_subjects = parsed_subjects.map(_numeric_subject_token)
+                mask = numeric_subjects == requested_numeric
+                if bool(mask.any()):
+                    logger.info(
+                        "Subject filter %s matched numerically equivalent BIDS label(s)",
+                        self.subject_filter,
+                    )
 
         # Backward-compatible fallback for legacy datasets where file parsing is
         # intentionally minimal and subject ID appears directly in filename text.
@@ -3198,6 +3369,32 @@ class DatasetSummaryRunner:
                     logger.warning("Some feature rows lack subject identifiers; they will be skipped")
                     features_df = features_df.loc[~unknown_mask]
 
+            # Apply task normalization from config before grouping so that recordings
+            # whose raw task names resolve to the same logical task (e.g. med1breath
+            # and med2 → meditation) end up in a single dispatch group.  This prevents
+            # parallel workers from racing to write the same output HDF5 file.
+            try:
+                meta_spec = self.config.get("metadata_extraction", {}) if isinstance(self.config, Mapping) else {}
+                default_task_cfg = (meta_spec.get("default", {}) or {}).get("task", {}) or {}
+                ds_task_cfg = ((meta_spec.get("datasets", {}) or {}).get(self.ds_id, {}) or {}).get("task", {}) or {}
+                merged_task_cfg = {**default_task_cfg, **ds_task_cfg}
+                task_norm_map = merged_task_cfg.get("normalize", {})
+                if isinstance(task_norm_map, dict) and task_norm_map:
+                    def _apply_task_norm(t: Any) -> Any:
+                        if t is None or (isinstance(t, float) and pd.isna(t)):
+                            return t
+                        raw = str(t).strip().lower()
+                        stripped = raw.replace("-", "").replace("_", "")
+                        return task_norm_map.get(raw, task_norm_map.get(stripped, t))
+                    features_df = features_df.assign(_task=features_df["_task"].map(_apply_task_norm))
+                    logger.debug(
+                        "Applied task normalization before grouping in %s (map: %s)",
+                        self.ds_id,
+                        task_norm_map,
+                    )
+            except Exception:
+                logger.debug("Could not apply task normalization during grouping; using raw task names")
+
             # Guardrail for non-BIDS sources: if multiple distinct files resolve to
             # the same summarize key, they are merged into one output run.
             group_cols = ["_subject", "_session", "_task", "_run", "_acq"]
@@ -3244,7 +3441,20 @@ class DatasetSummaryRunner:
             grouping = features_df.groupby(["_subject", "_session", "_task", "_run", "_acq"], dropna=False)
 
         if self.subject_filter:
-            grouping_items = [item for item in grouping if item[0][0] == self.subject_filter]
+            requested = str(self.subject_filter).removeprefix("sub-")
+
+            def _matches_requested_subject(group_subject: Any) -> bool:
+                value = str(group_subject)
+                if value == self.subject_filter:
+                    return True
+                candidate = value.removeprefix("sub-")
+                return (
+                    requested.isdigit()
+                    and candidate.isdigit()
+                    and int(candidate) == int(requested)
+                )
+
+            grouping_items = [item for item in grouping if _matches_requested_subject(item[0][0])]
         else:
             grouping_items = list(grouping)
         return grouping_items
@@ -3256,21 +3466,34 @@ class DatasetSummaryRunner:
         mnps_dir.mkdir(parents=True, exist_ok=True)
         return mnps_dir
 
-    def participant_meta_for(self, sub_id: str) -> Dict[str, Any]:
-        """Handle participant meta for."""
+    def participant_meta_for(self, sub_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
+        """Return participant metadata merged with optional session metadata."""
+        participant_meta: Dict[str, Any] = {}
         if self._participant_meta_map:
             for candidate in self._participant_lookup_candidates(sub_id):
                 hit = self._participant_meta_map.get(candidate)
                 if hit:
-                    return dict(hit)
-            return {}
-        if self.participants_df is None:
-            return {}
-        candidates = set(self._participant_lookup_candidates(sub_id))
-        lookup = self.participants_df[self.participants_df["participant_id"].astype(str).isin(candidates)]
-        if lookup.empty:
-            return {}
-        return lookup.iloc[0].to_dict()
+                    participant_meta = dict(hit)
+                    break
+        elif self.participants_df is not None:
+            candidates = set(self._participant_lookup_candidates(sub_id))
+            lookup = self.participants_df[self.participants_df["participant_id"].astype(str).isin(candidates)]
+            if not lookup.empty:
+                participant_meta = lookup.iloc[0].to_dict()
+
+        if session_id and self._session_meta_map:
+            session_candidates = {str(session_id)}
+            if str(session_id).startswith("ses-"):
+                session_candidates.add(str(session_id)[4:])
+            else:
+                session_candidates.add(f"ses-{session_id}")
+            for participant in self._participant_lookup_candidates(sub_id):
+                for session in session_candidates:
+                    hit = self._session_meta_map.get((participant, session))
+                    if hit:
+                        participant_meta.update(hit)
+                        return participant_meta
+        return participant_meta
 
     @staticmethod
     def _participant_lookup_candidates(sub_id: str) -> list[str]:
@@ -3359,7 +3582,13 @@ class SubjectSummaryRunner:
         missing_axis_policy = str(proj_cfg.get("missing_axis_policy", "nan_mask_v1")).strip().lower() or "nan_mask_v1"
 
         sub_id = sub_id if str(sub_id).startswith("sub-") else f"sub-{str(sub_id).zfill(3)}"
-        participant_meta = self.dataset.participant_meta_for(sub_id)
+        # Preserve the one-argument public call contract for existing runners
+        # and test doubles unless a dataset actually loaded session-level rows.
+        participant_meta = (
+            self.dataset.participant_meta_for(sub_id, ses_id)
+            if self.dataset._session_meta_map
+            else self.dataset.participant_meta_for(sub_id)
+        )
         participant_meta_source = self.dataset.participant_meta_source_info()
 
         # Extract representative filename for task parsing (if available)
@@ -3541,6 +3770,29 @@ class SubjectSummaryRunner:
         proj_cfg = config.get("mnps_projection", {}) if isinstance(config, Mapping) else {}
         clip_threshold = float(proj_cfg.get("clip_threshold", 6.0)) if isinstance(proj_cfg, Mapping) else 6.0
         feature_standardization = proj_cfg.get("feature_standardization", {}) if isinstance(proj_cfg, Mapping) else {}
+        feature_export_cfg = (
+            proj_cfg.get("feature_export", {})
+            if isinstance(proj_cfg, Mapping) and isinstance(proj_cfg.get("feature_export"), Mapping)
+            else {}
+        )
+        degenerate_scale_policy = str(
+            feature_export_cfg.get(
+                "degenerate_scale_policy",
+                projection.DEFAULT_DEGENERATE_SCALE_POLICY,
+            )
+        ).strip().lower()
+        degenerate_scale_eps = float(
+            feature_export_cfg.get(
+                "degenerate_scale_eps",
+                projection.DEFAULT_DEGENERATE_SCALE_EPS,
+            )
+        )
+        strict_robust_z_min_finite = int(
+            feature_export_cfg.get(
+                "min_finite_count",
+                projection.DEFAULT_STRICT_ROBUST_Z_MIN_FINITE,
+            )
+        )
         anchor_cfg = proj_cfg.get("anchor", {}) if isinstance(proj_cfg, Mapping) else {}
         anchor_artifact: Optional[dict[str, Any]] = None
         external_anchor: Optional[dict[str, Any]] = None
@@ -3936,6 +4188,11 @@ class SubjectSummaryRunner:
             sub_frame=sub_frame,
             window_start=window_start,
             window_end=window_end,
+        )
+        phase2_extensions_result = build_phase2_extensions_for_run(
+            config=config if isinstance(config, Mapping) else {},
+            dataset_id=self.dataset.ds_id,
+            subject_id=sub_id,
         )
         
         # Explicitly prevent derivative estimation across file boundaries (time aliasing protection)
@@ -4508,6 +4765,9 @@ class SubjectSummaryRunner:
         time_reference_extension = time_reference_result.get("extension")
         if isinstance(time_reference_extension, Mapping) and time_reference_extension:
             merged_extensions["time_reference"] = dict(time_reference_extension)
+        phase2_extensions = phase2_extensions_result.get("extensions")
+        if isinstance(phase2_extensions, Mapping) and phase2_extensions:
+            merged_extensions.update(dict(phase2_extensions))
         if tabular_exports_h5:
             existing_tables = merged_extensions.get("tabular_exports")
             merged_tables = dict(existing_tables) if isinstance(existing_tables, Mapping) else {}
@@ -4684,6 +4944,9 @@ class SubjectSummaryRunner:
             feature_standardization=feature_standardization if isinstance(feature_standardization, Mapping) else None,
             clip_threshold=clip_threshold,
             entropy_meta=entropy_meta,
+            degenerate_scale_policy=degenerate_scale_policy,
+            degenerate_scale_eps=degenerate_scale_eps,
+            min_finite_count=strict_robust_z_min_finite,
         )
         features_raw_values = np.asarray(feature_export_bundle.get("raw_values"), dtype=np.float32)
         features_raw_names = list(feature_export_bundle.get("raw_names", []) or [])
@@ -4703,7 +4966,29 @@ class SubjectSummaryRunner:
             robust_z_names=features_robust_z_names,
             time=np.asarray(time, dtype=np.float64),
             config=config,
+            feature_metadata=feature_metadata,
         )
+        anchor_state_validation: Dict[str, Any] = {}
+        if anchor_state_export:
+            anchor_validation_policy = resolve_anchor_validation_policy(config)
+            anchor_state_validation = validate_anchor_state_exports(
+                anchor_state_export,
+                policy=anchor_validation_policy,
+            )
+            anchor_state_diagnostics = {
+                **anchor_state_diagnostics,
+                "validation_status": anchor_state_validation["status"],
+                "validation_enabled": anchor_state_validation["enabled"],
+            }
+            if (
+                anchor_state_validation["enabled"]
+                and anchor_state_validation["blocking"]
+                and anchor_state_validation["status"] == "fail"
+            ):
+                raise ValueError(
+                    "anchor_state validation failed under blocking policy: "
+                    f"{anchor_state_validation['components']}"
+                )
         anchor_coupling_export: Dict[str, Any] = {}
         anchor_coupling_policy: Dict[str, Any] = {}
         anchor_coupling_cfg = (
@@ -4973,6 +5258,16 @@ class SubjectSummaryRunner:
                 "raw_file":      np.array([Path(f).name for f in _raw_files], dtype=object),
                 "source_format": _src_fmt,
             }
+            # Do not infer simultaneity from row order. A raw FIF MEEG stream
+            # is explicit simultaneous acquisition; legacy EEG-only streams
+            # are explicitly false. Dataset adapters may override upstream
+            # provenance before this export point.
+            _row_source_cols["is_simultaneous"] = (_has_meg & _has_eeg).astype(np.int8)
+        _epoch_id = (
+            pd.to_numeric(sub_frame["epoch_id"], errors="coerce").fillna(-1).to_numpy(dtype=np.int64)
+            if "epoch_id" in sub_frame.columns
+            else np.arange(len(sub_frame), dtype=np.int64)
+        )
 
         # Build payload
         payload = schema.MNPSPayload(
@@ -4981,6 +5276,7 @@ class SubjectSummaryRunner:
             x_dot=x_dot,
             window_start=window_start,
             window_end=window_end,
+            epoch_id=_epoch_id,
             stage=stage,
             z=z,
             events=events,
@@ -5164,6 +5460,11 @@ class SubjectSummaryRunner:
                     if isinstance(time_reference_result.get("attrs"), Mapping)
                     else {}
                 ),
+                **(
+                    dict(phase2_extensions_result.get("attrs"))
+                    if isinstance(phase2_extensions_result.get("attrs"), Mapping)
+                    else {}
+                ),
             },
         )
         if v2_enabled and coords_9d_names and coords_9d is not None and coords_9d.size:
@@ -5264,6 +5565,9 @@ class SubjectSummaryRunner:
         }
         if isinstance(time_reference_result.get("manifest"), Mapping):
             manifest_extra["time_reference"] = dict(time_reference_result["manifest"])
+        phase2_manifest = phase2_extensions_result.get("manifest")
+        if isinstance(phase2_manifest, Mapping):
+            manifest_extra.update(dict(phase2_manifest))
         if stage_mapping_qc_entry:
             stage_mapping_qc_entry = dict(stage_mapping_qc_entry)
             stage_mapping_qc_entry.update(
@@ -5405,6 +5709,12 @@ class SubjectSummaryRunner:
             "column_count": int(len(features_raw_names)),
             "names_hash": feature_names_hash,
             "metadata_fields": sorted(feature_metadata.keys()) if feature_metadata else [],
+            "robust_z_guard": {
+                "policy": degenerate_scale_policy,
+                "policy_version": projection.ROBUST_Z_GUARD_POLICY_VERSION,
+                "degenerate_scale_eps": degenerate_scale_eps,
+                "min_finite_count": strict_robust_z_min_finite,
+            },
         }
         hrv_feature_names = [str(name) for name in features_raw_names if str(name).startswith("ecg_hrv_")]
         if hrv_feature_names:
@@ -5441,6 +5751,8 @@ class SubjectSummaryRunner:
                     "anchor_quality": "/anchor_quality",
                 },
             }
+        if anchor_state_validation:
+            manifest_extra["anchor_state_validation"] = anchor_state_validation
         if anchor_coupling_policy:
             manifest_extra["anchor_coupling"] = {
                 **anchor_coupling_policy,
@@ -5507,9 +5819,44 @@ class SubjectSummaryRunner:
                 legacy_event_locked_prefix = "_".join(legacy_name_parts) or "event_locked"
 
                 if event_source_kind == "csv":
+                    # When stage_events_path is None (stage from features CSV,
+                    # not a BIDS events.tsv), derive a fallback search dir from
+                    # the subject's raw data directory so spindle CSVs co-located
+                    # with the annotation file are still discovered.
+                    _fb_search_dirs: List[Path] = []
+                    if not stage_events_path:
+                        _file_col = None
+                        if "file" in sub_frame.columns and len(sub_frame):
+                            _file_col = str(sub_frame["file"].iloc[0])
+                        _ds_cfg = config.get("paths", {}) if isinstance(config, Mapping) else {}
+                        _received_dirs_map = (
+                            _ds_cfg.get("dataset_received_dirs", {})
+                            if isinstance(_ds_cfg, Mapping) else {}
+                        )
+                        _ds_root = (
+                            _received_dirs_map.get(self.dataset.ds_id)
+                            if isinstance(_received_dirs_map, Mapping) else None
+                        )
+                        if _ds_root:
+                            _root_path = Path(str(_ds_root))
+                            # Derive subject dir name from sub_id (strip "sub-" prefix)
+                            _sub_dir_name = str(sub_id or "").removeprefix("sub-")
+                            _candidate = _root_path / _sub_dir_name
+                            if _candidate.is_dir():
+                                _fb_search_dirs.append(_candidate)
+                            # Also try the data root itself
+                            if _root_path.is_dir():
+                                _fb_search_dirs.append(_root_path)
+                        # If file column has a full path, use its parent dir
+                        if _file_col and Path(_file_col).parent != Path("."):
+                            _parent = Path(_file_col).parent
+                            if _parent.is_dir() and _parent not in _fb_search_dirs:
+                                _fb_search_dirs.append(_parent)
                     csv_sources = _resolve_event_locked_csv_sources(
                         stage_events_path=stage_events_path,
                         event_locked_cfg=event_locked_cfg,
+                        fallback_search_dirs=_fb_search_dirs if _fb_search_dirs else None,
+                        subject_id=str(sub_id or ""),
                     )
                     for csv_path, csv_slug in csv_sources:
                         out_prefix = target_dir / "event_locked"
@@ -5617,7 +5964,7 @@ class SubjectSummaryRunner:
                             "entries": event_locked_entries,
                         }
             except Exception as _el_exc:
-                logger.debug("event_locked export skipped: %s", _el_exc)
+                logger.warning("event_locked export skipped: %s", _el_exc)
         block_native_cfg = {}
         if isinstance(config, Mapping):
             block_native_root = config.get("block_native", {})

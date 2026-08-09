@@ -1,0 +1,22 @@
+# Download-only config for ds003710 — APPLESEED Example Dataset.
+#
+# Longitudinal pediatric EEG: 13 infants, 48 recordings, four sessions
+# (reliability at 4 months plus longitudinal recordings at 8 and 12 months).
+# BrainVision EEG, 32 channels, 5000 Hz. The code/ directory contains the
+# channel-location and bin files used by the APPLESEED reference pipeline.
+#
+# This config intentionally downloads the complete BIDS dataset. Use
+# config_ingest_ds003710_pilot.yaml first when bootstrapping a new machine.
+datasets:
+  - ds003710
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed"
+
+download:
+  retries: 3
+  use_uvx: true
+  datasets:
+    ds003710:
+      # Intentionally empty: pull all raw data, metadata, events, and code.

@@ -2,6 +2,75 @@
 
 ---
 
+## v2.5.0 — Multimodal ingest expansion, phase-aware features, and contract hardening
+
+This release consolidates the post-v2.4.0 working-tree additions into the next
+versioned measurement-contract line. The detailed MEG, HRV v0.1, block-native
+v2, geometry-contract, anchoring, and validation notes retained under v2.4.0
+below remain part of the cumulative contract history. This section records the
+additional functionality promoted into the v2.5.0 release.
+
+### Major additions
+
+**BDF / Figshare infant EEG**
+
+- Added BDF adapters and privacy-safe metadata extraction for Figshare infant
+  EEG workflows.
+- Added BAD_ masking, coverage-aware cohort-anchor export, and a repair for
+  connectivity features becoming all-NaN after masked segments.
+- The full internal run processed 71 BDF files, retained 5,273 epochs, and
+  produced 70 coverage-passing HDF5 summaries. These are ingest/QC results;
+  infant behavioural condition labels were not established by the available
+  Status field.
+
+**NWB / Neuropixels / ephys and LFP**
+
+- Added DANDI/NWB ElectricalSeries and Units-to-rate paths with probe discovery,
+  streaming QC, state/stimulation annotations, and explicit geometry limits.
+- Added Neuropixels ephys feature extraction and smoke validation for DANDI
+  000006.
+- Added LFP channel selection, contact/reference sensitivity, and state-aware
+  QC for DANDI 000458. These are one-session descriptive foundations, not
+  cross-probe geometric or circuit-level validation.
+
+**Phase anchor and sleep-EAP extensions**
+
+- Added optional cardiac/respiratory phase, RR, HR, respiratory-rate, inhale
+  fraction, and HEP-related feature extraction through `phase_anchor`.
+- Added the sleep-EAP phase-2 contract and associated quality/provenance
+  surfaces.
+- These features are now release-bound as optional v2.5.0 capabilities; their
+  dataset-scale scientific interpretation remains modality- and cohort-
+  dependent.
+
+**Contract, provenance, and QC hardening**
+
+- Added `/epoch_id` as an explicit window join key where available.
+- Added stricter simultaneous-MEEG row-lineage checks and expanded provenance.
+- Added robust-z degenerate-scale safeguards and documented the
+  `degenerate_scale_policy = "nan"` compatibility boundary.
+- Added configuration overlay replacement semantics and additional source
+  adapters, tests, and QC artifacts.
+
+### Validation and claim boundaries
+
+| Dataset or stream | Evidence in v2.5.0 | Claim ceiling |
+|---|---|---|
+| ds003838 | 130 completed HDF5 exports and 27,670 block-native windows; corrected stage statistics use `N = 62`, with `vagal_index` listen--mem13 `d = 1.995` | Internal task-contrast validation; no independent replication |
+| ds006848 | ECG polarity and contamination audits; encoding `m`/`d` analyses on `n = 30` | Working-memory HRV claims withheld because 87.7% of 60 s windows overlap retrieval |
+| ds003645 | Five-subject MEG pilot, readiness `0.7879` | Exploratory pilot; not full-cohort production validation |
+| DANDI 000006 / 000458 | Units and LFP smoke/QC paths | Transport and descriptive sensitivity only |
+| Figshare infant EEG | BDF ingest, masking, connectivity repair, and cohort outputs | No infant behavioural condition or clinical inference |
+
+### Release boundary
+
+The v2.5.0 release must be identified by the final commit and package version,
+not by the presence of local generated data. Exploratory, negative, and
+dataset-specific findings remain labelled as such. The v2.4.0 section below
+retains the historical release surface that v2.5.0 extends.
+
+---
+
 ## v2.4.0 — MEG support, HRV v0.1, block-native v2, geometry contract
 
 ### Major additions

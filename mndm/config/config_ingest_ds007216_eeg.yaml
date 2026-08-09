@@ -1,0 +1,122 @@
+version: 2.0
+modality: eeg
+
+# ds007216 — "EEG-fMRI Harmonization" simultaneous EEG-fMRI dataset (Kucyi Lab,
+# Temple/Drexel). 24 subjects (sub-022 absent from the public release), up to
+# 2 sessions, 4 runs/session (3x task-ExperienceSampling + 1x task-GradCPT).
+# BrainVision EEG (31-ch 10-20 montage + ECG + 4x CWL carbon-wire-loop
+# gradient/BCG reference channels) recorded inside the 3T Siemens Prisma at
+# 5000 Hz; simultaneous multiband BOLD (TR=2s).
+#
+# EEG-fMRI harmonization pilot (see project/ideas/fmri-EEG-harmonization/
+# sciencelead/001.md and .cursor/plans/ds007216_eeg-fmri_harmonization_pilot_*)
+# — this config ingests the dataset's own "Bergen_CWreg" derivative: BrainVision
+# gradient-artifact-corrected, carbon-wire-loop (CWL) regressed, and downsampled
+# to 250 Hz by the original authors (Bergen pipeline). This is the recommended
+# EEG-inside-scanner artifact correction; mndm does not re-implement gradient/BCG
+# artifact removal, so no raw (non-derivative) BrainVision fallback is wired up
+# here. If Bergen_CWreg is missing for a given run, that run is simply absent
+# from the EEG file index (see run_pair_index completeness flags).
+#
+# derivatives/ layout mirrors the raw BIDS tree (sub-*/ses-*/eeg/*_Bergen_CWreg.set)
+# but ships without its own channels.tsv/events.tsv/eeg.json sidecars — channel
+# typing below is therefore done by regex on the MNE-loaded channel names
+# (ECG, CWL1-4), not the BIDS sidecar, mirroring the ds003969/ds004511 pattern.
+#
+# NOTE on dataset_received_dirs: pointed directly at ".../ds007216/derivatives"
+# (not the dataset root) because mndm.bids_index.build_file_index unconditionally
+# skips any path containing a "derivatives" path segment. Rooting at the
+# derivatives folder itself sidesteps that filter (same trick as
+# config_ingest_ds004504_m_drive_derivatives_anchor.yaml / config_ingest_ds000228.yaml).
+# participants.tsv therefore has to be resolved one directory up (see
+# metadata_extraction below).
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds007216
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds007216"
+  dataset_name: "EEG-fMRI Harmonization"
+  dataset_version: "1.0.0"
+  url: "https://openneuro.org/datasets/ds007216"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "J:/processed/openneuro"
+  dataset_received_dirs:
+    ds007216: "K:/ExternalReceivedDatasets/openneuro/received/ds007216/derivatives"
+
+# The derivatives folder ships BOTH the gradient-artifact-corrected-only
+# "_Bergen.set" and the gradient+CWL-regressed "_Bergen_CWreg.set" for every
+# run. Exclude the plain Bergen variant so each run is only ingested once
+# (via the CWL-regressed version, which is the recommended one per the
+# dataset's own documentation).
+exclude_files:
+  - "_Bergen\\.(set|fdt)$"
+
+preprocess:
+  # Bergen_CWreg is already downsampled to 250 Hz by the source pipeline, so
+  # sfreq/sfreq_candidates below are a no-op resample guard, not a real
+  # downsample step.
+  sfreq: 250
+  sfreq_candidates: [250]
+  # CWL-regression already removes the MR gradient/ballistocardiogram artifact;
+  # avoid a second, redundant ICA pass for the Pilot A first look. Revisit if
+  # residual scanner artifact shows up in QC.
+  artifacts:
+    method: "none"
+
+  # ECG / CWL1-4 auxiliary channel typing rules live in
+  # mndm/config/channel_typing/datasets.yml (external policy library; see
+  # config_ingest_common_eeg.yaml's channel_typing.policy_dir). MNE's EEGLAB
+  # reader types every channel "eeg" by default (no BIDS channels.tsv sidecar
+  # ships with this derivative), so those regex rules are the only source of
+  # truth for ECG/CWL typing.
+
+metadata_extraction:
+  datasets:
+    ds007216:
+      participants:
+        # Dataset root for this config is ".../ds007216/derivatives"; the real
+        # participants.tsv lives one directory up, at the actual dataset root.
+        path: "../participants.tsv"
+      task:
+        from_filename: true
+
+indexing:
+  multimodal_bundles:
+    enabled: false   # EEG and fMRI are separate files/modalities for this dataset;
+                      # cross-modal alignment is handled by a dedicated analysis layer,
+                      # not by mndm's single-file multimodal bundle mechanism.
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8", "FC1", "FC2", "FC5", "FC6"]
+      central: ["C3", "C4", "Cz", "CP1", "CP2", "CP5", "CP6"]
+      parietal_occipital: ["P3", "P4", "Pz", "P7", "P8", "O1", "O2", "Oz", "POz"]
+      temporal: ["T7", "T8", "TP9", "TP10"]
+
+# sciencelead/006.md recommendation 4 (region-matched EEG-vs-fMRI comparison,
+# Part B): 3D-only per-region MNPS trajectories built from the ensembles
+# groups above (frontal/central/parietal_occipital/temporal), one per
+# "__g_<group>"-suffixed feature column already computed via
+# robustness.ensembles. 9D stratified layer stays OFF -- out of scope for
+# this pass, and this is additive-only (writes new /regional_mnps/<label>/*
+# groups to H5; does not alter /mnps_3d, /mnps_3d_dot, /jacobian/* -- verify
+# byte-parity against production H5s before treating as reference, per the
+# implementation plan).
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: false
+
+summarize:
+  allow_group_collisions: false

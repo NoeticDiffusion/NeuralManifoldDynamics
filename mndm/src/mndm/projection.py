@@ -37,6 +37,11 @@ logger = logging.getLogger(__name__)
 
 AXES = ("m", "d", "e")
 ROBUST_MAD_TO_SIGMA = 1.4826
+DEFAULT_DEGENERATE_SCALE_POLICY = "nan"
+DEGENERATE_SCALE_POLICIES = frozenset({"nan", "eps_floor"})
+DEFAULT_DEGENERATE_SCALE_EPS = 1e-9
+DEFAULT_STRICT_ROBUST_Z_MIN_FINITE = 3
+ROBUST_Z_GUARD_POLICY_VERSION = "mndm.robust_z_guard.v1"
 FEATURE_EXPORT_EXACT_EXCLUDED = {
     "file",
     "epoch_id",
@@ -135,28 +140,73 @@ def _format_pipeline_steps(pipeline: Sequence[str], clip_thresh: float) -> list[
     return applied_steps
 
 
-def _robust_center_and_scale(values: np.ndarray, eps: float = 1e-9) -> tuple[float, float]:
-    """Internal helper: robust center and scale."""
+def _robust_center_and_scale(
+    values: np.ndarray,
+    eps: float = DEFAULT_DEGENERATE_SCALE_EPS,
+    *,
+    floor_degenerate: bool = True,
+) -> tuple[float, float]:
+    """Return robust center and scale, optionally retaining legacy epsilon flooring."""
     finite_vals = np.asarray(values, dtype=np.float32)
     if finite_vals.size == 0:
         return float("nan"), float("nan")
     center = float(np.nanmedian(finite_vals))
     scale = float(np.nanmedian(np.abs(finite_vals - center))) * ROBUST_MAD_TO_SIGMA
-    if not np.isfinite(scale) or scale <= eps:
+    if floor_degenerate and (not np.isfinite(scale) or scale <= eps):
         scale = eps
     return center, scale
 
 
-def _strict_robust_z_column(col_data: np.ndarray, eps: float = 1e-9) -> tuple[np.ndarray, float, float]:
-    """Internal helper: strict robust z column."""
+def _strict_robust_z_column(
+    col_data: np.ndarray,
+    *,
+    eps: float = DEFAULT_DEGENERATE_SCALE_EPS,
+    degenerate_scale_policy: str = DEFAULT_DEGENERATE_SCALE_POLICY,
+    min_finite_count: int = DEFAULT_STRICT_ROBUST_Z_MIN_FINITE,
+) -> tuple[np.ndarray, float, float, str]:
+    """Return strict robust-z values and guard status for one raw feature.
+
+    The default ``nan`` policy treats inadequate support and a MAD scale at or
+    below ``eps`` as invalid rather than converting a small raw deviation into
+    an arbitrary very large z-score.  ``eps_floor`` is an explicit compatibility
+    mode that reproduces the historical division-by-epsilon behavior.
+    """
+    policy = str(degenerate_scale_policy).strip().lower()
+    if policy not in DEGENERATE_SCALE_POLICIES:
+        raise ValueError(
+            f"Unsupported degenerate_scale_policy '{degenerate_scale_policy}'; "
+            f"expected one of {sorted(DEGENERATE_SCALE_POLICIES)}"
+        )
+    if not np.isfinite(eps) or eps <= 0:
+        raise ValueError("eps must be finite and > 0")
+    if int(min_finite_count) < 1:
+        raise ValueError("min_finite_count must be >= 1")
+
     transformed = np.full(col_data.shape, np.nan, dtype=np.float32)
     mask = np.isfinite(col_data)
     if not mask.any():
-        return transformed, float("nan"), float("nan")
+        return transformed, float("nan"), float("nan"), "insufficient_support"
+
     finite_vals = np.asarray(col_data[mask], dtype=np.float32)
-    center, scale = _robust_center_and_scale(finite_vals, eps=eps)
+    center, raw_scale = _robust_center_and_scale(
+        finite_vals,
+        eps=eps,
+        floor_degenerate=False,
+    )
+    invalid_reason = ""
+    if finite_vals.size < int(min_finite_count):
+        invalid_reason = "insufficient_support"
+    elif not np.isfinite(raw_scale) or raw_scale <= eps:
+        invalid_reason = "degenerate_scale"
+
+    if invalid_reason and policy == "nan":
+        return transformed, center, float("nan"), invalid_reason
+
+    scale = raw_scale
+    if not np.isfinite(scale) or scale <= eps:
+        scale = float(eps)
     transformed[mask] = (finite_vals - center) / scale
-    return transformed, center, scale
+    return transformed, center, float(scale), invalid_reason
 
 
 def _apply_column_pipeline(
@@ -183,7 +233,12 @@ def _apply_column_pipeline(
             result[pos_mask] = np.log10(data[pos_mask])
             data = result
         elif step_str in ("robust_z", "robust"):
-            z, _, _ = _strict_robust_z_column(data.astype(np.float32))
+            # Projection coordinates retain their existing clipped transformation
+            # contract; strict feature-export guardrails are deliberately separate.
+            z, _, _, _ = _strict_robust_z_column(
+                data.astype(np.float32),
+                degenerate_scale_policy="eps_floor",
+            )
             data = z.astype(np.float64)
         elif step_str == "clip":
             data = np.where(np.isfinite(data), np.clip(data, -clip_threshold, clip_threshold), data)
@@ -218,8 +273,22 @@ def build_feature_export_bundle(
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
     clip_threshold: float = 6.0,
     entropy_meta: Optional[Mapping[str, Any]] = None,
+    degenerate_scale_policy: str = DEFAULT_DEGENERATE_SCALE_POLICY,
+    degenerate_scale_eps: float = DEFAULT_DEGENERATE_SCALE_EPS,
+    min_finite_count: int = DEFAULT_STRICT_ROBUST_Z_MIN_FINITE,
 ) -> dict[str, Any]:
     """Build raw/strict-robust-z feature surfaces and machine-readable metadata."""
+    degenerate_scale_policy = str(degenerate_scale_policy).strip().lower()
+    if degenerate_scale_policy not in DEGENERATE_SCALE_POLICIES:
+        raise ValueError(
+            f"Unsupported degenerate_scale_policy '{degenerate_scale_policy}'; "
+            f"expected one of {sorted(DEGENERATE_SCALE_POLICIES)}"
+        )
+    if not np.isfinite(degenerate_scale_eps) or float(degenerate_scale_eps) <= 0:
+        raise ValueError("degenerate_scale_eps must be finite and > 0")
+    if int(min_finite_count) < 1:
+        raise ValueError("min_finite_count must be >= 1")
+
     feature_cols = select_export_feature_columns(features_df)
     n_rows = int(len(features_df))
     if not feature_cols:
@@ -255,6 +324,9 @@ def build_feature_export_bundle(
         "raw_abs_mad": [],
         "robust_z_center": [],
         "robust_z_scale": [],
+        "robust_z_valid": [],
+        "robust_z_invalid_reason": [],
+        "robust_z_finite_count": [],
         "backend": [],
         "degraded_mode": [],
         "fallback_reason": [],
@@ -267,7 +339,12 @@ def build_feature_export_bundle(
     for idx, col in enumerate(feature_cols):
         col_values = pd.to_numeric(features_df[col], errors="coerce").to_numpy(dtype=np.float32, copy=True)
         raw_values[:, idx] = col_values
-        strict_robust_z, center, scale = _strict_robust_z_column(col_values)
+        strict_robust_z, center, scale, invalid_reason = _strict_robust_z_column(
+            col_values,
+            eps=degenerate_scale_eps,
+            degenerate_scale_policy=degenerate_scale_policy,
+            min_finite_count=min_finite_count,
+        )
         robust_z_values[:, idx] = strict_robust_z
 
         match = REGIONAL_FEATURE_RE.match(col)
@@ -308,6 +385,9 @@ def build_feature_export_bundle(
         metadata["raw_abs_mad"].append(raw_mad)
         metadata["robust_z_center"].append(center)
         metadata["robust_z_scale"].append(scale)
+        metadata["robust_z_valid"].append(int(not invalid_reason or degenerate_scale_policy == "eps_floor"))
+        metadata["robust_z_invalid_reason"].append(invalid_reason)
+        metadata["robust_z_finite_count"].append(int(finite_vals.size))
         metadata["backend"].append(entropy_backend if is_entropy_feature else "")
         metadata["degraded_mode"].append(int(entropy_degraded if is_entropy_feature else False))
         metadata["fallback_reason"].append(entropy_reason if is_entropy_feature else "")
@@ -321,6 +401,7 @@ def build_feature_export_bundle(
             "projection_normalize_mode",
             "projection_transform_applied",
             "projection_transform_steps",
+            "robust_z_invalid_reason",
             "backend",
             "fallback_reason",
         }:
@@ -332,6 +413,8 @@ def build_feature_export_bundle(
             "robust_z_scale",
         }:
             normalized_metadata[key] = np.asarray(values, dtype=np.float32)
+        elif key == "robust_z_finite_count":
+            normalized_metadata[key] = np.asarray(values, dtype=np.int32)
         else:
             normalized_metadata[key] = np.asarray(values, dtype=np.int8)
 

@@ -309,6 +309,43 @@ rows are synthesized from inferred `stage_blocking` intervals:
   `bridge_tail_sec`, `bridge_tail_cap_sec`, `bridge_tail_ms`,
   `block_start_ms`, `block_end_ms`, and `block_duration_ms`
 
+**`event_metadata_json`** *(str, JSON blob)*: any CSV columns not recognized
+by the standard `EventTable` schema (see `event_annotations.py`'s
+`_FLOAT_COLS`/`_STR_COLS`) are not dropped when loading a `kind: "csv"`
+event source — `load_event_table_from_csv` folds them into a single JSON
+string per event, and `build_event_locked_table` copies it verbatim into
+every corresponding output row as `event_metadata_json`. For example,
+ds004587's Illusion Game trial CSVs (see below) carry `illusion_strength`,
+`type`, `correct`, `rt`, `block_number`, `trial_number`,
+`qc_ok_event_sync`, and `within_sync_bracket` this way; downstream analysis
+must `json.loads()` this column to recover them as typed values (see
+`illusionGame_EAP/src/ds004587_support.py`'s `load_event_locked_trial_table`).
+
+**ds004587 (Illusion Game) trial-level event-locking.** ds004587's raw EEG
+`events.tsv` carries only a single "recording start" marker — there is no
+hardware trial trigger. `project/scripts/28_ds004587_lux_trial_sync.py`
+(backed by `mndm.pipeline.ds004587_lux_sync`) recovers per-trial onsets from
+the injected `LUX` photosensor channel using landmark-consensus clock-offset
+estimation against distinctive block-break landmarks (validated: ~72/100
+runs pass the sync quality gate with sub-30ms residuals). It writes one
+`EventTable`-compatible CSV per run
+(`{events_core}_ig_trials_v1.csv`) plus a cohort-level
+`ds004587_ig_trial_sync_quality.csv` audit. `event_locked.datasets.ds004587`
+(`config_ingest_ds004587.yaml`) then consumes those CSVs the normal
+`kind: "csv"` way, producing per-trial `event_locked.parquet` rows with `m`/
+`d`/`e` MNPS geometry at the nearest ~8s/4s-step window to each recovered
+trial onset. Trials whose run failed the sync quality gate, or that fall
+outside the run's landmark-bracketed interval, are never fabricated: their
+source-CSV `onset_sec` is `NaN`, so the alignment step silently excludes them
+(counted in `n_events_excluded_non_finite`) rather than guessing. Because
+several trials commonly land in the same MNPS window at this cadence,
+consumers must collapse each trial (`event_id`) to its single nearest window
+(minimum `abs(rel_time_sec)`) before running trial-level statistics — see
+`illusionGame_EAP/src/09_trial_level_event_locked_eap.py`. This still cannot
+produce a rest-vs-illusion neural contrast (ds004587 has no rest-EEG in the
+source BIDS release) or trial-locked Jacobian/MNJ metrics (only `m`/`d`/`e`
+are exported by `build_event_locked_table`).
+
 ---
 
 ### Group: `/codebooks`
@@ -368,6 +405,20 @@ enabled, the surface may also include `eeg_conventional_coma_*` columns.
 For `ds003645` MEG shadow-mapping runs, `features_raw` may additionally expose
 paired diagnostic and combined MEG columns:
 
+### MEG measurement-safeguard surfaces
+
+`/features_projection_z` is the transform-aware export surface: each row is
+aligned exactly to `/time`, `/mnps_3d`, and `/features_raw`, while values have
+the configured feature pipeline applied (for example `log10 → robust_z → clip`
+for MEG power). `/row_source` contains additive row-aligned source lineage
+(`raw_file`, source-format and modality flags); `/epoch_id` is an additive
+per-row identity when available.
+
+Sensor-topographic QC reports are external JSON/CSV artifacts. They report
+frozen helmet-sector coverage and reliability only. They do not add regional
+labels to MNPS outputs and must not be read as cortical localization or
+EEG–MEG coordinate harmonization.
+
 - diagnostic sensor-family columns such as `meg_mag_alpha`,
   `meg_grad_alpha`, `meg_mag_permutation_entropy`
 - combined shadow columns used by the ds003645 9D mapping such as
@@ -391,6 +442,31 @@ interoceptive/raw anchor columns such as:
 - `ecg_hrv_coverage_fraction`
 - `ecg_hrv_quality_score`
 - `qc_ok_ecg_hrv`
+
+When `phase_anchor.enabled: true` in the dataset config, `features_raw` also
+contains per-epoch **phase anchor** columns (Mål B / C of the Embodied Anchoring
+Principle). These land directly in `features.parquet` during `mndm.cli features`
+and are automatically carried into HDF5 by `mndm.cli summarize`:
+
+| Column | Type | Description |
+|--------|------|-------------|
+| `phi_cardiac_mean` | float32 | Circular mean cardiac phase ∈ [−π, π) via linear RR interpolation |
+| `phi_resp_mean` | float32 | Circular mean respiratory phase ∈ [−π, π) via Hilbert transform |
+| `rr_interval_ms` | float32 | Mean RR interval in epoch (ms) |
+| `hr_bpm` | float32 | Mean heart rate (bpm) |
+| `resp_rate_bpm` | float32 | Respiratory rate (bpm) from Hilbert phase advance |
+| `inhale_fraction` | float32 | Fraction of epoch samples in inhale phase (0–1) |
+| `hep_amplitude` | float32 | HEP mean frontal-EEG amplitude 200–600 ms post-R-peak |
+| `n_rpeaks_in_epoch` | int | R-peak count in epoch |
+| `pa_cardiac_quality` | float32 | Quality: fraction of expected beats detected (0–1, baseline 75 bpm) |
+| `pa_resp_quality` | float32 | Quality: finite fraction of phi_resp samples (0–1) |
+
+Missing modalities produce NaN-filled columns rather than errors:
+- **RichSleep**: ECG ✓ + Resp ✓ → full output
+- **ANPHY**: ECG ✓, no Resp → cardiac arm only; resp columns → NaN
+- **BOAS**: no ECG, Resp ✓ → respiratory arm only; cardiac columns → NaN
+
+Config key: top-level `phase_anchor:` in the dataset YAML (see `CONFIG_GUIDE.md`).
 
 When `features.ecg.hrv.complexity.enabled: true` (requires `antropy` + `nolds`),
 two additional nonlinear complexity columns are appended:
@@ -418,6 +494,12 @@ Created when summarize exports the strict robust-z feature surface.
 Important:
 - this surface is **strict robust-z only**
 - projection-only steps such as `log10` and `clip` remain represented in provenance metadata and `feature_baselines`, not baked into `features_robust_z`
+- new guarded exports add `robust_z_valid` (`int8`), `robust_z_invalid_reason`
+  (`""`, `degenerate_scale`, or `insufficient_support`), and
+  `robust_z_finite_count` to `/features_robust_z/metadata/*`
+- under the default `degenerate_scale_policy: nan`, a low-support or
+  MAD-degenerate column is all `NaN`; `eps_floor` is a legacy-reproduction
+  opt-in, not a coordinate-normalization setting
 
 ---
 
@@ -507,6 +589,16 @@ families when those modalities are available. In the current HRV v0.1 path,
 `anchor_state` prefers superwindow HRV columns over older short-window ECG
 surfaces when both exist.
 
+Guarded AnchorState exports retain `mndm.anchor_quality.v1` for compatibility
+and append a `quality_surface = "v2"` attr. For every emitted component and
+composite, `<name>_eligible` records raw-modality eligibility and
+`<name>_valid` records post-provenance/post-scale validity (both 0/1 float32).
+`anchor_valid_fraction` is the fraction of valid v0.1 components. Invalid
+components and all-invalid composites are `NaN`, so event-locked exports carry
+the same missing value rather than a numerical sentinel. `summary.json` also
+records `anchor_state_validation` (finite support, IQR, maximum magnitude,
+scale warnings, thresholds, and guard-policy version).
+
 Anchor fitting is subject-balanced: each subject contributes one summary value
 per feature, preventing long recordings from dominating the anchor.
 
@@ -578,6 +670,27 @@ Created when summarize exports additive per-window QC.
 
 This group intentionally carries only the light-weight, per-window contract.
 Heavier QC summaries still live in `qc_summary.json` and `qc_reliability.json`.
+
+#### ICA and bad-channel provenance in `qc_summary.json`
+
+When `preprocess.artifacts.method: "ica"` is active, the following fields are
+written into `qc_summary.json` under `artifacts`:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `artifacts.method` | str | Artifact method used: `"ica"`, `"none"`, or `"autoreject"` |
+| `artifacts.ica_n_components_fit` | int | Actual number of ICA components fitted |
+| `artifacts.ica_n_excluded` | int | Number of components excluded (eye + cardiac) |
+| `artifacts.ica_eog_proxy_channels` | list[str] | Channel names temporarily retyped as EOG |
+| `artifacts.ica_ecg_channel` | str\|null | ECG channel used for cardiac component detection |
+| `artifacts.bad_eeg_channels` | list[str] | Channel names flagged and dropped/interpolated |
+| `artifacts.n_bad_eeg_channels` | int | Count of bad EEG channels detected |
+
+When ICA is disabled (`method: "none"`), `artifacts.ica_n_excluded` is absent
+and `artifacts.method` = `"none"`.
+
+The per-subject bad-channel list is also echoed into `run_manifest.json` under
+`extra.preprocess_artifacts` for run-level aggregation.
 
 ---
 
@@ -681,6 +794,45 @@ Created if extensions exist. The structure is **free-form** and mirrors nested d
 Rule:
 - dict → subgroup
 - scalar/array → dataset (gzip-compressed unless scalar)
+
+---
+
+### Sleep-EAP Phase 2 sidecars and extensions
+
+Available only for the versioned RichSleep Phase 2 configuration. These are
+data/QC products, not inferential results.
+
+- **`phase_continuous_v1` sidecar**: one row per regular phase sample, with
+  `timestamp_sec`, `phi_cardiac`, `phi_resp`, per-modality validity flags, and
+  optional REM-theta phase. Its sampling rate is recorded in the sidecar
+  metadata and must be honoured by downstream hazard models.
+- **`non_event_risk_v1` sidecar**: seeded, N2- and time-of-night-stratified
+  non-event timestamps. It is distinct from `matched_control`, which is a
+  30-s geometry control product rather than a point-process risk set.
+- **`event_phase_v3` sidecar**: the catalog-filtered v2 event phase columns
+  plus raw-EEG spindle strength (`sigma_power`, `sigma_power_z_n2`), YASA
+  provenance, and SO-spindle coupling fields. `so_partner_missing=1` requires
+  coupling metrics to be NaN; zero is never used to represent a missing partner.
+- **`event_phase_n3_so_v1` sidecar**: one N3-gated slow-oscillation row per
+  detected trough/up-state pair. It samples the SO carrier and cardiac/
+  respiratory phases at both reference points. Missing autonomic phase is
+  represented by NaN plus point-specific validity and QC flags.
+- **`event_phase_rem_theta_v1` sidecar**: one row per scored 30-s REM epoch,
+  referenced at the epoch midpoint. It samples REM-restricted theta and
+  autonomic phase at that midpoint, without requiring a theta-burst detector.
+- **`/extensions/phase_continuous_v1`** and
+  **`/extensions/non_event_risk_v1`**: optional H5 embeddings of the same
+  sidecars. They are enabled only by the Phase 2 overlay and are not aligned
+  to the 30-s MNPS time grid.
+
+The N3-SO and REM-theta tables are Parquet-only in this version and join on
+`subject` plus their explicit reference times. Their schemas deliberately
+exclude spindle-strength (`sigma_*`, `frequency_hz`) and SO-spindle-pairing
+fields, so a carrier result cannot be mistaken for spindle coupling.
+
+The primary `/coords_9d` and `/mnps_3d` surfaces remain body-signal-free and
+retain their existing 30-s resolution. Phase 2 therefore supplies one
+integrated geometry outcome per event, not a within-spindle geometry trace.
 
 ---
 

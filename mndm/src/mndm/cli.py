@@ -170,6 +170,21 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     p_anchor_sens.add_argument("--max-files", type=int, default=500)
     p_anchor_sens.add_argument("--out", type=Path, default=None)
 
+    p_meg_replay = sub.add_parser("meg-transform-replay", help="Validate MEG feature transforms and exported coordinates")
+    p_meg_replay.add_argument("--h5", type=Path, required=True, help="Subject-level summarized H5 file")
+    p_meg_replay.add_argument("--dataset", type=str, required=True, help="Dataset id used for mapping resolution")
+    p_meg_replay.add_argument("--config", type=Path, required=True, help="Ingest config defining MEG transforms")
+    p_meg_replay.add_argument("--tolerance", type=float, default=2e-5)
+    p_meg_replay.add_argument("--out", type=Path, default=None)
+
+    p_topo_qc = sub.add_parser("sensor-topography-qc", help="Run opt-in report-only frozen-sector MEG QC")
+    p_topo_qc.add_argument("--h5", type=Path, required=True)
+    p_topo_qc.add_argument("--dataset", type=str, required=True)
+    p_topo_qc.add_argument("--config", type=Path, required=True)
+    p_topo_qc.add_argument("--out", type=Path, required=True, help="QC report JSON output")
+    p_topo_qc.add_argument("--cross-modal", action="store_true", help="Require the explicit paired-H5 null-gated workflow")
+    p_topo_qc.add_argument("--seed", type=int, default=0)
+
     p_check = sub.add_parser("check-structure", help="Validate summarized outputs (run folders) against a structure spec")
     _add_common_args(p_check)
     p_check.add_argument("--check-config", type=Path, default=Path(__file__).resolve().parents[2] / "config" / "check_structure.yaml", help="Path to structure check YAML spec")
@@ -214,7 +229,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     else:
         dataset_ids = datasets.list_datasets(config, include_pca_results=args.include_pca_results)
     
-    if not dataset_ids and args.command not in {"anchors-fit", "anchor-smoke", "anchor-sensitivity"}:
+    if not dataset_ids and args.command not in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "meg-transform-replay"}:
         logger.error("No datasets specified")
         return 1
     
@@ -340,6 +355,40 @@ def main(argv: Sequence[str] | None = None) -> int:
         else:
             print(text)
         return 0
+    elif args.command == "meg-transform-replay":
+        from .tools.meg_transform_replay import validate_meg_h5
+        import json
+        report = validate_meg_h5(args.h5, config, dataset_id=args.dataset, tolerance=args.tolerance)
+        text = json.dumps(report, indent=2, ensure_ascii=False)
+        if args.out:
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(text, encoding="utf-8")
+        else:
+            print(text)
+        return 0 if report["status"] == "ok" else 1
+    elif args.command == "sensor-topography-qc":
+        from .tools.sensor_topography_qc import run_sensor_topography_qc
+        import csv
+        import json
+        report = run_sensor_topography_qc(
+            args.h5, config, dataset_id=args.dataset, cross_modal=args.cross_modal, seed=args.seed,
+        )
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(json.dumps(report, indent=2, ensure_ascii=False), encoding="utf-8")
+        if report["status"] != "disabled":
+            csv_path = args.out.with_suffix(".csv")
+            with csv_path.open("w", newline="", encoding="utf-8") as handle:
+                writer = csv.DictWriter(handle, fieldnames=["sector", "feature_count", "odd_even_split_half_reliability"])
+                writer.writeheader()
+                for sector, count in report["frozen_group_coverage"].items():
+                    writer.writerow({
+                        "sector": sector,
+                        "feature_count": count,
+                        "odd_even_split_half_reliability": report["odd_even_split_half_reliability"].get(sector),
+                    })
+            logger.info("Wrote sensor-topography QC table: %s", csv_path)
+        logger.info("Wrote sensor-topography QC report: %s", args.out)
+        return 0 if report["status"] in {"ok", "disabled"} else 1
     elif args.command == "check-structure":
         from . import orchestrate
         return orchestrate.cmd_check_structure(

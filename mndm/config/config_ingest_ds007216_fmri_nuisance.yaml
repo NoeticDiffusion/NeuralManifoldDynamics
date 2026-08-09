@@ -1,0 +1,70 @@
+version: 2.0
+modality: fmri
+
+# ds007216 -- lightweight motion + WM/CSF nuisance-regression variant
+# (sciencelead/006.md recommendation 1, lightweight-only branch; see
+# c:\Users\Robin\.cursor\plans\ds007216_preprocessing_parity_+_regional_comparison_2b934e27.plan.md).
+#
+# Imports the production ds007216 fMRI config verbatim (same received-data
+# paths, same lightweight_norm_v1 BOLD, same atlas/features) and layers on
+# top of it:
+#   1. preprocess.fmri.nuisance_regression: regress out the extended motion
+#      (trans/rot) + WM/CSF (mean + top-3 PCA) confounds produced by
+#      project/scripts/21_ds007216_fmri_confounds_extract.py, before the
+#      existing [0.01, 0.1] Hz bandpass (see mndm.preprocess._apply_fmri_nuisance_regression).
+#   2. regional_mnps (recommendation 4, Part B): 3D-only EEG-region x
+#      fMRI-Yeo-network comparison. 9D stratified layer stays OFF (confirmed
+#      near-singular/rank-deficient for this window regime in earlier
+#      investigation; fixing it is out of scope for this pass). knn.k
+#      reduced to 5 for the per-network trajectories only -- this lives
+#      under regional_mnps.mnps (NOT the top-level mnps: block), so the
+#      primary /mnps_3d computation's knn.k=10 is completely unaffected
+#      (verified by code read: mndm.pipeline.regional_mnps.compute_regional_mnps_for_network
+#      reads config["mnps"] from whatever config dict it's given, and
+#      summary_regional.py passes it the `regional_mnps` sub-config, not the
+#      top-level one).
+#
+# IMPORTANT: paths.processed_dir is DELIBERATELY a separate root
+# ("openneuro_fmri_nuisance", not "openneuro_fmri"). mndm.pipeline.summary
+# ._create_output_dir names each summarize run's output folder purely as
+# "neuralmanifolddynamics_<dataset_id>_<UTC-timestamp>" -- with NO
+# config-content hash/tag whatsoever -- so every downstream script's
+# `_find_h5()` (latest-mtime glob under the dataset's processed_dir) would
+# silently start picking up this variant's H5s as "the" production ds007216
+# fMRI data the moment a `summarize` run under this config finished more
+# recently than the production one, corrupting every previously-closed
+# Pilot A/B/Stage 1-4 result without any error. A fully separate root makes
+# that impossible by construction.
+imports:
+  - "./config_ingest_ds007216_fmri.yaml"
+
+paths:
+  processed_dir: "J:/processed/openneuro_fmri_nuisance"
+
+preprocess:
+  fmri:
+    nuisance_regression:
+      enabled: true
+      confounds_suffix: "_desc-confoundsextended_timeseries.tsv"
+      columns:
+        - trans_x
+        - trans_y
+        - trans_z
+        - rot_x
+        - rot_y
+        - rot_z
+        - wm_mean
+        - csf_mean
+        - wm_pc1
+        - wm_pc2
+        - wm_pc3
+        - csf_pc1
+        - csf_pc2
+        - csf_pc3
+
+regional_mnps:
+  enabled: true
+  mnps:
+    knn: {k: 5, metric: "euclidean"}
+  stratified:
+    enabled: false

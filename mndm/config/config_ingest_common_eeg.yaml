@@ -241,6 +241,12 @@ conventional_eeg:
 mnps_projection:
   normalize: "robust_z"
   clip_threshold: 6.0
+  # Strict robust-z is a feature-export surface used by AnchorState. It is
+  # intentionally separate from the clipped projection coordinate pipeline.
+  feature_export:
+    degenerate_scale_policy: "nan"
+    degenerate_scale_eps: 1.0e-9
+    min_finite_count: 3
   # Optional export surface selection for anchored H5 bundles.
   # If omitted:
   # - subject_anchored defaults to true
@@ -499,3 +505,19 @@ regional_mnps:
     knn: {k: 10}
     ridge_alpha: 1.0
     super_window: 3
+
+# ── Phase Anchor (Mål B / C) — disabled by default ───────────────────────
+# Enable per-dataset by overriding phase_anchor.enabled: true in the
+# dataset-specific config.  See mndm/src/mndm/features/phase_anchor.py
+# for the full column contract.
+phase_anchor:
+  enabled: false
+  ecg_bipolar: false
+  frontal_eeg_channels: []        # dataset config should set these
+  hep_window_lo_s: 0.200
+  hep_window_hi_s: 0.600
+  resp_bandpass_lo_hz: 0.10
+  resp_bandpass_hi_hz: 0.50
+  chunk_minutes: 5
+  min_rpeaks_epoch: 5
+  min_rpeaks_hep: 3

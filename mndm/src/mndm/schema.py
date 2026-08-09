@@ -85,6 +85,9 @@ class MNPSPayload:
     # Optional per-window time bounds (seconds)
     window_start: Optional[np.ndarray] = None
     window_end: Optional[np.ndarray] = None
+    # Optional source-file-local epoch identity, aligned to the MNPS time axis.
+    # This is additive provenance; window bounds remain the fallback join key.
+    epoch_id: Optional[np.ndarray] = None
     # Optional binary labels aligned to MNPS time (e.g., mapped events)
     labels: MutableMapping[str, np.ndarray] = field(default_factory=dict)
     # Optional columnar event annotation table (see pipeline/event_annotations.py).
@@ -176,6 +179,7 @@ class MNPSPayload:
             "x_dot": self.x_dot,
             "window_start": self.window_start,
             "window_end": self.window_end,
+            "epoch_id": self.epoch_id,
             "stage": self.stage,
             "z": self.z,
             "events": dict(self.events),
@@ -474,6 +478,11 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
         payload.window_start = _as_float_array(payload.window_start, np.float32, (t.shape[0],))
     if payload.window_end is not None:
         payload.window_end = _as_float_array(payload.window_end, np.float32, (t.shape[0],))
+    if payload.epoch_id is not None:
+        epoch_id = np.asarray(payload.epoch_id)
+        if epoch_id.shape != (t.shape[0],):
+            raise ValueError("epoch_id must align with time axis")
+        payload.epoch_id = epoch_id.astype(np.int64, copy=False)
 
     if payload.stage is not None:
         stage = np.asarray(payload.stage)
@@ -505,10 +514,22 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
         t_len=t.shape[0],
         label="features_robust_z",
     )
+    payload.features_projection_z_values, payload.features_projection_z_names = _normalize_feature_surface(
+        payload.features_projection_z_values,
+        payload.features_projection_z_names,
+        t_len=t.shape[0],
+        label="features_projection_z",
+    )
     if payload.features_raw_names is not None and payload.features_robust_z_names is not None:
         if list(payload.features_raw_names) != list(payload.features_robust_z_names):
             raise ValueError("features_raw_names and features_robust_z_names must match")
-    feature_names = payload.features_raw_names or payload.features_robust_z_names
+    for names, label in (
+        (payload.features_robust_z_names, "features_robust_z"),
+        (payload.features_projection_z_names, "features_projection_z"),
+    ):
+        if payload.features_raw_names is not None and names is not None and list(payload.features_raw_names) != list(names):
+            raise ValueError(f"features_raw_names and {label}_names must match")
+    feature_names = payload.features_raw_names or payload.features_robust_z_names or payload.features_projection_z_names
     if payload.feature_metadata:
         if feature_names is None:
             raise ValueError("feature_metadata requires an exported feature surface")
@@ -550,6 +571,13 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
         payload.qc_windows = _normalize_columnar_mapping(
             payload.qc_windows,
             label="qc_windows",
+            expected_len=t.shape[0],
+            int_dtype=np.int8,
+        )
+    if payload.row_source_columns:
+        payload.row_source_columns = _normalize_columnar_mapping(
+            payload.row_source_columns,
+            label="row_source_columns",
             expected_len=t.shape[0],
             int_dtype=np.int8,
         )

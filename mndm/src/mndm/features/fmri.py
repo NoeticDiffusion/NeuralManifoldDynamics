@@ -93,8 +93,16 @@ def compute_fmri_features(signals: Mapping[str, Any], config: Mapping[str, Any])
             repro_cfg.setdefault("seed", int(base_seed))
             metrics_cfg["reproducibility"] = repro_cfg
 
+    # NMD-fMRI-v2.5 Stage 2 (sciencelead/003.md + 0004.md): dynamic-connectivity
+    # delta features need the previous epoch's value, same pattern as the
+    # existing fmri_lf_power_delta below. Opt-in only (default False), so no
+    # existing dataset config changes output schema/cost unless it explicitly
+    # enables compute_dynamic_deltas.
+    compute_dynamic_deltas = bool(metrics_cfg.get("compute_dynamic_deltas", False))
     records: list[Dict[str, Any]] = []
     prev_power_global: Optional[float] = None
+    prev_modularity: Optional[float] = None
+    prev_fc_mean: Optional[float] = None
 
     # 2) Single epoch loop (no nested windows).
     for epoch_id, start_idx in enumerate(range(0, n_times - window_samples + 1, step_samples)):
@@ -136,6 +144,23 @@ def compute_fmri_features(signals: Mapping[str, Any], config: Mapping[str, Any])
             lf_power_delta = float(abs(fmri_signal_power - prev_power_global))
             lf_power_delta_valid = 1
 
+        dynamic_delta_metrics: Dict[str, Any] = {}
+        if compute_dynamic_deltas:
+            modularity_val = float(epoch_metrics.get("fmri_modularity", float("nan")))
+            fc_mean_val = float(epoch_metrics.get("fmri_FC_mean", float("nan")))
+            if prev_modularity is not None and np.isfinite(prev_modularity) and np.isfinite(modularity_val):
+                dynamic_delta_metrics["fmri_modularity_delta"] = float(abs(modularity_val - prev_modularity))
+            else:
+                dynamic_delta_metrics["fmri_modularity_delta"] = float("nan")
+            if prev_fc_mean is not None and np.isfinite(prev_fc_mean) and np.isfinite(fc_mean_val):
+                dynamic_delta_metrics["fmri_FC_mean_change_rate"] = float(abs(fc_mean_val - prev_fc_mean))
+            else:
+                dynamic_delta_metrics["fmri_FC_mean_change_rate"] = float("nan")
+            if np.isfinite(modularity_val):
+                prev_modularity = modularity_val
+            if np.isfinite(fc_mean_val):
+                prev_fc_mean = fc_mean_val
+
         records.append(
             {
                 "epoch_id": int(epoch_id),
@@ -155,6 +180,7 @@ def compute_fmri_features(signals: Mapping[str, Any], config: Mapping[str, Any])
                 "fmri_sfreq": float(sfreq),
                 "dataset_id": dataset_id,
                 **epoch_metrics,
+                **dynamic_delta_metrics,
             }
         )
 

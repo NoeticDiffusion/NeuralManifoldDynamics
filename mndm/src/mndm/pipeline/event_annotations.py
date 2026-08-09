@@ -46,6 +46,14 @@ _FLOAT_COLS = frozenset(
         "frequency_hz",
         "amplitude",
         "sigma_power",
+        "sigma_power_z_n2",
+        "so_onset_sec",
+        "so_upstate_sec",
+        "so_amplitude",
+        "so_phase_at_spindle_peak",
+        "so_spindle_latency_sec",
+        "so_spindle_coupling_score",
+        "so_partner_missing",
     }
 )
 
@@ -80,7 +88,9 @@ class EventTable:
     Optional float columns
     ----------------------
     duration_sec, offset_sec, peak_sec, confidence, frequency_hz,
-    amplitude, sigma_power
+    amplitude, sigma_power, sigma_power_z_n2, so_onset_sec, so_upstate_sec,
+    so_amplitude, so_phase_at_spindle_peak, so_spindle_latency_sec,
+    so_spindle_coupling_score, so_partner_missing
 
     Optional string columns
     -----------------------
@@ -103,6 +113,14 @@ class EventTable:
     frequency_hz: Optional[np.ndarray] = None
     amplitude: Optional[np.ndarray] = None
     sigma_power: Optional[np.ndarray] = None
+    sigma_power_z_n2: Optional[np.ndarray] = None
+    so_onset_sec: Optional[np.ndarray] = None
+    so_upstate_sec: Optional[np.ndarray] = None
+    so_amplitude: Optional[np.ndarray] = None
+    so_phase_at_spindle_peak: Optional[np.ndarray] = None
+    so_spindle_latency_sec: Optional[np.ndarray] = None
+    so_spindle_coupling_score: Optional[np.ndarray] = None
+    so_partner_missing: Optional[np.ndarray] = None
 
     event_type: Optional[np.ndarray] = None
     source: Optional[np.ndarray] = None
@@ -329,6 +347,14 @@ def load_event_table_from_csv(
     frequency_hz = _to_float_col("frequency_hz")
     amplitude = _to_float_col("amplitude")
     sigma_power = _to_float_col("sigma_power")
+    sigma_power_z_n2 = _to_float_col("sigma_power_z_n2")
+    so_onset_sec = _to_float_col("so_onset_sec")
+    so_upstate_sec = _to_float_col("so_upstate_sec")
+    so_amplitude = _to_float_col("so_amplitude")
+    so_phase_at_spindle_peak = _to_float_col("so_phase_at_spindle_peak")
+    so_spindle_latency_sec = _to_float_col("so_spindle_latency_sec")
+    so_spindle_coupling_score = _to_float_col("so_spindle_coupling_score")
+    so_partner_missing = _to_float_col("so_partner_missing")
 
     event_type = _to_str_col("event_type")
     source = _to_str_col("source")
@@ -367,6 +393,14 @@ def load_event_table_from_csv(
         frequency_hz=_apply_mask(frequency_hz),
         amplitude=_apply_mask(amplitude),
         sigma_power=_apply_mask(sigma_power),
+        sigma_power_z_n2=_apply_mask(sigma_power_z_n2),
+        so_onset_sec=_apply_mask(so_onset_sec),
+        so_upstate_sec=_apply_mask(so_upstate_sec),
+        so_amplitude=_apply_mask(so_amplitude),
+        so_phase_at_spindle_peak=_apply_mask(so_phase_at_spindle_peak),
+        so_spindle_latency_sec=_apply_mask(so_spindle_latency_sec),
+        so_spindle_coupling_score=_apply_mask(so_spindle_coupling_score),
+        so_partner_missing=_apply_mask(so_partner_missing),
         event_type=_apply_mask(event_type),
         source=_apply_mask(source),
         channel=_apply_mask(channel),
@@ -444,6 +478,14 @@ def event_table_to_hdf5_columns(table: EventTable) -> Dict[str, Any]:
     _add_float("frequency_hz", table.frequency_hz)
     _add_float("amplitude", table.amplitude)
     _add_float("sigma_power", table.sigma_power)
+    _add_float("sigma_power_z_n2", table.sigma_power_z_n2)
+    _add_float("so_onset_sec", table.so_onset_sec)
+    _add_float("so_upstate_sec", table.so_upstate_sec)
+    _add_float("so_amplitude", table.so_amplitude)
+    _add_float("so_phase_at_spindle_peak", table.so_phase_at_spindle_peak)
+    _add_float("so_spindle_latency_sec", table.so_spindle_latency_sec)
+    _add_float("so_spindle_coupling_score", table.so_spindle_coupling_score)
+    _add_float("so_partner_missing", table.so_partner_missing)
     _add_str("event_type", table.event_type)
     _add_str("source", table.source)
     _add_str("channel", table.channel)

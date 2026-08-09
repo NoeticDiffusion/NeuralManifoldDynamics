@@ -9,6 +9,11 @@ modality: eeg
 # Optional composition (recommended):
 # imports:
 #   - "./config_ingest_common_eeg.yaml"
+#
+# For non-BIDS BioSemi BDF archives, start from
+# ``bdf_config_ingest_template.yaml`` instead. It contains the opt-in BDF
+# adapter policy for filename mapping, channel-bank selection, canonical
+# channel names, montage, bad-channel tables, crops, and session metadata.
 
 datasets:
   - YOUR_DATASET_ID

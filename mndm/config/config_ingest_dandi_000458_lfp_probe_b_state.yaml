@@ -1,0 +1,17 @@
+version: 2.0
+modality: nwb_rodent_lfp
+
+imports:
+  - "./config_ingest_dandi_000458_lfp_probe_b_full.yaml"
+
+paths:
+  processed_dir: "data/dandi/processed_lfp/000458_probeB_state"
+
+state_labels:
+  enabled: false
+
+lfp_state_analysis:
+  primary_filter: "lfp_interstim_primary"
+  state_column: "lfp_behavioral_state"
+  stim_guard_sec: 1.0
+  exclude_pre_stim: true

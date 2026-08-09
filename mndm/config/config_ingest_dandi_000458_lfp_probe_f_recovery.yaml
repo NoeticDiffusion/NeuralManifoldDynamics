@@ -1,0 +1,4 @@
+version: 2.0
+imports: ["./config_ingest_dandi_000458_lfp_probe_f_state.yaml"]
+paths: {processed_dir: "data/dandi/processed_lfp/000458_probeF_recovery"}
+lfp_state_analysis: {primary_filter: "lfp_interstim_primary", state_column: "lfp_behavioral_state", state_value: "recovery"}

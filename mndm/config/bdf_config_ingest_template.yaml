@@ -1,0 +1,146 @@
+version: 2.0
+modality: eeg
+
+# ---------------------------------------------------------------------------
+# Copy-template for a non-BIDS BioSemi BDF collection.
+#
+# The BDF adapter is opt-in. It leaves ordinary BIDS BDF files unchanged unless
+# ``preprocess.bdf_adapter.enabled`` is true for this dataset.
+# Replace all YOUR_* placeholders and remove optional sections not needed by
+# the source archive.
+# ---------------------------------------------------------------------------
+imports:
+  - "./config_ingest_common_eeg.yaml"
+
+datasets:
+  - YOUR_BDF_DATASET_ID
+
+source:
+  name: "YOUR_SOURCE_NAME"
+  platform: "YOUR_PLATFORM"
+  format: "BioSemi BDF (non-BIDS)"
+  dataset_id: "YOUR_BDF_DATASET_ID"
+  dataset_name: "YOUR_DATASET_NAME"
+  dataset_version: "UNKNOWN"
+  url: "https://YOUR_SOURCE_URL"
+
+paths:
+  received_dir: "E:/Science_Datasets/received"
+  processed_dir: "E:/Science_Datasets/processed"
+  # Non-BIDS collections normally need this explicit path.
+  dataset_received_dirs:
+    YOUR_BDF_DATASET_ID: "E:/Science_Datasets/received/YOUR_RAW_BDF_DIRECTORY"
+
+preprocess:
+  sfreq: 256
+  sfreq_candidates: [256]
+  notch_hz: null
+  eeg_bandpass: [0.5, 45]
+  reref: "average"
+
+  bdf_adapter:
+    enabled: true
+
+    # Option A (recommended): a CSV that maps each raw BDF stem to BIDS-like
+    # identities. Example row:
+    # old_id,subject_id,subject,session
+    # RECORDING_001,sub-01_ses-01,1,1
+    mapping_path: "metadata/subject_session_map.csv"
+    mapping_key_column: "old_id"
+    mapping_subject_session_column: "subject_id"
+    mapping_subject_column: "subject"
+    mapping_session_column: "session"
+    subject_pad: 2
+    session_pad: 2
+
+    # Option B / fallback: named groups parse unmapped filenames. It must match
+    # the full basename, including the .bdf suffix.
+    filename_regex: "^(?P<subject>\\d+)_v(?P<session>\\d+)\\.bdf$"
+    task: "continuous_eeg"
+
+    # Keep the active scalp bank before resampling/filtering. This prevents
+    # BioSemi Status, EXG, and duplicated or flat banks entering EEG features.
+    channel_selection:
+      mode: "first_n"  # "first_n" or "names"
+      n_channels: 32
+      # For mode: names:
+      # channels: ["A1", "A2", "..."]
+
+    # Rename the retained bank in its source order. The count must exactly
+    # match the selected number of channels.
+    canonical_channel_names:
+      ["Fp1", "AF3", "F7", "F3", "FC1", "FC5", "T7", "C3",
+       "CP1", "CP5", "P7", "P3", "Pz", "PO3", "O1", "Oz",
+       "O2", "PO4", "P4", "P8", "CP6", "CP2", "C4", "T8",
+       "FC6", "FC2", "F4", "F8", "AF4", "Fp2", "Fz", "Cz"]
+    montage: "biosemi32"
+
+    # Optional per-recording bad channels. The BDF mapping row supplies the
+    # join key (normally subject_id); values may be CSV strings or [lists].
+    bad_channels_path: "metadata/bad_channels.csv"
+    bad_channels_key_column: "subject_id"
+    bad_channels_column: "bad_channels"
+    interpolate_bads: true
+
+    # Optional per-recording MNE annotation CSVs (for example, source-reviewed
+    # BAD_ artifact segments). The adapter resolves the filename from the
+    # mapping row, keeps the original time grid, and rejects every EEG epoch
+    # touching a marked interval. Do not use this for unvalidated task labels.
+    bad_segments_dir: "metadata/bad_segments"
+    bad_segments_key_column: "subject_id"
+    bad_segments_filename_template: "{subject_id}_annotations.csv"
+    mask_bad_segments: true
+
+    # Optional hard crops, keyed by BDF stem without .bdf. These are source
+    # protocol decisions, not automatic artifact rejection.
+    recording_crops: {}
+      # YOUR_RECORDING_STEM: {start_sec: 0, stop_sec: 300}
+
+epoching:
+  length_s: 8.0
+  step_s: 4.0
+
+metadata_extraction:
+  datasets:
+    YOUR_BDF_DATASET_ID:
+      # This regex is retained for generic non-BIDS tooling. Summary uses the
+      # adapter mapping when it is enabled, so do not duplicate a mapping here.
+      filename_parse:
+        regex: "^(?P<subject>\\d+)_v(?P<session>\\d+)\\.bdf$"
+        subject_pad: 2
+      participants:
+        # Optional privacy-safe subject-level table (CSV/TSV).
+        path: "metadata/derived/participants.tsv"
+      sessions:
+        # Optional privacy-safe session table. It must contain participant_id
+        # and session_id; summary joins it per HDF5 output.
+        path: "metadata/derived/sessions.tsv"
+      group:
+        default: "unknown"
+      condition:
+        # Use visit/session strata when the BDF Status channel has not been
+        # independently validated as an experimental-event source.
+        session_map: {}
+      task:
+        default: "continuous_eeg"
+
+features:
+  eeg_psd: {method: "multitaper", bandwidth: null}
+  eeg_bands: {delta: [1,4], theta: [4,8], alpha: [8,12], beta: [13,30], gamma: [30,45]}
+  ratios: {alpha_theta: ["alpha","theta"], beta_alpha: ["beta","alpha"]}
+
+conventional_eeg:
+  enabled: true
+  packs: ["tier1", "complexity"]
+  export: {per_epoch_columns: true, summaries: true}
+
+regional_mnps:
+  enabled: true
+  stratified: {enabled: true}
+  block_jacobians: {enabled: false}
+
+mnps_9d:
+  block_jacobians: {enabled: false}
+
+summarize:
+  allow_group_collisions: false
