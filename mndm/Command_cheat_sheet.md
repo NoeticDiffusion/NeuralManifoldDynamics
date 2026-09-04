@@ -1,5 +1,10 @@
 # MNDM + OpenNeuro Ingest CLI Reference
 
+Documented for **NeuralManifoldDynamics 3.0.0**. Canonical MNPS / Jacobian
+commands are unchanged from v2.6; dynamical families and Gate F \(W_Q\) remain
+opt-in overlays. See `CONFIG_GUIDE.md` and
+`../release_notes/RELEASE_NOTES_v3.0.0.md`.
+
 Quick command reference for the split pipeline:
 - `openneuro` handles dataset download
 - `mndm` handles features, summarization, Jacobians, exports, packing, and checks

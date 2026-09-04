@@ -2,6 +2,9 @@
 
 MNPS computation pipeline that computes per-epoch features and produces MNPS summaries, Jacobians, and derived outputs.
 
+Documented for **NeuralManifoldDynamics 3.0.0**. See
+[`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md).
+
 Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package covers feature extraction, summarization, packing, and structure checks.
 
 **New to the pipeline?** Start here:
@@ -12,10 +15,11 @@ Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package co
 | [`CONFIG_GUIDE.md`](CONFIG_GUIDE.md) | Step-by-step YAML config guide with recipes |
 | [`Command_cheat_sheet.md`](Command_cheat_sheet.md) | All CLI commands in one place |
 | [`Output_variables_guide.md`](Output_variables_guide.md) | Full HDF5 schema and variable reference |
+| [`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md) | v3.0.0 measurement-contract release notes |
 
 ## Overview
 
-This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajectories with associated Jacobian meta-dynamics, supporting the Noetic Diffusion Theory framework.
+This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajectories and Jacobian estimates under a versioned measurement contract. NDT interpretation is downstream, not an ingest claim.
 
 ### Pipeline Stages
 
@@ -30,8 +34,9 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 
 - **Multimodal feature extraction**: EEG (band power, entropy, connectivity), fMRI (regional BOLD, modularity), and peripheral signals (ECG, RESP, EDA, EOG, EMG)
 - **MNPS projection**: Maps features to 3D coordinates (m, d, e) representing mobility, diffusivity, and entropy
-- **Stratified MNPS**: Optional 9D subcoordinate chart (m_a, m_e, m_o, d_n, d_l, d_s, e_e, e_s, e_m) for mechanistic decomposition
+- **Stratified MNPS**: Optional 9D subcoordinate chart (m_a, m_e, m_o, d_n, d_l, d_s, e_e, e_s, e_m) for finer chart decomposition
 - **Jacobian estimation**: Local linear approximations of MNPS dynamics with meta-indices (trace, rotation, anisotropy)
+- **MNDM 3.0 dynamical families** (opt-in; not on common EEG/fMRI/ephys profiles): versioned `/dynamical_families/{diffusion,destination,resilience}/v1` writes with validity certificates, inferential grain, and `/support_signature/v1/`. Gate F \(W_Q\) is a separate opt-in under `/stochastic_reachability/v1`. The MNPS chart and `J_hat` are unchanged. See [`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md).
 - **MNPS extensions**: E-Kappa (energetic curvature), RFM (resonant frequency modes), O-Koh (organizational coherence), TIG (temporal integrity grade)
 - **Robustness**: Ensemble variance, split-half reliability, PSD multiverse stability, entropy sanity checks, and an always-on mathematical invalidity policy for MNPS/MNJ geometry
 - **Preprocessing robustness**:
@@ -1024,16 +1029,16 @@ Adjust ingest worker settings in `openneuro_ingest` for your hardware.
 
 ---
 
-## Theory Reference
+## Measurement objects
 
-This pipeline implements the data preparation layer for:
+This pipeline is the data-preparation / measurement-contract layer. It exports:
 
-- **Noetic Diffusion Theory (NDT)**: Models brain states as rhythmically scheduled denoising on learned manifolds
-- **Meta-Noetic Phase Space (MNPS)**: Low-dimensional embedding with mobility (m), diffusivity (d), entropy (e) axes
-- **Stratified MNPS**: 9D decomposition revealing mechanistic contributions to each axis
-- **Meta-Noetic Jacobian (MNJ)**: Second-order dynamics capturing how the rules of change themselves vary
+- **MNPS**: operational 3D chart `[m, d, e]`, not a uniquely identified latent manifold
+- **Stratified MNPS**: 9D chart subcoordinates compatible with the 3D export
+- **MNJ**: local chart Jacobian on exported coordinates, not a biophysical Jacobian
+- **Dynamical families (v3.0.0, opt-in)**: fail-closed schema objects beside MNPS, not licensed NDT \(\alpha/\omega/G_{\mathrm{peak}}\)
 
-See `docs/articles/` for theoretical foundations.
+See [`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md) for claim ceilings.
 
 ---
 

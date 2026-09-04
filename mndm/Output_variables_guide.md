@@ -1,12 +1,12 @@
-### HDF5 output schema (MNDM 2.6 release line)
+### HDF5 output schema (MNDM 3.0 release line)
 
 This file documents **all nodes (datasets + groups) and relevant HDF5 attributes** written by the MNDM summarization pipeline into each `*.h5`.
 
 Release-version note:
-- This document describes the **NeuralManifoldDynamics 2.6** measurement surface.
+- This document describes the **NeuralManifoldDynamics 3.0** measurement surface.
 - Some embedded sub-schema identifiers intentionally still carry `v2.1` names
   (for example the explicit anchored-coordinate layer schema) because those
-  subcontracts were introduced in the 2.1 release line and remain valid in 2.6.
+  subcontracts were introduced in the 2.1 release line and remain valid in 3.0.
 
 Notation:
 - **T**: number of MNPS timepoints (per-window/epoch on the MNPS grid)
@@ -134,7 +134,7 @@ Payload attributes (`payload.attrs`) are also copied into `h5.attrs` when not `N
 - **`stage_source`** *(str|None)*, **`stage_column`** *(str|None)*
 - **`coords_v2_names`** *(list[str]|None)*: v2 coordinate names (if v2 exists)
 - **`schema_version`** *(str)*: often `mnps_tensor_spec_v2_1` when the explicit anchored-coordinate sub-contract is present. In the 2.3 release line this identifier is still retained for backward-compatible coordinate-layer schema naming.
-- **`mndm_version`** *(str)*: software/measurement-contract release line recorded in the export metadata; current documentation tracks `2.6`.
+- **`mndm_version`** *(str)*: software/measurement-contract release line recorded in the export metadata; current documentation tracks `3.0.0`.
 - **`primary_coordinate_layer`** *(str)*: usually `coords_3d_cohort_anchored` when a cohort/external anchor is configured, otherwise `coords_3d_subject_anchored`.
 - **`primary_coordinate_contract`** *(str)*: `cohort_anchored` or `subject_anchored`.
 - **`anchor_id`**, **`anchor_hash`** *(str|None)*: identity and hash of the feature-anchor artifact used for cohort-anchored coordinates.
@@ -399,7 +399,7 @@ Always created (may be empty if Jacobians were not computed).
     `symmetric_rate_min`, `symmetric_rate_max`, `reactivity_gap`,
     `stable_reactive_flag`, `dynamical_regime`, `spectral_radius`,
     `frobenius_norm`, `trace`, `rotation_norm`, and `henrici_departure`.
-  - Theory \(\Omega\) appears only as the scalar `rotation_norm`, not as a matrix. Theory \(G_{\mathrm{peak}}\) is **not** in this group; see FTR `g_peak_over_horizons`.
+  - Theory \(\Omega\) appears only as the scalar `rotation_norm`, not as a matrix. Theory \(G_{\mathrm{peak}}\) is **not** in this group. FTR `g_peak_over_horizons` is a peak-gain analogue, not licensed NDT \(G_{\mathrm{peak}}\).
 
 Interpretation note:
 
@@ -835,7 +835,7 @@ not written here. Opt-in `mndm.stochastic_reachability.v1` lives at
 
 - **`/dynamical_families/diffusion/v1/`**: `mndm.diffusion_geometry.v1`. Local increment-covariance diffusion geometry. `contract_status=standard` is the schema class, not an empirical license. Ingest uses C1 defaults (`drift=None`, `residualize_increments=False`): `a_hat` / `D_total` / `d_diff` / `c_diff` may be `computed`, but `A_bD` and `R_b_over_a` are NaN with `summary.A_bD_computation_status=not_testable`, `summary.R_b_over_a_computation_status=not_testable`, and `drift_alignment_failure_reason=independent_drift_not_supplied`. `summary.a_semantics=raw_increment_covariance`. Do not read those NaNs as zero alignment. Jacobian residuals, MNPS \(\dot x\), and Jacobian intercepts are not diffusion \(a\) or SDE drift. Library C1 may consume an externally qualified chart \(b\) without changing `a_hat` (Gate C1-A). Ingest does not estimate \(b\); nmd-analysis owns identification (SL-005). C2 residualization is not authorized. Legacy read path: `/orthogonal_dynamics/diffusion_geometry/v1`.
 - **`/dynamical_families/destination/v1/`**: `mndm.committor.v1`. Production adapter is 1-D O2b (`local_law_dense_grid_o2b`) with explicit first-hit A/B + reaction coordinate. O2b does not serialize \(V_{1/2}\) or \(\lvert\nabla q\rvert\); the first-hit estimator serializes `q_A_to_B` only. Stage labels are not committor truth. Legacy read path: `/orthogonal_dynamics/committor/v1`.
-- **`/dynamical_families/resilience/v1/`**: `mndm.finite_amplitude_resilience.v1`. Observed perturbation-outcome FAR summary. Legacy read path: `/orthogonal_dynamics/finite_amplitude_resilience/v1`.
+- **`/dynamical_families/resilience/v1/`**: `mndm.finite_amplitude_resilience.v1`. Protocol-gated FAR object. Observational FAR / \(R(\rho)\) is not an ingest product in v3.0.0. Legacy read path: `/orthogonal_dynamics/finite_amplitude_resilience/v1`.
 
 These groups do not alter `/mnps_3d`, `/coords_9d`, or `/jacobian`. Common EEG/fMRI/ephys profiles do not enable them. Each family v1 group carries the Round-2 validity certificate (`computation_status`, `measurement_validity`, `claim_status`) and the Round-3 nested `grain/` object as siblings; `provenance.validation_level` remains the method-validation tag.
 

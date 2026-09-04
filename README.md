@@ -2,14 +2,17 @@
 
 Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation for EEG and fMRI workflows.
 
-Current documented release line: **NeuralManifoldDynamics 2.5.0**.
+Current documented release line: **NeuralManifoldDynamics 3.0.0**.
 
-Version 2.5.0 keeps the versioned measurement-contract framing introduced in the
-2.1 coordinate-contract release and extended through v2.4. It adds optional
-BDF/Figshare, NWB/Neuropixels/LFP, phase-anchor, sleep-EAP, explicit epoch
-lineage, provenance, and QC-hardening surfaces while preserving the canonical
-`mnps_3d = [m,d,e]` chart and the additive embodied/interoceptive layer
-(`anchor_state`, `anchor_quality`, and optional `anchor_coupling`).
+Version 3.0.0 keeps the frozen MNPS chart introduced in the 2.1 coordinate-contract
+release and carried through v2.6: canonical `mnps_3d = [m,d,e]`, stratified
+`coords_9d`, Jacobian estimator `J_hat`, and the additive embodied/interoceptive
+layer (`anchor_state`, `anchor_quality`, and optional `anchor_coupling`). It adds
+the dynamical-families write surface, validity/grain/support certificates, and
+opt-in discrete chart-space \(W_Q\). Biological inference, empirical C1-M3,
+observational FAR, and committor overlays remain downstream in `nmd-analysis`.
+
+See `release_notes/RELEASE_NOTES_v3.0.0.md` and `CHANGELOG.md`.
 
 This root README is intentionally high-level. Package-specific usage, schema details, and command references live in each subproject.
 
@@ -124,6 +127,8 @@ embodied/task-aware runs where:
 
 ## Where To Read Next
 
+- Release notes: `release_notes/RELEASE_NOTES_v3.0.0.md`
+- Changelog: `CHANGELOG.md`
 - MNDM usage and output contracts: `mndm/README.md`
 - MNDM generic config template: `mndm/config/config_template.yaml`
 - MNDM command reference: `mndm/Command_cheat_sheet.md`
@@ -141,6 +146,8 @@ NeuralManifoldDynamics/
 ├── dandi_ingest/
 ├── apollo_ingest/
 ├── vitaldb_ingest/
+├── release_notes/
+├── CHANGELOG.md
 ├── requirements.txt
 └── README.md
 ```

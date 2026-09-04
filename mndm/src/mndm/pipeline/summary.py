@@ -126,6 +126,7 @@ from .dynamical_families_export import (
     reject_legacy_family_config_key,
 )
 from .run_manifest import write_run_manifest
+from ..__about__ import __version__ as _MNDM_VERSION
 from ..reproducibility import resolve_reproducibility_policy
 from ..support_signature import build_support_signature
 
@@ -5804,7 +5805,7 @@ class SubjectSummaryRunner:
                 "epochs_after_qc": n_after_qc,
                 "epochs_after_nan_mask": int(len(sub_frame)),
                 "epochs_after_geometry_policy": int(len(sub_frame)),
-                "mndm_version": "2.6",
+                "mndm_version": _MNDM_VERSION,
                 "export_contract_version": "mndm.eeg_h5_contract.v1",
                 "primary_coordinate_layer": (
                     "coords_3d_cohort_anchored" if primary_coordinate_layer == "cohort_anchored" else "coords_3d_subject_anchored"

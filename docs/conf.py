@@ -16,8 +16,9 @@ project = "NeuralManifoldDynamics"
 copyright = "NeuralManifoldDynamics contributors"
 author = "NeuralManifoldDynamics contributors"
 
-version = ""
-release = ""
+from mndm.__about__ import __version__ as release
+
+version = ".".join(release.split(".")[:2])
 
 extensions = [
     "sphinx.ext.autodoc",

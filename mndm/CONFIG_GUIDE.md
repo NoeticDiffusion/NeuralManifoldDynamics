@@ -2,6 +2,14 @@
 
 A practical reference for neuroscientists adding a new EEG or fMRI dataset.
 
+Documented for **NeuralManifoldDynamics 3.0.0**. Canonical MNPS `[m,d,e]` / 9D,
+`J_hat`, and family schema IDs are unchanged from v2.6. This guide covers the
+additive v3 surfaces (`dynamical_families`, validity certificates, inferential
+grain, support signatures, and opt-in Gate F \(W_Q\)) plus the existing
+local-dynamics and dataset overlay YAML.
+
+Release notes: [`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md).
+
 ## Local dynamics extension
 
 Derived Jacobian metrics are computed whenever a Jacobian exists. Finite-time

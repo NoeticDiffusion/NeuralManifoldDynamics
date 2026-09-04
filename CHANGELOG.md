@@ -2,52 +2,99 @@
 
 ---
 
-## Unreleased — DF-DRIFT-C1 ingest freeze and analysis handoff (SL-005)
+## v3.0.0 — Dynamical families and measurement certificates
 
-Documentation only. No measurement change. MNPS `[m,d,e]` / 9D, `J_hat`,
-and family schema IDs are unchanged. Ingest still writes `drift=None`.
+Measurement-contract generation. MNPS `[m,d,e]` / 9D, `J_hat`, and family
+schema IDs are unchanged. Ingest still writes `drift=None`. Package version
+`3.0.0`. Release notes: `release_notes/RELEASE_NOTES_v3.0.0.md`.
 
-- SL-004 RATIFY of C1 M1–M2 stands. SL-005 freezes the ingest line at
-  consume-external-`b` and moves M3+ to nmd-analysis.
-- Handoff: `project/mnps_v3/df_drift_c1_analysis_handoff.md`
-  (**RATIFIED** 2026-09-03). MNPS chart trajectory, not “raw”; analysis
-  supplies auditable split hashes; ingest records an externally governed
-  qualification without adjudicating M3 PASS; Gate F
-  `input_semantics=discrete_transition_residual_covariance`.
-- C2 residualization, empirical C1 overlays, common-profile enablement,
-  and ds004100 OD-EPI-001 modification remain not authorized.
+This release is identified by the final commit and package version. It does
+not license NDT \(\alpha/\omega/G_{\mathrm{peak}}\), claim a latent SDE, or
+move empirical C1-M3 / observational FAR / committor overlays into ingest.
 
----
+### Round 1 — semantic kernel (dynamical families)
 
-## Unreleased — DF-DRIFT-C1 M1–M2 alignment-only estimator split
+Container and language rename only.
 
-Science-lead SL-003: C1 `alignment_only` is authorized for synthetic
-M1–M2 qualification only. C2 residualization, empirical C1 overlays,
-common-profile enablement, and ds004100 OD-EPI-001 modification are not
-authorized. MNPS `[m,d,e]` / 9D, `J_hat`, and family schema IDs are
-unchanged.
+- Python package `mndm.orthogonal_dynamics` → `mndm.dynamical_families`.
+- YAML root `orthogonal_dynamics` → `dynamical_families` (old key refused).
+- HDF5 write path `/dynamical_families/{diffusion,destination,resilience}/v1`.
+- Legacy `/orthogonal_dynamics/` is read-only; new files do not dual-write.
+- Schema IDs remain `mndm.diffusion_geometry.v1`, `mndm.committor.v1`,
+  `mndm.finite_amplitude_resilience.v1`.
+- Historical protocol IDs (`OD-TQ*`, `OD-EPI-*`, `OD-SLP-*`, `FAR-*`) kept.
 
-- `estimate_local_diffusion_geometry` now splits alignment `drift` from
-  `residualize_increments` (default false). Supplying truth-known chart
-  \(b\) for alignment leaves `a_hat` / `D_total` / `d_diff` / `c_diff`
-  byte-equal to the no-drift path (Gate C1-A). The C2 flag is
-  `invalid` / `c2_residualize_increments_not_authorized`.
-- Ingest still does not supply a vector and never residualizes. Forbidden
-  sources (`mnps_xdot`, Jacobian intercept, same-sample increment mean)
-  fail closed; `a_hat` stays on the no-drift path.
-- Under C1, `a_semantics=raw_increment_covariance` and
-  `ratio_semantics=chart_velocity_to_increment_spread`. \(R_{b/a}\) is
-  secondary; it is not an Itô drift-to-diffusion ratio.
-- FAR-EXT-002E is parked `BLOCKED_EXTERNAL_CUSTODY`. No live 0.2, freeze,
-  \(R(\rho)\), or FAR-003 until complete E1+E2 XML arrives.
+### Round 2 — validity certificate
 
----
+- Sibling fields `computation_status`, `measurement_validity`, and
+  `claim_status` on dynamical-family and local-dynamics exports.
+- New writes set `claim_status` to `no_biological_claim`; `ndt_licensed` is
+  not emitted.
+- `measurement_validity=translation_qualified` only for destination or
+  resilience when a family TQ id and contract hash are already recorded.
+  Diffusion OD-TQ1 tags are provenance only. Jacobian metrics and FTR remain
+  `not_assessed` when computed.
+- `validation_level` is not `measurement_validity`.
+- Legacy readers fill missing fields as `not_recorded` and do not infer
+  regime validity or NDT licensing.
 
-## Unreleased — Gate F admissible Q and opt-in \(W_Q\)
+### Round 3 — inferential grain
+
+- Additive nested `grain/` on existing v1 groups.
+- Fields: `native`, `parent`, `biological_unit`, `repeated_measure`,
+  `direct_between_subject_inference`.
+- New writes set `biological_unit=subject` and
+  `direct_between_subject_inference=forbidden`.
+- Grain is schema metadata and is written even when the object is not
+  computed. Windows are not participants.
+- Legacy readers fill missing grain fields as `not_recorded` and do not infer
+  `window` from series.
+
+### Round 4 — support / capability
+
+- Additive metadata schema `/support_signature/v1/`
+  (`mndm.support_signature.v1`). `geometry_contract` is unchanged.
+- Per-coordinate `source` / `fallback_feature` / `semantic_equivalence`
+  from existing `metric_policies` and recorded fallback metadata.
+- File-level capability row by modality (`chart_3d=yes` for EEG/iEEG/fMRI;
+  `spread=gated`; FAR `resilience=perturbational_only`; fMRI MNJ `limited`).
+- Legacy readers fill missing fields as `not_recorded` and do not infer
+  capability from HDF5 presence.
+
+### Diffusion compute vs OD-TQ1 method tag
+
+When `dynamical_families.diffusion` is enabled, ingest computes increment
+covariance if the estimator has support. YAML OD-TQ1 id/hash are provenance
+method tags. They are not an on/off gate and do not set
+`measurement_validity=translation_qualified`.
+
+- Write: `computed` + `not_assessed` + `no_biological_claim` when support holds.
+- Estimator refusals (gaps, irregular \(dt\), insufficient samples) remain
+  `not_testable` / `insufficient_support`.
+- Destination and FAR still require protocol inputs plus an adapter stamp.
+
+### Names, \(A_{bD}\) status, claim ceilings
+
+- `contract_status=standard` is the schema class, not an experimental vs
+  licensed scientific tag.
+- FTR `g_peak_over_horizons` is a peak-gain analogue on `J_hat`. It is not
+  licensed NDT \(G_{\mathrm{peak}}\).
+- Ingest diffusion remains `drift=None`. `computed` increment covariance is
+  not testable \(A_{bD}\) / \(R_{b/a}\). Those series stay NaN and now carry
+  `summary.A_bD_computation_status=not_testable` /
+  `R_b_over_a_computation_status=not_testable` with
+  `drift_alignment_failure_reason=independent_drift_not_supplied`.
+- Registry forbids `mnps_xdot_as_sde_drift` in addition to Jacobian-residual
+  substitution as \(a\).
+- O2b and first-hit committor do not serialize \(V_{1/2}\) or
+  \(\lvert\nabla q\rvert\).
+- v2.6 jacobian_metrics / FTR are provenance, not S3-licensed empirical NDT.
+  I-CARE analysis reachability is not `mndm.stochastic_reachability.v1`.
+
+### Gate F admissible Q and opt-in \(W_Q\)
 
 Gate F freeze: the only admissible Q for computed discrete \(W_Q\) is the
-Gate E recording-level transition-residual covariance. MNPS `[m,d,e]` / 9D,
-`J_hat`, and family schema IDs are unchanged.
+Gate E recording-level transition-residual covariance.
 
 - Admissible tags: `q_time_semantics=one_step_transition_covariance`,
   `q_units=state_squared`, `conversion_model=not_applicable`.
@@ -64,107 +111,42 @@ Gate E recording-level transition-residual covariance. MNPS `[m,d,e]` / 9D,
 - Common EEG/fMRI/ephys profiles do not enable reachability or FTR.
   I-CARE `tube_d_eff_median` is not this schema.
 
----
+### DF-DRIFT-C1 M1–M2 alignment-only estimator split
 
-## Unreleased — v3 B/D docs: names, \(A_{bD}\) status, claim ceilings
+Science-lead SL-003/SL-004: C1 `alignment_only` is authorized for synthetic
+M1–M2 qualification only. C2 residualization, empirical C1 overlays,
+common-profile enablement, and ds004100 OD-EPI-001 modification are not
+authorized.
 
-Documentation catch-up plus explicit ingest status for drift-alignment
-scalars. MNPS `[m,d,e]` / 9D, `J_hat`, and family schema IDs are unchanged.
+- `estimate_local_diffusion_geometry` now splits alignment `drift` from
+  `residualize_increments` (default false). Supplying truth-known chart
+  \(b\) for alignment leaves `a_hat` / `D_total` / `d_diff` / `c_diff`
+  byte-equal to the no-drift path (Gate C1-A). The C2 flag is
+  `invalid` / `c2_residualize_increments_not_authorized`.
+- Ingest still does not supply a vector and never residualizes. Forbidden
+  sources (`mnps_xdot`, Jacobian intercept, same-sample increment mean)
+  fail closed; `a_hat` stays on the no-drift path.
+- Under C1, `a_semantics=raw_increment_covariance` and
+  `ratio_semantics=chart_velocity_to_increment_spread`. \(R_{b/a}\) is
+  secondary; it is not an Itô drift-to-diffusion ratio.
+- FAR-EXT-002E is parked `BLOCKED_EXTERNAL_CUSTODY`. No live 0.2, freeze,
+  \(R(\rho)\), or FAR-003 until complete E1+E2 XML arrives.
 
-- `contract_status=standard` is the schema class, not an experimental vs
-  licensed scientific tag.
-- Theory \(G_{\mathrm{peak}}\) serializes as FTR `g_peak_over_horizons`.
-- Ingest diffusion remains `drift=None`. `computed` increment covariance is
-  not testable \(A_{bD}\) / \(R_{b/a}\). Those series stay NaN and now carry
-  `summary.A_bD_computation_status=not_testable` /
-  `R_b_over_a_computation_status=not_testable` with
-  `drift_alignment_failure_reason=independent_drift_not_supplied`.
-- Registry forbids `mnps_xdot_as_sde_drift` in addition to Jacobian-residual
-  substitution as \(a\).
-- O2b and first-hit committor do not serialize \(V_{1/2}\) or
-  \(\lvert\nabla q\rvert\).
-- v2.6 jacobian_metrics / FTR are provenance, not S3-licensed empirical NDT.
-  I-CARE analysis reachability is not `mndm.stochastic_reachability.v1`.
+### DF-DRIFT-C1 ingest freeze and analysis handoff (SL-005)
 
----
+Documentation freeze. No further measurement change in this ingest line.
 
-## Unreleased — diffusion compute vs OD-TQ1 method tag
-
-When `dynamical_families.diffusion` is enabled, ingest computes increment
-covariance if the estimator has support. YAML OD-TQ1 id/hash are provenance
-method tags. They are not an on/off gate and do not set
-`measurement_validity=translation_qualified`.
-
-- Write: `computed` + `not_assessed` + `no_biological_claim` when support holds.
-- Estimator refusals (gaps, irregular \(dt\), insufficient samples) remain
-  `not_testable` / `insufficient_support`.
-- Destination and FAR still require protocol inputs plus an adapter stamp.
-- MNPS `[m,d,e]` / 9D, `J_hat`, and family schema IDs are unchanged.
-
----
-
-## Unreleased — v3 Round 4 support / capability
-
-Additive metadata schema `/support_signature/v1/`
-(`mndm.support_signature.v1`). MNPS `[m,d,e]` / 9D, `J_hat`, family schema
-IDs, and `geometry_contract` are unchanged.
-
-- Per-coordinate `source` / `fallback_feature` / `semantic_equivalence`
-  from existing `metric_policies` and recorded fallback metadata.
-- File-level capability row by modality (`chart_3d=yes` for EEG/iEEG/fMRI;
-  `spread=gated`; FAR `resilience=perturbational_only`; fMRI MNJ `limited`).
-- Legacy readers fill missing fields as `not_recorded` and do not infer
-  capability from HDF5 presence.
-
----
-
-## Unreleased — v3 Round 3 inferential grain
-
-Additive nested `grain/` on existing v1 groups. MNPS `[m,d,e]` / 9D, `J_hat`,
-and schema IDs are unchanged.
-
-- Fields: `native`, `parent`, `biological_unit`, `repeated_measure`,
-  `direct_between_subject_inference`.
-- New writes set `biological_unit=subject` and
-  `direct_between_subject_inference=forbidden`.
-- Grain is schema metadata and is written even when the object is not
-  computed. Windows are not participants.
-- Legacy readers fill missing grain fields as `not_recorded` and do not infer
-  `window` from series.
-
----
-
-## Unreleased — v3 Round 2 validity certificate
-
-Additive certificate fields on existing v1 groups. MNPS `[m,d,e]` / 9D,
-`J_hat`, and family schema IDs are unchanged.
-
-- Sibling fields `computation_status`, `measurement_validity`, and
-  `claim_status` on dynamical-family and local-dynamics exports.
-- New writes set `claim_status` to `no_biological_claim`; `ndt_licensed` is
-  not emitted.
-- `measurement_validity=translation_qualified` only when a family TQ id and
-  contract hash are already recorded. Jacobian metrics and FTR remain
-  `not_assessed` when computed.
-- `validation_level` is not `measurement_validity`.
-- Legacy readers fill missing fields as `not_recorded` and do not infer
-  regime validity or NDT licensing.
-
----
-
-## Unreleased — v3 Round 1 semantic kernel (dynamical families)
-
-Container and language rename only. MNPS `[m,d,e]` / 9D order, the Jacobian
-estimator, and family schema IDs are unchanged.
-
-- Python package `mndm.orthogonal_dynamics` → `mndm.dynamical_families`.
-- YAML root `orthogonal_dynamics` → `dynamical_families` (old key refused).
-- HDF5 write path `/dynamical_families/{diffusion,destination,resilience}/v1`.
-- Legacy `/orthogonal_dynamics/` is read-only; new files do not dual-write.
-- Schema IDs remain `mndm.diffusion_geometry.v1`, `mndm.committor.v1`,
-  `mndm.finite_amplitude_resilience.v1`.
-- Historical protocol IDs (`OD-TQ*`, `OD-EPI-*`, `OD-SLP-*`, `FAR-*`) kept.
-- Spread / Gate F `W_Q` remains closed.
+- SL-004 RATIFY of C1 M1–M2 stands. SL-005 freezes ingest at
+  consume-external-`b` and moves M3+ to nmd-analysis.
+- Handoff: `project/mnps_v3/df_drift_c1_analysis_handoff.md`
+  (**RATIFIED** 2026-09-03). MNPS chart trajectory, not “raw”; analysis
+  supplies auditable split hashes; ingest records an externally governed
+  qualification without adjudicating M3 PASS. Gate F Q is tagged
+  `q_time_semantics=one_step_transition_covariance` with
+  `q_source=transition_residual_covariance_proxy`; it is discrete
+  chart-space predictive spread, not process noise.
+- C2 residualization, empirical C1 overlays, common-profile enablement,
+  and ds004100 OD-EPI-001 modification remain not authorized.
 
 ---
 

@@ -1,7 +1,7 @@
 NeuralManifoldDynamics
 ========================
 
-Python reference documentation for the shared ``core`` package and the ``mndm`` (MNPS / manifold dynamics) toolkit. Docstrings follow the `Google Python Style Guide <https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings>`_ (rendered via Sphinx Napoleon).
+Python reference documentation for the shared ``core`` package and the ``mndm`` (MNPS / manifold dynamics) toolkit. Current documented release line: **3.0.0**. Docstrings follow the `Google Python Style Guide <https://google.github.io/styleguide/pyguide.html#38-comments-and-docstrings>`_ (rendered via Sphinx Napoleon).
 
 .. toctree::
    :maxdepth: 2
