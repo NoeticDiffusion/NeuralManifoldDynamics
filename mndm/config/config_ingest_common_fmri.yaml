@@ -16,7 +16,7 @@ source:
 
 paths:
   received_dir: "E:/Science_Datasets/openneuro/received"
-  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  processed_dir: "K:/NeuralManifoldDyanamics/processed"
   dataset_received_dirs: {}
 
 preprocess:

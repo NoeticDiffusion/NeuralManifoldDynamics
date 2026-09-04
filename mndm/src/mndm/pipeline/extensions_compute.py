@@ -102,16 +102,23 @@ def compute_extensions(
         ),
     }
 
-    with ThreadPoolExecutor(max_workers=4) as ex:
-        future_map = {ex.submit(fn): name for name, fn in tasks.items()}
-        for fut in as_completed(future_map):
-            name = future_map[fut]
-            try:
-                payload_part, summary_part = fut.result()
-                extensions_payload.update(payload_part)
-                extensions_summary.update(summary_part)
-            except Exception:
-                logger.exception("Extension %s failed for %s", name, dataset_label)
+    enabled_tasks = {
+        name: fn
+        for name, fn in tasks.items()
+        if isinstance(extensions_cfg.get(name), Mapping)
+        and bool(extensions_cfg[name].get("enabled", False))
+    }
+    if enabled_tasks:
+        with ThreadPoolExecutor(max_workers=len(enabled_tasks)) as ex:
+            future_map = {ex.submit(fn): name for name, fn in enabled_tasks.items()}
+            for fut in as_completed(future_map):
+                name = future_map[fut]
+                try:
+                    payload_part, summary_part = fut.result()
+                    extensions_payload.update(payload_part)
+                    extensions_summary.update(summary_part)
+                except Exception:
+                    logger.exception("Extension %s failed for %s", name, dataset_label)
 
     if "rfm" not in extensions_summary and not regional_available:
         extensions_summary["rfm"] = {"status": "skipped_no_regional_bold"}

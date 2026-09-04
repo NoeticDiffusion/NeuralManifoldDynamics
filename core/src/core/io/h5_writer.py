@@ -18,7 +18,12 @@ except Exception:  # pragma: no cover - optional dependency
     h5py = None  # type: ignore
 import numpy as np
 
+from mndm.dynamical_families.registry import WRITABLE_FAMILY_IDS
 from mndm.schema import MNPSPayload, normalize_payload
+from mndm.support_signature import (
+    SUPPORT_SIGNATURE_SCHEMA_VERSION,
+    validate_write_support_signature,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -770,6 +775,10 @@ def write_h5(
             _create_dataset(jacobian_grp, "J_dot", payload.jacobian_dot)
         if payload.jacobian_centers is not None and payload.jacobian_centers.size:
             _create_dataset(jacobian_grp, "centers", payload.jacobian_centers)
+        if getattr(payload, "jacobian_affine_reference", None) is not None and payload.jacobian_affine_reference.size:
+            _create_dataset(jacobian_grp, "affine_reference", payload.jacobian_affine_reference)
+        if getattr(payload, "jacobian_affine_intercept", None) is not None and payload.jacobian_affine_intercept.size:
+            _create_dataset(jacobian_grp, "affine_intercept", payload.jacobian_affine_intercept)
         if isinstance(jacobian_diagnostics, Mapping) and jacobian_diagnostics:
             diag_grp = jacobian_grp.require_group("diagnostics")
             for diag_key, diag_value in jacobian_diagnostics.items():
@@ -789,6 +798,15 @@ def write_h5(
                 if isinstance(diag_value, (str, bytes)):
                     diag_grp.attrs[safe_key] = _prepare_attr_value(diag_value)
 
+        jacobian_metrics = getattr(payload, "jacobian_derived_metrics", None)
+        if isinstance(jacobian_metrics, Mapping) and jacobian_metrics:
+            _write_nested_mapping_group(
+                jacobian_grp,
+                "derived_metrics",
+                {"v1": jacobian_metrics},
+                schema_version="mndm.jacobian_metrics.v1",
+            )
+
         # Optional Stratified MNPS Jacobians (v2)
         if getattr(payload, "jacobian_9D", None) is not None and payload.jacobian_9D.size:
             jac_v2_grp = h5.require_group("jacobian_9D")
@@ -797,6 +815,10 @@ def write_h5(
                 _create_dataset(jac_v2_grp, "J_dot", payload.jacobian_9D_dot)
             if getattr(payload, "jacobian_9D_centers", None) is not None and payload.jacobian_9D_centers.size:
                 _create_dataset(jac_v2_grp, "centers", payload.jacobian_9D_centers)
+            if getattr(payload, "jacobian_9D_affine_reference", None) is not None and payload.jacobian_9D_affine_reference.size:
+                _create_dataset(jac_v2_grp, "affine_reference", payload.jacobian_9D_affine_reference)
+            if getattr(payload, "jacobian_9D_affine_intercept", None) is not None and payload.jacobian_9D_affine_intercept.size:
+                _create_dataset(jac_v2_grp, "affine_intercept", payload.jacobian_9D_affine_intercept)
             # Optional cross-partials extracted from the v2 Jacobian, stored as [W2] series
             cross = getattr(payload, "jacobian_9D_cross_partials", None)
             if isinstance(cross, Mapping) and cross:
@@ -805,6 +827,112 @@ def write_h5(
                     # Avoid nested paths; use a flat dataset name
                     safe = str(name).replace("/", "_")
                     _create_dataset(cp_grp, safe, np.asarray(arr, dtype=np.float32))
+            jacobian_v2_metrics = getattr(payload, "jacobian_9D_derived_metrics", None)
+            if isinstance(jacobian_v2_metrics, Mapping) and jacobian_v2_metrics:
+                _write_nested_mapping_group(
+                    jac_v2_grp,
+                    "derived_metrics",
+                    {"v1": jacobian_v2_metrics},
+                    schema_version="mndm.jacobian_metrics.v1",
+                )
+
+        residual_primary = getattr(payload, "residual_covariance_proxy", None)
+        residual_v2 = getattr(payload, "residual_covariance_proxy_9D", None)
+        if (isinstance(residual_primary, Mapping) and residual_primary) or (
+            isinstance(residual_v2, Mapping) and residual_v2
+        ):
+            residual_layers = {}
+            if isinstance(residual_primary, Mapping) and residual_primary:
+                residual_layers["primary"] = dict(residual_primary)
+            if isinstance(residual_v2, Mapping) and residual_v2:
+                residual_layers["stratified_9d"] = dict(residual_v2)
+            _write_nested_mapping_group(
+                h5,
+                "transition_residual_covariance_proxy",
+                {"v1": residual_layers},
+                schema_version="mndm.transition_residual_covariance_proxy.v1",
+            )
+        transition_primary = getattr(payload, "transition_residuals", None)
+        transition_v2 = getattr(payload, "transition_residuals_9D", None)
+        if (isinstance(transition_primary, Mapping) and transition_primary) or (
+            isinstance(transition_v2, Mapping) and transition_v2
+        ):
+            transition_layers = {}
+            if isinstance(transition_primary, Mapping) and transition_primary:
+                transition_layers["primary"] = dict(transition_primary)
+            if isinstance(transition_v2, Mapping) and transition_v2:
+                transition_layers["stratified_9d"] = dict(transition_v2)
+            _write_nested_mapping_group(
+                h5,
+                "transition_residuals",
+                {"v1": transition_layers},
+                schema_version="mndm.transition_residuals.v1",
+            )
+        finite_time_primary = getattr(payload, "finite_time_response", None)
+        finite_time_v2 = getattr(payload, "finite_time_response_9D", None)
+        if (isinstance(finite_time_primary, Mapping) and finite_time_primary) or (
+            isinstance(finite_time_v2, Mapping) and finite_time_v2
+        ):
+            finite_time_layers = {}
+            if isinstance(finite_time_primary, Mapping) and finite_time_primary:
+                finite_time_layers["primary"] = dict(finite_time_primary)
+            if isinstance(finite_time_v2, Mapping) and finite_time_v2:
+                finite_time_layers["stratified_9d"] = dict(finite_time_v2)
+            _write_nested_mapping_group(
+                h5,
+                "finite_time_response",
+                {"v1": finite_time_layers},
+                schema_version="mndm.finite_time_response.v1",
+            )
+        reachability_primary = getattr(payload, "stochastic_reachability", None)
+        reachability_v2 = getattr(payload, "stochastic_reachability_9D", None)
+        if (isinstance(reachability_primary, Mapping) and reachability_primary) or (
+            isinstance(reachability_v2, Mapping) and reachability_v2
+        ):
+            reachability_layers = {}
+            if isinstance(reachability_primary, Mapping) and reachability_primary:
+                reachability_layers["primary"] = dict(reachability_primary)
+            if isinstance(reachability_v2, Mapping) and reachability_v2:
+                reachability_layers["stratified_9d"] = dict(reachability_v2)
+            _write_nested_mapping_group(
+                h5,
+                "stochastic_reachability",
+                {"v1": reachability_layers},
+                schema_version="mndm.stochastic_reachability.v1",
+            )
+        dynamical_families = getattr(payload, "dynamical_families", None)
+        if isinstance(dynamical_families, Mapping) and dynamical_families:
+            families_grp = h5.require_group("dynamical_families")
+            for family_name, family_payload in dynamical_families.items():
+                if not isinstance(family_payload, Mapping):
+                    continue
+                if str(family_name) not in WRITABLE_FAMILY_IDS:
+                    raise ValueError(
+                        "dynamical_families payload keys must be one of "
+                        f"{list(WRITABLE_FAMILY_IDS)}; unknown: {family_name!r}"
+                    )
+                family_grp = families_grp.require_group(_sanitize_h5_key(str(family_name)))
+                family_schema = str(family_payload.get("schema_version", "mndm.dynamical_families.v1"))
+                _write_nested_mapping_group(
+                    family_grp,
+                    "v1",
+                    dict(family_payload),
+                    schema_version=family_schema,
+                )
+
+        support_signature = getattr(payload, "support_signature", None)
+        if isinstance(support_signature, Mapping) and support_signature:
+            mapping = dict(support_signature)
+            validate_write_support_signature(mapping)
+            sig_grp = h5.require_group("support_signature")
+            _write_nested_mapping_group(
+                sig_grp,
+                "v1",
+                mapping,
+                schema_version=str(
+                    mapping.get("schema_version", SUPPORT_SIGNATURE_SCHEMA_VERSION)
+                ),
+            )
 
         # Optional stratified MNPS coordinates (typically 9D)
         coords_9d = getattr(payload, "coords_9d", None)

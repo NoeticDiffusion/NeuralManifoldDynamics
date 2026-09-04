@@ -233,3 +233,4 @@ project/preprocessing/*
 project/
 logs/
 results/
+.cursor/

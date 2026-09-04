@@ -103,6 +103,8 @@ Jacobian groups:
   - Temporal differences between successive Jacobians (meta‑plasticity proxy).
 - `/jacobian/centers` (optional) – `int32[W]`  
   - Indices into `/time` of the centre of each Jacobian window.
+- `/jacobian/derived_metrics/v1` (optional)
+  - `mndm.jacobian_metrics.v1` per-window semantic measurements plus support-counted summaries and provenance. It derives from the exported continuous-time Jacobian and does not change the estimator.
 
 Stratified MNPS v2 (optional):
 
@@ -137,6 +139,72 @@ Stratified (v2) Jacobians (optional):
     - `core_pairs` (fixed, theory-driven set)
     - `extra_pairs` (explicit dataset-specific additions)
     - `rationale` (free text; prereg/Methods traceability)
+
+Local-dynamics groups (all optional) are `/finite_time_response/v1`,
+`/residual_covariance_proxy/v1`, `/transition_residuals/v1`, and
+`/stochastic_reachability/v1`. They record their capability schema,
+coordinate-layer provenance, validity status, and time semantics; computed
+response or reachability is not evidence of predictive or perturbational
+validity by itself. Round 2 adds sibling certificate fields
+`computation_status`, `measurement_validity`, and `claim_status`.
+`validation_level` is a method-validation tag, not regime validity. New
+writes set `claim_status` to `no_biological_claim` and do not emit
+`ndt_licensed`. Jacobian metrics that are finite remain
+`measurement_validity=not_assessed`. They are provenance on `J_hat`, not
+S3-licensed empirical NDT \(\alpha/\omega\). FTR `g_peak_over_horizons` is
+the serialized \(G_{\mathrm{peak}}\) analogue; it is not a jacobian_metrics
+field and is not licensed empirical NDT. I-CARE / analysis-repo coma
+reachability is not `/stochastic_reachability/v1`.
+
+Round 3 adds nested `grain/` (`native`, `parent`, `biological_unit`,
+`repeated_measure`, `direct_between_subject_inference`). New writes set
+`biological_unit=subject` and `direct_between_subject_inference=forbidden`.
+A window is not a participant. Grain is present even when the object is not
+computed. Legacy readers fill missing grain fields as `not_recorded` and must
+not infer `window` from series.
+
+Round 4 adds `/support_signature/v1/` (`mndm.support_signature.v1`): per-9D
+coordinate `source` (`direct` / `fallback`) from existing metric policies
+and recorded substitutions, plus one modality capability row
+(`chart_3d`/`mnj_*`/`spread=gated`/`resilience=perturbational_only`). This
+is metadata, not a coverage estimator and not `geometry_contract`.
+`coords_9d` present is not the same feature support and not the same
+modality capability. Legacy missing fields are `not_recorded`; do not infer
+`chart_3d=yes` from `/mnps_3d` or `spread=gated` from absent reachability.
+
+Standard non-MNPS measurement families, when explicitly requested, are
+written only under `/dynamical_families/{diffusion,destination,resilience}/v1`.
+They do not alter `/mnps_3d`, `/coords_9d`, or `/jacobian`. Schema IDs remain
+`mndm.diffusion_geometry.v1`, `mndm.committor.v1`, and
+`mndm.finite_amplitude_resilience.v1`. Pre-v3 files may still contain
+`/orthogonal_dynamics/*`; readers load that tree only when the canonical
+group is missing. The diffusion, committor, and finite-amplitude-resilience
+contracts each carry their own support/status, dataset-eligibility, and
+translation-qualification requirements. Diffusion, when enabled, is computed
+if the estimator has support and is written `not_assessed`; OD-TQ1 id/hash
+are provenance method tags, not a compute gate. Ingest diffusion uses
+C1 defaults (`drift=None`, `residualize_increments=False`): `computed` is
+raw increment covariance (`a_semantics=raw_increment_covariance`), not
+testable \(A_{bD}\) / \(R_{b/a}\) (`summary.A_bD_computation_status=not_testable`,
+`summary.R_b_over_a_computation_status=not_testable`,
+`independent_drift_not_supplied`; NaN is not zero alignment). Library C1
+may consume an externally qualified chart \(b\) without changing `a_hat`.
+Ingest does not estimate \(b\) (SL-005; nmd-analysis). C2
+residualization is not authorized.
+`contract_status=standard` is the schema
+class, not an empirical license. Destination and resilience
+are `measurement_validity=translation_qualified` only when computed with a
+TQ id and contract hash already recorded; otherwise new writes use
+`not_assessed` or `not_applicable`. Production destination is 1-D O2b;
+neither O2b nor the first-hit estimator serializes \(V_{1/2}\) or
+\(\lvert\nabla q\rvert\). Spread as a **family YAML / `/dynamical_families` key**
+(`stochastic_reachability.v1`) remains registry `gate_closed` and is not
+written there. Opt-in ingest `W_Q` uses `/stochastic_reachability/v1` after
+the Gate F freeze (Gate E Q + crossfit \(\Phi\)). Legacy readers must fill missing
+certificate fields as `not_recorded` and must not infer
+`translation_qualified`. Missing `claim_status` may be copied from
+`provenance/claim_status` when that dataset exists; otherwise it is
+`not_recorded`. Do not default a missing claim to `no_biological_claim`.
 
 > The 3D Jacobian (`/jacobian`) and 9D Stratified Jacobian (`/jacobian_9D`) can coexist. Both use the same time base, but may have different valid window counts (`W` vs `W2`).
 

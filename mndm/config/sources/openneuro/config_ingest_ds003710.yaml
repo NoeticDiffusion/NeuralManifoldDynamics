@@ -1,0 +1,143 @@
+version: 2.0
+modality: eeg
+
+# ds003710 — APPLESEED Example Dataset.
+#
+# Longitudinal infant EEG: 13 participants and 48 BrainVision recordings
+# across sessions 1–4 (4 months, test-retest; 8 and 12 months longitudinal).
+# The recordings contain 32 scalp EEG channels at 5000 Hz and no ECG/EOG/EMG
+# channels. BIDS events.tsv files contain point events for passive viewing and
+# listening conditions.
+imports:
+  - "../../config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds003710
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds003710"
+  dataset_name: "APPLESEED Example Dataset"
+  dataset_version: "1.0.2"
+  doi: "10.18112/openneuro.ds003710.v1.0.2"
+  url: "https://openneuro.org/datasets/ds003710"
+  acknowledgement: "Puglia, Slobin, & Williams (2022), APPLESEED; see dataset_description.json for the full citation."
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "J:/processed/openneuro"
+  dataset_received_dirs:
+    ds003710: "K:/ExternalReceivedDatasets/openneuro/received/ds003710"
+
+indexing:
+  multimodal_bundles:
+    enabled: false
+
+preprocess:
+  # The source is 5000 Hz BrainVision EEG. 250 Hz is an exact 20:1
+  # downsample and is sufficient for the configured 1–45 Hz feature surface.
+  sfreq: 250
+  sfreq_candidates: [250]
+  notch_hz: 60
+  eeg_bandpass: [1, 45]
+  reref: "average"
+  eeg_csd:
+    enabled: false
+  # There are no dedicated EOG/ECG channels in this dataset; do not infer
+  # physiological channels from scalp electrodes in the initial ingest.
+  ica:
+    enabled: false
+
+epoching:
+  length_s: 8.0
+  step_s: 4.0
+  datasets:
+    ds003710:
+      sampling:
+        # BIDS events.tsv contains point events (duration=0). These are kept
+        # as auditable event-coded windows, not interpreted as sleep stages.
+        stage_columns: ["trial_type"]
+        prefer_events_stage_in_summary: false
+        stage_map:
+          "New Segment": 0
+          "Comment": 0
+          "object": 3
+          "water": 1
+          "speech": 2
+          "face": 4
+          "attention-getter": 5
+          "experimenter-pause": 6
+
+event_mapping:
+  datasets:
+    ds003710:
+      enabled: true
+
+features:
+  eeg_psd:
+    method: "multitaper"
+    bandwidth: null
+  eeg_bands: {delta: [1,4], theta: [4,8], alpha: [8,12], beta: [13,30], gamma: [30,45]}
+  ratios: {alpha_theta: ["alpha","theta"], beta_alpha: ["beta","alpha"]}
+
+conventional_eeg:
+  enabled: true
+  packs: ["tier1", "complexity"]
+  export:
+    per_epoch_columns: true
+    summaries: true
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F7", "F3", "Fz", "F4", "F8"]
+      central: ["FC5", "FC1", "FC2", "FC6", "T7", "C3", "Cz", "C4", "T8"]
+      parietal_occipital: ["TP9", "CP5", "CP1", "CP2", "CP6", "TP10", "P7", "P3", "Pz", "P4", "P8", "PO9", "O1", "Oz", "O2", "PO10"]
+
+mnps:
+  # Event codes are deliberately separate from sleep-stage semantics; the H5
+  # stage/event surface is a compact window label while the event table keeps
+  # the original onset, duration, and raw label.
+  stage_codebook:
+    "New Segment": 0
+    "Comment": 0
+    "object": 3
+    "water": 1
+    "speech": 2
+    "face": 4
+    "attention-getter": 5
+    "experimenter-pause": 6
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+metadata_extraction:
+  datasets:
+    ds003710:
+      group:
+        candidates: ["group"]
+        normalize:
+          Complete: "Complete"
+          Reliability: "Reliability"
+      task:
+        from_filename: true
+        default: "appleseedexample"
+        normalize:
+          appleseedexample: "appleseedexample"
+
+summarize:
+  allow_group_collisions: false

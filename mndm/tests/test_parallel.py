@@ -3,11 +3,41 @@
 from pathlib import Path
 import sys
 import json
+import os
 
 import numpy as np
 import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
+
+
+def test_worker_init_pins_all_supported_blas_thread_environments(monkeypatch):
+    """Feature workers must inherit single-thread BLAS settings."""
+    from mndm.parallel import worker_init
+
+    for name in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+        "BLIS_NUM_THREADS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+    worker_init()
+
+    assert all(
+        os.environ[name] == "1"
+        for name in (
+            "OMP_NUM_THREADS",
+            "MKL_NUM_THREADS",
+            "OPENBLAS_NUM_THREADS",
+            "NUMEXPR_NUM_THREADS",
+            "VECLIB_MAXIMUM_THREADS",
+            "BLIS_NUM_THREADS",
+        )
+    )
 
 
 def test_merge_temp_features_dedupes_by_file_epoch_id(tmp_path: Path):

@@ -14,6 +14,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 pytest.importorskip("mne")
 
 import mndm.pipeline.summary as summary_mod
+import mndm.pipeline.extensions_compute as extensions_compute
 from mndm.pipeline.summary import DatasetSummaryRunner, SubjectSummaryRunner
 from mndm.pipeline.extensions_compute import compute_extensions
 
@@ -420,6 +421,36 @@ def test_tig_extension_computation(dummy_ctx, tmp_path):
     assert "tig" in payload
     assert "tig" in summary
     assert payload["tig"]["tau"] == pytest.approx(summary["tig"]["tau"])
+
+
+def test_compute_extensions_skips_idle_thread_pool(monkeypatch: pytest.MonkeyPatch):
+    """Disabled extension configs must not create a nested executor."""
+    monkeypatch.setattr(
+        extensions_compute,
+        "ThreadPoolExecutor",
+        lambda *args, **kwargs: pytest.fail("idle extensions must not start a thread pool"),
+    )
+
+    payload, summary = compute_extensions(
+        dataset_label="ds001:sub-001",
+        extensions_cfg={},
+        x=np.ones((4, 3), dtype=np.float32),
+        sub_frame=pd.DataFrame({"dummy": np.arange(4)}),
+        time=np.arange(4, dtype=np.float32),
+        dt=1.0,
+        coords_9d=None,
+        coords_9d_names=[],
+        regions_bold=None,
+        regions_sfreq=None,
+        group_ts={},
+        group_matrix=None,
+        group_names=[],
+        region_groups={},
+    )
+
+    assert payload == {}
+    assert summary["regional_data_available"] is False
+    assert summary["rfm"]["status"] == "skipped_no_regional_bold"
 
 
 def test_dataset_runner_uses_requested_worker_count(dummy_ctx, monkeypatch, tmp_path):

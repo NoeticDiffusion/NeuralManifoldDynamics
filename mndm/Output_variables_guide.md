@@ -1,12 +1,12 @@
-### HDF5 output schema (MNDM 2.3 release line)
+### HDF5 output schema (MNDM 2.6 release line)
 
 This file documents **all nodes (datasets + groups) and relevant HDF5 attributes** written by the MNDM summarization pipeline into each `*.h5`.
 
 Release-version note:
-- This document describes the **NeuralManifoldDynamics 2.3** measurement surface.
+- This document describes the **NeuralManifoldDynamics 2.6** measurement surface.
 - Some embedded sub-schema identifiers intentionally still carry `v2.1` names
   (for example the explicit anchored-coordinate layer schema) because those
-  subcontracts were introduced in the 2.1 release line and remain valid in 2.3.
+  subcontracts were introduced in the 2.1 release line and remain valid in 2.6.
 
 Notation:
 - **T**: number of MNPS timepoints (per-window/epoch on the MNPS grid)
@@ -36,6 +36,19 @@ Block-native provenance is embedded in `run_manifest.json` under:
   - `requested_contracts`
   - `realized_contracts`
   - `skipped_contracts_with_reason`
+
+Local-dynamics capability discovery is available under
+`capabilities.jacobian_metrics_v1`, `capabilities.finite_time_response_v1`,
+`capabilities.transition_residuals_v1`,
+`capabilities.transition_residual_covariance_proxy_v1`,
+`capabilities.residual_covariance_proxy_v1`, and
+`capabilities.stochastic_reachability_v1`, with corresponding `*_path` and
+`counts.h5_with_*` fields. Dynamical-family discovery is
+`capabilities.dynamical_families` with
+`capabilities.dynamical_families_path = "/dynamical_families"` and
+`counts.h5_with_dynamical_families`. The probe counts both the canonical tree
+and legacy `/orthogonal_dynamics/` containers. A false capability means no
+serialized surface was emitted; it is not evidence of a zero-valued measurement.
 
 Per-subject block-native injection summary is available in `summary.json` under top-level `block_native`:
 
@@ -121,7 +134,7 @@ Payload attributes (`payload.attrs`) are also copied into `h5.attrs` when not `N
 - **`stage_source`** *(str|None)*, **`stage_column`** *(str|None)*
 - **`coords_v2_names`** *(list[str]|None)*: v2 coordinate names (if v2 exists)
 - **`schema_version`** *(str)*: often `mnps_tensor_spec_v2_1` when the explicit anchored-coordinate sub-contract is present. In the 2.3 release line this identifier is still retained for backward-compatible coordinate-layer schema naming.
-- **`mndm_version`** *(str)*: software/measurement-contract release line recorded in the export metadata; current documentation tracks `2.3`.
+- **`mndm_version`** *(str)*: software/measurement-contract release line recorded in the export metadata; current documentation tracks `2.6`.
 - **`primary_coordinate_layer`** *(str)*: usually `coords_3d_cohort_anchored` when a cohort/external anchor is configured, otherwise `coords_3d_subject_anchored`.
 - **`primary_coordinate_contract`** *(str)*: `cohort_anchored` or `subject_anchored`.
 - **`anchor_id`**, **`anchor_hash`** *(str|None)*: identity and hash of the feature-anchor artifact used for cohort-anchored coordinates.
@@ -376,9 +389,17 @@ Always created (may be empty if Jacobians were not computed).
 - **`/jacobian/J_hat`** *(float32, shape `[W,D,D]`)*: MNPS Jacobian estimates.
 - **`/jacobian/J_dot`** *(float32, shape `[W-1,D,D]`)*: temporal difference of the Jacobian.
 - **`/jacobian/centers`** *(int32, shape `[W]`)*: center index for each Jacobian window.
+- **`/jacobian/affine_reference`** *(float32, shape `[W,D]`, optional)*: local fit-neighborhood reference used by the affine derivative model.
+- **`/jacobian/affine_intercept`** *(float32, shape `[W,D]`, optional)*: local derivative intercept paired with `affine_reference`; it does not alter `J_hat` semantics.
 - **`/jacobian/diagnostics/hard_invalid_centers`** *(int32, optional)*: center indices of Jacobian windows removed by the standard invalidity policy.
 - **`/jacobian/diagnostics/hard_invalid_windows`** *(scalar attr, optional)*: number of canonical windows removed after Jacobian estimation.
 - **`/jacobian/diagnostics/hard_invalid_condition_number_threshold`** *(scalar attr, optional)*: hard condition-number threshold used by the standard policy.
+- **`/jacobian/derived_metrics/v1/`** *(optional)*: `mndm.jacobian_metrics.v1` semantic local-dynamics metrics. Its `series/` datasets are per valid-Jacobian-window fields (`spectral_abscissa`, `numerical_abscissa`, `symmetric_rate_min`, `reactivity_gap`, `stable_reactive_flag`, magnitude/deformation/rotation diagnostics); `summary/` carries support counts and `stable_reactive_fraction`; `provenance/` carries zero tolerances and metric semantics. Sibling certificate fields: `computation_status` (`computed` if any finite metric windows, else `insufficient_support`), `measurement_validity` (`not_assessed` when computed, else `not_applicable`), `claim_status` (`no_biological_claim` on new writes). These are mathematical provenance on `J_hat`, not S3-licensed empirical NDT \(\alpha/\omega\).
+  - Full `series/` fields are `spectral_abscissa`, `numerical_abscissa`,
+    `symmetric_rate_min`, `symmetric_rate_max`, `reactivity_gap`,
+    `stable_reactive_flag`, `dynamical_regime`, `spectral_radius`,
+    `frobenius_norm`, `trace`, `rotation_norm`, and `henrici_departure`.
+  - Theory \(\Omega\) appears only as the scalar `rotation_norm`, not as a matrix. Theory \(G_{\mathrm{peak}}\) is **not** in this group; see FTR `g_peak_over_horizons`.
 
 Interpretation note:
 
@@ -701,9 +722,122 @@ Created if v2 Jacobians exist.
 - **`/jacobian_9D/J_hat`** *(float32, shape `[W2,K,K]`)*: Jacobian in Stratified MNPS v2 space.
 - **`/jacobian_9D/J_dot`** *(float32, shape `[W2-1,K,K]`)*: temporal difference.
 - **`/jacobian_9D/centers`** *(int32, shape `[W2]`)*: center index.
+- **`/jacobian_9D/affine_reference`**, **`/jacobian_9D/affine_intercept`** *(float32, shape `[W2,K]`, optional)*: affine fit parameters for the directly estimated 9D Jacobian.
+- **`/jacobian_9D/derived_metrics/v1/`** *(optional)*: the same Jacobian Metrics v1 contract evaluated directly on the 9D Jacobian; it is not synthesized from 3D outputs. Same Round-2 certificate siblings as `/jacobian/derived_metrics/v1/`.
 
 Optional subgroup:
 - **`/jacobian_9D/cross_partials/<name>`** *(float32, shape `[W2]`)*: selected elements from the v2 Jacobian as 1D series (dataset names are sanitized; `/` is replaced with `_`).
+
+### Local-dynamics extension groups (optional)
+
+- **`/finite_time_response/v1/{primary,stratified_9d}/`**: opt-in finite-time response summaries with explicit horizon, continuity, timebase, propagator, computation, and validation semantics. A branch is emitted only when it was computed. `computation_status` is one of `not_requested`, `unavailable`, `invalid`, or `computed`; `validation_level` is independent (method-validation; default `model_derived` is not `measurement_validity`). Sibling certificate: `measurement_validity` is `not_assessed` when computed and `not_applicable` otherwise; `claim_status` is `no_biological_claim` on new writes. The peak-gain analogue of theory \(G_{\mathrm{peak}}\) is `summary.g_peak_over_horizons` (with `log_g_peak_over_horizons`, `tau_peak_over_horizons`, `peak_horizon_steps`). FTR is not FAR, not perturbational, and not S3-licensed empirical NDT.
+- **`/residual_covariance_proxy/v1/`**: PSD-regularized residual covariance proxy and mandatory time-semantic/QC provenance. The current subject summarize pipeline does not emit this surface because it lacks an exported one-step transition residual. New writes carry the same three-way certificate; computed proxies are `not_assessed`, not NDT-licensed.
+- **`/transition_residuals/v1/{primary,stratified_9d}/`**: opt-in, cross-fitted one-step state prediction and residual series. Each record carries source/target window and center indices, observed `dt_sec`, predicted state, residual, and coordinate/fit provenance. Sibling certificate fields as above (`not_assessed` only when `computation_status=computed`).
+- **`/transition_residual_covariance_proxy/v1/{primary,stratified_9d}/`**: recording-level covariance of accepted cross-fitted transition residuals. It is unavailable for materially irregular transition steps or insufficient support. This proxy is not biological process noise. Under the Gate F freeze it is the only admissible Q for opt-in discrete `W_Q`.
+- **`/stochastic_reachability/v1/{primary,stratified_9d}/`**: opt-in (`local_dynamics.stochastic_reachability.enabled`, default false) discrete reachability \(W\leftarrow\Phi W\Phi^\top+Q\) from Gate E Q and \(\Phi=\mathrm{expm}(J_{\mathrm{crossfit}}\Delta t)\). Not `/dynamical_families/spread`. Certificate when computed: `not_assessed` / `no_biological_claim`. Grain: `recording_horizon`. Analysis-repo I-CARE / coma reachability products (for example `tube_d_eff_median`) are **not** this schema.
+
+### Validity certificate (v3 R2)
+
+Every family and local-dynamics v1 group above may carry three sibling datasets:
+
+- `computation_status`
+- `measurement_validity`
+- `claim_status`
+
+These are additive keys on existing schema IDs (`mndm.jacobian_metrics.v1`,
+`mndm.finite_time_response.v1`, `mndm.transition_residuals.v1`,
+`mndm.diffusion_geometry.v1`, `mndm.committor.v1`,
+`mndm.finite_amplitude_resilience.v1`, residual-covariance and reachability
+v1). Schema IDs are unchanged.
+
+On **new writes**, `claim_status` is always `no_biological_claim`.
+Diffusion that the estimator can support is `computed` /
+`measurement_validity=not_assessed`; OD-TQ1 id/hash in `provenance` are
+method tags, not regime validity. `measurement_validity` is
+`translation_qualified` only for a computed **destination or resilience**
+family that already records a TQ id and contract hash. Jacobian metrics and
+FTR stay `not_assessed` even when series are finite. `validation_level` is
+not `measurement_validity`.
+
+**Legacy read:** if a field is absent, readers must report `not_recorded`.
+Do not infer `translation_qualified` from `qualification_id` or
+`validation_level`. Do not default a missing `claim_status` to
+`no_biological_claim` (copy `provenance/claim_status` only when that dataset
+exists). Always record `certificate_origin`: `canonical`,
+`legacy_promoted_provenance`, or `legacy_absent`.
+
+### Inferential grain (v3 R3)
+
+The same v1 groups carry a nested `grain/` mapping:
+
+- `native`, `parent` ∈ {`window`, `transition`, `recording_horizon`, `event`, `recording`, `subject`}
+- `biological_unit` = `subject` on new writes
+- `repeated_measure` = `true` or `false`
+- `direct_between_subject_inference` = `forbidden` on new writes
+
+Typical natives: Jacobian metrics and diffusion/destination `window`; FTR and
+reachability `recording_horizon`; transition residuals `transition`; Q-proxy
+`recording` (`repeated_measure=false`); FAR `event`. Grain is written even
+when `computation_status` is not `computed`.
+
+**Legacy read:** missing grain fields are `not_recorded`. Do not infer
+`window` because `series/` exists, and do not infer `subject` from the path.
+`grain_origin` is `canonical` or `legacy_absent`.
+
+### Group: `/support_signature/v1/` (metadata; not a dynamical family)
+
+Schema id: `mndm.support_signature.v1`. Additive file-level support /
+capability signature. Does not alter `/mnps_3d`, `/coords_9d`, `/jacobian`,
+or `geometry_contract`. Family schema IDs are unchanged.
+
+```text
+/support_signature/v1/
+  modality                         eeg | ieeg | fmri | meg | unknown
+  coordinates/{m_a,…,e_m}/
+    source                         direct | fallback | mixed | not_applicable
+    fallback_feature               feature name, or none
+    semantic_equivalence           true | false | not_applicable
+  axes_3d/{m,d,e}/
+    source                         direct | mixed | not_applicable
+  capability/
+    chart_3d, chart_9d, mnj_3d, mnj_9d
+    diffusion, spread, destination, resilience
+```
+
+Coordinate `source` is built from existing `mnps_9d.metric_policies` plus
+already-recorded fallback metadata (entropy `actual_metric_used` /
+`degraded_mode`, `embodied_arousal_proxy_source`). It is **not** a new
+coverage fraction. `axes_3d` is `direct` when all three child 9D
+coordinates are `direct`, else `mixed`.
+
+Capability cells are the contract class for this file's modality (one row
+of the CONFIG_GUIDE table), not HDF5 presence. `spread` is `gated` (Gate F).
+`resilience` is `perturbational_only`. `destination` is
+`no_generic_ingest`. `diffusion` is `overlay_only`. Capability `yes` is not
+an NDT license.
+
+**Legacy read:** missing `/support_signature/v1` or missing children are
+`not_recorded`. Do not infer `chart_3d=yes` from `/mnps_3d`. Do not infer
+`spread=gated` from a missing reachability group. `signature_origin` is
+`canonical` or `legacy_absent`.
+
+### Group: `/dynamical_families` (optional, overlay-gated)
+
+Written only when `dynamical_families.enabled` is true in an explicit overlay.
+New files write the canonical tree only. Readers may load a legacy
+`/orthogonal_dynamics/` group when the canonical path is absent and must then
+set `provenance.namespace_origin = "legacy_orthogonal_dynamics"`. Dual-write
+is not performed.
+
+Schema IDs are unchanged. Family YAML `spread` remains `gate_closed` and is
+not written here. Opt-in `mndm.stochastic_reachability.v1` lives at
+`/stochastic_reachability/v1`, not under `/dynamical_families`.
+
+- **`/dynamical_families/diffusion/v1/`**: `mndm.diffusion_geometry.v1`. Local increment-covariance diffusion geometry. `contract_status=standard` is the schema class, not an empirical license. Ingest uses C1 defaults (`drift=None`, `residualize_increments=False`): `a_hat` / `D_total` / `d_diff` / `c_diff` may be `computed`, but `A_bD` and `R_b_over_a` are NaN with `summary.A_bD_computation_status=not_testable`, `summary.R_b_over_a_computation_status=not_testable`, and `drift_alignment_failure_reason=independent_drift_not_supplied`. `summary.a_semantics=raw_increment_covariance`. Do not read those NaNs as zero alignment. Jacobian residuals, MNPS \(\dot x\), and Jacobian intercepts are not diffusion \(a\) or SDE drift. Library C1 may consume an externally qualified chart \(b\) without changing `a_hat` (Gate C1-A). Ingest does not estimate \(b\); nmd-analysis owns identification (SL-005). C2 residualization is not authorized. Legacy read path: `/orthogonal_dynamics/diffusion_geometry/v1`.
+- **`/dynamical_families/destination/v1/`**: `mndm.committor.v1`. Production adapter is 1-D O2b (`local_law_dense_grid_o2b`) with explicit first-hit A/B + reaction coordinate. O2b does not serialize \(V_{1/2}\) or \(\lvert\nabla q\rvert\); the first-hit estimator serializes `q_A_to_B` only. Stage labels are not committor truth. Legacy read path: `/orthogonal_dynamics/committor/v1`.
+- **`/dynamical_families/resilience/v1/`**: `mndm.finite_amplitude_resilience.v1`. Observed perturbation-outcome FAR summary. Legacy read path: `/orthogonal_dynamics/finite_amplitude_resilience/v1`.
+
+These groups do not alter `/mnps_3d`, `/coords_9d`, or `/jacobian`. Common EEG/fMRI/ephys profiles do not enable them. Each family v1 group carries the Round-2 validity certificate (`computation_status`, `measurement_validity`, `claim_status`) and the Round-3 nested `grain/` object as siblings; `provenance.validation_level` remains the method-validation tag.
 
 ---
 

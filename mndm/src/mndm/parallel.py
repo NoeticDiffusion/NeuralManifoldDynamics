@@ -420,7 +420,7 @@ class WorkerResult:
     timings: Optional[Dict[str, float]] = None
 
 
-def worker_init(base_seed: int, worker_id: int):
+def worker_init(base_seed: int = 0, worker_id: int = 0):
     """Initialize worker process with BLAS threads pinned to a single thread.
 
     Args:
@@ -432,18 +432,19 @@ def worker_init(base_seed: int, worker_id: int):
     os.environ["MKL_NUM_THREADS"] = "1"
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
     os.environ["NUMEXPR_NUM_THREADS"] = "1"
-    
+    os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+    os.environ["BLIS_NUM_THREADS"] = "1"
+    try:
+        from threadpoolctl import threadpool_limits
+
+        threadpool_limits(limits=1)
+    except Exception:
+        # The optional runtime limiter supplements the inherited environment.
+        pass
+
     # Do not set RNG here: per-file seeds in process_single_file ensure
     # deterministic outputs independent of task scheduling/worker assignment.
     logger.debug("Worker %s initialized (BLAS threads pinned to 1)", worker_id)
-
-
-def _set_blas_threads():
-    """Set BLAS environment variables to prevent oversubscription."""
-    os.environ["OMP_NUM_THREADS"] = "1"
-    os.environ["MKL_NUM_THREADS"] = "1"
-    os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
 
 def _stable_seed_token(file_path: Path, config: Dict[str, Any]) -> str:
@@ -481,7 +482,7 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
     Returns:
         :class:`WorkerResult` with ``success``, ``features_df``, timings, etc.
     """
-    _set_blas_threads()
+    worker_init()
     
     preprocessed = None
     stage_times: Dict[str, float] = {}
@@ -619,7 +620,7 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
 
 def process_file_bundle(bundle_records: list[Dict[str, Any]], dataset_root: Path, config: Dict[str, Any]) -> WorkerResult:
     """Process one multimodal recording bundle and merge modality features on epoch_id."""
-    _set_blas_threads()
+    worker_init()
 
     from . import preprocess
 

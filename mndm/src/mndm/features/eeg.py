@@ -58,6 +58,30 @@ def _run_multitaper_psd_safely(data: np.ndarray, **kwargs: Any) -> Tuple[np.ndar
         return psd_array_multitaper(data, **kwargs)
 
 
+def _run_welch_psd_batched(
+    data: np.ndarray,
+    *,
+    sfreq: float,
+    fmin: float,
+    fmax: float,
+    nperseg: int,
+    noverlap: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Compute Welch PSD over all leading epoch/signal dimensions at once."""
+    freqs, psd = signal.welch(
+        data,
+        fs=sfreq,
+        window="hann",
+        nperseg=nperseg,
+        noverlap=noverlap,
+        detrend="constant",
+        scaling="density",
+        axis=-1,
+    )
+    in_band = (freqs >= fmin) & (freqs <= fmax)
+    return psd[..., in_band], freqs[in_band]
+
+
 def _integrated_bandpower(psd_1d: np.ndarray, freqs_1d: np.ndarray, f_lo: float, f_hi: float) -> float:
     """Integrated power over [f_lo, f_hi] using trapezoidal integration."""
     mask = (freqs_1d >= float(f_lo)) & (freqs_1d <= float(f_hi))
@@ -262,6 +286,9 @@ def _compute_conventional_complexity_features(
     delay: int,
     normalize: bool,
     conventional_cfg: Mapping[str, Any],
+    precomputed_hjorth: Optional[Tuple[float, float]] = None,
+    precomputed_permutation_entropy: Optional[float] = None,
+    permutation_entropy_degraded: bool = False,
 ) -> Dict[str, Any]:
     """Compute config-driven conventional EEG complexity comparator features."""
     export_cfg = conventional_cfg.get("export", {}) if isinstance(conventional_cfg, Mapping) else {}
@@ -286,13 +313,19 @@ def _compute_conventional_complexity_features(
             sfreq=float(sfreq),
         )
     if bool(complexity_cfg.get("permutation_entropy", False)):
-        out["eeg_conventional_complexity_permutation_entropy"] = _compute_permutation_entropy(
-            epoch_signal,
-            order=int(order),
-            delay=int(delay),
-            normalize=bool(normalize),
-        )
-    hjorth_mobility, hjorth_complexity = _compute_hjorth_metrics(epoch_signal)
+        if precomputed_permutation_entropy is not None and not permutation_entropy_degraded:
+            out["eeg_conventional_complexity_permutation_entropy"] = precomputed_permutation_entropy
+        else:
+            out["eeg_conventional_complexity_permutation_entropy"] = _compute_permutation_entropy(
+                epoch_signal,
+                order=int(order),
+                delay=int(delay),
+                normalize=bool(normalize),
+            )
+    if precomputed_hjorth is None:
+        hjorth_mobility, hjorth_complexity = _compute_hjorth_metrics(epoch_signal)
+    else:
+        hjorth_mobility, hjorth_complexity = precomputed_hjorth
     if bool(complexity_cfg.get("hjorth_complexity", False)):
         out["eeg_conventional_complexity_hjorth_complexity"] = hjorth_complexity
     if bool(complexity_cfg.get("hjorth_mobility", False)):
@@ -1328,31 +1361,17 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
             verbose=False,
         )
     else:
-        # Fallback to Welch per epoch / per montage
-        psds: List[np.ndarray] = []
-        freqs = None
+        # Fallback to Welch over all epochs and montages in one call.
         nperseg = min(epoch_length_samples, 512)
         noverlap = nperseg // 2
-        for epoch_idx in range(n_epochs_real):
-            epoch_psds: List[np.ndarray] = []
-            for sig_idx in range(n_signals):
-                f, p = signal.welch(
-                    epochs_agg_arr[epoch_idx, sig_idx, :],
-                    fs=sfreq,
-                    window="hann",
-                    nperseg=nperseg,
-                    noverlap=noverlap,
-                    detrend="constant",
-                    scaling="density",
-                )
-                in_band = (f >= psd_fmin) & (f <= psd_fmax)
-                f = f[in_band]
-                p = p[in_band]
-                if freqs is None:
-                    freqs = f
-                epoch_psds.append(p)
-            psds.append(np.stack(epoch_psds, axis=0))  # [1 + G, F]
-        psd = np.stack(psds, axis=0)  # [E, 1 + G, F]
+        psd, freqs = _run_welch_psd_batched(
+            epochs_agg_arr,
+            sfreq=float(sfreq),
+            fmin=float(psd_fmin),
+            fmax=float(psd_fmax),
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
 
     if freqs is None:
         # Should not happen, but guard against edge cases
@@ -1382,27 +1401,16 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                 freqs_alt = None
         elif psd_secondary_method == "welch":
             try:
-                psds_alt: List[np.ndarray] = []
-                freqs_alt = None
                 nperseg_alt = min(epoch_length_samples, 512)
                 noverlap_alt = nperseg_alt // 2
-                for row in epochs_global:
-                    f_alt, p_alt = signal.welch(
-                        row,
-                        fs=sfreq,
-                        window="hann",
-                        nperseg=nperseg_alt,
-                        noverlap=noverlap_alt,
-                        detrend="constant",
-                        scaling="density",
-                    )
-                    in_band_alt = (f_alt >= psd_fmin) & (f_alt <= psd_fmax)
-                    f_alt = f_alt[in_band_alt]
-                    p_alt = p_alt[in_band_alt]
-                    if freqs_alt is None:
-                        freqs_alt = f_alt
-                    psds_alt.append(p_alt)
-                psd_alt = np.stack(psds_alt, axis=0)  # [E, F]
+                psd_alt, freqs_alt = _run_welch_psd_batched(
+                    epochs_global,
+                    sfreq=float(sfreq),
+                    fmin=float(psd_fmin),
+                    fmax=float(psd_fmax),
+                    nperseg=nperseg_alt,
+                    noverlap=noverlap_alt,
+                )
             except Exception:
                 logger.exception("Secondary PSD (welch) failed; disabling PSD multiverse for this run")
                 psd_alt = None
@@ -1500,6 +1508,9 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                 delay=pe_delay,
                 normalize=pe_normalize,
                 conventional_cfg=conventional_cfg,
+                precomputed_hjorth=(hj_mob, hj_comp),
+                precomputed_permutation_entropy=entropy_value,
+                permutation_entropy_degraded=bool(entropy_meta.get("degraded_mode", False)),
             )
         )
         conventional_features.update(

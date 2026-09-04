@@ -2,6 +2,221 @@
 
 ---
 
+## Unreleased — DF-DRIFT-C1 ingest freeze and analysis handoff (SL-005)
+
+Documentation only. No measurement change. MNPS `[m,d,e]` / 9D, `J_hat`,
+and family schema IDs are unchanged. Ingest still writes `drift=None`.
+
+- SL-004 RATIFY of C1 M1–M2 stands. SL-005 freezes the ingest line at
+  consume-external-`b` and moves M3+ to nmd-analysis.
+- Handoff: `project/mnps_v3/df_drift_c1_analysis_handoff.md`
+  (**RATIFIED** 2026-09-03). MNPS chart trajectory, not “raw”; analysis
+  supplies auditable split hashes; ingest records an externally governed
+  qualification without adjudicating M3 PASS; Gate F
+  `input_semantics=discrete_transition_residual_covariance`.
+- C2 residualization, empirical C1 overlays, common-profile enablement,
+  and ds004100 OD-EPI-001 modification remain not authorized.
+
+---
+
+## Unreleased — DF-DRIFT-C1 M1–M2 alignment-only estimator split
+
+Science-lead SL-003: C1 `alignment_only` is authorized for synthetic
+M1–M2 qualification only. C2 residualization, empirical C1 overlays,
+common-profile enablement, and ds004100 OD-EPI-001 modification are not
+authorized. MNPS `[m,d,e]` / 9D, `J_hat`, and family schema IDs are
+unchanged.
+
+- `estimate_local_diffusion_geometry` now splits alignment `drift` from
+  `residualize_increments` (default false). Supplying truth-known chart
+  \(b\) for alignment leaves `a_hat` / `D_total` / `d_diff` / `c_diff`
+  byte-equal to the no-drift path (Gate C1-A). The C2 flag is
+  `invalid` / `c2_residualize_increments_not_authorized`.
+- Ingest still does not supply a vector and never residualizes. Forbidden
+  sources (`mnps_xdot`, Jacobian intercept, same-sample increment mean)
+  fail closed; `a_hat` stays on the no-drift path.
+- Under C1, `a_semantics=raw_increment_covariance` and
+  `ratio_semantics=chart_velocity_to_increment_spread`. \(R_{b/a}\) is
+  secondary; it is not an Itô drift-to-diffusion ratio.
+- FAR-EXT-002E is parked `BLOCKED_EXTERNAL_CUSTODY`. No live 0.2, freeze,
+  \(R(\rho)\), or FAR-003 until complete E1+E2 XML arrives.
+
+---
+
+## Unreleased — Gate F admissible Q and opt-in \(W_Q\)
+
+Gate F freeze: the only admissible Q for computed discrete \(W_Q\) is the
+Gate E recording-level transition-residual covariance. MNPS `[m,d,e]` / 9D,
+`J_hat`, and family schema IDs are unchanged.
+
+- Admissible tags: `q_time_semantics=one_step_transition_covariance`,
+  `q_units=state_squared`, `conversion_model=not_applicable`.
+- Derivative-residual covariance remains refused
+  (`q_contract_not_admissible`). Irregular \(dt\) keeps Q and \(W_Q\)
+  `unavailable` / `materially_irregular_dt`.
+- Propagators are Gate E `series/phi_one_step` =
+  \(\mathrm{expm}(J_{\mathrm{crossfit}}\Delta t)\), not canonical `J_hat`.
+- Opt-in `local_dynamics.stochastic_reachability.enabled` (default false)
+  writes `/stochastic_reachability/v1`. Family YAML `spread` stays
+  `gate_closed`. Registry forbid `gate_e_proxy_as_process_noise` stays.
+- Computed writes: `measurement_validity=not_assessed`,
+  `claim_status=no_biological_claim`, grain `recording_horizon`.
+- Common EEG/fMRI/ephys profiles do not enable reachability or FTR.
+  I-CARE `tube_d_eff_median` is not this schema.
+
+---
+
+## Unreleased — v3 B/D docs: names, \(A_{bD}\) status, claim ceilings
+
+Documentation catch-up plus explicit ingest status for drift-alignment
+scalars. MNPS `[m,d,e]` / 9D, `J_hat`, and family schema IDs are unchanged.
+
+- `contract_status=standard` is the schema class, not an experimental vs
+  licensed scientific tag.
+- Theory \(G_{\mathrm{peak}}\) serializes as FTR `g_peak_over_horizons`.
+- Ingest diffusion remains `drift=None`. `computed` increment covariance is
+  not testable \(A_{bD}\) / \(R_{b/a}\). Those series stay NaN and now carry
+  `summary.A_bD_computation_status=not_testable` /
+  `R_b_over_a_computation_status=not_testable` with
+  `drift_alignment_failure_reason=independent_drift_not_supplied`.
+- Registry forbids `mnps_xdot_as_sde_drift` in addition to Jacobian-residual
+  substitution as \(a\).
+- O2b and first-hit committor do not serialize \(V_{1/2}\) or
+  \(\lvert\nabla q\rvert\).
+- v2.6 jacobian_metrics / FTR are provenance, not S3-licensed empirical NDT.
+  I-CARE analysis reachability is not `mndm.stochastic_reachability.v1`.
+
+---
+
+## Unreleased — diffusion compute vs OD-TQ1 method tag
+
+When `dynamical_families.diffusion` is enabled, ingest computes increment
+covariance if the estimator has support. YAML OD-TQ1 id/hash are provenance
+method tags. They are not an on/off gate and do not set
+`measurement_validity=translation_qualified`.
+
+- Write: `computed` + `not_assessed` + `no_biological_claim` when support holds.
+- Estimator refusals (gaps, irregular \(dt\), insufficient samples) remain
+  `not_testable` / `insufficient_support`.
+- Destination and FAR still require protocol inputs plus an adapter stamp.
+- MNPS `[m,d,e]` / 9D, `J_hat`, and family schema IDs are unchanged.
+
+---
+
+## Unreleased — v3 Round 4 support / capability
+
+Additive metadata schema `/support_signature/v1/`
+(`mndm.support_signature.v1`). MNPS `[m,d,e]` / 9D, `J_hat`, family schema
+IDs, and `geometry_contract` are unchanged.
+
+- Per-coordinate `source` / `fallback_feature` / `semantic_equivalence`
+  from existing `metric_policies` and recorded fallback metadata.
+- File-level capability row by modality (`chart_3d=yes` for EEG/iEEG/fMRI;
+  `spread=gated`; FAR `resilience=perturbational_only`; fMRI MNJ `limited`).
+- Legacy readers fill missing fields as `not_recorded` and do not infer
+  capability from HDF5 presence.
+
+---
+
+## Unreleased — v3 Round 3 inferential grain
+
+Additive nested `grain/` on existing v1 groups. MNPS `[m,d,e]` / 9D, `J_hat`,
+and schema IDs are unchanged.
+
+- Fields: `native`, `parent`, `biological_unit`, `repeated_measure`,
+  `direct_between_subject_inference`.
+- New writes set `biological_unit=subject` and
+  `direct_between_subject_inference=forbidden`.
+- Grain is schema metadata and is written even when the object is not
+  computed. Windows are not participants.
+- Legacy readers fill missing grain fields as `not_recorded` and do not infer
+  `window` from series.
+
+---
+
+## Unreleased — v3 Round 2 validity certificate
+
+Additive certificate fields on existing v1 groups. MNPS `[m,d,e]` / 9D,
+`J_hat`, and family schema IDs are unchanged.
+
+- Sibling fields `computation_status`, `measurement_validity`, and
+  `claim_status` on dynamical-family and local-dynamics exports.
+- New writes set `claim_status` to `no_biological_claim`; `ndt_licensed` is
+  not emitted.
+- `measurement_validity=translation_qualified` only when a family TQ id and
+  contract hash are already recorded. Jacobian metrics and FTR remain
+  `not_assessed` when computed.
+- `validation_level` is not `measurement_validity`.
+- Legacy readers fill missing fields as `not_recorded` and do not infer
+  regime validity or NDT licensing.
+
+---
+
+## Unreleased — v3 Round 1 semantic kernel (dynamical families)
+
+Container and language rename only. MNPS `[m,d,e]` / 9D order, the Jacobian
+estimator, and family schema IDs are unchanged.
+
+- Python package `mndm.orthogonal_dynamics` → `mndm.dynamical_families`.
+- YAML root `orthogonal_dynamics` → `dynamical_families` (old key refused).
+- HDF5 write path `/dynamical_families/{diffusion,destination,resilience}/v1`.
+- Legacy `/orthogonal_dynamics/` is read-only; new files do not dual-write.
+- Schema IDs remain `mndm.diffusion_geometry.v1`, `mndm.committor.v1`,
+  `mndm.finite_amplitude_resilience.v1`.
+- Historical protocol IDs (`OD-TQ*`, `OD-EPI-*`, `OD-SLP-*`, `FAR-*`) kept.
+- Spread / Gate F `W_Q` remains closed.
+
+---
+
+## v2.6.0 — Local Jacobian metrics and finite-time response
+
+This release adds a versioned local-dynamics interpretation layer on top of the
+unchanged MNPS Jacobian estimator. It remains a measurement/export release:
+cohort comparisons, retrospective audits, and biological claims stay in the
+analysis repository.
+
+### Major additions
+
+**Jacobian Metrics v1**
+
+- Added `mndm.jacobian_metrics.v1` for 3D and directly estimated 9D Jacobian
+  fields, including spectral/numerical abscissae, reactivity, deformation,
+  rotation, support counts, and explicit stable-reactive flags.
+- Added `/jacobian/derived_metrics/v1/` and
+  `/jacobian_9D/derived_metrics/v1/`, carrying coordinate-contract provenance.
+
+**Finite-Time Response v1**
+
+- Added opt-in `mndm.finite_time_response.v1` with time-ordered exponentials,
+  original-center and observed-time continuity gates, actual horizon duration,
+  support counts, and distinct computation/validation status.
+- Added 9D family-transfer summaries only for truly 9D fields; no 3D fallback
+  is synthesized.
+
+**Residual covariance and reachability boundary**
+
+- Added residual-covariance and stochastic-reachability library contracts,
+  including PSD/QC and explicit time semantics.
+- The summarize pipeline does not yet emit a one-step transition residual
+  covariance, so it does not claim computed stochastic reachability.
+
+### Validation and claim boundaries
+
+| Stream | Evidence | Claim ceiling |
+|---|---|---|
+| Local-dynamics unit and writer contracts | Analytic matrices, continuity and Q-gate tests | Mathematical/export contract only |
+| ds003944 / ds003947 reruns | Model-derived local measurements | Internal descriptive output; not biological inference |
+| Finite-time response | `validation_level = model_derived` | Not held-out predictive or perturbational validation |
+
+### Release boundary
+
+v2.6.0 is identified by its final commit and package version, not by generated
+dataset outputs. The Jacobian estimator semantics are unchanged, and
+unavailable Q/reachability inputs remain explicit gates rather than inferred
+noise models.
+
+---
+
 ## v2.5.0 — Multimodal ingest expansion, phase-aware features, and contract hardening
 
 This release consolidates the post-v2.4.0 working-tree additions into the next

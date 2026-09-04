@@ -1680,6 +1680,7 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     wfdb_cfg = preprocess_cfg.get("wfdb", {}) if isinstance(preprocess_cfg, Mapping) else {}
     if not isinstance(wfdb_cfg, Mapping):
         wfdb_cfg = {}
+    preprocess_timings: Dict[str, float] = {}
 
     record_stem = str(file_path.with_suffix(""))
     try:
@@ -1729,8 +1730,19 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         original_sfreq=float(fs),
         preprocess_cfg=preprocess_cfg if isinstance(preprocess_cfg, Mapping) else {},
     )
+    resample_cfg = preprocess_cfg.get("resample", {}) if isinstance(preprocess_cfg, Mapping) else {}
+    resample_n_jobs = resample_cfg.get("n_jobs", 1) if isinstance(resample_cfg, Mapping) else 1
+    if isinstance(resample_n_jobs, str) and resample_n_jobs.strip().lower() == "auto":
+        n_jobs_resample: Any = "auto"
+    else:
+        try:
+            n_jobs_resample = max(1, int(resample_n_jobs))
+        except Exception:
+            n_jobs_resample = 1
+    t_resample0 = time.perf_counter()
     if raw.info["sfreq"] != target_sfreq:
-        raw.resample(target_sfreq, verbose=False)
+        raw.resample(target_sfreq, n_jobs=n_jobs_resample, verbose=False)
+    preprocess_timings["resample"] = float(time.perf_counter() - t_resample0)
 
     notch_hz = preprocess_cfg.get("notch_hz", None) if isinstance(preprocess_cfg, Mapping) else None
     eeg_picks = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
@@ -1768,7 +1780,7 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     if eeg_scale.shape[0] == eeg_values.shape[0]:
         eeg_values = eeg_values * eeg_scale[:, np.newaxis]
 
-    preprocess_timings: Dict[str, float] = {"total": float(time.perf_counter() - t_pre0)}
+    preprocess_timings["total"] = float(time.perf_counter() - t_pre0)
     meta: Dict[str, Any] = {
         "file": str(file_path),
         "dataset_id": dataset_id,

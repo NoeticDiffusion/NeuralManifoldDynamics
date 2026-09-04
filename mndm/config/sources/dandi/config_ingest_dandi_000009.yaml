@@ -1,0 +1,21 @@
+version: 2.0
+modality: ephys
+
+imports:
+  - "../../config_ingest_common_ephys.yaml"
+
+datasets: ["dandi_000009"]
+
+source:
+  name: "DANDI 000009"
+  platform: "DANDI"
+  format: "NWB"
+  dataset_id: "000009"
+  dataset_name: "Maintenance of persistent activity in a frontal thalamocortical loop"
+  url: "https://dandiarchive.org/dandiset/000009"
+
+paths:
+  received_dir: "data/dandi/raw/000009"
+  processed_dir: "data/dandi/processed_ephys/000009"
+  dataset_received_dirs:
+    dandi_000009: "data/dandi/raw/000009"

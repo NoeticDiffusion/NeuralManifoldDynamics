@@ -1,0 +1,98 @@
+# Figshare infant EEG — v3 dynamical-families overlay.
+#
+# Observational rest/reaching recordings. This overlay serializes all three
+# family adapters plus Jacobian-derived measures on the existing infant EEG
+# contract. It is an eligibility / refusal test, not a translation-qualified
+# production analysis and not a cohort-age overlay.
+#
+# Expected write states:
+#   diffusion:   computed when estimator support holds
+#                (measurement_validity=not_assessed; no OD-TQ1 copy)
+#   destination: not_testable (no explicit first-hit A/B or reaction coordinate)
+#   resilience:  not_testable / no_perturbation_protocol
+#   jacobian metrics: computed when J_hat exists (measurement_validity=not_assessed)
+#   FTR: computed when Jacobian support allows (validation_level=model_derived)
+#   grain + certificate + /support_signature/v1: written on new files
+#
+# Gate F remains closed: no spread / W_Q. Do not copy OD-TQ1 hashes here.
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_figshare_infant_eeg.yaml"
+  - "../../config_ingest_common_dynamical_families.yaml"
+
+datasets:
+  - figshare_infant_eeg
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+
+  diffusion:
+    enabled: true
+    estimator: local_increment_covariance
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+    neighborhood: {k: 20}
+    min_samples: 30
+    min_neighborhood_samples: 10
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    psd_floor: 1.0e-8
+
+  destination:
+    enabled: true
+    regime_source: null
+    label_key: null
+    reaction_coordinate:
+      source: explicit_column
+      key: null
+      name: reaction_coordinate
+      boundaries: [-0.8, 0.8]
+    estimator: local_law_dense_grid_o2b
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+    grid_resolution: 65
+    set_A: []
+    set_B: []
+    diffusion_coefficient: null
+    min_samples: 30
+    min_support_per_grid: 30
+    min_transition_segments: 5
+    max_dt_relative_deviation: 0.05
+
+  resilience:
+    enabled: true
+    protocol_source: null
+    estimator: observed_perturbation_outcome_summary
+    amplitude_key: null
+    returned_key: null
+    survived_key: null
+    recovery_time_key: null
+    protocol: {}
+    min_trials_per_amplitude: 20
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+
+local_dynamics:
+  jacobian_metrics:
+    stability_zero_tolerance: 1.0e-8
+    reactivity_zero_tolerance: 1.0e-8
+  finite_time_response:
+    enabled: true
+    propagator_mode: time_ordered_expm
+    horizon_steps: [1, 2, 4]
+    max_gap_sec: null
+    validation_level: model_derived
+  transition_residuals:
+    enabled: true
+    crossfit_embargo_steps: 4
+    max_dt_deviation_sec: 1.0e-6
+    min_eigenvalue: 1.0e-8

@@ -1,0 +1,69 @@
+# Standard non-MNPS measurement families; opt-in by dataset overlay.
+# Import only from explicit qualification/dataset overlays; this file is
+# intentionally not imported by the common EEG, fMRI, or ephys configs.
+dynamical_families:
+  enabled: false
+  coordinate_layer: subject_anchored
+  diffusion:
+    enabled: false
+    estimator: local_increment_covariance
+    # Method tags only. When enabled, ingest computes if the estimator has
+    # support. qualification_id / hash do not gate computation.
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+    # C1 alignment_only is library-qualified (DF-DRIFT-C1 M1–M2). Ingest does
+    # not supply a vector. C2 residualize_increments is not authorized.
+    drift:
+      enabled: false
+      mode: alignment_only
+      source: not_supplied
+      qualification_id: null
+      qualification_contract_hash: null
+    neighborhood: {k: 20}
+    min_samples: 30
+    min_neighborhood_samples: 10
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    psd_floor: 1.0e-8
+  destination:
+    enabled: false
+    # Only an explicit first-hit label column and scalar reaction-coordinate
+    # column may activate the O2b adapter; no stage/coordinate inference.
+    regime_source: null
+    label_key: null
+    reaction_coordinate:
+      source: explicit_column
+      key: null
+      name: reaction_coordinate
+      boundaries: [-0.8, 0.8]
+    estimator: local_law_dense_grid_o2b
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+    grid_resolution: 65
+    set_A: []
+    set_B: []
+    diffusion_coefficient: null
+    min_samples: 30
+    min_support_per_grid: 30
+    min_transition_segments: 5
+    max_dt_relative_deviation: 0.05
+  resilience:
+    enabled: false
+    # Requires explicit observed perturbation outcomes. No spontaneous
+    # trajectory, Jacobian, reachability, or centroid fallback is permitted.
+    protocol_source: null
+    estimator: observed_perturbation_outcome_summary
+    amplitude_key: null
+    returned_key: null
+    survived_key: null
+    recovery_time_key: null
+    protocol: {}
+    min_trials_per_amplitude: 20
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null

@@ -17,7 +17,13 @@ def test_load_config_valid_yaml():
     """Test loading a valid YAML config."""
     from core.config_loader import load_config
     
-    config_path = Path(__file__).resolve().parents[1] / "config" / "config_ingest.yaml"
+    config_path = (
+        Path(__file__).resolve().parents[1]
+        / "config"
+        / "sources"
+        / "openneuro"
+        / "config_ingest_ds003478.yaml"
+    )
     cfg = load_config(config_path)
     
     assert isinstance(cfg, dict)
@@ -97,4 +103,16 @@ def test_load_config_imports_deep_merge():
         assert cfg["paths"]["processed_dir"] == "overlay"
         assert cfg["preprocess"]["sfreq"] == 500
         assert cfg["preprocess"]["channel_typing"]["enabled"] is True
+
+
+def test_all_source_configs_have_resolvable_imports():
+    """Every reorganized source overlay should load through its import chain."""
+    from core.config_loader import load_config
+
+    source_root = Path(__file__).resolve().parents[1] / "config" / "sources"
+    source_configs = sorted(source_root.rglob("*.yaml"))
+
+    assert source_configs
+    for config_path in source_configs:
+        assert isinstance(load_config(config_path), dict), config_path
 

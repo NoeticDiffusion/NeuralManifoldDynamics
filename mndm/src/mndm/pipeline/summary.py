@@ -108,8 +108,26 @@ from .robustness_helpers import (
 from .. import nwb_intervals, preprocess
 from core.io import json_writer
 from .. import anchors, jacobian, projection, robustness, schema
+from ..dynamics.finite_time_response import compute_finite_time_response
+from ..dynamics.jacobian_metrics import compute_jacobian_metrics
+from ..dynamics.stochastic_reachability import (
+    compute_stochastic_reachability_from_gate_e,
+    estimate_transition_residual_covariance_proxy,
+)
+from ..dynamics.transition_residuals import compute_transition_residuals
+from ..dynamical_families.contracts import (
+    COMMITTOR_SCHEMA_VERSION,
+    DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+    FINITE_AMPLITUDE_RESILIENCE_SCHEMA_VERSION,
+    unavailable_result as family_unavailable_result,
+)
+from .dynamical_families_export import (
+    build_dynamical_families_export,
+    reject_legacy_family_config_key,
+)
 from .run_manifest import write_run_manifest
 from ..reproducibility import resolve_reproducibility_policy
+from ..support_signature import build_support_signature
 
 logger = logging.getLogger(__name__)
 
@@ -729,6 +747,90 @@ def _build_coverage_export(
     return out
 
 
+def _build_dynamical_families_export_for_layers(
+    *,
+    config: Mapping[str, Any],
+    x_subject_anchored: np.ndarray | None,
+    x_cohort_anchored: np.ndarray | None,
+    time: np.ndarray,
+    stage: np.ndarray | None,
+    segment_id: np.ndarray | None,
+    reaction_coordinate: np.ndarray | None = None,
+    reaction_coordinate_name: str = "reaction_coordinate",
+    perturbation_amplitudes: np.ndarray | None = None,
+    returned_to_reference: np.ndarray | None = None,
+    perturbation_survived: np.ndarray | None = None,
+    recovery_time_sec: np.ndarray | None = None,
+    perturbation_protocol: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build family exports from the configured 3D coordinate layer."""
+    reject_legacy_family_config_key(config if isinstance(config, Mapping) else None)
+    family_cfg = config.get("dynamical_families", {}) if isinstance(config, Mapping) else {}
+    family_cfg = family_cfg if isinstance(family_cfg, Mapping) else {}
+    family_layer = (
+        str(family_cfg.get("coordinate_layer", "subject_anchored"))
+        if family_cfg
+        else "subject_anchored"
+    )
+    if family_layer == "cohort_anchored" and x_cohort_anchored is not None:
+        family_state = np.asarray(x_cohort_anchored, dtype=np.float32)
+        family_layer_name = "coords_3d_cohort_anchored"
+    elif family_layer == "subject_anchored" and x_subject_anchored is not None:
+        family_state = np.asarray(x_subject_anchored, dtype=np.float32)
+        family_layer_name = "coords_3d_subject_anchored"
+    else:
+        family_state = None
+        family_layer_name = f"unavailable_{family_layer}"
+
+    if family_state is not None:
+        return build_dynamical_families_export(
+            config=config,
+            state=family_state,
+            time=np.asarray(time, dtype=np.float64),
+            stage=np.asarray(stage) if stage is not None else None,
+            segment_id=segment_id,
+            coordinate_layer=family_layer_name,
+            coordinate_names=["m", "d", "e"],
+            reaction_coordinate=reaction_coordinate,
+            reaction_coordinate_name=reaction_coordinate_name,
+            perturbation_amplitudes=perturbation_amplitudes,
+            returned_to_reference=returned_to_reference,
+            perturbation_survived=perturbation_survived,
+            recovery_time_sec=recovery_time_sec,
+            perturbation_protocol=perturbation_protocol,
+        )
+
+    return {
+        name: family_unavailable_result(
+            schema_version,
+            status="not_testable",
+            failure_reason="requested_coordinate_layer_not_available",
+            coordinate_layer=family_layer_name,
+            coordinate_names=["m", "d", "e"],
+        )
+        for name, schema_version, enabled in (
+            (
+                "diffusion",
+                DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+                bool((family_cfg.get("diffusion", {}) or {}).get("enabled", False)),
+            ),
+            (
+                "destination",
+                COMMITTOR_SCHEMA_VERSION,
+                bool((family_cfg.get("destination", {}) or {}).get("enabled", False)),
+            ),
+            (
+                "resilience",
+                FINITE_AMPLITUDE_RESILIENCE_SCHEMA_VERSION,
+                bool((family_cfg.get("resilience", {}) or {}).get("enabled", False)),
+            ),
+        )
+        if isinstance(family_cfg, Mapping)
+        and bool(family_cfg.get("enabled", False))
+        and enabled
+    }
+
+
 def _resolve_export_contract_preferences(
     proj_cfg: Mapping[str, Any],
     *,
@@ -956,6 +1058,35 @@ def _resolve_entropy_provenance(frame: pd.DataFrame) -> Dict[str, Any]:
         "degraded_mode": degraded_mode,
         "reason": reason,
     }
+
+
+def _actual_metrics_from_existing_metadata(
+    frame: pd.DataFrame,
+    mnps_9d_constructs: Mapping[str, Any],
+) -> Dict[str, str]:
+    """Collect already-recorded feature substitutions; do not invent coverage."""
+    actual: Dict[str, str] = {}
+    if isinstance(frame, pd.DataFrame):
+        for col in ("eeg_entropy_metric", "meg_entropy_metric"):
+            if col not in frame.columns:
+                continue
+            series = frame[col].dropna().astype(str)
+            series = series[series.str.strip().astype(bool)]
+            if not series.empty:
+                actual["e_e"] = str(series.mode(dropna=True).iloc[0]).strip()
+                break
+    if "e_e" not in actual:
+        e_e = mnps_9d_constructs.get("e_e") if isinstance(mnps_9d_constructs, Mapping) else None
+        if isinstance(e_e, Mapping):
+            metric = str(e_e.get("actual_metric_used") or "").strip()
+            if metric:
+                actual["e_e"] = metric
+    if isinstance(frame, pd.DataFrame) and "embodied_arousal_proxy_source" in frame.columns:
+        series = frame["embodied_arousal_proxy_source"].dropna().astype(str)
+        series = series[series.str.strip().astype(bool)]
+        if not series.empty:
+            actual["e_m"] = str(series.mode(dropna=True).iloc[0]).strip()
+    return actual
 
 
 def _canonical_mde_from_v2_map() -> Dict[str, List[str]]:
@@ -4875,6 +5006,212 @@ class SubjectSummaryRunner:
         except Exception:
             logger.exception("Failed to compute tier2_jacobian_metrics for %s", dataset_label)
 
+        # Jacobian Metrics v1 are derived from the already filtered canonical
+        # Jacobian. They are a versioned measurement layer, not a new estimator.
+        jacobian_metrics = None
+        jacobian_metrics_v2 = None
+        try:
+            dynamics_cfg = config.get("local_dynamics", {}) if isinstance(config, Mapping) else {}
+            metrics_cfg = dynamics_cfg.get("jacobian_metrics", {}) if isinstance(dynamics_cfg, Mapping) else {}
+            metrics_cfg = metrics_cfg if isinstance(metrics_cfg, Mapping) else {}
+            if jac_res is not None:
+                jacobian_metrics = compute_jacobian_metrics(
+                    jac_res.j_hat,
+                    stability_zero_tolerance=float(metrics_cfg.get("stability_zero_tolerance", 1e-8)),
+                    reactivity_zero_tolerance=float(metrics_cfg.get("reactivity_zero_tolerance", 1e-8)),
+                )
+                jacobian_metrics["provenance"].update(
+                    {
+                        "primary_coordinate_contract": primary_coordinate_layer,
+                        "primary_coordinate_layer": (
+                            "coords_3d_cohort_anchored"
+                            if primary_coordinate_layer == "cohort_anchored"
+                            else "coords_3d_subject_anchored"
+                        ),
+                    }
+                )
+            if jac_res_v2 is not None:
+                jacobian_metrics_v2 = compute_jacobian_metrics(
+                    jac_res_v2.j_hat,
+                    stability_zero_tolerance=float(metrics_cfg.get("stability_zero_tolerance", 1e-8)),
+                    reactivity_zero_tolerance=float(metrics_cfg.get("reactivity_zero_tolerance", 1e-8)),
+                )
+                jacobian_metrics_v2["provenance"].update(
+                    {
+                        "primary_coordinate_contract": primary_coordinate_layer,
+                        "primary_coordinate_layer": (
+                            "coords_9d_cohort_anchored"
+                            if primary_coordinate_layer == "cohort_anchored"
+                            else "coords_9d_subject_anchored"
+                        ),
+                    }
+                )
+        except Exception:
+            logger.exception("Failed to compute Jacobian Metrics v1 for %s", dataset_label)
+
+        finite_time_response = {}
+        finite_time_response_v2 = {}
+        try:
+            dynamics_cfg = config.get("local_dynamics", {}) if isinstance(config, Mapping) else {}
+            finite_cfg = dynamics_cfg.get("finite_time_response", {}) if isinstance(dynamics_cfg, Mapping) else {}
+            finite_cfg = finite_cfg if isinstance(finite_cfg, Mapping) else {}
+            if bool(finite_cfg.get("enabled", False)):
+                horizons = finite_cfg.get("horizon_steps", [1, 2, 4])
+                common_kwargs = {
+                    "horizon_steps": horizons,
+                    "nominal_dt_sec": float(dt),
+                    "propagator_mode": str(finite_cfg.get("propagator_mode", "time_ordered_expm")),
+                    "max_gap_sec": finite_cfg.get("max_gap_sec"),
+                    "validation_level": str(finite_cfg.get("validation_level", "model_derived")),
+                }
+                if jac_res is not None:
+                    finite_time_response = compute_finite_time_response(
+                        jac_res.j_hat,
+                        time=np.asarray(time)[jac_res.centers],
+                        centers=jac_res.centers,
+                        **common_kwargs,
+                    )
+                    finite_time_response["provenance"].update(
+                        {
+                            "primary_coordinate_contract": primary_coordinate_layer,
+                            "primary_coordinate_layer": (
+                                "coords_3d_cohort_anchored"
+                                if primary_coordinate_layer == "cohort_anchored"
+                                else "coords_3d_subject_anchored"
+                            ),
+                        }
+                    )
+                if jac_res_v2 is not None:
+                    family_indices = (
+                        {"m": [0, 1, 2], "d": [3, 4, 5], "e": [6, 7, 8]}
+                        if jac_res_v2.j_hat.shape[1] == 9
+                        else None
+                    )
+                    finite_time_response_v2 = compute_finite_time_response(
+                        jac_res_v2.j_hat,
+                        time=np.asarray(time)[jac_res_v2.centers],
+                        centers=jac_res_v2.centers,
+                        family_indices=family_indices,
+                        **common_kwargs,
+                    )
+                    finite_time_response_v2["provenance"].update(
+                        {
+                            "primary_coordinate_contract": primary_coordinate_layer,
+                            "primary_coordinate_layer": (
+                                "coords_9d_cohort_anchored"
+                                if primary_coordinate_layer == "cohort_anchored"
+                                else "coords_9d_subject_anchored"
+                            ),
+                        }
+                    )
+        except Exception:
+            logger.exception("Failed to compute finite-time response for %s", dataset_label)
+
+        transition_residuals = {}
+        transition_residuals_v2 = {}
+        residual_covariance_proxy = {}
+        residual_covariance_proxy_v2 = {}
+        stochastic_reachability = {}
+        stochastic_reachability_v2 = {}
+        dynamics_cfg = config.get("local_dynamics", {}) if isinstance(config, Mapping) else {}
+        dynamics_cfg = dynamics_cfg if isinstance(dynamics_cfg, Mapping) else {}
+        transition_cfg = dynamics_cfg.get("transition_residuals", {}) if isinstance(dynamics_cfg, Mapping) else {}
+        transition_cfg = transition_cfg if isinstance(transition_cfg, Mapping) else {}
+        reachability_cfg = dynamics_cfg.get("stochastic_reachability", {}) if isinstance(dynamics_cfg, Mapping) else {}
+        reachability_cfg = reachability_cfg if isinstance(reachability_cfg, Mapping) else {}
+        try:
+            if bool(transition_cfg.get("enabled", False)):
+                segment_id = (
+                    pd.factorize(sub_frame["file"], sort=True)[0].astype(np.int32)
+                    if "file" in sub_frame.columns
+                    else np.zeros(len(time), dtype=np.int32)
+                )
+                common_transition_kwargs = {
+                    "time": np.asarray(time),
+                    "nn_indices": nn_indices,
+                    "super_window": int(mnps_cfg["super_window"]),
+                    "ridge_alpha": float(mnps_cfg["ridge_alpha"]),
+                    "distance_weighted": bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
+                    "crossfit_embargo_steps": int(transition_cfg.get("crossfit_embargo_steps", 4)),
+                    "coordinate_contract": primary_coordinate_layer,
+                    "segment_id": segment_id,
+                }
+                if jac_res is not None:
+                    transition_residuals = compute_transition_residuals(
+                        x,
+                        x_dot,
+                        np.asarray(time),
+                        jac_res.centers,
+                        nn_indices,
+                        coordinate_layer=(
+                            "coords_3d_cohort_anchored"
+                            if primary_coordinate_layer == "cohort_anchored"
+                            else "coords_3d_subject_anchored"
+                        ),
+                        coordinate_names=["m", "d", "e"],
+                        **{key: value for key, value in common_transition_kwargs.items() if key not in {"time", "nn_indices"}},
+                    )
+                    residual_covariance_proxy = estimate_transition_residual_covariance_proxy(
+                        transition_residuals,
+                        max_dt_deviation_sec=float(transition_cfg.get("max_dt_deviation_sec", 1e-6)),
+                        min_eigenvalue=float(transition_cfg.get("min_eigenvalue", 1e-8)),
+                    )
+                if jac_res_v2 is not None:
+                    transition_residuals_v2 = compute_transition_residuals(
+                        coords_9d,
+                        coords_9d_dot,
+                        np.asarray(time),
+                        jac_res_v2.centers,
+                        nn_indices=nn_indices_v2,
+                        coordinate_layer=(
+                            "coords_9d_cohort_anchored"
+                            if primary_coordinate_layer == "cohort_anchored"
+                            else "coords_9d_subject_anchored"
+                        ),
+                        coordinate_names=list(coords_9d_names or []),
+                        **{key: value for key, value in common_transition_kwargs.items() if key not in {"time", "nn_indices"}},
+                    )
+                    residual_covariance_proxy_v2 = estimate_transition_residual_covariance_proxy(
+                        transition_residuals_v2,
+                        max_dt_deviation_sec=float(transition_cfg.get("max_dt_deviation_sec", 1e-6)),
+                        min_eigenvalue=float(transition_cfg.get("min_eigenvalue", 1e-8)),
+                    )
+        except Exception:
+            logger.exception("Failed to compute transition residuals for %s", dataset_label)
+        try:
+            if bool(reachability_cfg.get("enabled", False)):
+                if not bool(transition_cfg.get("enabled", False)):
+                    not_requested = {
+                        "computation_status": "unavailable",
+                        "failure_reason": "transition_residuals_not_requested",
+                    }
+                    stochastic_reachability = compute_stochastic_reachability_from_gate_e(
+                        not_requested,
+                        {},
+                    )
+                    stochastic_reachability_v2 = compute_stochastic_reachability_from_gate_e(
+                        not_requested,
+                        {},
+                    )
+                else:
+                    stochastic_reachability = compute_stochastic_reachability_from_gate_e(
+                        transition_residuals,
+                        residual_covariance_proxy,
+                    )
+                    stochastic_reachability_v2 = compute_stochastic_reachability_from_gate_e(
+                        transition_residuals_v2,
+                        residual_covariance_proxy_v2,
+                    )
+        except Exception:
+            logger.exception("Failed to compute stochastic reachability for %s", dataset_label)
+            if bool(reachability_cfg.get("enabled", False)):
+                failed = {
+                    "computation_status": "unavailable",
+                    "failure_reason": "reachability_compute_failed",
+                }
+                stochastic_reachability = compute_stochastic_reachability_from_gate_e(failed, {})
+                stochastic_reachability_v2 = compute_stochastic_reachability_from_gate_e(failed, {})
+
         mnps_mnj_sanity = None
         try:
             mnps_mnj_sanity = compute_mnps_mnj_sanity(
@@ -5227,6 +5564,95 @@ class SubjectSummaryRunner:
             cohort_summary=regional_mnps_results_cohort if export_cohort_anchored else None,
             anchor_spec=exported_anchor_spec if isinstance(exported_anchor_spec, Mapping) else {},
         )
+        family_segment_id = (
+            pd.factorize(sub_frame["file"], sort=True)[0].astype(np.int32)
+            if "file" in sub_frame.columns
+            else np.zeros(len(time), dtype=np.int32)
+        )
+        reject_legacy_family_config_key(config if isinstance(config, Mapping) else None)
+        family_cfg = config.get("dynamical_families", {}) if isinstance(config, Mapping) else {}
+        family_cfg = family_cfg if isinstance(family_cfg, Mapping) else {}
+        committor_reaction_coordinate = None
+        committor_reaction_coordinate_name = "reaction_coordinate"
+        destination_cfg = family_cfg.get("destination", {}) if isinstance(family_cfg, Mapping) else {}
+        destination_cfg = destination_cfg if isinstance(destination_cfg, Mapping) else {}
+        reaction_coordinate_spec = destination_cfg.get("reaction_coordinate")
+        if isinstance(reaction_coordinate_spec, Mapping):
+            committor_reaction_coordinate_name = str(
+                reaction_coordinate_spec.get(
+                    "name",
+                    reaction_coordinate_spec.get("key", "reaction_coordinate"),
+                )
+            )
+            if str(reaction_coordinate_spec.get("source", "")).strip() == "explicit_column":
+                reaction_coordinate_key = str(reaction_coordinate_spec.get("key", "")).strip()
+                if reaction_coordinate_key and reaction_coordinate_key in sub_frame.columns:
+                    committor_reaction_coordinate = pd.to_numeric(
+                        sub_frame[reaction_coordinate_key],
+                        errors="coerce",
+                    ).to_numpy(dtype=np.float64)
+        resilience_amplitudes = None
+        resilience_returned = None
+        resilience_survived = None
+        resilience_recovery_time = None
+        resilience_protocol: Mapping[str, Any] | None = None
+        resilience_cfg = (
+            family_cfg.get("resilience", {})
+            if isinstance(family_cfg, Mapping)
+            else {}
+        )
+        resilience_cfg = resilience_cfg if isinstance(resilience_cfg, Mapping) else {}
+        if (
+            str(resilience_cfg.get("protocol_source", "")).strip()
+            == "explicit_perturbation_outcomes"
+        ):
+            amplitude_key = str(resilience_cfg.get("amplitude_key", "")).strip()
+            returned_key = str(resilience_cfg.get("returned_key", "")).strip()
+            if (
+                amplitude_key
+                and returned_key
+                and amplitude_key in sub_frame.columns
+                and returned_key in sub_frame.columns
+            ):
+                resilience_amplitudes = pd.to_numeric(
+                    sub_frame[amplitude_key], errors="coerce"
+                ).to_numpy(dtype=np.float64)
+                resilience_returned = pd.to_numeric(
+                    sub_frame[returned_key], errors="coerce"
+                ).to_numpy()
+                survived_key = str(resilience_cfg.get("survived_key", "")).strip()
+                if survived_key and survived_key in sub_frame.columns:
+                    resilience_survived = pd.to_numeric(
+                        sub_frame[survived_key], errors="coerce"
+                    ).to_numpy()
+                recovery_time_key = str(
+                    resilience_cfg.get("recovery_time_key", "")
+                ).strip()
+                if recovery_time_key and recovery_time_key in sub_frame.columns:
+                    resilience_recovery_time = pd.to_numeric(
+                        sub_frame[recovery_time_key], errors="coerce"
+                    ).to_numpy(dtype=np.float64)
+                configured_protocol = resilience_cfg.get("protocol", {})
+                resilience_protocol = (
+                    dict(configured_protocol)
+                    if isinstance(configured_protocol, Mapping)
+                    else {}
+                )
+        dynamical_families_export = _build_dynamical_families_export_for_layers(
+            config=config,
+            x_subject_anchored=x_subject_anchored,
+            x_cohort_anchored=x_cohort_anchored,
+            time=np.asarray(time, dtype=np.float64),
+            stage=np.asarray(stage) if stage is not None else None,
+            segment_id=family_segment_id,
+            reaction_coordinate=committor_reaction_coordinate,
+            reaction_coordinate_name=committor_reaction_coordinate_name,
+            perturbation_amplitudes=resilience_amplitudes,
+            returned_to_reference=resilience_returned,
+            perturbation_survived=resilience_survived,
+            recovery_time_sec=resilience_recovery_time,
+            perturbation_protocol=resilience_protocol,
+        )
 
         # Build per-row source provenance (replaces implicit stacked-half slicing).
         # The file column encodes which raw file each row was computed from.
@@ -5269,6 +5695,16 @@ class SubjectSummaryRunner:
             else np.arange(len(sub_frame), dtype=np.int64)
         )
 
+        support_signature_export = build_support_signature(
+            modality=config.get("modality") if isinstance(config, Mapping) else None,
+            metric_policies=v2_metric_policies if isinstance(v2_metric_policies, Mapping) else {},
+            actual_metrics=_actual_metrics_from_existing_metadata(
+                sub_frame,
+                mnps_9d_constructs if isinstance(mnps_9d_constructs, Mapping) else {},
+            ),
+            entropy_meta=entropy_meta if isinstance(entropy_meta, Mapping) else None,
+        )
+
         # Build payload
         payload = schema.MNPSPayload(
             time=time,
@@ -5288,9 +5724,25 @@ class SubjectSummaryRunner:
             jacobian=jac_res.j_hat if jac_res is not None else None,
             jacobian_dot=jac_res.j_dot if jac_res is not None else None,
             jacobian_centers=jac_res.centers if jac_res is not None else None,
+            jacobian_affine_reference=jac_res.affine_reference if jac_res is not None else None,
+            jacobian_affine_intercept=jac_res.affine_intercept if jac_res is not None else None,
             jacobian_9D=jac_res_v2.j_hat if jac_res_v2 is not None else None,
             jacobian_9D_dot=jac_res_v2.j_dot if jac_res_v2 is not None else None,
             jacobian_9D_centers=jac_res_v2.centers if jac_res_v2 is not None else None,
+            jacobian_9D_affine_reference=jac_res_v2.affine_reference if jac_res_v2 is not None else None,
+            jacobian_9D_affine_intercept=jac_res_v2.affine_intercept if jac_res_v2 is not None else None,
+            jacobian_derived_metrics=jacobian_metrics or {},
+            jacobian_9D_derived_metrics=jacobian_metrics_v2 or {},
+            finite_time_response=finite_time_response,
+            finite_time_response_9D=finite_time_response_v2,
+            transition_residuals=transition_residuals,
+            transition_residuals_9D=transition_residuals_v2,
+            residual_covariance_proxy=residual_covariance_proxy,
+            residual_covariance_proxy_9D=residual_covariance_proxy_v2,
+            stochastic_reachability=stochastic_reachability,
+            stochastic_reachability_9D=stochastic_reachability_v2,
+            dynamical_families=dynamical_families_export,
+            support_signature=support_signature_export,
             feature_baselines=merged_baselines,
             features_raw_values=features_raw_values,
             features_raw_names=features_raw_names,
@@ -5352,7 +5804,7 @@ class SubjectSummaryRunner:
                 "epochs_after_qc": n_after_qc,
                 "epochs_after_nan_mask": int(len(sub_frame)),
                 "epochs_after_geometry_policy": int(len(sub_frame)),
-                "mndm_version": "2.1",
+                "mndm_version": "2.6",
                 "export_contract_version": "mndm.eeg_h5_contract.v1",
                 "primary_coordinate_layer": (
                     "coords_3d_cohort_anchored" if primary_coordinate_layer == "cohort_anchored" else "coords_3d_subject_anchored"
@@ -5662,6 +6114,74 @@ class SubjectSummaryRunner:
             manifest_extra["tau_summary"] = tau_summary
         if tier2_jac:
             manifest_extra["tier2_jacobian"] = tier2_jac
+        if jacobian_metrics:
+            manifest_extra["jacobian_metrics"] = dict(jacobian_metrics.get("summary", {}))
+            manifest_extra["jacobian_metrics"]["schema_version"] = jacobian_metrics.get("schema_version")
+            manifest_extra["jacobian_metrics"]["h5_path"] = "/jacobian/derived_metrics/v1"
+        if jacobian_metrics_v2:
+            manifest_extra["jacobian_metrics_9d"] = dict(jacobian_metrics_v2.get("summary", {}))
+            manifest_extra["jacobian_metrics_9d"]["schema_version"] = jacobian_metrics_v2.get("schema_version")
+            manifest_extra["jacobian_metrics_9d"]["h5_path"] = "/jacobian_9D/derived_metrics/v1"
+        if finite_time_response:
+            manifest_extra["finite_time_response"] = {
+                "schema_version": finite_time_response.get("schema_version"),
+                "computation_status": finite_time_response.get("computation_status"),
+                "validation_level": finite_time_response.get("validation_level"),
+                "summary": finite_time_response.get("summary", {}),
+                "h5_path": "/finite_time_response/v1/primary",
+            }
+        if finite_time_response_v2:
+            manifest_extra["finite_time_response_9d"] = {
+                "schema_version": finite_time_response_v2.get("schema_version"),
+                "computation_status": finite_time_response_v2.get("computation_status"),
+                "validation_level": finite_time_response_v2.get("validation_level"),
+                "summary": finite_time_response_v2.get("summary", {}),
+                "h5_path": "/finite_time_response/v1/stratified_9d",
+            }
+        if transition_residuals:
+            transition_summary = dict(transition_residuals.get("summary", {}))
+            if isinstance(transition_summary.get("residual_mean"), np.ndarray):
+                transition_summary["residual_mean"] = transition_summary["residual_mean"].tolist()
+            manifest_extra["transition_residuals"] = {
+                "schema_version": transition_residuals.get("schema_version"),
+                "computation_status": transition_residuals.get("computation_status"),
+                "summary": transition_summary,
+                "h5_path": "/transition_residuals/v1/primary",
+            }
+        if transition_residuals_v2:
+            transition_summary_v2 = dict(transition_residuals_v2.get("summary", {}))
+            if isinstance(transition_summary_v2.get("residual_mean"), np.ndarray):
+                transition_summary_v2["residual_mean"] = transition_summary_v2["residual_mean"].tolist()
+            manifest_extra["transition_residuals_9d"] = {
+                "schema_version": transition_residuals_v2.get("schema_version"),
+                "computation_status": transition_residuals_v2.get("computation_status"),
+                "summary": transition_summary_v2,
+                "h5_path": "/transition_residuals/v1/stratified_9d",
+            }
+        if residual_covariance_proxy:
+            manifest_extra["transition_residual_covariance_proxy"] = {
+                "schema_version": residual_covariance_proxy.get("schema_version"),
+                "computation_status": residual_covariance_proxy.get("computation_status"),
+                "q_scope": residual_covariance_proxy.get("q_scope"),
+                "q_dt_sec": residual_covariance_proxy.get("q_dt_sec"),
+                "h5_path": "/transition_residual_covariance_proxy/v1/primary",
+            }
+        if stochastic_reachability:
+            manifest_extra["stochastic_reachability"] = {
+                "schema_version": stochastic_reachability.get("schema_version"),
+                "computation_status": stochastic_reachability.get("computation_status"),
+                "failure_reason": stochastic_reachability.get("failure_reason"),
+                "n_propagator_steps": stochastic_reachability.get("n_propagator_steps"),
+                "h5_path": "/stochastic_reachability/v1/primary",
+            }
+        if stochastic_reachability_v2:
+            manifest_extra["stochastic_reachability_9d"] = {
+                "schema_version": stochastic_reachability_v2.get("schema_version"),
+                "computation_status": stochastic_reachability_v2.get("computation_status"),
+                "failure_reason": stochastic_reachability_v2.get("failure_reason"),
+                "n_propagator_steps": stochastic_reachability_v2.get("n_propagator_steps"),
+                "h5_path": "/stochastic_reachability/v1/stratified_9d",
+            }
         if emmi:
             manifest_extra["tier2_emmi"] = emmi
         if null_sanity_tests is not None:

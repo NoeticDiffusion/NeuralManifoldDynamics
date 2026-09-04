@@ -19,6 +19,7 @@ from typing import Any, Dict, Mapping, Optional, Sequence
 
 from core.io import json_writer
 from .. import bids_index
+from ..dynamical_families.io import family_tree_present
 from ..reproducibility import resolve_reproducibility_policy
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,8 @@ def _config_excerpt(config: Mapping[str, Any], ds_id: str) -> Dict[str, Any]:
             "dataset_override": mnps_9d_ds,
         },
         "mnps_projection": _pick(config, "mnps_projection", {}),
+        "local_dynamics": _pick(config, "local_dynamics", {}),
+        "dynamical_families": _pick(config, "dynamical_families", {}),
         "meg_mapping": meg_mapping_cfg if isinstance(meg_mapping_cfg, Mapping) else {},
         "block_native": {"dataset_override": block_native_ds},
         "mnps_extensions": {"keys": sorted(list(_pick(config, "mnps_extensions", {}).keys()))}
@@ -421,6 +424,13 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
     has_anchor_state_count = 0
     has_anchor_quality_count = 0
     has_anchor_coupling_count = 0
+    has_jacobian_metrics_count = 0
+    has_finite_time_response_count = 0
+    has_residual_covariance_proxy_count = 0
+    has_stochastic_reachability_count = 0
+    has_transition_residuals_count = 0
+    has_transition_residual_covariance_count = 0
+    has_dynamical_families_count = 0
     bad_files: list[str] = []
 
     for p in h5_paths[: max_files if max_files > 0 else len(h5_paths)]:
@@ -441,6 +451,23 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
                         jac_dims[d] = jac_dims.get(d, 0) + 1
                     except Exception:
                         pass
+                if (
+                    ("jacobian" in f and "derived_metrics" in f["jacobian"] and "v1" in f["jacobian"]["derived_metrics"])
+                    or ("jacobian_9D" in f and "derived_metrics" in f["jacobian_9D"] and "v1" in f["jacobian_9D"]["derived_metrics"])
+                ):
+                    has_jacobian_metrics_count += 1
+                if "finite_time_response" in f and "v1" in f["finite_time_response"]:
+                    has_finite_time_response_count += 1
+                if "transition_residuals" in f and "v1" in f["transition_residuals"]:
+                    has_transition_residuals_count += 1
+                if "transition_residual_covariance_proxy" in f and "v1" in f["transition_residual_covariance_proxy"]:
+                    has_transition_residual_covariance_count += 1
+                if "residual_covariance_proxy" in f and "v1" in f["residual_covariance_proxy"]:
+                    has_residual_covariance_proxy_count += 1
+                if "stochastic_reachability" in f and "v1" in f["stochastic_reachability"]:
+                    has_stochastic_reachability_count += 1
+                if family_tree_present(f):
+                    has_dynamical_families_count += 1
 
                 # MNPS v2 subcoordinates (typically 9D: 3 axes × 3 subcoords)
                 if "coords_9d" in f and "values" in f["coords_9d"]:
@@ -566,6 +593,20 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
         "mnj": bool(jac_3d or jac_9d),
         "mnj_3d": bool(jac_3d),
         "mnj_9d": bool(jac_9d),
+        "jacobian_metrics_v1": bool(has_jacobian_metrics_count > 0),
+        "jacobian_metrics_v1_path": "/jacobian/derived_metrics/v1",
+        "finite_time_response_v1": bool(has_finite_time_response_count > 0),
+        "finite_time_response_v1_path": "/finite_time_response/v1",
+        "transition_residuals_v1": bool(has_transition_residuals_count > 0),
+        "transition_residuals_v1_path": "/transition_residuals/v1",
+        "transition_residual_covariance_proxy_v1": bool(has_transition_residual_covariance_count > 0),
+        "transition_residual_covariance_proxy_v1_path": "/transition_residual_covariance_proxy/v1",
+        "residual_covariance_proxy_v1": bool(has_residual_covariance_proxy_count > 0),
+        "residual_covariance_proxy_v1_path": "/residual_covariance_proxy/v1",
+        "stochastic_reachability_v1": bool(has_stochastic_reachability_count > 0),
+        "stochastic_reachability_v1_path": "/stochastic_reachability/v1",
+        "dynamical_families": bool(has_dynamical_families_count > 0),
+        "dynamical_families_path": "/dynamical_families",
         "regional_outputs": bool(has_regional_outputs_count > 0),
         "regional_outputs_path": "/regional_mnps",
         "raw_region_signals": bool(has_raw_region_signals_count > 0),
@@ -608,6 +649,13 @@ def _probe_h5_capabilities(h5_paths: Sequence[Path], max_files: int = 200) -> Di
             "h5_with_stage": int(has_stage_count),
             "h5_with_v2_like": int(has_v2_like_count),
             "h5_with_block_native_windows": int(has_block_native_count),
+            "h5_with_jacobian_metrics_v1": int(has_jacobian_metrics_count),
+            "h5_with_finite_time_response_v1": int(has_finite_time_response_count),
+            "h5_with_transition_residuals_v1": int(has_transition_residuals_count),
+            "h5_with_transition_residual_covariance_proxy_v1": int(has_transition_residual_covariance_count),
+            "h5_with_residual_covariance_proxy_v1": int(has_residual_covariance_proxy_count),
+            "h5_with_stochastic_reachability_v1": int(has_stochastic_reachability_count),
+            "h5_with_dynamical_families": int(has_dynamical_families_count),
         },
     }
 

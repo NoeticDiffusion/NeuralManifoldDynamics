@@ -84,6 +84,48 @@ def test_run_manifest_uses_regional_mnps_as_canonical_regional_output(tmp_path: 
     assert caps["counts"]["h5_with_time_reference"] == 0
 
 
+def test_run_manifest_detects_standard_dynamical_families(tmp_path: Path):
+    """The run manifest must advertise the additive standard namespace."""
+    mnps_dir = tmp_path / "mnps_dsX_20260101_000002"
+    rec_dir = mnps_dir / "sub-001"
+    rec_dir.mkdir(parents=True)
+    with h5py.File(rec_dir / "sub-001.h5", "w") as h5:
+        h5.require_group("dynamical_families")
+
+    out_path = write_run_manifest(
+        mnps_dir=mnps_dir,
+        config=_base_config(),
+        ds_id="dsX",
+        received_dir=tmp_path / "received",
+        processed_dir=tmp_path / "processed",
+        h5_mode="subject",
+    )
+    capabilities = json.loads(out_path.read_text(encoding="utf-8"))["capabilities"]
+    assert capabilities["dynamical_families"] is True
+    assert capabilities["dynamical_families_path"] == "/dynamical_families"
+
+
+def test_run_manifest_detects_legacy_orthogonal_dynamics_tree(tmp_path: Path):
+    """Old HDF5 containers still count as family capability."""
+    mnps_dir = tmp_path / "mnps_dsX_20260101_000003"
+    rec_dir = mnps_dir / "sub-001"
+    rec_dir.mkdir(parents=True)
+    with h5py.File(rec_dir / "sub-001.h5", "w") as h5:
+        h5.require_group("orthogonal_dynamics")
+
+    out_path = write_run_manifest(
+        mnps_dir=mnps_dir,
+        config=_base_config(),
+        ds_id="dsX",
+        received_dir=tmp_path / "received",
+        processed_dir=tmp_path / "processed",
+        h5_mode="subject",
+    )
+    capabilities = json.loads(out_path.read_text(encoding="utf-8"))["capabilities"]
+    assert capabilities["dynamical_families"] is True
+    assert capabilities["dynamical_families_path"] == "/dynamical_families"
+
+
 def test_run_manifest_tracks_raw_region_signals_separately_from_regional_outputs(tmp_path: Path):
     """Test run manifest tracks raw region signals separately from regional outputs."""
     mnps_dir = tmp_path / "mnps_dsX_20260101_000001"

@@ -24,6 +24,11 @@ CORE SYMBOLS:
 - A_t, b_t, Q_t                 = local linear reachability parameters
 - Sigma_t^(h)                   = h-step reachability covariance
 
+IMPLEMENTED MAIN-REPOSITORY DEPENDENCY:
+- J_hat -> Phi (time-ordered finite-time response, opt-in)
+- residual_covariance_proxy + Phi -> W_Q (only for an explicitly admissible
+  one-step transition covariance)
+
 AXIS SEMANTICS:
 - m = metastability / mobility / rhythmic coordination
 - d = deviation from optimal integration-segregation balance

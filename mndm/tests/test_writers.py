@@ -45,6 +45,34 @@ def test_write_json_summary():
         assert loaded["meta_indices"]["windows"] == 0
 
 
+def test_write_h5_writes_standard_dynamical_families_namespace(require_real_h5py, tmp_path: Path):
+    """Standard non-MNPS families must not be written as Jacobian metrics."""
+    import h5py
+    from core.io.h5_writer import write_h5
+    from mndm.schema import MNPSPayload
+
+    payload = MNPSPayload(
+        time=np.array([0.0, 1.0]),
+        x=np.zeros((2, 3), dtype=np.float32),
+        x_dot=np.zeros((2, 3), dtype=np.float32),
+        dynamical_families={
+            "diffusion": {
+                "schema_version": "mndm.diffusion_geometry.v1",
+                "computation_status": "not_testable",
+                "failure_reason": "qualification_required",
+                "series": {},
+                "summary": {},
+                "provenance": {},
+            }
+        },
+    )
+    output = write_h5(tmp_path / "orthogonal.h5", "test", payload)
+    with h5py.File(output, "r") as handle:
+        assert "/dynamical_families/diffusion/v1" in handle
+        assert "orthogonal_dynamics" not in handle
+        assert "/jacobian/derived_metrics" not in handle
+
+
 def test_write_json_summary_sanitizes_nonfinite_and_paths():
     """Test write json summary sanitizes nonfinite and paths."""
     from core.io.json_writer import write_json_summary

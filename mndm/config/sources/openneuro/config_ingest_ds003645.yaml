@@ -1,0 +1,163 @@
+version: 1.2
+modality: meg
+
+# ds003645 dataset overlay config.
+# The primary raw assets are Neuromag FIF recordings under /meg that contain
+# simultaneous MEG and EEG. The current pipeline will extract EEG channels from
+# those FIF files and preserve MEG channels for future dedicated features.
+imports:
+  - "../../config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds003645
+
+source:
+  dataset_id: "ds003645"
+  dataset_name: "Wakeman-Henson MEEG Face Processing"
+  dataset_version: "2.0.2"
+  url: "https://openneuro.org/datasets/ds003645/versions/2.0.2"
+
+preprocess:
+  # Task recordings are shorter and event-rich; keep the full run by default.
+  crop:
+    start_sec: 0
+    stop_sec: null
+  # Use the same physiological passband for MEG as the EEG channels extracted
+  # from the shared FIF recording.
+  meg_bandpass: [1, 45]
+  eeg_csd:
+    enabled: false
+
+  # ---------------------------------------------------------------------------
+  # MEG-specific artifact removal plan (Lager 2).
+  # Neuromag FIF with simultaneous MEG+EEG. 306 MEG channels (102 magnetometers
+  # + 204 gradiometers) + EEG.
+  #
+  # Unlike ds006848, MEG has:
+  #   - Strong cardiac artifact in magnetometers  -> ICA ECG component
+  #   - Eye movement artifacts in frontal magnetometers -> ICA EOG component
+  #   - SQUID jumps / environmental noise -> MaxFilter/SSS (pre-processing step)
+  #   - Head movement -> cHPI coils / movement compensation
+  #
+  # For ICA on MEG, n_components should match rank after SSS (typically 64-80).
+  # ---------------------------------------------------------------------------
+  ica:
+    enabled: false             # set true when running ICA-cleaned MEG rerun
+    n_components: 0.999        # fraction of variance; auto-determines rank post-SSS
+    method: "fastica"
+    random_state: 42
+    max_iter: 1000
+    eog:
+      enabled: true
+      channels: ["EOG061", "EOG062"]   # Neuromag standard EOG channel names
+      proxy_channels: []               # MEG frontal magnetometers as fallback
+      threshold: 3.0
+    ecg:
+      enabled: true
+      channel: "ECG063"               # Neuromag standard ECG channel
+      threshold: 3.0
+    icalabel:
+      enabled: false
+    max_components_to_remove: 5
+
+  bad_channels:
+    enabled: false
+    method: "correlation"       # RANSAC not ideal for MEG; use correlation-based
+    interpolate: false          # MEG bad channels should be handled by MaxFilter
+    max_bad_fraction: 0.1
+
+mnps_projection:
+  feature_standardization:
+    meg_delta: ["log10", "robust_z", "clip"]
+    meg_theta: ["log10", "robust_z", "clip"]
+    meg_alpha: ["log10", "robust_z", "clip"]
+    meg_beta: ["log10", "robust_z", "clip"]
+    meg_gamma: ["log10", "robust_z", "clip"]
+    meg_highfreq_power_30_45: ["log10", "robust_z", "clip"]
+    meg_alpha_theta: ["robust_z", "clip"]
+    meg_beta_alpha: ["robust_z", "clip"]
+    meg_permutation_entropy: ["robust_z", "clip"]
+    meg_sample_entropy: ["robust_z", "clip"]
+    meg_hjorth_mobility: ["robust_z", "clip"]
+    meg_hjorth_complexity: ["robust_z", "clip"]
+
+mnps_9d:
+  datasets:
+    ds003645:
+      subcoords:
+        m_a: {meg_delta: -0.5, meg_theta: -0.5}
+        m_e: {meg_alpha: -1.0}
+        m_o: {meg_beta_alpha: 1.0}
+        d_n: {meg_gamma: 1.0}
+        d_l: {meg_hjorth_mobility: 1.0}
+        d_s: {meg_alpha_theta: 1.0}
+        e_e: {meg_permutation_entropy: 1.0}
+        e_s: {meg_hjorth_complexity: 1.0}
+        # e_m: embodied_arousal_proxy is not available for MEG (no ECG).
+        # meg_sample_entropy uses true SampEn (template-matching), which is
+        # independent of meg_permutation_entropy and gives a genuine 9th axis.
+        e_m: {meg_sample_entropy: 1.0}
+      metric_policies:
+        e_e:
+          preferred: meg_permutation_entropy
+          fallbacks: [meg_highfreq_power_30_45]
+
+summarize:
+  allow_group_collisions: true
+
+meg_mapping:
+  enabled: true
+  primary_surface: "meg_sensor_shadow"
+  paired_surfaces: ["eeg"]
+  mapping_family: "electrophysiology_shadow"
+  mapping_reference: "eeg_contract_v2"
+  sensor_types: ["mag", "grad"]
+  feature_combination: "robust_z_then_median"
+  validation_pilot:
+    dataset_id: "ds003645"
+    subjects: ["sub-002", "sub-003", "sub-004", "sub-005", "sub-006"]
+    export_validity:
+      require_h5_paths:
+        - "/mnps_3d"
+        - "/coords_9d/values"
+        - "/jacobian/J_hat"
+        - "/features_raw/values"
+        - "/features_robust_z/values"
+    event_geometry_agreement:
+      contrasts:
+        - "face_vs_scrambled"
+      metrics:
+        sign_agreement_min: 0.60
+        spearman_min: 0.30
+        procrustes_similarity_min: 0.30
+    temporal_null:
+      enabled: true
+      shuffle: "window_order"
+      require_similarity_drop: true
+      min_drop_abs: 0.10
+
+# Opt-in measurement QC only. This does not modify /mnps_3d and sector names
+# must never be interpreted as cortical labels or as EEG-MEG harmonization.
+sensor_topography_qc:
+  enabled: false
+  sensor_topography_contract: {}
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
+      temporal: ["T7", "T8", "TP7", "TP8"]
+
+metadata_extraction:
+  datasets:
+    ds003645:
+      group:
+        default: "Healthy"
+      condition:
+        default: "meeg"
+      task:
+        from_filename: true

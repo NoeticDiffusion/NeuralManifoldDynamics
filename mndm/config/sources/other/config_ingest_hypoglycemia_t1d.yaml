@@ -1,0 +1,135 @@
+version: 2.0
+modality: eeg
+
+imports:
+  - "../../config_ingest_common_eeg.yaml"
+
+# ── Hypoglycemia T1D EEG complexity dataset (Zenodo 3465213) ────────────────
+#
+# Rubega, Scarpa, Teodori, Sejling, Frandsen & Sparacino (2020), "Detection of
+# Hypoglycemia Using Measures of EEG Complexity in Type 1 Diabetes Patients",
+# Entropy 22(1):81. https://doi.org/10.5281/zenodo.3465213
+#
+# 34 T1D patients, 19-channel scalp EEG (linked-ears A1A2 reference), 200 Hz.
+# The raw release ships ONE MATLAB file (EEGdata.mat) with, per subject, two
+# independently excerpted 5-minute (300 s) segments: "eu" (euglycemia) and
+# "hy" (hypoglycemia), taken from an 8 h hyperinsulinemic-hypoglycemic clamp.
+# There is no shared/continuous timeline linking the two segments -- this is
+# a discrete two-condition contrast per subject, not an event-locked or
+# continuous-block design.
+#
+# No MNDM ingest code was changed to bring this dataset in (same no-code
+# contract as ASZED, see project/diary/064_20260601_aszed_no_code_ingest_impl.md):
+# `project/smoke_tests/stage_hypoglycemia_t1d_eeg.py` stages each
+# (subject, condition) pair as a flat BIDS-lite EDF file --
+# `sub-<001>_task-<eu|hy>_eeg.edf` -- and everything below is config-only.
+#
+# Run staging first:
+#   python project/smoke_tests/stage_hypoglycemia_t1d_eeg.py \
+#     --source-mat "K:/ExternalReceivedDatasets/Zenodo/3465213/DataAndCode/EEGdata.mat" \
+#     --dest-root "M:/datasets/received/Zenodo/hypoglycemia_t1d_staged/hypoglycemia_t1d"
+#
+# Channel-name confidence: indices T5/T6/P3/P4/Pz/O1/O2 are confirmed against
+# the published paper (its multichannel/NN analysis names exactly these
+# channels, "<name>-A1A2"). The remaining 12 channels (Fp1, Fp2, F3, F4, C3,
+# C4, F7, F8, T3, T4, Fz, Cz) are a best-effort convention-based fill-in --
+# see the staging script's module docstring. Treat frontal/central-channel
+# claims as lower confidence than the confirmed posterior set; the paper's
+# own main findings, and the `parietal_occipital`/`temporal` ensembles below,
+# rely only on the confirmed channels.
+#
+# "Metabolic anchoring" framing: this config exposes the eu/hy contrast as
+# `task` metadata (from the staged filename), which is enough for a
+# condition-contrast analysis (eu vs. hy geometry/feature differences per
+# subject) with the existing pipeline as-is. A true euglycemia-anchored
+# comparison (fit a per-subject or cohort MNDM 2.1 feature anchor from ONLY
+# the "eu" task epochs, then express "hy" epochs relative to it) is a
+# natural next step using the existing `python -m mndm.tools.anchors_fit`
+# CLI against the "eu"-only H5 outputs after `summarize` -- that is not
+# implemented here and should be treated as a planned follow-up, not yet
+# validated.
+
+datasets:
+  - hypoglycemia_t1d
+
+source:
+  name: "Hypoglycemia EEG complexity in T1D (Rubega et al. 2020)"
+  platform: "Zenodo"
+  format: "BIDS-lite EDF staging"
+  dataset_id: "hypoglycemia_t1d"
+  dataset_name: "Detection of hypoglycemia using measures of EEG complexity in type 1 diabetes patients"
+  dataset_version: null
+  doi: "10.5281/zenodo.3465213"
+  url: "https://doi.org/10.5281/zenodo.3465213"
+  acknowledgement: "Staged from Zenodo 3465213 EEGdata.mat to BIDS-lite EDF via project/smoke_tests/stage_hypoglycemia_t1d_eeg.py, without modifying MNDM ingest code."
+
+paths:
+  received_dir: "M:/datasets/received/Zenodo/hypoglycemia_t1d_staged"
+  processed_dir: "M:/datasets/processed/Zenodo/hypoglycemia_t1d"
+  dataset_received_dirs:
+    hypoglycemia_t1d: "M:/datasets/received/Zenodo/hypoglycemia_t1d_staged/hypoglycemia_t1d"
+
+preprocess:
+  # Native rate of the staged EDFs; no resampling needed.
+  sfreq: 200
+  sfreq_candidates: [200]
+  notch_hz: 50
+  eeg_bandpass: [1, 45]
+  reref: "average"
+
+epoching:
+  length_s: 8.0
+  step_s: 4.0
+
+robustness:
+  # 300 s per (subject, condition) file comfortably clears the common_eeg
+  # defaults (min_seconds: 60, min_epochs: 20); no per-dataset override needed.
+  ensembles:
+    datasets:
+      hypoglycemia_t1d:
+        groups:
+          frontal: ["Fp1", "Fp2", "F3", "F4", "F7", "F8", "Fz"]
+          central: ["C3", "C4", "Cz"]
+          temporal: ["T3", "T4", "T5", "T6"]
+          # Confirmed against the published channel list (see header note).
+          parietal_occipital: ["P3", "P4", "Pz", "O1", "O2"]
+
+# Cohort-anchored export, on top of the default subject-anchored export.
+# `subject_anchored` (per-subject baseline/scale) is already produced by
+# default; `anchor_auto_fit` fits a one-shot population anchor from THIS
+# run's own pooled feature table (all 34 subjects, both eu+hy rows together)
+# so `coords_*_cohort_anchored` (population-referenced) and
+# `coords_*_subject_anchored` (individual-referenced) coexist in every H5.
+#
+# Note: this cohort anchor is fit from the pooled eu+hy table, i.e. it is a
+# whole-cohort reference frame, NOT a euglycemia-only baseline. A true
+# "euglycemia-anchored" contrast (fit the anchor from `eu` rows only, then
+# express `hy` epochs relative to that metabolic baseline) would instead use
+# a pre-fit anchor file via `mnps_projection.anchor.path` (Option A in
+# `mndm/config/eeg_config_ingest_template.yaml`, fit with
+# `python -m mndm.tools.anchors_fit` against eu-only H5/feature output) --
+# not done here, flagged as a follow-up.
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "hypoglycemia_t1d_all_subjects_both_conditions_iqr_v2_1"
+    anchor_source: "all_subjects_features_table"
+    scale_method: "iqr"
+    min_subjects: 3
+
+metadata_extraction:
+  datasets:
+    hypoglycemia_t1d:
+      participants:
+        # No demographic columns beyond participant_id are available in the
+        # source release (age/sex/awareness are reported only as cohort
+        # aggregates in the paper, not per-subject in EEGdata.mat).
+        subject_id_candidates: ["participant_id"]
+      task:
+        from_filename: true
+        normalize:
+          eu: "euglycemia"
+          hy: "hypoglycemia"

@@ -15,6 +15,8 @@ from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
 
+from .dynamical_families.registry import validate_writable_family_payload
+
 
 MNPS_AXIS_NAMES = ("m", "d", "e")
 mnps_9d_CANONICAL_ORDER: Sequence[str] = (
@@ -62,9 +64,32 @@ class MNPSPayload:
     jacobian: Optional[np.ndarray] = None
     jacobian_dot: Optional[np.ndarray] = None
     jacobian_centers: Optional[np.ndarray] = None
+    jacobian_affine_reference: Optional[np.ndarray] = None
+    jacobian_affine_intercept: Optional[np.ndarray] = None
     jacobian_9D: Optional[np.ndarray] = None
     jacobian_9D_dot: Optional[np.ndarray] = None
     jacobian_9D_centers: Optional[np.ndarray] = None
+    jacobian_9D_affine_reference: Optional[np.ndarray] = None
+    jacobian_9D_affine_intercept: Optional[np.ndarray] = None
+    # Versioned mathematical measurements derived from (but not altering) J_hat.
+    # Mappings are written under /jacobian[/_9D]/derived_metrics/v1.
+    jacobian_derived_metrics: MutableMapping[str, Any] = field(default_factory=dict)
+    jacobian_9D_derived_metrics: MutableMapping[str, Any] = field(default_factory=dict)
+    # Higher local-dynamics surfaces use dedicated top-level HDF5 groups.
+    finite_time_response: MutableMapping[str, Any] = field(default_factory=dict)
+    finite_time_response_9D: MutableMapping[str, Any] = field(default_factory=dict)
+    transition_residuals: MutableMapping[str, Any] = field(default_factory=dict)
+    transition_residuals_9D: MutableMapping[str, Any] = field(default_factory=dict)
+    residual_covariance_proxy: MutableMapping[str, Any] = field(default_factory=dict)
+    residual_covariance_proxy_9D: MutableMapping[str, Any] = field(default_factory=dict)
+    stochastic_reachability: MutableMapping[str, Any] = field(default_factory=dict)
+    stochastic_reachability_9D: MutableMapping[str, Any] = field(default_factory=dict)
+    # Standard non-MNPS measurement families, written separately under
+    # /dynamical_families and never merged into /jacobian.
+    dynamical_families: MutableMapping[str, Any] = field(default_factory=dict)
+    # File-level support/capability metadata. Written under /support_signature/v1.
+    # Not a dynamical family; does not alter MNPS or J_hat.
+    support_signature: MutableMapping[str, Any] = field(default_factory=dict)
     # Optional time series extracted from jacobian_9D: mapping "out__in" -> [W2] series
     jacobian_9D_cross_partials: MutableMapping[str, np.ndarray] = field(default_factory=dict)
     # Optional per-feature baseline metadata (captured before normalization)
@@ -195,6 +220,22 @@ class MNPSPayload:
             "jacobian_9D": self.jacobian_9D,
             "jacobian_9D_dot": self.jacobian_9D_dot,
             "jacobian_9D_centers": self.jacobian_9D_centers,
+            "jacobian_affine_reference": self.jacobian_affine_reference,
+            "jacobian_affine_intercept": self.jacobian_affine_intercept,
+            "jacobian_9D_affine_reference": self.jacobian_9D_affine_reference,
+            "jacobian_9D_affine_intercept": self.jacobian_9D_affine_intercept,
+            "jacobian_derived_metrics": dict(self.jacobian_derived_metrics),
+            "jacobian_9D_derived_metrics": dict(self.jacobian_9D_derived_metrics),
+            "finite_time_response": dict(self.finite_time_response),
+            "finite_time_response_9D": dict(self.finite_time_response_9D),
+            "transition_residuals": dict(self.transition_residuals),
+            "transition_residuals_9D": dict(self.transition_residuals_9D),
+            "residual_covariance_proxy_9D": dict(self.residual_covariance_proxy_9D),
+            "residual_covariance_proxy": dict(self.residual_covariance_proxy),
+            "stochastic_reachability": dict(self.stochastic_reachability),
+            "stochastic_reachability_9D": dict(self.stochastic_reachability_9D),
+            "dynamical_families": dict(self.dynamical_families),
+            "support_signature": dict(self.support_signature),
             "jacobian_9D_cross_partials": dict(self.jacobian_9D_cross_partials),
             "feature_baselines": dict(self.feature_baselines),
             "features_raw_values": self.features_raw_values,
@@ -593,6 +634,10 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
     )
     payload.provenance = dict(payload.provenance) if isinstance(payload.provenance, Mapping) else {}
     payload.coverage = dict(payload.coverage) if isinstance(payload.coverage, Mapping) else {}
+    payload.dynamical_families = validate_writable_family_payload(payload.dynamical_families)
+    payload.support_signature = (
+        dict(payload.support_signature) if isinstance(payload.support_signature, Mapping) else {}
+    )
 
     if payload.block_table_columns:
         payload.block_table_columns = _normalize_columnar_mapping(

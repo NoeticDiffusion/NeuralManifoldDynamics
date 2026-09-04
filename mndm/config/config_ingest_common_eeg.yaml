@@ -26,7 +26,7 @@ paths:
   # candidate based on which root contains the configured dataset IDs.
   received_dir_fallbacks:
     - "G:/Science_Datasets_longtime_storage"
-  processed_dir: "E:/Science_Datasets/openneuro/processed"
+  processed_dir: "K:/NeuralManifoldDyanamics/processed"
   dataset_received_dirs: {}
 
 preprocess:

@@ -1,0 +1,144 @@
+version: 2.0
+modality: fmri
+
+# ds007216 — "EEG-fMRI Harmonization" simultaneous EEG-fMRI dataset (Kucyi Lab,
+# Temple/Drexel). fMRI: Siemens Prisma 3T, BOLD TR=2s, TE=25ms, multiband
+# factor 3, 2mm isotropic, AP phase encoding.
+#
+# ds007216 ships NO fMRIPrep derivatives, and mndm.preprocess.preprocess_fmri
+# requires spatially normalized BOLD (Schaefer-200 MNI152 2mm atlas grid).
+# This config therefore points at a first-pass, no-Docker substitute produced
+# by project/scripts/11_ds007216_fmri_lightweight_norm.py: rigid motion
+# correction + rigid func->T1w + affine T1w->MNI (NOT full fMRIPrep -- no
+# fieldmap/slice-timing/nonlinear warp/nuisance regression). See that script's
+# module docstring and project/diary/ for the explicit first-pass-substitute
+# caveat. Revisit with real fMRIPrep if the Pilot A signal looks promising.
+#
+# NOTE on dataset_received_dirs: pointed directly at
+# ".../ds007216/derivatives/lightweight_norm_v1" (not the dataset root)
+# because mndm.bids_index.build_file_index unconditionally skips any path
+# containing a "derivatives" path segment. Rooting at the lightweight-norm
+# output folder itself sidesteps that filter (same trick used by
+# config_ingest_ds007216_eeg.yaml for the Bergen_CWreg EEG derivative).
+# participants.tsv therefore has to be resolved two directories up (see
+# metadata_extraction below).
+#
+# NOTE on paths.processed_dir: mndm scopes features.parquet/file_index.csv/
+# grouping purely by dataset_id (there is no modality- or config-level
+# namespacing), so config_ingest_ds007216_eeg.yaml and this fMRI config --
+# both declaring `datasets: [ds007216]` -- would otherwise write into the
+# exact same "<processed_dir>/ds007216/" folder. In practice this caused
+# mndm.pipeline.summary._build_groupings to explode with spurious
+# "grouping-key collisions" while summarizing fMRI, because it scans the
+# *entire* on-disk features.parquet (not just the current run's file index)
+# and found stale/duplicate EEG rows there. Pointing this config at a
+# dedicated processed_dir keeps the two modalities' caches fully isolated.
+imports:
+  - "../../config_ingest_common_fmri.yaml"
+
+datasets:
+  - ds007216
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds007216"
+  dataset_name: "EEG-fMRI Harmonization"
+  dataset_version: "1.0.0"
+  url: "https://openneuro.org/datasets/ds007216"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "J:/processed/openneuro_fmri"
+  dataset_received_dirs:
+    ds007216: "K:/ExternalReceivedDatasets/openneuro/received/ds007216/derivatives/lightweight_norm_v1"
+
+preprocess:
+  fallback_tr: 2.0
+  fmri_bandpass: [0.01, 0.1]
+  fmri:
+    # Reuses the Schaefer-200 FSL-MNI152-2mm atlas from config_ingest_common_fmri.yaml.
+    # The lightweight-norm script resamples BOLD directly onto this atlas's own
+    # affine grid (not just "any 2mm MNI grid"), so no resample_atlas_to_bold
+    # fallback should be needed here; leave it available as a safety net only.
+    datasets:
+      ds007216:
+        resample_atlas_to_bold: false
+    # Confounds TSVs sit right next to their BOLD file (see the lightweight-norm
+    # script's output layout), so the default sibling-file lookup in
+    # mndm.pipeline.summary._resolve_confounds_path_for_bold already finds them
+    # with zero extra config here.
+    confounds:
+      confounds_root: null
+      derivatives_dir: null
+
+features:
+  metrics:
+    compute_variance: true
+    compute_power: true
+    compute_fc: true
+    compute_kuramoto: true
+    compute_modularity: true
+    compute_dfc_variance: true
+    compute_ar1: true
+    compute_slow_band_ratio: true
+    compute_gradient_proxy: true
+    # DVARS-based hard epoch-scrub assumes fMRIPrep-style intensity-normalized
+    # (~%BOLD-signal-change / grand-mean-scaled) units, where the project-wide
+    # default dvars_threshold=5.0 is calibrated. project/scripts/
+    # 11_ds007216_fmri_lightweight_norm.py does NOT do that intensity
+    # normalization (first-pass scope), so raw-intensity DVARS here comes out
+    # ~50-60 -- an order of magnitude over the default threshold -- which was
+    # silently scrubbing every single epoch to NaN and dropping every Pilot A
+    # run entirely. We already have real per-volume framewise_displacement
+    # from the lightweight-norm script's motion-correction step (merged via
+    # the standard confounds-TSV path), which is a properly-scaled, reliable
+    # motion measure; disable the miscalibrated DVARS proxy here rather than
+    # guess at a dataset-specific intensity-based threshold.
+    compute_dvars: false
+    # NMD-fMRI-v2.5 Stage 2 (sciencelead/003.md + 0004.md): candidate feature
+    # families, opt-in only (see mndm.features.fmri_epoch_metrics /
+    # fmri.py docstrings). Enabled here so ds007216's features.parquet gets
+    # the new columns for the v25_feature_registry.csv audit. Purely
+    # additive -- no existing mapping/config depends on these columns yet,
+    # and Stage 2 explicitly defers any mapping search (0004.md: "please do
+    # not run mapping search yet").
+    compute_spectral_entropy: true
+    compute_permutation_entropy_fmri: true
+    compute_sample_entropy_fmri: true
+    compute_network_fc: true
+    compute_ar2: true
+    compute_temporal_smoothness: true
+    compute_hurst: true
+    # ALFF/fALFF: exposed per 0004.md item 6, but treated as motion-risk
+    # (raw amplitude/power features correlate ~0.58 with FD in ds007216 per
+    # the Stage 1 audit) until independently screened in the registry.
+    compute_alff: true
+    compute_falff: true
+    compute_dynamic_deltas: true
+
+metadata_extraction:
+  datasets:
+    ds007216:
+      participants:
+        # Dataset root for this config is
+        # ".../ds007216/derivatives/lightweight_norm_v1"; the real
+        # participants.tsv lives two directories up, at the actual dataset root.
+        path: "../../participants.tsv"
+      task:
+        from_filename: true
+
+indexing:
+  multimodal_bundles:
+    enabled: false   # EEG and fMRI are separate files/modalities for this dataset;
+                      # cross-modal alignment is handled by a dedicated analysis layer,
+                      # not by mndm's single-file multimodal bundle mechanism.
+
+robustness:
+  coverage:
+    min_seconds: 120
+    min_epochs: 5
+
+summarize:
+  allow_group_collisions: false

@@ -2,6 +2,253 @@
 
 A practical reference for neuroscientists adding a new EEG or fMRI dataset.
 
+## Local dynamics extension
+
+Derived Jacobian metrics are computed whenever a Jacobian exists. Finite-time
+response is intentionally opt-in:
+
+```yaml
+local_dynamics:
+  jacobian_metrics:
+    stability_zero_tolerance: 1.0e-8
+    reactivity_zero_tolerance: 1.0e-8
+  finite_time_response:
+    enabled: false
+    propagator_mode: time_ordered_expm
+    horizon_steps: [1, 2, 4]
+    max_gap_sec: null
+    validation_level: model_derived
+  transition_residuals:
+    enabled: false
+    crossfit_embargo_steps: 4
+    max_dt_deviation_sec: 1.0e-6
+    min_eigenvalue: 1.0e-8
+  stochastic_reachability:
+    enabled: false
+```
+
+`frozen_j_expm` is a comparator. Discrete transition products are not created
+without independent transitions. Derivative residuals are not converted
+silently into process noise.
+
+Transition residuals use a separate leave-one-transition-out affine refit and
+only pool a recording-level covariance when observed steps are nearly constant.
+That Gate E proxy is admissible **discrete one-step Q** for opt-in
+`W_Q` (`Gate F` freeze, 2026-09-02). It is not Itô process noise and not
+diffusion \(a(x)\). The registry forbid `gate_e_proxy_as_process_noise`
+stays. Enable `local_dynamics.stochastic_reachability` only together with
+Gate E; default remains false. Common EEG/fMRI/ephys profiles do not turn
+it on. Do not enable FTR on those profiles.
+
+v2.6 Jacobian Metrics (`spectral_abscissa` \(\alpha\), `numerical_abscissa`
+\(\omega\)) and Finite-Time Response are per-recording mathematical
+provenance when `J_hat` exists. They are not S3-licensed empirical NDT
+\(\alpha/\omega/G_{\mathrm{peak}}\). The FTR peak-gain analogue is
+`g_peak_over_horizons`, not a jacobian_metrics field. I-CARE /
+analysis-repo coma reachability (`tube_d_eff_median` and related) is
+**not** `mndm.stochastic_reachability.v1`. Computed `W_Q` is written only
+under `/stochastic_reachability/v1` when the opt-in flag is on and Gate E
+Q plus \(\Phi=\mathrm{expm}(J_{\mathrm{crossfit}}\Delta t)\) are admissible.
+
+## Dynamical families
+
+Non-MNPS measurement families live under a separate YAML root and a separate
+HDF5 tree. They are **not** imported by the common EEG, fMRI, or ephys
+profiles. Enable them only from an explicit qualification overlay.
+
+```yaml
+dynamical_families:
+  enabled: false
+  coordinate_layer: subject_anchored
+  diffusion: { enabled: false }
+  destination: { enabled: false }   # committor object; schema mndm.committor.v1
+  resilience: { enabled: false }    # FAR object; schema mndm.finite_amplitude_resilience.v1
+```
+
+Shared defaults: `mndm/config/config_ingest_common_dynamical_families.yaml`.
+Historical protocol IDs (`OD-TQ*`, `OD-EPI-*`, `OD-SLP-*`, `FAR-*`) are
+unchanged. The pre-v3 YAML key `orthogonal_dynamics` is refused; there is no
+alias.
+
+| family_id | family object | schema (unchanged) | write path | default |
+|---|---|---|---|---|
+| `diffusion` | diffusion geometry | `mndm.diffusion_geometry.v1` | `/dynamical_families/diffusion/v1` | off |
+| `spread` | stochastic reachability | `mndm.stochastic_reachability.v1` | not under `/dynamical_families`; opt-in `/stochastic_reachability/v1` | registry `gate_closed`; no family YAML flag |
+| `destination` | committor | `mndm.committor.v1` | `/dynamical_families/destination/v1` | off |
+| `resilience` | FAR | `mndm.finite_amplitude_resilience.v1` | `/dynamical_families/resilience/v1` | off |
+
+`spread` is not a YAML enable flag in this file. Family YAML `spread`
+remains refused. Opt-in `W_Q` is `local_dynamics.stochastic_reachability`,
+not `/dynamical_families/spread`. Do not emit `W_Q` from derivative
+residuals. Gate E Q may feed discrete `W_Q` only under the Gate F freeze;
+do not call that Q process noise.
+
+Jacobian-residual substitution as diffusion \(a\) is forbidden
+(`jacobian_derivative_residual_as_diffusion`). MNPS \(\dot x\) is not
+passed as SDE drift (`mnps_xdot_as_sde_drift`). When `diffusion.enabled`
+is true, ingest **computes** increment-covariance geometry if the
+estimator has support (samples, gaps, regular \(dt\)).
+`computation_status=computed`, `measurement_validity=not_assessed`,
+`claim_status=no_biological_claim`. OD-TQ1 id/hash, if present in YAML,
+are copied to `provenance` as a method tag
+(`validation_level=mndm_translation_validated`). They do not unlock the
+family and do not set `translation_qualified`. Destination and FAR still
+require protocol inputs plus an adapter stamp before `computed`.
+
+`contract_status=standard` on family provenance is the schema-contract
+class. It is not an experimental/licensed scientific claim and is not
+`measurement_validity`.
+
+Ingest always calls the diffusion estimator with C1 defaults
+(`drift=None`, `residualize_increments=False`). A `computed` diffusion
+object is therefore **not** a testable \(A_{bD}\) / \(R_{b/a}\) object.
+Those scalars remain NaN arrays and are labelled
+`summary.A_bD_computation_status=not_testable` /
+`R_b_over_a_computation_status=not_testable` with
+`drift_alignment_failure_reason=independent_drift_not_supplied`.
+Do not read NaN as "alignment is zero." Library C1
+(`alignment_only`) may consume a truth-known or later
+externally qualified chart-space \(b\) without changing `a_hat`.
+Ingest does not estimate \(b\); nmd-analysis owns identification
+(SL-005). Ingest does not enable an empirical overlay.
+`mode: residualize_increments` (C2) is not
+authorized. MNPS \(\dot x\), Jacobian intercepts, and same-sample
+increment means are refused as \(b\). Under C1, `a_semantics` is
+`raw_increment_covariance` and `ratio_semantics` is
+`chart_velocity_to_increment_spread` (not an Itô drift-to-diffusion
+ratio).
+
+Common EEG/fMRI/ephys profiles do not import the family YAML. Do not
+enable families on those defaults.
+
+Observational ingest without a perturbation protocol reports FAR as
+`not_testable` / `no_perturbation_protocol`.
+
+## Validity certificate (v3 R2)
+
+Family and local-dynamics exports now carry three sibling fields. They are
+orthogonal: a value existing is not regime validity, and regime validity is
+not an NDT or biology license.
+
+```text
+computation_status     value exists / why not
+measurement_validity   valid under this observation regime
+claim_status           NDT / biology licensed
+```
+
+`computation_status` is unchanged: `computed`, `not_requested`,
+`not_testable`, `insufficient_support`, `invalid`, `unavailable`.
+
+`measurement_validity` on **new writes**:
+
+- `not_applicable` — `computation_status` is not `computed`
+- `not_assessed` — values exist; this round does not certify the observation
+  regime. **Diffusion** uses this whenever the estimator has support.
+  YAML `qualification_id` / hash are method tags in `provenance`, not an
+  on/off gate and not `measurement_validity`.
+- `translation_qualified` — destination or resilience computed **and**
+  provenance already records a non-empty `qualification_id` and
+  `qualification_contract_hash` (those families still require protocol
+  inputs plus the YAML adapter stamp)
+
+`claim_status` on **all new writes** is `no_biological_claim`. Round 2 does
+not emit `ndt_licensed`.
+
+`validation_level` (FTR `model_derived`; family
+`mndm_translation_validated` / `simulator_validated`) is a
+**method-validation** tag. It is not `measurement_validity`. Do not map FTR
+`model_derived` to `translation_qualified` or to an NDT license.
+
+Legacy files: a reader may fill a missing field as `not_recorded`. It must
+not infer `translation_qualified` from `qualification_id` or
+`validation_level`, and must not default a missing `claim_status` to
+`no_biological_claim`. Copy `provenance/claim_status` only when that dataset
+exists. Always record `certificate_origin`: `canonical`,
+`legacy_promoted_provenance`, or `legacy_absent`.
+
+## Inferential grain (v3 R3)
+
+Family and local-dynamics exports also carry a nested `grain:` object. A
+window or HDF5 file is not a participant.
+
+```text
+grain.native                              what is one row of this object
+grain.biological_unit                     who is the organism (ingest: subject)
+grain.direct_between_subject_inference    always forbidden on these exports
+```
+
+Closed tokens for `native` / `parent`: `window`, `transition`,
+`recording_horizon`, `event`, `recording`, `subject`.
+`repeated_measure` is the string `true` or `false`.
+`biological_unit` is `subject`. Direct between-subject inference is
+`forbidden`.
+
+Native grain by surface (schema metadata; attached even when not computed):
+
+| Surface | native | parent | repeated_measure |
+|---|---|---|---|
+| Jacobian metrics | window | recording | true |
+| FTR | recording_horizon | recording | true |
+| Transition residuals | transition | recording | true |
+| Q / residual-covariance proxy | recording | subject | false |
+| Stochastic reachability | recording_horizon | recording | true |
+| Diffusion / destination | window | recording | true |
+| Resilience (FAR) | event | recording | true |
+
+Do not treat 40,000 windows from 20 people as `N=40,000`. Ingest records
+grain; it does not yet refuse analysis-side pooling.
+
+Legacy files: missing `grain/` fields are `not_recorded`. Do not infer
+`window` from series or `subject` from the file path.
+
+## Support / capability (v3 R4)
+
+Presence of `coords_9d` is not the same as the same feature support, and
+neither is the same as this modality's contract capability.
+
+```text
+coords_9d present  ≠  same feature support  ≠  same modality capability
+```
+
+`/support_signature/v1/` is file-level **metadata**, not a dynamical family
+and not a replacement for `geometry_contract`. `geometry_contract` remains
+the mathematical invalidity / coverage contract. This object records:
+
+1. **Coordinate source** — whether each canonical 9D coordinate used its
+   preferred metric or a policy fallback (`direct` / `fallback` / `mixed` /
+   `not_applicable`). Fallback substitutions (entropy spectral fallback;
+   `e_m` `ecg_rmssd` → `eog_blink_rate` / `eeg_highfreq_power_30_45`) write
+   `semantic_equivalence=false`. No invented numeric `direct_support`
+   fractions. Windows are still not N (see Round 3 grain).
+2. **Capability matrix** — one **modality row** for this file (not the
+   full EEG / iEEG / fMRI grid). Tokens are contract class, not HDF5
+   presence: `chart_3d` existing does not make `chart_3d=yes` on read.
+
+| key | EEG | iEEG | fMRI |
+|---|---|---|---|
+| chart_3d / chart_9d | yes | yes | yes |
+| mnj_3d | yes | yes | limited |
+| mnj_9d | conditional | yes | limited |
+| diffusion | overlay_only | overlay_only | overlay_only |
+| spread | gated | gated | gated |
+| destination | no_generic_ingest | no_generic_ingest | no_generic_ingest |
+| resilience | perturbational_only | perturbational_only | perturbational_only |
+
+MEG uses the EEG row (`mnj_9d=conditional`). Unknown modality: chart/mnj
+`not_assessed`; spread still `gated`; destination still
+`no_generic_ingest`; diffusion still `overlay_only`; resilience still
+`perturbational_only`.
+
+Write tokens for capability cells: `yes`, `limited`, `conditional`,
+`gated`, `overlay_only`, `no_generic_ingest`, `perturbational_only`,
+`opt_in`, `not_assessed`.
+
+Legacy files: missing `/support_signature/v1` or missing children are
+`not_recorded`. Do not infer `chart_3d=yes` from `/mnps_3d`. Do not infer
+`spread=gated` from a missing `/stochastic_reachability` group. Do not copy
+`geometry_contract` coverage into coordinate `source`. Capability `yes` is
+not an NDT license.
+
 ---
 
 ## Contents

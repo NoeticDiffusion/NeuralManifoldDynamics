@@ -87,24 +87,26 @@ def compute_eeg_synchrony_features(
 
     features: Dict[str, float] = {}
     for band in bands:
-        for pair in pairs:
-            metric_series: Dict[str, List[np.ndarray]] = {}
-            for segment in clean_segments:
-                windows = _sliding_windows(segment.shape[1], win_len, win_step)
-                if windows and isinstance(max_windows, (int, float)) and int(max_windows) > 0:
-                    windows = _subsample_windows(windows, int(max_windows))
-                if not windows:
-                    continue
-                try:
-                    filtered = _bandpass(segment, sfreq, band.f_low, band.f_high)
-                except ValueError:
-                    logger.debug(
-                        "Skipping short clean synchrony segment (%d samples) for %s",
-                        segment.shape[1],
-                        band.name,
-                    )
-                    continue
-                phases = np.angle(hilbert(filtered, axis=1))
+        metric_series_by_pair: List[Dict[str, List[np.ndarray]]] = [
+            {} for _ in pairs
+        ]
+        for segment in clean_segments:
+            windows = _sliding_windows(segment.shape[1], win_len, win_step)
+            if windows and isinstance(max_windows, (int, float)) and int(max_windows) > 0:
+                windows = _subsample_windows(windows, int(max_windows))
+            if not windows:
+                continue
+            try:
+                filtered = _bandpass(segment, sfreq, band.f_low, band.f_high)
+            except ValueError:
+                logger.debug(
+                    "Skipping short clean synchrony segment (%d samples) for %s",
+                    segment.shape[1],
+                    band.name,
+                )
+                continue
+            phases = np.angle(hilbert(filtered, axis=1))
+            for pair_index, pair in enumerate(pairs):
                 values = _compute_metrics_for_pair(
                     filtered[pair.idx1],
                     filtered[pair.idx2],
@@ -114,9 +116,11 @@ def compute_eeg_synchrony_features(
                     windows=windows,
                     metrics=metrics_cfg,
                 )
+                metric_series = metric_series_by_pair[pair_index]
                 for metric_name, series in values.items():
                     if series.size:
                         metric_series.setdefault(metric_name, []).append(series)
+        for pair, metric_series in zip(pairs, metric_series_by_pair):
             for metric_name, series_parts in metric_series.items():
                 series = np.concatenate(series_parts)
                 key_prefix = f"eeg_sync_{band.name}_{pair.name}_{metric_name}"

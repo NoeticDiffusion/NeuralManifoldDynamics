@@ -339,6 +339,56 @@ def test_project_features_with_coverage_preserves_direct_feature_baselines():
     assert baselines["eeg_alpha"]["transformation_applied"] == "log10 -> robust_z -> clip_6.0"
 
 
+def test_project_features_with_coverage_reuses_normalization_for_partial_nan(monkeypatch):
+    """Coverage should share the projection normalization and finite mask."""
+    from mndm import projection
+
+    features_df = pd.DataFrame(
+        {
+            "epoch_id": [0, 1, 2],
+            "feat_a": [1.0, np.nan, 3.0],
+            "feat_b": [10.0, 20.0, np.nan],
+        }
+    )
+    weights = {"m": {"feat_a": 0.25, "feat_b": 0.75}, "d": {}, "e": {}}
+    feature_standardization = {
+        "feat_a": ["robust_z", "clip"],
+        "feat_b": ["robust_z", "clip"],
+    }
+
+    expected_x, expected_baselines = projection.project_features(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization=feature_standardization,
+        clip_threshold=6.0,
+    )
+
+    calls = []
+    original_normalize = projection._normalize_used_columns
+
+    def _counting_normalize(*args, **kwargs):
+        calls.append(True)
+        return original_normalize(*args, **kwargs)
+
+    monkeypatch.setattr(projection, "_normalize_used_columns", _counting_normalize)
+    x, coverage, baselines = projection.project_features_with_coverage(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization=feature_standardization,
+        clip_threshold=6.0,
+    )
+
+    assert len(calls) == 1
+    assert np.array_equal(x, expected_x, equal_nan=True)
+    assert baselines == expected_baselines
+    # Preserve the existing normalization contract: non-finite source values
+    # are zero-filled before the coverage finite-mask is evaluated.
+    assert np.allclose(coverage[:, 0], [1.0, 1.0, 1.0], atol=1e-6)
+    assert np.all(np.isnan(coverage[:, 1:]))
+
+
 def test_project_features_accepts_external_anchor_after_pretransforms():
     """External anchors should replace local robust-z center/scale."""
     from mndm.projection import project_features
@@ -370,6 +420,135 @@ def test_project_features_accepts_external_anchor_after_pretransforms():
     assert np.allclose(x[:, 0], [0.0, 1.0, 2.0], atol=1e-6)
     assert baselines["eeg_alpha"]["anchor_applied"] == "external"
     assert baselines["eeg_alpha"]["anchor_id"] == "unit-test"
+
+
+def test_project_features_with_coverage_preserves_external_anchor():
+    """Coverage reuse must preserve anchored coordinates and metadata."""
+    from mndm import projection
+
+    features_df = pd.DataFrame(
+        {
+            "epoch_id": [0, 1, 2],
+            "eeg_alpha": [10.0, 100.0, 1000.0],
+        }
+    )
+    weights = {"m": {"eeg_alpha": 1.0}, "d": {}, "e": {}}
+    feature_standardization = {"eeg_alpha": ["log10", "robust_z", "clip"]}
+    external_anchor = {
+        "eeg_alpha": {
+            "center": 1.0,
+            "scale": 1.0,
+            "anchor_id": "unit-test",
+            "anchor_hash": "abc",
+        }
+    }
+
+    expected_x, expected_baselines = projection.project_features(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization=feature_standardization,
+        clip_threshold=6.0,
+        external_anchor=external_anchor,
+    )
+    x, coverage, baselines = projection.project_features_with_coverage(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization=feature_standardization,
+        clip_threshold=6.0,
+        external_anchor=external_anchor,
+    )
+
+    assert np.array_equal(x, expected_x, equal_nan=True)
+    assert baselines == expected_baselines
+    assert np.allclose(x[:, 0], [0.0, 1.0, 2.0], atol=1e-6)
+    assert np.allclose(coverage[:, 0], 1.0)
+    assert baselines["eeg_alpha"]["anchor_id"] == "unit-test"
+    assert baselines["eeg_alpha"]["anchor_hash"] == "abc"
+
+
+def test_project_features_with_coverage_supports_z_pipeline():
+    """Coverage reuse must preserve a z-score feature pipeline."""
+    from mndm import projection
+
+    features_df = pd.DataFrame({"feat_a": [1.0, 2.0, 3.0]})
+    weights = {"m": {"feat_a": 1.0}, "d": {}, "e": {}}
+    feature_standardization = {"feat_a": ["z", "clip"]}
+
+    expected_x, expected_baselines = projection.project_features(
+        features_df,
+        weights,
+        normalize="z",
+        feature_standardization=feature_standardization,
+        clip_threshold=6.0,
+    )
+    x, coverage, baselines = projection.project_features_with_coverage(
+        features_df,
+        weights,
+        normalize="z",
+        feature_standardization=feature_standardization,
+        clip_threshold=6.0,
+    )
+
+    assert np.array_equal(x, expected_x, equal_nan=True)
+    assert baselines == expected_baselines
+    assert baselines["feat_a"]["transformation_applied"] == "z -> clip_6.0"
+    assert np.allclose(coverage[:, 0], 1.0)
+
+
+def test_project_features_with_coverage_handles_empty_and_unused_inputs():
+    """Coverage remains explicit for empty frames and absent weighted columns."""
+    from mndm import projection
+
+    weights = {"m": {"feat_a": 1.0}, "d": {}, "e": {}}
+    empty = pd.DataFrame(columns=["feat_a"])
+    x_empty, coverage_empty, baselines_empty = projection.project_features_with_coverage(
+        empty,
+        weights,
+        normalize="robust_z",
+    )
+    assert x_empty.shape == (0, 3)
+    assert coverage_empty.shape == (0, 3)
+    assert baselines_empty == {}
+
+    unused = pd.DataFrame({"other": [1.0, 2.0]})
+    x_unused, coverage_unused, baselines_unused = projection.project_features_with_coverage(
+        unused,
+        weights,
+        normalize="robust_z",
+    )
+    assert np.array_equal(x_unused, np.zeros((2, 3), dtype=np.float32))
+    assert np.all(np.isnan(coverage_unused))
+    assert baselines_unused == {}
+
+
+def test_project_features_with_coverage_keeps_all_nan_column_missing():
+    """An all-NaN normalized column remains missing rather than zero-filled."""
+    from mndm import projection
+
+    features_df = pd.DataFrame({"feat_a": [np.nan, np.nan]})
+    weights = {"m": {"feat_a": 1.0}, "d": {}, "e": {}}
+
+    expected_x, expected_baselines = projection.project_features(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization={"feat_a": ["robust_z", "clip"]},
+    )
+    x, coverage, baselines = projection.project_features_with_coverage(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization={"feat_a": ["robust_z", "clip"]},
+    )
+
+    assert np.array_equal(x, expected_x, equal_nan=True)
+    assert baselines.keys() == expected_baselines.keys()
+    assert np.isnan(baselines["feat_a"]["abs_median"])
+    assert np.isnan(baselines["feat_a"]["abs_mad"])
+    assert np.all(np.isnan(x[:, 0]))
+    assert np.allclose(coverage[:, 0], 0.0)
 
 
 def test_build_feature_export_bundle_exports_all_numeric_features_with_usage_metadata():

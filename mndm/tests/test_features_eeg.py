@@ -110,6 +110,173 @@ def test_compute_eeg_features_permutation_entropy_metadata():
     )
 
 
+def test_batched_welch_matches_serial_epoch_and_montage_psd():
+    """Batched Welch must preserve serial PSD values and frequency bins."""
+    from mndm.features import eeg as eeg_mod
+
+    rng = np.random.default_rng(20260820)
+    for shape in ((3, 2, 2000), (4, 1, 17)):
+        data = rng.normal(size=shape)
+        nperseg = min(shape[-1], 512)
+        noverlap = nperseg // 2
+        batched_psd, batched_freqs = eeg_mod._run_welch_psd_batched(
+            data,
+            sfreq=250.0,
+            fmin=1.0,
+            fmax=45.0,
+            nperseg=nperseg,
+            noverlap=noverlap,
+        )
+
+        serial_rows = []
+        serial_freqs = None
+        for epoch in data:
+            serial_signals = []
+            for signal_1d in epoch:
+                freqs, psd = eeg_mod.signal.welch(
+                    signal_1d,
+                    fs=250.0,
+                    window="hann",
+                    nperseg=nperseg,
+                    noverlap=noverlap,
+                    detrend="constant",
+                    scaling="density",
+                )
+                in_band = (freqs >= 1.0) & (freqs <= 45.0)
+                serial_freqs = freqs[in_band]
+                serial_signals.append(psd[in_band])
+            serial_rows.append(np.stack(serial_signals, axis=0))
+        serial_psd = np.stack(serial_rows, axis=0)
+
+        assert np.array_equal(batched_freqs, serial_freqs)
+        assert np.array_equal(batched_psd, serial_psd)
+
+
+def test_batched_welch_preserves_nonfinite_rows_and_empty_band():
+    """Welch batching keeps non-finite isolation and empty frequency masks."""
+    from mndm.features import eeg as eeg_mod
+
+    rng = np.random.default_rng(20260822)
+    data = rng.normal(size=(2, 2, 512))
+    data[0, 0, 0] = np.nan
+    data[1, 1, 0] = np.inf
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", RuntimeWarning)
+        batched_psd, batched_freqs = eeg_mod._run_welch_psd_batched(
+            data,
+            sfreq=250.0,
+            fmin=1.0,
+            fmax=45.0,
+            nperseg=512,
+            noverlap=256,
+        )
+        serial_rows = []
+        serial_freqs = None
+        for epoch in data:
+            serial_signals = []
+            for signal_1d in epoch:
+                freqs, psd = eeg_mod.signal.welch(
+                    signal_1d,
+                    fs=250.0,
+                    window="hann",
+                    nperseg=512,
+                    noverlap=256,
+                    detrend="constant",
+                    scaling="density",
+                )
+                in_band = (freqs >= 1.0) & (freqs <= 45.0)
+                serial_freqs = freqs[in_band]
+                serial_signals.append(psd[in_band])
+            serial_rows.append(np.stack(serial_signals, axis=0))
+        serial_psd = np.stack(serial_rows, axis=0)
+
+        empty_psd, empty_freqs = eeg_mod._run_welch_psd_batched(
+            data,
+            sfreq=250.0,
+            fmin=1000.0,
+            fmax=1001.0,
+            nperseg=512,
+            noverlap=256,
+        )
+
+    assert np.array_equal(batched_freqs, serial_freqs)
+    assert np.array_equal(batched_psd, serial_psd, equal_nan=True)
+    assert np.isnan(batched_psd[0, 0]).all()
+    assert np.isnan(batched_psd[1, 1]).all()
+    assert np.isfinite(batched_psd[0, 1]).all()
+    assert np.isfinite(batched_psd[1, 0]).all()
+    assert empty_psd.shape == (2, 2, 0)
+    assert empty_freqs.shape == (0,)
+
+
+def test_compute_eeg_features_calls_welch_once_for_all_epochs(monkeypatch):
+    """The primary Welch fallback should receive the complete PSD batch."""
+    from mndm.features import eeg as eeg_mod
+
+    calls = []
+    original_welch = eeg_mod.signal.welch
+
+    def _counting_welch(data, *args, **kwargs):
+        calls.append(np.asarray(data).shape)
+        return original_welch(data, *args, **kwargs)
+
+    monkeypatch.setattr(eeg_mod.signal, "welch", _counting_welch)
+    rng = np.random.default_rng(20260821)
+    signals = {
+        "signals": {"eeg": rng.normal(size=(6, 250 * 16)).astype(np.float32)},
+        "sfreq": 250,
+    }
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 4.0},
+        "features": {
+            "eeg_psd": {"method": "welch", "fmin": 1.0, "fmax": 45.0},
+        },
+    }
+
+    out = eeg_mod.compute_eeg_features(signals, config)
+
+    assert not out.empty
+    assert calls == [(len(out), 1, 2000)]
+
+
+def test_compute_eeg_features_batches_secondary_welch(monkeypatch):
+    """Secondary multiverse Welch should use one global epoch batch."""
+    from mndm.features import eeg as eeg_mod
+
+    calls = []
+    original_welch = eeg_mod.signal.welch
+
+    def _counting_welch(data, *args, **kwargs):
+        calls.append(np.asarray(data).shape)
+        return original_welch(data, *args, **kwargs)
+
+    monkeypatch.setattr(eeg_mod.signal, "welch", _counting_welch)
+    rng = np.random.default_rng(20260823)
+    signals = {
+        "signals": {"eeg": rng.normal(size=(6, 250 * 16)).astype(np.float32)},
+        "sfreq": 250,
+    }
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 4.0},
+        "features": {
+            "eeg_psd": {"method": "welch", "fmin": 1.0, "fmax": 45.0},
+            "eeg_bands": {"alpha": [8.0, 12.0]},
+        },
+        "robustness": {
+            "multiverse": {
+                "psd": {"enabled": True, "secondary_method": "welch"},
+            },
+        },
+    }
+
+    out = eeg_mod.compute_eeg_features(signals, config)
+
+    assert not out.empty
+    assert calls == [(len(out), 1, 2000), (len(out), 2000)]
+    assert "eeg_alpha__psd_alt" in out.columns
+    assert np.all(np.isfinite(out["eeg_alpha__psd_alt"]))
+
+
 def test_compute_eeg_features_suppresses_multitaper_nonconvergence_warning(monkeypatch):
     """The known multitaper non-convergence warning is suppressed for EEG/iEEG."""
     from mndm.features import eeg as eeg_mod
@@ -330,6 +497,137 @@ def test_compute_eeg_features_conventional_complexity_outputs():
     )
 
 
+def test_compute_eeg_features_reuses_global_complexity_metrics(monkeypatch):
+    """The conventional complexity pack should not recompute global metrics."""
+    from mndm.features import eeg as eeg_mod
+
+    calls = {"hjorth": 0, "permutation_entropy": 0}
+    original_hjorth = eeg_mod._compute_hjorth_metrics
+    original_permutation_entropy = eeg_mod._compute_permutation_entropy
+
+    def _counting_hjorth(data):
+        calls["hjorth"] += 1
+        return original_hjorth(data)
+
+    def _counting_permutation_entropy(*args, **kwargs):
+        calls["permutation_entropy"] += 1
+        return original_permutation_entropy(*args, **kwargs)
+
+    monkeypatch.setattr(eeg_mod, "_compute_hjorth_metrics", _counting_hjorth)
+    monkeypatch.setattr(eeg_mod, "_compute_permutation_entropy", _counting_permutation_entropy)
+
+    rng = np.random.default_rng(124)
+    eeg_data = rng.normal(size=(8, 250 * 16)).astype(np.float32)
+    signals = {"signals": {"eeg": eeg_data}, "sfreq": 250}
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 4.0},
+        "features": {
+            "eeg_psd": {"method": "welch", "fmin": 1.0, "fmax": 45.0},
+            "permutation_entropy": {"order": 5, "delay": 1, "normalize": True},
+        },
+        "robustness": {"ensembles": {"enabled": False}},
+        "conventional_eeg": {
+            "enabled": True,
+            "packs": ["complexity"],
+            "export": {"per_epoch_columns": True, "summaries": True},
+            "complexity": {
+                "permutation_entropy": True,
+                "hjorth_complexity": True,
+                "hjorth_mobility": True,
+            },
+        },
+    }
+
+    out = eeg_mod.compute_eeg_features(signals, config)
+
+    assert len(out) == 3
+    assert calls == {"hjorth": len(out), "permutation_entropy": len(out)}
+
+
+def test_conventional_complexity_does_not_copy_degraded_entropy(monkeypatch):
+    """Degraded primary entropy must not become the conventional PE column."""
+    from mndm.features import eeg as eeg_mod
+
+    direct_value = 0.125
+    monkeypatch.setattr(
+        eeg_mod,
+        "_compute_permutation_entropy",
+        lambda *_args, **_kwargs: direct_value,
+    )
+    conventional_cfg = {
+        "enabled": True,
+        "packs": ["complexity"],
+        "export": {"per_epoch_columns": True, "summaries": True},
+        "complexity": {
+            "permutation_entropy": True,
+            "hjorth_complexity": True,
+            "hjorth_mobility": True,
+        },
+    }
+
+    normal = eeg_mod._compute_conventional_complexity_features(
+        epoch_signal=np.arange(32, dtype=float),
+        sfreq=250.0,
+        order=5,
+        delay=1,
+        normalize=True,
+        conventional_cfg=conventional_cfg,
+        precomputed_hjorth=(0.25, 0.5),
+        precomputed_permutation_entropy=0.875,
+        permutation_entropy_degraded=False,
+    )
+    degraded = eeg_mod._compute_conventional_complexity_features(
+        epoch_signal=np.arange(32, dtype=float),
+        sfreq=250.0,
+        order=5,
+        delay=1,
+        normalize=True,
+        conventional_cfg=conventional_cfg,
+        precomputed_hjorth=(0.25, 0.5),
+        precomputed_permutation_entropy=0.875,
+        permutation_entropy_degraded=True,
+    )
+
+    assert normal["eeg_conventional_complexity_permutation_entropy"] == 0.875
+    assert degraded["eeg_conventional_complexity_permutation_entropy"] == direct_value
+    assert degraded["eeg_conventional_complexity_hjorth_mobility"] == 0.25
+    assert degraded["eeg_conventional_complexity_hjorth_complexity"] == 0.5
+
+
+def test_compute_eeg_features_preserves_degraded_entropy_semantics(monkeypatch):
+    """End-to-end degraded entropy keeps conventional PE distinct from fallback."""
+    from mndm.features import eeg as eeg_mod
+
+    monkeypatch.setattr(
+        eeg_mod,
+        "_compute_permutation_entropy",
+        lambda *_args, **_kwargs: np.nan,
+    )
+    rng = np.random.default_rng(125)
+    eeg_data = rng.normal(size=(8, 250 * 8)).astype(np.float32)
+    signals = {"signals": {"eeg": eeg_data}, "sfreq": 250}
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 4.0},
+        "features": {
+            "eeg_psd": {"method": "welch", "fmin": 1.0, "fmax": 45.0},
+            "permutation_entropy": {"order": 5, "delay": 1, "normalize": True},
+        },
+        "conventional_eeg": {
+            "enabled": True,
+            "packs": ["complexity"],
+            "export": {"per_epoch_columns": True, "summaries": True},
+            "complexity": {"permutation_entropy": True},
+        },
+    }
+
+    out = eeg_mod.compute_eeg_features(signals, config)
+
+    assert set(out["eeg_entropy_metric"].astype(str).unique()) == {"spectral_entropy"}
+    assert out["eeg_entropy_degraded_mode"].astype(bool).all()
+    assert np.all(np.isfinite(out["eeg_permutation_entropy"].to_numpy(dtype=float)))
+    assert np.all(np.isnan(out["eeg_conventional_complexity_permutation_entropy"].to_numpy(dtype=float)))
+
+
 def test_compute_eeg_features_conventional_connectivity_outputs(monkeypatch):
     """Connectivity pack should emit conventional synchrony columns."""
     from mndm.features import eeg as eeg_mod
@@ -402,6 +700,62 @@ def test_synchrony_connectivity_uses_clean_segments_around_bad_mask():
 
     assert np.isfinite(result["eeg_sync_infant_theta_F4_P4_coh_mean"])
     assert np.isfinite(result["eeg_sync_infant_theta_F4_P4_coh_std"])
+
+
+def test_synchrony_reuses_filter_and_hilbert_per_band_segment(monkeypatch):
+    """Filtering and Hilbert transforms are shared across ROI pairs."""
+    from mndm.features import eeg_sync
+
+    sfreq = 128.0
+    rng = np.random.default_rng(18)
+    data = rng.normal(size=(4, int(12 * sfreq)))
+    data[:, int(4 * sfreq) : int(5 * sfreq)] = np.nan
+    config = {
+        "bands": [
+            {"name": "low", "f_low": 3.0, "f_high": 6.0},
+            {"name": "high", "f_low": 8.0, "f_high": 12.0},
+        ],
+        "windows": {"length_sec": 2.0, "step_sec": 1.0},
+        "roi_pairs": [
+            {"name": "pair_01", "channels": ["C0", "C1"]},
+            {"name": "pair_23", "channels": ["C2", "C3"]},
+        ],
+        "metrics": {"plv": True},
+        "outputs": {"summary_stats": ["mean"]},
+    }
+    bandpass_calls = []
+    hilbert_calls = []
+    original_bandpass = eeg_sync._bandpass
+    original_hilbert = eeg_sync.hilbert
+
+    def _counting_bandpass(*args, **kwargs):
+        bandpass_calls.append(True)
+        return original_bandpass(*args, **kwargs)
+
+    def _counting_hilbert(*args, **kwargs):
+        hilbert_calls.append(True)
+        return original_hilbert(*args, **kwargs)
+
+    monkeypatch.setattr(eeg_sync, "_bandpass", _counting_bandpass)
+    monkeypatch.setattr(eeg_sync, "hilbert", _counting_hilbert)
+
+    result = eeg_sync.compute_eeg_synchrony_features(
+        data,
+        sfreq,
+        ["C0", "C1", "C2", "C3"],
+        config,
+    )
+
+    # Two bands × two clean segments; neither operation depends on the pair.
+    assert len(bandpass_calls) == 4
+    assert len(hilbert_calls) == 4
+    assert set(result) == {
+        "eeg_sync_low_pair_01_plv_mean",
+        "eeg_sync_low_pair_23_plv_mean",
+        "eeg_sync_high_pair_01_plv_mean",
+        "eeg_sync_high_pair_23_plv_mean",
+    }
+    assert all(np.isfinite(value) for value in result.values())
 
 
 def test_compute_eeg_features_conventional_coma_outputs(monkeypatch):

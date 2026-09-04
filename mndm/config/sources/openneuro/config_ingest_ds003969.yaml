@@ -1,0 +1,282 @@
+version: 1.2
+modality: eeg
+
+imports:
+  - "../../config_ingest_common_eeg.yaml"
+
+# ds003969 — "Meditation vs thinking task" (Delorme & Braboszcz, OpenNeuro).
+#
+# Biosemi 64-ch EEG (.bdf), 98 subjects (HTR/CTR/SNY/VIP meditation traditions),
+# 4 recordings/subject: task-med1breath, task-med2, task-think1, task-think2.
+#
+# The 64 scalp channels are typed EEG in BIDS; the 16 auxiliary channels
+# (EXG1-8, GSR1-2, Erg1-2, Resp, Plet, Temp) are typed MISC/RESP/TEMP/GSR in the
+# BIDS channels.tsv. MNE reads the .bdf directly (not the BIDS sidecar types), so
+# the auxiliary channels need explicit channel_typing rules below for the
+# embodied-anchoring ingest to find EOG/ECG/PPG/RESP.
+#
+# EXG sensor mapping (from dataset author Claire Braboszcz in the OpenNeuro
+# comments, cross-confirmed by A. S. Ghatpande):
+#   EXG1  left eye corner            -> HEOG
+#   EXG2  right eye corner           -> HEOG
+#   EXG3  left eye eyebrow (above)   -> VEOG
+#   EXG4  left eye below             -> VEOG
+#   EXG5  left mastoide              -> M1 (reference)
+#   EXG6  right mastoide             -> M2 (reference)
+#   EXG7  middle of the collar bone  -> ECG        <-- key embodied signal
+#   EXG8  extra electrode for Fp1    -> Fp1 replacement (see NOTE)
+#
+# NOTE on Fp1 / EXG8: the Fp1 electrode on the Biosemi cap was defective
+# (flat line at this gain, per Ghatpande) and was replaced by an extra electrode
+# wired to EXG8.  EXG8 is therefore the usable Fp1 signal.  The pipeline has no
+# generic channel-rename hook, so EXG8 is typed `misc` here to avoid creating a
+# second EEG channel without a montage position (which would break average-reref
+# / CSD / regional groups).  A future refine should rename EXG8 -> Fp1, drop the
+# flat original Fp1, and let EXG8 carry the Fp1 montage slot.
+#
+# NOTE on PPG pick-up: features/ppg.py finds the PPG channel by name regex
+# (ppg|pleth|pulse|photopleth) and, failing that, falls back to ALL `bio`-type
+# channels.  The channel is named "Plet" (no "h"), so the name regex does NOT
+# match and the bio fallback is used.  Therefore Plet is typed `bio` (so it is
+# picked as PPG) while GSR1/GSR2/Temp are typed `misc`/`gsr` (so the bio
+# fallback does not grab them as PPG).  GSR1/GSR2 are typed with MNE's native
+# `gsr` type so features/eda.py picks them up automatically (see
+# features.eda below); Temp stays `misc` (no temperature extractor yet).
+
+datasets:
+  - ds003969
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds003969"
+  dataset_name: "Meditation vs thinking task"
+  dataset_version: "1.0.0"
+  doi: "10.18112/openneuro.ds003969.v1.0.0"
+  url: "https://openneuro.org/datasets/ds003969"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "J:/processed/openneuro"
+  dataset_received_dirs:
+    ds003969: "K:/ExternalReceivedDatasets/openneuro/received/ds003969"
+
+indexing:
+  multimodal_bundles:
+    enabled: true
+    group_by: ["subject", "session", "task", "run", "acq"]
+    primary_modality: "eeg"
+    # All modalities co-recorded in the single Biosemi .bdf.  The BIDS index
+    # has one row per recording (modality "eeg"); the channel_typing rules
+    # below assign ECG/EOG/RESP/bio roles within that file.
+    # Adding resp/eog/cardioresp here is declarative; functionally the filter
+    # operates on the BIDS index modality column (always "eeg" for BDF files).
+    include_modalities: ["eeg", "ecg", "ppg", "resp", "eog"]
+
+preprocess:
+  eeg_csd:
+    enabled: false
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+
+  # ICA artifact removal.  ds003969 has 4 dedicated EOG channels (EXG1-4 typed
+  # eog) — ideal for ICA; no proxy channels needed.  ECG components are detected
+  # via EXG7 (auto-detected through ecg channel type).  ICA is applied to EEG
+  # channels only; EXG7 itself is untouched so HRV/resp feature extractors see
+  # the true physiological signals.
+  artifacts:
+    method: "ica"
+    ica_n_components: 20
+    ica_method: "fastica"
+    ica_random_state: 42
+    ica_fit_highpass_hz: 1.0
+    eog_proxy_channels: []       # EXG1-4 are typed eog; no proxy needed
+    ica_eog_threshold: 3.0
+    ecg_channel: null            # auto-detect EXG7 via ecg channel type
+    ica_ecg_threshold: 3.0
+    ica_max_components_to_remove: 5
+
+  # Biosemi auxiliary channel typing.  Dataset rules run before the generic
+  # default_rules; first match wins.  Use anchored regex so EXG1 is not matched
+  # by an EXG1* prefix rule intended for other channels.
+  channel_typing:
+    enabled: true
+    datasets:
+      ds003969:
+        rules:
+          # EOG (eye channels)
+          - {regex: "(?i)^EXG1$", type: "eog"}   # HEOG (left eye corner)
+          - {regex: "(?i)^EXG2$", type: "eog"}   # HEOG (right eye corner)
+          - {regex: "(?i)^EXG3$", type: "eog"}   # VEOG (left eyebrow above)
+          - {regex: "(?i)^EXG4$", type: "eog"}   # VEOG (left eye below)
+          # ECG (key embodied signal)
+          - {regex: "(?i)^EXG7$", type: "ecg"}   # ECG (mid collar bone)
+          # PPG / photoplethysmograph -> bio (picked as PPG via bio fallback)
+          - {regex: "(?i)^Plet$", type: "bio"}   # PPG
+          # Respiration
+          - {regex: "(?i)^Resp$", type: "resp"}  # respiration belt
+          # Mastoid references (not used as EEG; kept as misc)
+          - {regex: "(?i)^EXG5$", type: "misc"}  # M1 left mastoid
+          - {regex: "(?i)^EXG6$", type: "misc"}  # M2 right mastoid
+          # EXG8 = defective-Fp1 replacement electrode; misc until a rename step
+          - {regex: "(?i)^EXG8$", type: "misc"}  # Fp1 replacement (see NOTE)
+          # EDA / GSR: native MNE "gsr" type -> picked up by features/eda.py.
+          - {regex: "(?i)^GSR1$", type: "gsr"}  # EDA
+          - {regex: "(?i)^GSR2$", type: "gsr"}  # EDA
+          # Temperature: misc (no extractor; avoid PPG bio fallback)
+          - {regex: "(?i)^Temp$", type: "misc"}  # temperature
+          # Ergometer inputs: misc
+          - {regex: "(?i)^Erg1$", type: "misc"}
+          - {regex: "(?i)^Erg2$", type: "misc"}
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "Fpz", "AF3", "AF4", "AF7", "AF8", "AFz",
+                "F3", "F4", "Fz", "F7", "F8", "F1", "F2", "F5", "F6"]
+      central: ["FC1", "FC2", "FC3", "FC4", "FC5", "FC6", "FCz",
+                "C3", "Cz", "C4", "C1", "C2", "C5", "C6", "FT7", "FT8"]
+      parietal_occipital: ["CP1", "CP2", "CP3", "CP4", "CP5", "CP6", "CPz",
+                           "P1", "P2", "P3", "P4", "P5", "P6", "P7", "P8", "P9", "P10", "Pz",
+                           "PO3", "PO4", "PO7", "PO8", "POz",
+                           "O1", "O2", "Oz", "Iz"]
+      temporal: ["T7", "T8", "TP7", "TP8"]
+
+features:
+  ecg:
+    peak_detector: "neurokit2"   # Pan-Tompkins via NeuroKit2; avoids T-wave double-detection
+    hrv:
+      enabled: true
+      superwindow_s: 60.0
+      window_mode: centered
+      min_nn_intervals: 20
+      min_coverage_fraction: 0.5
+      max_artifact_fraction: 0.25
+      pnn50_threshold_ms: 50.0
+      complexity:
+        enabled: true
+        sampen_order: 2
+        sampen_tolerance_mult: 0.2
+        min_nn_for_sampen: 50
+        dfa_short_nvals_lo: 4
+        dfa_short_nvals_hi: 12
+        min_nn_for_dfa: 16
+
+  # Respiration v0.1 — Resp channel confirmed as respiration belt (BIDS: Resp).
+  # Meditation blocks are typically 10+ minutes, well within the regime where
+  # long-window respiration features (rate, regularity, depth) are meaningful.
+  resp:
+    lowpass_hz: 1.0              # cut above 1 Hz; breathing is 0.1-0.5 Hz
+    peak_min_distance_s: 1.5     # ~40 bpm max; meditation breathing is slower
+    peak_min_prominence_frac: 0.15
+    pause_flatness_frac: 0.05
+    min_breaths: 2
+    min_signal_quality: 0.20
+
+  # OcularState v0.1 — four EXG channels typed as EOG.
+  # EXG1/EXG2 = HEOG (left/right eye corner), EXG3/EXG4 = VEOG.
+  # Detection thresholds are intentionally generous because meditation
+  # subjects have fewer blinks and slower eye movements than typical tasks.
+  eog:
+    filter_low_hz: 0.5
+    filter_high_hz: 10.0
+    filter_order: 3
+    std_mult: 2.0
+    mad_mult: 3.5
+    prominence_mult: 0.8
+    refractory_s: 0.25
+    blink_halfwidth_s: 0.15
+    saccade_filter_low_hz: 1.0
+    saccade_filter_high_hz: 30.0
+    saccade_std_mult: 2.5
+    saccade_refractory_s: 0.15
+    artifact_sat_frac: 0.95
+
+  # Cardiorespiratory Coupling v0.1 — requires both ECG (EXG7) and Resp.
+  # Respiration band 0.1-0.5 Hz covers the full meditation breathing range.
+  cardioresp:
+    resp_band_lo: 0.10
+    resp_band_hi: 0.50
+    ibi_interp_hz: 4.0
+    coherence_nperseg: 64      # shorter than default; epochs here are 8 s
+    xcorr_max_lag_s: 8.0
+    min_rpeaks: 5
+
+  # EDA/GSR: tonic SCL + phasic SCR events from GSR1 (typed "gsr" above).
+  eda:
+    enabled: true
+
+anchor_state:
+  enabled: true
+  # AnchorState v0.2 — adds resp_anchor_index, ocular_stability_index,
+  # cardioresp_anchor_index, and the global anchor_index_v02 composite.
+  # All v0.1 columns (sympathetic_index, vagal_index, vascular_index,
+  # pupil_arousal_index, anchor_index) are preserved verbatim.
+  v2:
+    enabled: true
+
+anchor_coupling:
+  enabled: true
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: false
+  min_windows: 3
+  condition_number_max: 1000000.0
+
+mnps:
+  embodied:
+    enabled: true
+    channels:
+      - ecg_hr_bpm
+      - ecg_hrv_rmssd_ms
+      - ppg_rate_bpm
+      - ppg_amplitude_mean
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+metadata_extraction:
+  datasets:
+    ds003969:
+      group:
+        candidates: ["group"]
+        # participants.tsv `group` values are lowercase codes; normalize to the
+        # meditation tradition labels from participants.json.
+        normalize:
+          ctr: "Control"
+          htr: "Himalayan"
+          sny: "Isha"
+          vip: "Vipassana"
+      task:
+        from_filename: true
+        # Four BIDS task labels collapse to the two paradigm conditions.
+        # med1breath is a breath-focused meditation session.
+        normalize:
+          med1breath: "meditation"
+          med2: "meditation"
+          think1: "thinking"
+          think2: "thinking"
+
+# allow_group_collisions is required because task normalization merges two source
+# files (med1breath + med2 → meditation; think1 + think2 → thinking) into a single
+# output HDF5 per subject.  Without this flag the collision guardrail would refuse
+# to proceed.  The merging is intentional: both recordings of the same condition
+# are concatenated into one combined summary (≈300 epochs instead of ≈150).
+summarize:
+  allow_group_collisions: true

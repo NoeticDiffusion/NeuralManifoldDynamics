@@ -1,0 +1,90 @@
+version: 1.2
+modality: eeg
+
+# ds004100 dataset overlay config.
+# Imports common EEG defaults, then applies only dataset-specific overrides.
+imports:
+  - "../../config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds004100
+
+preprocess:
+  eeg_csd:
+    enabled: true
+    lambda2: 1.0e-5
+    stiffness: 4.0
+    n_legendre_terms: 50
+    min_eeg_channels: 16
+    on_error: "warn"
+
+robustness:
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
+      temporal: ["T7", "T8", "TP7", "TP8", "T3", "T4", "T5", "T6"]
+    datasets:
+      ds004100:
+        # Harmonized high-resolution group names aligned to ANPHY/Apollo.
+        # This dataset is mixed ECoG/sEEG/iEEG, so these are best-effort
+        # scalp-anchor groups that resolve when those labels are present.
+        groups:
+          frontal_left: ["Fp1", "AF7", "AF3", "F7", "F5", "F3", "F1"]
+          frontal_right: ["Fp2", "AF8", "AF4", "F8", "F6", "F4", "F2"]
+          frontal_midline: ["Fpz", "AFz", "Fz"]
+
+          frontocentral_left: ["FC5", "FC3", "FC1", "C5", "C3", "C1"]
+          frontocentral_right: ["FC6", "FC4", "FC2", "C6", "C4", "C2"]
+          central_midline: ["FCz", "Cz", "CPz"]
+
+          temporal_left: ["FT9", "FT7", "T7", "TP7", "TP9", "T3", "T5"]
+          temporal_right: ["FT10", "FT8", "T8", "TP8", "TP10", "T4", "T6"]
+
+          parietal_left: ["CP5", "CP3", "CP1", "P7", "P5", "P3", "P1"]
+          parietal_right: ["CP6", "CP4", "CP2", "P8", "P6", "P4", "P2"]
+          parietal_midline: ["Pz"]
+
+          occipital_left: ["PO7", "PO3", "O1"]
+          occipital_right: ["PO8", "PO4", "O2"]
+          occipital_midline: ["POz", "Oz"]
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: true
+
+mnps_9d:
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+local_dynamics:
+  jacobian_metrics:
+    stability_zero_tolerance: 1.0e-8
+    reactivity_zero_tolerance: 1.0e-8
+  finite_time_response:
+    enabled: true
+    propagator_mode: time_ordered_expm
+    horizon_steps: [1, 2, 4]
+    max_gap_sec: null
+    validation_level: model_derived
+  transition_residuals:
+    enabled: true
+    crossfit_embargo_steps: 4
+    max_dt_deviation_sec: 1.0e-6
+    min_eigenvalue: 1.0e-8
+
+metadata_extraction:
+  datasets:
+    ds004100:
+      group:
+        default: "Epilepsy"
+      task:
+        from_filename: true

@@ -659,16 +659,16 @@ def project_features_with_coverage(
     values lie in ``[0, 1]``. The result is NaN when an axis has no configured
     non-zero weights.
     """
-    x, baselines = project_features(
-        features_df, 
-        weights, 
-        normalize=normalize,
-        feature_standardization=feature_standardization,
-        clip_threshold=clip_threshold,
-        external_anchor=external_anchor,
-    )
-    coverage = np.full_like(x, np.nan, dtype=np.float32)
     if len(features_df) == 0:
+        x, baselines = project_features(
+            features_df,
+            weights,
+            normalize=normalize,
+            feature_standardization=feature_standardization,
+            clip_threshold=clip_threshold,
+            external_anchor=external_anchor,
+        )
+        coverage = np.full_like(x, np.nan, dtype=np.float32)
         return x, coverage, baselines
 
     used_cols = sorted(
@@ -680,10 +680,19 @@ def project_features_with_coverage(
         }
     )
     if not used_cols:
+        x, baselines = project_features(
+            features_df,
+            weights,
+            normalize=normalize,
+            feature_standardization=feature_standardization,
+            clip_threshold=clip_threshold,
+            external_anchor=external_anchor,
+        )
+        coverage = np.full_like(x, np.nan, dtype=np.float32)
         return x, coverage, baselines
 
     if normalize:
-        features_df_norm, _ = _normalize_used_columns(
+        features_df_norm, baselines = _normalize_used_columns(
             features_df, 
             used_cols, 
             normalize,
@@ -693,6 +702,12 @@ def project_features_with_coverage(
         )
     else:
         features_df_norm = features_df
+        baselines = {}
+
+    # The normalized frame is shared by projection and coverage. Passing
+    # normalize=None prevents project_features from repeating the transform.
+    x, _ = project_features(features_df_norm, weights, normalize=None)
+    coverage = np.full_like(x, np.nan, dtype=np.float32)
         
     X = features_df_norm.loc[:, used_cols].to_numpy(dtype=np.float32, copy=True)
     X[~np.isfinite(X)] = np.nan

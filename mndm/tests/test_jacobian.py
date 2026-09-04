@@ -126,6 +126,36 @@ def test_jacobian_is_exactly_deterministic_for_identical_inputs():
     assert np.array_equal(first.j_dot, second.j_dot)
 
 
+def test_estimate_local_jacobians_gathers_neighbours_once(monkeypatch):
+    """The canonical estimator should reuse each center's gathered neighbours."""
+    from mndm import jacobian
+
+    rng = np.random.default_rng(2028)
+    x = rng.normal(size=(30, 3)).astype(np.float32)
+    x_dot = rng.normal(size=(30, 3)).astype(np.float32)
+    nn_idx = np.tile(np.arange(len(x)), (len(x), 1)).astype(np.int32)
+    gathered_centers = []
+    original_gather = jacobian._gather_indices
+
+    def _counting_gather(center, *args, **kwargs):
+        gathered_centers.append(int(center))
+        return original_gather(center, *args, **kwargs)
+
+    monkeypatch.setattr(jacobian, "_gather_indices", _counting_gather)
+
+    result = jacobian.estimate_local_jacobians(
+        x,
+        x_dot,
+        nn_idx,
+        super_window=3,
+        ridge_alpha=1e-4,
+    )
+
+    expected_centers = np.arange(1, len(x) - 1, dtype=np.int32)
+    assert np.array_equal(result.centers, expected_centers)
+    assert gathered_centers == expected_centers.tolist()
+
+
 def test_estimate_anchor_coupling_exports_cross_blocks_and_metrics():
     from mndm.jacobian import estimate_anchor_coupling
 

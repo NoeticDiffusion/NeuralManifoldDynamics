@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -187,3 +188,66 @@ def test_preprocess_file_meg_fif_extracts_meg_and_eeg_channels(tmp_path: Path):
     assert result.signals["meg_mag"].shape[0] == 1
     assert result.signals["meg_grad"].shape[0] == 1
     assert result.signals["eeg"].shape[0] == 1
+
+
+def test_preprocess_wfdb_forwards_resample_jobs_and_records_timing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """WFDB preprocessing honors the shared resample worker setting."""
+    mne = pytest.importorskip("mne")
+
+    import mndm.preprocess as preprocess
+
+    times = np.arange(0, 10.0, 1.0 / 200.0)
+    record = SimpleNamespace(
+        p_signal=np.column_stack(
+            [
+                np.sin(2 * np.pi * 8.0 * times),
+                np.sin(2 * np.pi * 12.0 * times),
+            ]
+        ),
+        sig_name=["C3", "C4"],
+        units=["uV", "uV"],
+        fs=200.0,
+        record_name="synthetic",
+    )
+    monkeypatch.setattr(preprocess, "wfdb", SimpleNamespace(rdrecord=lambda _: record))
+
+    calls: list[int | str] = []
+    original_resample = mne.io.BaseRaw.resample
+
+    def spy_resample(self, *args, **kwargs):
+        calls.append(kwargs.get("n_jobs"))
+        return original_resample(self, *args, **kwargs)
+
+    monkeypatch.setattr(mne.io.BaseRaw, "resample", spy_resample)
+    hea_path = tmp_path / "dsWFDB" / "synthetic.hea"
+    hea_path.parent.mkdir()
+
+    def run(n_jobs: int | None):
+        resample_cfg = {} if n_jobs is None else {"n_jobs": n_jobs}
+        return preprocess.preprocess_wfdb(
+            hea_path,
+            {
+                "datasets": ["dsWFDB"],
+                "preprocess": {
+                    "sfreq": 100.0,
+                    "sfreq_candidates": [100.0],
+                    "resample": resample_cfg,
+                    "notch_hz": None,
+                    "eeg_bandpass": [1.0, 40.0],
+                    "reref": "average",
+                },
+            },
+        )
+
+    default_result = run(None)
+    parallel_result = run(4)
+
+    assert calls == [1, 4]
+    assert default_result.meta["timings"]["resample"] >= 0.0
+    assert parallel_result.meta["timings"]["resample"] >= 0.0
+    assert default_result.meta["timings"]["total"] >= default_result.meta["timings"]["resample"]
+    assert np.array_equal(default_result.signals["eeg"], parallel_result.signals["eeg"])
+    assert default_result.channels == parallel_result.channels
+    assert default_result.sfreq == parallel_result.sfreq == 100.0

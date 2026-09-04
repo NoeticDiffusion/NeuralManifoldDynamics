@@ -18,6 +18,8 @@ class JacobianResult:
     j_dot: np.ndarray
     centers: np.ndarray
     diagnostics: Dict[str, Any]
+    affine_reference: Optional[np.ndarray] = None
+    affine_intercept: Optional[np.ndarray] = None
 
 
 def _gather_indices(center: int, nn_idx: np.ndarray, super_window: int, total: int) -> np.ndarray:
@@ -67,6 +69,74 @@ def _fit_ridge(design: np.ndarray, target: np.ndarray, alpha: float, sample_weig
     return a, b
 
 
+def fit_local_affine_at_center(
+    x: np.ndarray,
+    x_dot: np.ndarray,
+    nn_idx: np.ndarray,
+    center: int,
+    *,
+    super_window: int,
+    ridge_alpha: float,
+    distance_weighted: bool,
+    exclude_indices: Optional[Sequence[int]] = None,
+    neighbour_indices: Optional[np.ndarray] = None,
+) -> Optional[Dict[str, Any]]:
+    """Fit the local affine derivative model at one center.
+
+    ``exclude_indices`` is used only by transition-residual cross-fitting. It
+    never changes the canonical Jacobian estimate returned by
+    :func:`estimate_local_jacobians`.
+    """
+    dim = int(x.shape[1])
+    if neighbour_indices is None:
+        neighbours = _gather_indices(int(center), nn_idx, int(super_window), x.shape[0])
+    else:
+        neighbours = np.asarray(neighbour_indices, dtype=np.int32).ravel()
+    if exclude_indices is not None and len(exclude_indices) > 0:
+        excluded = np.asarray(list(exclude_indices), dtype=np.int32)
+        neighbours = neighbours[~np.isin(neighbours, excluded)]
+    if neighbours.size < dim + 1:
+        return None
+    x_samples = x[neighbours]
+    xdot_samples = x_dot[neighbours]
+    finite_mask = np.isfinite(x_samples).all(axis=1) & np.isfinite(xdot_samples).all(axis=1)
+    x_samples = x_samples[finite_mask]
+    xdot_samples = xdot_samples[finite_mask]
+    if x_samples.shape[0] < dim + 1:
+        return None
+
+    x_mean = np.mean(x_samples, axis=0, keepdims=True)
+    design = x_samples - x_mean
+    col_scale = np.std(design, axis=0, ddof=0)
+    col_scale = np.where(np.isfinite(col_scale) & (col_scale > 1e-8), col_scale, 1.0).astype(np.float32)
+    design_std = design / col_scale[None, :]
+    design_aug = np.hstack([design_std, np.ones((design.shape[0], 1), dtype=np.float32)])
+    weights = None
+    if distance_weighted:
+        center_vec = x[int(center)]
+        d = np.linalg.norm(x_samples - center_vec[None, :], axis=1)
+        d_pos = d[d > 0]
+        sigma = float(np.median(d_pos)) if d_pos.size > 0 else float(np.median(d))
+        sigma = sigma if np.isfinite(sigma) and sigma > 1e-6 else 1.0
+        weights = np.exp(-0.5 * (d / sigma) ** 2).astype(np.float32)
+        weights = weights / (float(np.mean(weights)) + 1e-8)
+    a, b = _fit_ridge(design_aug, xdot_samples, ridge_alpha, sample_weights=weights)
+    y_hat = design_aug @ np.vstack([a.T, b[None, :]])
+    residual = xdot_samples - y_hat
+    mse_model = float(np.mean(residual**2))
+    baseline = xdot_samples - np.mean(xdot_samples, axis=0, keepdims=True)
+    mse_baseline = float(np.mean(baseline**2))
+    return {
+        "jacobian": (a / col_scale[None, :]).astype(np.float32),
+        "affine_reference": x_mean.reshape(-1).astype(np.float32),
+        "affine_intercept": b.astype(np.float32),
+        "mse_model": mse_model,
+        "mse_baseline": mse_baseline,
+        "rel_mse_baseline": float(mse_model / mse_baseline) if np.isfinite(mse_baseline) and mse_baseline > 1e-12 else float("nan"),
+        "support_indices": neighbours,
+    }
+
+
 def estimate_local_jacobians(
     x: np.ndarray,
     x_dot: np.ndarray,
@@ -107,6 +177,8 @@ def estimate_local_jacobians(
     local_fit_mse: list[float] = []
     local_fit_mse_baseline: list[float] = []
     rel_mse_baseline: list[float] = []
+    affine_reference_list: list[np.ndarray] = []
+    affine_intercept_list: list[np.ndarray] = []
 
     for center in centers:
         neighbour_idx = _gather_indices(center, nn_idx, super_window, x.shape[0])
@@ -115,62 +187,28 @@ def estimate_local_jacobians(
             failed_centers.append(int(center))
             failed_insufficient_neighbours += 1
             continue
-
-        x_samples = x[neighbour_idx]
-        xdot_samples = x_dot[neighbour_idx]
-        # Critical for NaN-aware pipelines: only fit on rows where both x and x_dot are finite.
-        finite_mask = np.isfinite(x_samples).all(axis=1) & np.isfinite(xdot_samples).all(axis=1)
-        x_samples = x_samples[finite_mask]
-        xdot_samples = xdot_samples[finite_mask]
-        if x_samples.shape[0] < dim + 1:
+        fit = fit_local_affine_at_center(
+            x,
+            x_dot,
+            nn_idx,
+            int(center),
+            super_window=super_window,
+            ridge_alpha=ridge_alpha,
+            distance_weighted=distance_weighted,
+            neighbour_indices=neighbour_idx,
+        )
+        if fit is None:
             failures += 1
             failed_centers.append(int(center))
             failed_nonfinite_samples += 1
             continue
-
-        x_mean = np.mean(x_samples, axis=0, keepdims=True)
-        design = x_samples - x_mean
-        # Standardize local design to keep ridge strength comparable across scale-shifted runs.
-        # We later map coefficients back to the original units.
-        col_scale = np.std(design, axis=0, ddof=0)
-        col_scale = np.where(np.isfinite(col_scale) & (col_scale > 1e-8), col_scale, 1.0).astype(np.float32)
-        design_std = design / col_scale[None, :]
-        ones = np.ones((design.shape[0], 1), dtype=np.float32)
-        design_aug = np.hstack([design_std, ones])
-
-        # Optional distance weights (closer points weigh more)
-        weights = None
-        if distance_weighted:
-            center_vec = x[center]
-            d = np.linalg.norm(x_samples - center_vec[None, :], axis=1)
-            # Use a smooth RBF kernel instead of inverse distance:
-            # inverse distance over-emphasizes d=0 (the center sample) and can collapse the fit.
-            d_pos = d[d > 0]
-            sigma = float(np.median(d_pos)) if d_pos.size > 0 else float(np.median(d))
-            if not np.isfinite(sigma) or sigma <= 1e-6:
-                sigma = 1.0
-            weights = np.exp(-0.5 * (d / sigma) ** 2).astype(np.float32)
-            # Keep effective sample size sane by normalizing around mean weight.
-            weights = weights / (float(np.mean(weights)) + 1e-8)
-
-        a, b = _fit_ridge(design_aug, xdot_samples, ridge_alpha, sample_weights=weights)
-        # Local fit residual diagnostics for auditability:
-        # compare fitted local linear model against an intercept-only baseline.
-        y_hat = design_aug @ np.vstack([a.T, b[None, :]])
-        residual = xdot_samples - y_hat
-        mse_model = float(np.mean(residual ** 2))
-        y0 = np.mean(xdot_samples, axis=0, keepdims=True)
-        residual_baseline = xdot_samples - y0
-        mse_baseline = float(np.mean(residual_baseline ** 2))
-        rel_mse = float("nan")
-        if np.isfinite(mse_baseline) and mse_baseline > 1e-12:
-            rel_mse = float(mse_model / mse_baseline)
-        a_orig = (a / col_scale[None, :]).astype(np.float32)
-        j_list.append(a_orig)
+        j_list.append(np.asarray(fit["jacobian"], dtype=np.float32))
         centers_ok.append(int(center))
-        local_fit_mse.append(mse_model)
-        local_fit_mse_baseline.append(mse_baseline)
-        rel_mse_baseline.append(rel_mse)
+        local_fit_mse.append(float(fit["mse_model"]))
+        local_fit_mse_baseline.append(float(fit["mse_baseline"]))
+        rel_mse_baseline.append(float(fit["rel_mse_baseline"]))
+        affine_reference_list.append(np.asarray(fit["affine_reference"], dtype=np.float32))
+        affine_intercept_list.append(np.asarray(fit["affine_intercept"], dtype=np.float32))
 
     if not j_list:
         return JacobianResult(
@@ -186,6 +224,8 @@ def estimate_local_jacobians(
                 "failed_nonfinite_samples": float(failed_nonfinite_samples),
                 "condition_number_windows": np.zeros((0,), dtype=np.float64),
             },
+        affine_reference=np.zeros((0, dim), dtype=np.float32),
+        affine_intercept=np.zeros((0, dim), dtype=np.float32),
         )
 
     j_hat = np.stack(j_list, axis=0)
@@ -223,6 +263,8 @@ def estimate_local_jacobians(
         "local_fit_mse_baseline_windows": np.asarray(local_fit_mse_baseline, dtype=np.float32),
         "rel_mse_baseline_windows": np.asarray(rel_mse_baseline, dtype=np.float32),
         "condition_number_windows": condition_number,
+        "affine_reference_windows": np.stack(affine_reference_list, axis=0).astype(np.float32),
+        "affine_intercept_windows": np.stack(affine_intercept_list, axis=0).astype(np.float32),
         "attempted_centers": np.asarray(centers, dtype=np.int32),
         "failed_centers": np.asarray(failed_centers, dtype=np.int32),
         "failed_insufficient_neighbours": float(failed_insufficient_neighbours),
@@ -234,6 +276,8 @@ def estimate_local_jacobians(
         j_dot=j_dot,
         centers=np.asarray(centers_ok, dtype=np.int32),
         diagnostics=diagnostics,
+        affine_reference=np.stack(affine_reference_list, axis=0),
+        affine_intercept=np.stack(affine_intercept_list, axis=0),
     )
 
 
