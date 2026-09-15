@@ -431,6 +431,7 @@ def compute_regional_mnps_for_network(
             ridge_alpha=ridge_alpha,
             distance_weighted=dist_weighted,
             j_dot_dt=float(dt),
+            knn_k=k,
         )
 
         result.jacobian = jac_result.j_hat
@@ -818,6 +819,7 @@ def compute_block_jacobian_rows(
                     ridge_alpha=ridge_alpha,
                     distance_weighted=False,
                     j_dot_dt=float(dt),
+                    knn_k=knn_k,
                 )
             except Exception as exc:
                 logger.debug(
@@ -844,6 +846,7 @@ def compute_block_jacobian_rows(
                         X_rev, Y_rev_dot, nn_rev,
                         super_window=super_window, ridge_alpha=ridge_alpha,
                         distance_weighted=False, j_dot_dt=float(dt),
+                        knn_k=knn_k,
                     )
                     T_min = min(jac_result.j_hat.shape[0], jac_rev.j_hat.shape[0])
                     sym_vals: List[float] = []

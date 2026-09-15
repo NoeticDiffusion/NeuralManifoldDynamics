@@ -1474,6 +1474,12 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         hj_mob, hj_comp = _compute_hjorth_metrics(epochs_agg_arr[i, 0])
         features_dict["eeg_hjorth_mobility"] = hj_mob
         features_dict["eeg_hjorth_complexity"] = hj_comp
+        if bool(features_cfg.get("hjorth_activity", False)):
+            epoch_1d = np.asarray(epochs_agg_arr[i, 0], dtype=np.float64)
+            epoch_1d = epoch_1d[np.isfinite(epoch_1d)]
+            features_dict["eeg_hjorth_activity"] = (
+                float(np.var(epoch_1d)) if epoch_1d.size >= 4 else np.nan
+            )
 
         # Energetic complexity metric for global montage:
         # permutation entropy (primary) with deterministic spectral fallback.

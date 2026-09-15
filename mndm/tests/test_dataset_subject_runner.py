@@ -254,6 +254,43 @@ def test_dataset_runner_applies_combat_normalization(dummy_ctx):
     assert after_gap < before_gap
 
 
+def test_dataset_runner_combat_strict_defaults_true_and_is_dataset_agnostic(dummy_ctx, monkeypatch):
+    """normalization.strict must default to True for ANY dataset enabling ComBat.
+
+    Regression guard: an earlier version of this fix set ``strict: true``
+    only on two specific I-CARE dataset overlay YAML files, which would
+    leave every other current or future dataset config that enables ComBat
+    (without itself setting ``strict``) silently exposed to a fundamental
+    ComBat failure (e.g. neuroCombat not importable) continuing with
+    unharmonized features. The protection must live in the code default,
+    not per-dataset config, so it applies to ``dummy_ctx``'s made-up
+    ``ds001`` id here just as much as to any I-CARE overlay -- this test
+    intentionally does NOT use the ``physionet_icare_2_1`` dataset id.
+    """
+    monkeypatch.setitem(sys.modules, "neuroCombat", None)
+    dummy_ctx.config = {
+        "robustness": {"coverage": {}},
+        "normalization": {
+            "enabled": True,
+            "method": "combat",
+            "scope": "post_features",
+            "batch_key": "hospital",
+            # No "strict" key at all: must still fail closed by default.
+        },
+    }
+    runner = DatasetSummaryRunner(dummy_ctx, "some_future_dataset", None, "subject")
+    features_df = pd.DataFrame({"file": ["sub-0001_task-rest_eeg.set"], "eeg_alpha": [0.1]})
+    with pytest.raises(RuntimeError, match="neuroCombat import failed"):
+        runner._apply_feature_normalization(features_df.copy())
+
+    # Explicit opt-out is still honored: strict: false suppresses the raise.
+    dummy_ctx.config["normalization"]["strict"] = False
+    runner_lenient = DatasetSummaryRunner(dummy_ctx, "some_future_dataset", None, "subject")
+    out_df = runner_lenient._apply_feature_normalization(features_df.copy())
+    pd.testing.assert_frame_equal(out_df, features_df)
+    assert runner_lenient._normalization_report["status"] == "failed_import"
+
+
 def test_dataset_runner_combat_preserves_single_feature_family(dummy_ctx):
     """Single-feature family chunks should be left unchanged (not NaN-harmonized)."""
     pytest.importorskip("neuroCombat")
@@ -566,6 +603,75 @@ def test_dataset_runner_writes_manifest_and_run_errors_on_group_failure(dummy_ct
     assert manifest["extra"]["run_errors"]["count"] == 1
     assert manifest["extra"]["run_errors"]["path"] == "run_errors.json"
     assert manifest["extra"]["normalization_report"]["path"] == "normalization_report.json"
+
+
+def test_dataset_runner_writes_skipped_recordings_for_policy_driven_skips(dummy_ctx, monkeypatch, tmp_path):
+    """A deliberate coverage/geometry skip must leave an explicit record, not a silent empty dir.
+
+    Regression guard for ingest_jacobian_fidelity_handover_2.md item 5: a
+    grouped run directory with no H5 output must be discoverable from a
+    skipped_recordings.json sidecar rather than requiring analysis repos to
+    rediscover empty stems. This must NOT flip run_status to
+    "completed_with_errors" -- a policy-driven skip is not an error.
+    """
+    runner = DatasetSummaryRunner(dummy_ctx, "ds001", None, "subject", n_jobs=1)
+    ds_path = tmp_path / "ds001"
+    mnps_dir = ds_path / "MNPS"
+    ds_path.mkdir(parents=True, exist_ok=True)
+    mnps_dir.mkdir(parents=True, exist_ok=True)
+
+    grouping_items = [
+        (("sub-001", "ses-01", "rest", "run-01", None), pd.DataFrame({"file": ["sub-001_task-rest_eeg.set"]})),
+        (("sub-002", "ses-01", "rest", "run-01", None), pd.DataFrame({"file": ["sub-002_task-rest_eeg.set"]})),
+    ]
+
+    monkeypatch.setattr(summary_mod, "load_participant_table", lambda *_args, **_kwargs: pd.DataFrame())
+    monkeypatch.setattr(runner, "_read_index", lambda _ds_path: pd.DataFrame())
+    monkeypatch.setattr(runner, "_read_features", lambda _ds_path: pd.DataFrame({"file": ["ignored"]}))
+    monkeypatch.setattr(runner, "_apply_subject_filter", lambda frame: frame)
+    monkeypatch.setattr(runner, "_apply_qc_filters", lambda frame: frame)
+    monkeypatch.setattr(runner, "_build_groupings", lambda frame: grouping_items)
+    monkeypatch.setattr(runner, "_create_output_dir", lambda _ds_path: mnps_dir)
+    monkeypatch.setattr(runner, "_prepare_one_shot_anchor", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(runner, "_write_features_snapshot", lambda *_args, **_kwargs: None)
+
+    def _fake_subject_run(self, sub_id, ses_id, raw_task, run_id, acq_id, sub_frame):
+        """One subject is skipped by policy (not an exception); the other succeeds."""
+        if sub_id == "sub-002":
+            self.dataset._record_skipped_recording(
+                {
+                    "reason": "coverage_too_low",
+                    "dataset_id": self.dataset.ds_id,
+                    "subject": sub_id,
+                    "epochs": 1,
+                    "required_epochs": 10,
+                }
+            )
+
+    monkeypatch.setattr(summary_mod.SubjectSummaryRunner, "run", _fake_subject_run)
+
+    runner.run()
+
+    manifest_path = mnps_dir / "run_manifest.json"
+    errors_path = mnps_dir / "run_errors.json"
+    skipped_path = mnps_dir / "skipped_recordings.json"
+    assert manifest_path.exists()
+    assert not errors_path.exists()  # no exception -> no run_errors.json
+    assert skipped_path.exists()
+
+    skipped = json.loads(skipped_path.read_text(encoding="utf-8"))
+    assert skipped["counts"]["skipped_total"] == 1
+    assert skipped["counts"]["groupings_total"] == 2
+    assert skipped["counts"]["skipped_by_reason"] == {"coverage_too_low": 1}
+    assert skipped["skipped"][0]["subject"] == "sub-002"
+    assert skipped["skipped"][0]["reason"] == "coverage_too_low"
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    # A policy-driven skip is not an error: run_status stays "completed".
+    assert manifest["extra"]["run_status"] == "completed"
+    assert manifest["extra"]["run_errors"]["count"] == 0
+    assert manifest["extra"]["skipped_recordings"]["count"] == 1
+    assert manifest["extra"]["skipped_recordings"]["path"] == "skipped_recordings.json"
 
 
 def test_dataset_runner_keeps_jacobian_hashes_stable_across_n_jobs(dummy_ctx, monkeypatch, tmp_path):

@@ -1,0 +1,204 @@
+# PhysioNet I-CARE next_140 (0-12h) — v3 dynamical-families overlay.
+#
+# Imports the existing next_140 no-regional contract, then adds family
+# adapters plus Jacobian-derived local dynamics. Global MNPS 3D/9D only:
+# no regional MNPS, no regional Jacobian metrics, no block Jacobians.
+#
+# Expected write states:
+#   diffusion:   computed when estimator support holds
+#                (measurement_validity=not_assessed; no OD-TQ1 copy)
+#   destination: not_testable (no explicit first-hit A/B or reaction coordinate)
+#   resilience:  not_testable / no_perturbation_protocol
+#   jacobian metrics: computed when J_hat exists AND local-fit fidelity
+#                passes the opt-in fit_fidelity_gate below (else
+#                insufficient_support with failure_reason=
+#                local_linear_fit_not_better_than_baseline /
+#                fit_fidelity_unknown); measurement_validity=not_assessed
+#   FTR: computed when Jacobian support allows (validation_level=model_derived)
+#   Gate E residuals + Q proxy: computed when J_hat and regular dt allow
+#   Gate F W_Q: computed only when Gate E Q is admissible
+#                (discrete chart-space spread; not process noise;
+#                not analysis-repo I-CARE coma tubes)
+#   grain + certificate + /support_signature/v1: written on new files
+#
+# Do not copy OD-TQ1 hashes here.
+#
+# 2026-09-11 (ingest_jacobian_fidelity_handover_2.md items 10-12, by explicit
+# user decision, not a silent default change):
+#   - ComBat harmonization: already enabled by inheritance from
+#     config_ingest_physionet_i-care_2_1_next_140_0_12h_no_regional.yaml
+#     (batch_key=hospital). A no-ComBat twin overlay is kept at
+#     config_ingest_physionet_i-care_2_1_next_140_0_12h_dynamical_families_no_combat.yaml.
+#     normalization.strict is set to true below for clarity (this is also
+#     now the code-level default for any dataset enabling ComBat, per
+#     independent review): fail closed on a fundamental ComBat failure
+#     rather than silently continuing unharmonized; see the sibling part1
+#     overlay's normalization block comment for the exact scope of what
+#     strict does and does not cover.
+#   - Cohort-anchored coordinates: added alongside subject-anchored (see
+#     mnps_projection below). dynamical_families.coordinate_layer stays
+#     subject_anchored; direct_between_subject_inference remains forbidden
+#     at the certificate level regardless of which layer is read.
+#   - conventional_eeg: enabled; NOT gated by dropping windows on
+#     qc_ok_eeg (I-CARE preprocess.artifacts.method is "none", so
+#     qc_ok_eeg would always be -1/not_assessed); instead
+#     /extensions/conventional_eeg/artifact_qc explicitly stamps
+#     not_assessed. See mndm/src/mndm/pipeline/conventional_summary.py.
+#   Both changes require a features re-extract and a summarize re-run on
+#   the actual I-CARE dump; not validated against real data in this change
+#   (no local copy of that raw dump in this repo checkout).
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_physionet_i-care_2_1_next_140_0_12h_no_regional.yaml"
+  - "../../config_ingest_common_dynamical_families.yaml"
+
+datasets:
+  - physionet_icare_2_1
+
+paths:
+  processed_dir: "K:/processed/physionet_icare_2_1_next140_0_12h_dynamical_families"
+
+# Override only strict; all other normalization keys are inherited from
+# config_ingest_physionet_i-care_2_1_next_140_0_12h_no_regional.yaml.
+normalization:
+  strict: true
+
+robustness:
+  ensembles:
+    enabled: false
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: false
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+
+  diffusion:
+    enabled: true
+    estimator: local_increment_covariance
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+    neighborhood: {k: 20}
+    min_samples: 30
+    min_neighborhood_samples: 10
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    psd_floor: 1.0e-8
+
+  destination:
+    enabled: true
+    regime_source: null
+    label_key: null
+    reaction_coordinate:
+      source: explicit_column
+      key: null
+      name: reaction_coordinate
+      boundaries: [-0.8, 0.8]
+    estimator: local_law_dense_grid_o2b
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+    grid_resolution: 65
+    set_A: []
+    set_B: []
+    diffusion_coefficient: null
+    min_samples: 30
+    min_support_per_grid: 30
+    min_transition_segments: 5
+    max_dt_relative_deviation: 0.05
+
+  resilience:
+    enabled: true
+    protocol_source: null
+    estimator: observed_perturbation_outcome_summary
+    amplitude_key: null
+    returned_key: null
+    survived_key: null
+    recovery_time_key: null
+    protocol: {}
+    min_trials_per_amplitude: 20
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+
+local_dynamics:
+  jacobian_metrics:
+    stability_zero_tolerance: 1.0e-8
+    reactivity_zero_tolerance: 1.0e-8
+    # Opt-in fit-fidelity gate (default off everywhere else). See
+    # ../config_ingest_physionet_i-care_2_1_dynamical_families.yaml
+    # and project/mnps_v3/tests/ingest_jacobian_fidelity_handover.md.
+    fit_fidelity_gate:
+      enabled: true
+      threshold: 0.9
+  finite_time_response:
+    enabled: true
+    propagator_mode: time_ordered_expm
+    horizon_steps: [1, 2, 4]
+    max_gap_sec: null
+    validation_level: model_derived
+  transition_residuals:
+    enabled: true
+    crossfit_embargo_steps: 4
+    max_dt_deviation_sec: 1.0e-6
+    min_eigenvalue: 1.0e-8
+  stochastic_reachability:
+    enabled: true
+
+# Cohort-anchored coordinates alongside subject-anchored (item 11).
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "physionet_icare_2_1_next140_0_12h_dynamical_families_cohort_iqr_v2_1"
+    anchor_source: "physionet_icare_2_1_next140_0_12h_dynamical_families_all_subjects_features"
+    scale_method: "iqr"
+    min_subjects: 3
+
+# Conventional qEEG comparator pack (item 12). artifact_qc is a
+# non-blocking provenance stamp; it does not gate this pack's write.
+conventional_eeg:
+  enabled: true
+  packs: ["tier1", "complexity", "coma"]
+  export:
+    per_epoch_columns: true
+    summaries: true
+  coma:
+    suppression_ratio: true
+    burst_suppression_proxy: true
+    continuity_proxy: true
+    alpha_delta_ratio: true
+    suppression:
+      amplitude_floor: 0.01
+      relative_to_rms: 0.20
+      envelope_smoothing_sec: 0.25
+    reactivity_proxy:
+      enabled: true
+      diff_features:
+        - eeg_conventional_coma_alpha_delta_ratio
+        - eeg_conventional_coma_continuity_proxy
+        - eeg_permutation_entropy
+        - eeg_highfreq_power_30_45
+      eps: 1.0e-6
+      clip_at: 5.0
+  datasets:
+    physionet_icare_2_1:
+      enabled: true

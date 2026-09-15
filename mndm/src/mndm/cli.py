@@ -69,6 +69,15 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
             "and intermediate JSON files. Use after updating feature code or config."
         ),
     )
+    p.add_argument(
+        "--verbose-logs",
+        action="store_true",
+        default=False,
+        help=(
+            "Restore per-file stage timings, MNE/ICA chatter, and sidecar write lines. "
+            "Default is one start line and one finish line per file, with N of X progress."
+        ),
+    )
 
 
 def _add_anchor_fit_args(p: argparse.ArgumentParser) -> None:
@@ -130,10 +139,26 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     p_sum = sub.add_parser("summarize", help="Project to MNPS and summarize")
     _add_common_args(p_sum)
     _add_anchor_fit_args(p_sum)
+    p_sum.add_argument(
+        "--resume-run",
+        type=Path,
+        default=None,
+        help=(
+            "Reuse an existing summarize run directory and only write missing or "
+            "incomplete recording H5 files. Cohort ComBat still runs on the full "
+            "feature table; an existing anchors/*.json is reused."
+        ),
+    )
 
     p_resum = sub.add_parser("resummarize", help="Re-run summarize only (alias of summarize)")
     _add_common_args(p_resum)
     _add_anchor_fit_args(p_resum)
+    p_resum.add_argument(
+        "--resume-run",
+        type=Path,
+        default=None,
+        help="Same as summarize --resume-run.",
+    )
 
     p_pack = sub.add_parser("pack", help="Pack a summarized run (many small H5) into a single H5 container")
     _add_common_args(p_pack)
@@ -211,7 +236,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = build_parser(argv)
     args = parser.parse_args(argv)
-    
+
+    from .progress_log import configure_runtime_logging, verbose_logs_enabled
+
     # Load config for pipeline commands. Anchor post-processing commands either
     # infer per-dataset configs internally or accept their own optional config.
     if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity"}:
@@ -220,7 +247,12 @@ def main(argv: Sequence[str] | None = None) -> int:
         config = config_loader.load_config(args.config)
         if isinstance(config, dict):
             _apply_cli_feature_overrides(config, args)
-    
+
+    configure_runtime_logging(
+        verbose=bool(getattr(args, "verbose_logs", False))
+        or verbose_logs_enabled(config if isinstance(config, dict) else None)
+    )
+
     # Get dataset IDs
     if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity"}:
         dataset_ids = []
@@ -259,6 +291,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_jobs=n_jobs,
             mnps_overrides=_mnps_overrides_from_args(args),
             anchor_fit_options=_anchor_fit_options_from_args(args),
+            resume_run=getattr(args, "resume_run", None),
         )
     elif args.command == "resummarize":
         from . import orchestrate
@@ -273,6 +306,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_jobs=n_jobs,
             mnps_overrides=_mnps_overrides_from_args(args),
             anchor_fit_options=_anchor_fit_options_from_args(args),
+            resume_run=getattr(args, "resume_run", None),
         )
     elif args.command == "pack":
         _, processed_base = resolve_paths(config, args.out_dir, args.data_dir)
@@ -425,6 +459,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_jobs=n_jobs,
             mnps_overrides=_mnps_overrides_from_args(args),
             anchor_fit_options=_anchor_fit_options_from_args(args),
+            resume_run=getattr(args, "resume_run", None),
         )
     else:
         parser.error("Unknown command")

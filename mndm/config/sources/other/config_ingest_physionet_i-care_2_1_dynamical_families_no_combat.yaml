@@ -1,0 +1,29 @@
+version: 2.0
+modality: eeg
+
+# I-CARE part1 dynamical-families overlay, unharmonized (no-ComBat) twin.
+#
+# Same contract as config_ingest_physionet_i-care_2_1_dynamical_families.yaml
+# (cohort-anchored coords, conventional_eeg pack, Jacobian fit-fidelity
+# gate) with ComBat harmonization turned back off, for a side-by-side
+# unharmonized export. See that file's 2026-09-11 header note
+# (ingest_jacobian_fidelity_handover_2.md item 10) for why both exports are
+# kept: the previous coma manuscript consumed ComBat-harmonized exports, but
+# this dump is the first v3 run on this contract, and hospital x CPC is
+# unbalanced (site E is almost pure CPC5) so an unharmonized comparison
+# export is kept rather than assuming ComBat is neutral for this cohort.
+imports:
+  - "./config_ingest_physionet_i-care_2_1_dynamical_families.yaml"
+
+paths:
+  processed_dir: "K:/processed/physionet_icare_2_1_dynamical_families_no_combat"
+
+normalization:
+  enabled: false
+  validation:
+    enabled: false
+  datasets:
+    physionet_icare_2_1:
+      enabled: false
+      batch_key: "hospital"
+      covariates: ["group", "age", "sex"]

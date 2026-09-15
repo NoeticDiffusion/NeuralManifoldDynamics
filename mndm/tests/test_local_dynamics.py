@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "src"))
 
 from mndm.dynamics.finite_time_response import compute_finite_time_response
-from mndm.dynamics.jacobian_metrics import compute_jacobian_metrics
+from mndm.dynamics.jacobian_metrics import compute_jacobian_metrics, resolve_fit_fidelity_gate_input
 from mndm.dynamics.stochastic_reachability import (
     compute_stochastic_reachability,
     compute_stochastic_reachability_from_gate_e,
@@ -48,6 +48,266 @@ def test_jacobian_metrics_preserve_invalid_windows_and_support_counts() -> None:
     assert result["summary"]["n_windows_metrics_valid"] == 1
     assert np.isnan(result["series"]["spectral_abscissa"][1])
     assert result["series"]["stable_reactive_flag"][1] == -1
+
+
+def test_jacobian_metrics_without_fidelity_diagnostics_is_backward_compatible() -> None:
+    # No rel_mse_baseline_* supplied: the gate must not be evaluated and prior
+    # releases' unconditional computed/regime behavior must be unchanged.
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    result = compute_jacobian_metrics(j)
+    assert result["computation_status"] == "computed"
+    assert result["provenance"]["fit_fidelity_gate"] == "not_evaluated"
+    assert result["summary"]["fit_identified"] is None
+    assert result["series"]["stable_reactive_flag"][0] == 1
+
+
+def test_jacobian_metrics_gate_withholds_regime_on_near_null_fit() -> None:
+    # Same operator as the reactivity test above, but the estimator's own
+    # diagnostics say the local linear fit does not beat the no-dynamics
+    # baseline (rel_mse_baseline_median >= threshold). The family must be
+    # withheld rather than reporting a plausible-looking stable/unstable
+    # classification derived from an unidentified operator.
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_median=0.96,
+        fit_fidelity_threshold=0.9,
+    )
+    assert result["computation_status"] == "insufficient_support"
+    assert result["failure_reason"] == "local_linear_fit_not_better_than_baseline"
+    assert result["summary"]["fit_identified"] is False
+    assert result["summary"]["rel_mse_baseline_median"] == 0.96
+    assert np.isnan(result["series"]["spectral_abscissa"][0])
+    assert result["series"]["stable_reactive_flag"][0] == -1
+    assert result["series"]["dynamical_regime"][0] == -1
+
+
+def test_jacobian_metrics_provenance_copies_neighborhood_support() -> None:
+    # Neighborhood provenance is inspectable next to the gate threshold.
+    # Copying it must not weaken the near-null fit refusal.
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_median=0.96,
+        fit_fidelity_threshold=0.9,
+        estimator_diagnostics={
+            "knn_k": 20,
+            "super_window": 3,
+            "ridge_alpha": 1.0,
+            "distance_weighted": True,
+            "min_samples": 4,
+            "n_neighborhood_samples_median": 41.0,
+            "n_neighborhood_samples_min": 18.0,
+        },
+    )
+    assert result["computation_status"] == "insufficient_support"
+    assert result["failure_reason"] == "local_linear_fit_not_better_than_baseline"
+    assert result["provenance"]["fit_fidelity_threshold"] == 0.9
+    assert result["provenance"]["knn_k"] == 20
+    assert result["provenance"]["super_window"] == 3
+    assert result["provenance"]["ridge_alpha"] == 1.0
+    assert result["provenance"]["distance_weighted"] is True
+    assert result["provenance"]["min_samples"] == 4
+    assert result["provenance"]["n_neighborhood_samples_median"] == 41.0
+    assert result["provenance"]["n_neighborhood_samples_min"] == 18.0
+
+
+def test_jacobian_metrics_provenance_copies_oos_rel_mse() -> None:
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_median=0.96,
+        fit_fidelity_threshold=0.9,
+        estimator_diagnostics={
+            "rel_mse_baseline_oos_median": 0.99,
+            "oos_holdout_stride": 4,
+        },
+    )
+    assert result["computation_status"] == "insufficient_support"
+    assert result["provenance"]["rel_mse_baseline_oos_median"] == 0.99
+    assert result["provenance"]["oos_holdout_stride"] == 4
+    assert result["provenance"]["fit_fidelity_threshold"] == 0.9
+
+
+def test_jacobian_metrics_in_sample_gate_ignores_passing_oos() -> None:
+    """OOS holdout diagnostics must not admit a recording the in-sample gate refuses."""
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_median=0.96,
+        fit_fidelity_threshold=0.9,
+        estimator_diagnostics={
+            "rel_mse_baseline_oos_median": 0.4,
+            "oos_holdout_stride": 4,
+        },
+    )
+    assert result["computation_status"] == "insufficient_support"
+    assert result["summary"]["fit_identified"] is False
+    assert result["provenance"]["rel_mse_baseline_oos_median"] == 0.4
+
+
+def test_jacobian_metrics_gate_passes_through_on_identified_fit() -> None:
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_median=0.5,
+        fit_fidelity_threshold=0.9,
+        nominal_dt_sec=4.0,
+    )
+    assert result["computation_status"] == "computed"
+    assert result["summary"]["fit_identified"] is True
+    assert result["series"]["stable_reactive_flag"][0] == 1
+    assert result["provenance"]["fit_fidelity_gate"] == "rel_mse_baseline_median"
+    assert result["provenance"]["operator_semantics"] == "continuous_time_generator"
+    assert result["provenance"]["nominal_dt_sec"] == 4.0
+    assert result["provenance"]["abscissa_units"] == "1/second"
+
+
+def test_jacobian_metrics_gate_uses_window_level_rel_mse_when_no_median_given() -> None:
+    j = np.repeat(np.array([[[-1.0, 3.0], [0.0, -1.0]]]), 2, axis=0)
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_windows=np.array([0.95, 0.97]),
+        fit_fidelity_threshold=0.9,
+    )
+    assert result["computation_status"] == "insufficient_support"
+    assert result["summary"]["fit_identified"] is False
+    assert np.isclose(result["summary"]["rel_mse_baseline_median"], 0.96)
+    assert np.allclose(result["series"]["rel_mse_baseline"], [0.95, 0.97])
+
+
+def test_jacobian_metrics_gate_fails_closed_on_unresolvable_fidelity() -> None:
+    # The caller explicitly attempted to supply fit-fidelity diagnostics, but
+    # the value is not a number (e.g. an all-NaN window population upstream).
+    # This must fail CLOSED (insufficient_support), not silently fall back to
+    # the "gate not evaluated" unconditional-compute path.
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    result = compute_jacobian_metrics(j, rel_mse_baseline_median=float("nan"))
+    assert result["computation_status"] == "insufficient_support"
+    assert result["failure_reason"] == "fit_fidelity_unknown"
+    assert result["summary"]["fit_identified"] is False
+    assert result["provenance"]["fit_fidelity_gate"] == "rel_mse_baseline_unknown"
+    assert result["series"]["stable_reactive_flag"][0] == -1
+
+
+def test_jacobian_metrics_gate_fails_closed_on_misaligned_window_array() -> None:
+    # rel_mse_baseline_windows length does not match jacobian.shape[0] and no
+    # scalar fallback is given: the mismatched array must not be silently
+    # dropped in favor of unconditional computation.
+    j = np.repeat(np.array([[[-1.0, 3.0], [0.0, -1.0]]]), 2, axis=0)
+    result = compute_jacobian_metrics(j, rel_mse_baseline_windows=np.array([0.1, 0.2, 0.3]))
+    assert result["computation_status"] == "insufficient_support"
+    assert result["failure_reason"] == "fit_fidelity_unknown"
+    assert result["provenance"]["fit_fidelity_gate"] == "rel_mse_baseline_unknown"
+
+
+def test_jacobian_metrics_gate_prefers_aligned_window_array_over_stale_scalar() -> None:
+    # A caller-supplied scalar median can be stale relative to jacobian (e.g.
+    # not recomputed after independently filtering windows out of J_hat).
+    # The per-window array, aligned to jacobian by construction, must win.
+    j = np.repeat(np.array([[[-1.0, 3.0], [0.0, -1.0]]]), 2, axis=0)
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_median=0.99,  # stale/bad if trusted directly
+        rel_mse_baseline_windows=np.array([0.1, 0.2]),  # aligned/good
+        fit_fidelity_threshold=0.9,
+    )
+    assert result["computation_status"] == "computed"
+    assert result["summary"]["fit_identified"] is True
+    assert np.isclose(result["summary"]["rel_mse_baseline_median"], 0.15)
+
+
+def test_jacobian_metrics_gate_withholds_individual_windows_even_when_median_passes() -> None:
+    # Recording-level median (0.535) passes threshold=0.9, but one window's
+    # own rel_mse_baseline (0.97) does not. That window's alpha/omega and
+    # regime/flag must still be individually withheld, not licensed by the
+    # passing recording-level median.
+    j = np.repeat(np.array([[[-1.0, 3.0], [0.0, -1.0]]]), 2, axis=0)
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_windows=np.array([0.1, 0.97]),
+        fit_fidelity_threshold=0.9,
+    )
+    assert result["computation_status"] == "computed"
+    assert result["summary"]["fit_identified"] is True
+    assert result["summary"]["n_windows_fit_unidentified"] == 1
+    # Good window (index 0) is classified normally.
+    assert result["series"]["stable_reactive_flag"][0] == 1
+    assert np.isfinite(result["series"]["spectral_abscissa"][0])
+    # Bad window (index 1) is withheld even though the recording passed.
+    assert result["series"]["stable_reactive_flag"][1] == -1
+    assert result["series"]["dynamical_regime"][1] == -1
+    assert np.isnan(result["series"]["spectral_abscissa"][1])
+
+
+def test_resolve_fit_fidelity_gate_input_disabled_always_none() -> None:
+    # Gate disabled: never forward a diagnostic, regardless of what the
+    # estimator's diagnostics dict happens to contain. Preserves legacy
+    # byte-for-byte behavior for datasets that never opted in.
+    assert resolve_fit_fidelity_gate_input(0.5, gate_enabled=False) is None
+    assert resolve_fit_fidelity_gate_input(None, gate_enabled=False) is None
+    assert resolve_fit_fidelity_gate_input(float("nan"), gate_enabled=False) is None
+
+
+def test_resolve_fit_fidelity_gate_input_enabled_passes_through_value() -> None:
+    assert resolve_fit_fidelity_gate_input(0.5, gate_enabled=True) == 0.5
+
+
+def test_resolve_fit_fidelity_gate_input_enabled_missing_diagnostic_is_not_none() -> None:
+    # Regression for a fail-open wiring bug: a dataset overlay enables the
+    # gate, but the estimator's diagnostics mapping is missing the expected
+    # key (e.g. an upstream diagnostics-population gap), so the raw lookup
+    # is None. compute_jacobian_metrics treats a bare None as "gate not
+    # requested" and would compute unconditionally -- exactly the unsafe
+    # behavior the gate exists to prevent. The resolved value must be
+    # non-None (and non-finite) so the gate is still evaluated and fails
+    # closed rather than silently reopening.
+    resolved = resolve_fit_fidelity_gate_input(None, gate_enabled=True)
+    assert resolved is not None
+    assert np.isnan(resolved)
+
+
+def test_jacobian_metrics_gate_enabled_with_missing_diagnostic_fails_closed_not_open() -> None:
+    # End-to-end regression matching the summary.py call-site wiring: gate
+    # enabled by config, but the estimator's diagnostics dict does not have
+    # 'rel_mse_baseline_median' (simulated missing key -> raw None). Must
+    # fail closed, not classify the operator as stable/reactive/unstable.
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    jac_diag: dict[str, float] = {}  # simulates a diagnostics dict missing the key
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_median=resolve_fit_fidelity_gate_input(
+            jac_diag.get("rel_mse_baseline_median"), gate_enabled=True
+        ),
+        rel_mse_baseline_windows=(
+            jac_diag.get("rel_mse_baseline_windows")  # still None -> fine, median carries the gate
+        ),
+        fit_fidelity_threshold=0.9,
+    )
+    assert result["computation_status"] == "insufficient_support"
+    assert result["failure_reason"] == "fit_fidelity_unknown"
+    assert result["summary"]["fit_identified"] is False
+    assert result["provenance"]["fit_fidelity_gate"] == "rel_mse_baseline_unknown"
+    assert result["series"]["stable_reactive_flag"][0] == -1
+    assert result["series"]["dynamical_regime"][0] == -1
+
+
+def test_jacobian_metrics_gate_disabled_with_missing_diagnostic_computes_unconditionally() -> None:
+    # Sanity counterpart: when the gate is NOT enabled, a missing diagnostic
+    # must still resolve to legacy unconditional-compute behavior (no
+    # regression for datasets that never opted into the gate).
+    j = np.array([[[-1.0, 3.0], [0.0, -1.0]]])
+    jac_diag: dict[str, float] = {}
+    result = compute_jacobian_metrics(
+        j,
+        rel_mse_baseline_median=resolve_fit_fidelity_gate_input(
+            jac_diag.get("rel_mse_baseline_median"), gate_enabled=False
+        ),
+        fit_fidelity_threshold=0.9,
+    )
+    assert result["computation_status"] == "computed"
+    assert result["provenance"]["fit_fidelity_gate"] == "not_evaluated"
+    assert result["summary"]["fit_identified"] is None
 
 
 def test_finite_time_response_uses_ordered_actual_steps() -> None:
@@ -356,6 +616,66 @@ def test_gate_e_adapter_refuses_library_one_step_q_schema() -> None:
 def test_zero_jacobian_state_matrix_is_identity() -> None:
     phi = affine_one_step_state_matrix(np.zeros((2, 2)), 0.25)
     assert np.allclose(phi, np.eye(2))
+
+
+def test_gate_e_reachability_short_circuits_on_unidentified_upstream_jacobian() -> None:
+    # Same well-formed inputs as test_gate_e_identity_phi_yields_nq_reachability,
+    # which alone would report computation_status="computed". When the upstream
+    # Jacobian derived-metrics fit-fidelity gate says the local linear fit did
+    # not beat the no-dynamics baseline, reachability must fail closed instead
+    # of running the W <- Phi W Phi^T + Q recursion on an unidentified operator.
+    residuals = np.array([[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0], [0.5, -0.5]])
+    n_steps = int(residuals.shape[0])
+    transitions = {
+        "computation_status": "computed",
+        "series": {
+            "transition_residual": residuals,
+            "dt_sec": np.ones(residuals.shape[0], dtype=np.float32),
+            "phi_one_step": np.repeat(np.eye(2, dtype=np.float32)[None], n_steps, axis=0),
+        },
+        "provenance": {
+            "crossfit_status": "leave_one_transition_out",
+            "prediction_fit_policy": "affine_expm",
+        },
+    }
+    proxy = estimate_transition_residual_covariance_proxy(transitions)
+    result = compute_stochastic_reachability_from_gate_e(
+        transitions,
+        proxy,
+        jacobian_fit_gate={"fit_identified": False, "rel_mse_baseline_median": 0.96},
+    )
+    assert result["computation_status"] == "unavailable"
+    assert result["failure_reason"] == "upstream_jacobian_local_fit_not_identified"
+    assert result["provenance"]["upstream_rel_mse_baseline_median"] == 0.96
+    assert "w_q" not in result
+
+
+def test_gate_e_reachability_unaffected_when_upstream_gate_not_evaluated_or_passes() -> None:
+    residuals = np.array([[1.0, 0.0], [-1.0, 0.0], [0.0, 1.0], [0.0, -1.0], [0.5, -0.5]])
+    n_steps = int(residuals.shape[0])
+    transitions = {
+        "computation_status": "computed",
+        "series": {
+            "transition_residual": residuals,
+            "dt_sec": np.ones(residuals.shape[0], dtype=np.float32),
+            "phi_one_step": np.repeat(np.eye(2, dtype=np.float32)[None], n_steps, axis=0),
+        },
+        "provenance": {
+            "crossfit_status": "leave_one_transition_out",
+            "prediction_fit_policy": "affine_expm",
+        },
+    }
+    proxy = estimate_transition_residual_covariance_proxy(transitions)
+    no_gate = compute_stochastic_reachability_from_gate_e(transitions, proxy)
+    passing_gate = compute_stochastic_reachability_from_gate_e(
+        transitions, proxy, jacobian_fit_gate={"fit_identified": True, "rel_mse_baseline_median": 0.4}
+    )
+    unresolved_gate = compute_stochastic_reachability_from_gate_e(
+        transitions, proxy, jacobian_fit_gate={"fit_identified": None}
+    )
+    assert no_gate["computation_status"] == "computed"
+    assert passing_gate["computation_status"] == "computed"
+    assert unresolved_gate["computation_status"] == "computed"
 
 
 def test_missing_phi_makes_reachability_unavailable() -> None:

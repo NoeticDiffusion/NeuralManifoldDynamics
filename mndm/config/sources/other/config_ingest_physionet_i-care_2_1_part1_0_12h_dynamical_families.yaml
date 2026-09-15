@@ -1,0 +1,60 @@
+# PhysioNet I-CARE 2.1 part1 (random100) — first 12h dynamical-families overlay.
+#
+# Same measurement contract as
+# config_ingest_physionet_i-care_2_1_dynamical_families.yaml (global MNPS
+# 3D/9D, families + local dynamics, ComBat, cohort-anchored coords,
+# conventional_eeg pack, Jacobian fit-fidelity gate). Restricted to
+# filename hours 000-012 inclusive.
+#
+# The 0-12h window follows the intent of
+# config_ingest_physionet_i-care_2_1_part1_0_12h_regional.yaml (physionet_ingest
+# subset.max_eeg_hours_per_patient: 12). That overlay still points at
+# i-care_2_1_random100_longitudinal/training, which on disk currently
+# contains hours 1-119, so this file enforces the window in ingest via
+# exclude_files rather than trusting the received folder to already be
+# truncated. Do NOT copy regional_mnps / stratified / block_jacobians from
+# the regional overlay: those stay off.
+#
+# Filename pattern: {subject}_{hour}_{seg}_EEG.hea. Hour 013 and above are
+# excluded. Segment numbers >= 013 on hour 000-012 files are kept.
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_physionet_i-care_2_1_dynamical_families.yaml"
+
+datasets:
+  - physionet_icare_2_1
+
+paths:
+  processed_dir: "K:/processed/physionet_icare_2_1_part1_0_12h_dynamical_families"
+  dataset_received_dirs:
+    physionet_icare_2_1: "E:/Science_Datasets/physionet/received/i-care_2_1_random100_longitudinal/training"
+
+# Drop filename hours 013-999. pandas str.contains, applied to file_index
+# `path` and features `file` (see mndm/src/mndm/file_filters.py).
+exclude_files:
+  - "\\d{4}_(?:0(?:1[3-9]|[2-9]\\d)|[1-9]\\d{2})_\\d{3}_EEG"
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: false
+
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "physionet_icare_2_1_part1_0_12h_dynamical_families_cohort_iqr_v2_1"
+    anchor_source: "physionet_icare_2_1_part1_0_12h_dynamical_families_all_subjects_features"
+    scale_method: "iqr"
+    min_subjects: 3

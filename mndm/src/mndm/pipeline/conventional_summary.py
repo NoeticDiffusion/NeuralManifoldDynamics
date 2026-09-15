@@ -65,11 +65,32 @@ def _coma_clinical_markers_payload(dataset_id: Optional[str]) -> Dict[str, Any]:
     }
 
 
+def _artifact_qc_status_payload(artifact_qc_applied: Optional[bool]) -> Dict[str, Any]:
+    """Explicit, non-blocking artifact-QC provenance for this extension.
+
+    This is a soft flag, not a write gate: the extension is still written
+    when an artifact-reduction method is not confirmed to have run (e.g.
+    I-CARE preprocess.artifacts.method=none), because withholding it
+    entirely would make the family unusable on every dataset that has not
+    yet enabled ICA/EOG regression. Readers must consult this field before
+    trusting family-average band-power / connectivity descriptives that can
+    be outlier-heavy without artifact rejection (see
+    project/mnps_v3/tests/ingest_jacobian_fidelity_handover_2.md items 9 and
+    12).
+    """
+    if artifact_qc_applied is True:
+        return {"status": "confirmed_applied", "reason": "artifact_method_confirmed_applied"}
+    if artifact_qc_applied is False:
+        return {"status": "not_confirmed", "reason": "artifact_method_not_configured_or_not_applied"}
+    return {"status": "not_assessed", "reason": "no_artifact_qc_sidecar_evidence"}
+
+
 def compute_conventional_eeg_summary(
     *,
     sub_frame: pd.DataFrame,
     config: Mapping[str, Any],
     dataset_id: Optional[str],
+    artifact_qc_applied: Optional[bool] = None,
 ) -> Optional[Dict[str, Any]]:
     """Compute summarize-time descriptives for conventional EEG comparator columns."""
     conventional_cfg = resolve_conventional_eeg_cfg(config, dataset_id)
@@ -124,6 +145,7 @@ def compute_conventional_eeg_summary(
         "column_count": int(len(conventional_cols)),
         "columns": sorted(conventional_cols),
         "families": family_payload,
+        "artifact_qc": _artifact_qc_status_payload(artifact_qc_applied),
     }
     if "coma" in packs:
         payload["clinical_markers"] = _coma_clinical_markers_payload(dataset_id)

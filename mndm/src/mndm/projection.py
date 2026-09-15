@@ -15,6 +15,7 @@ tensor pipeline:
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import re
 from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
@@ -429,6 +430,27 @@ def build_feature_export_bundle(
     }
 
 
+def _fit_population_evidence(df: pd.DataFrame, mask: np.ndarray) -> dict:
+    """Identify the ordered rows actually supplied to a local estimator.
+
+    The digest covers positions and available source/epoch/time identity. It
+    describes this function's input frame, not an assumed whole recording.
+    """
+    identity_columns = [c for c in ("file", "epoch_id", "t_start", "t_end") if c in df]
+    identities = df[identity_columns].copy().reset_index(drop=True)
+    identities.insert(0, "input_row_position", np.arange(len(df)))
+    payload = identities.loc[np.asarray(mask, dtype=bool)].to_json(
+        orient="split", index=False, double_precision=15, force_ascii=True
+    )
+    return {
+        "fit_population_hash": hashlib.sha256(payload.encode("utf-8")).hexdigest(),
+        "fit_population_count": int(np.count_nonzero(mask)),
+        "fit_input_row_count": int(len(df)),
+        "fit_population_encoding": "pandas split JSON; ordered input_row_position,file,epoch_id,t_start,t_end where available; double_precision=15; SHA256 UTF8",
+        "fit_scope": "local_input_frame_rows_selected_by_original_finite_feature_mask",
+    }
+
+
 def _normalize_used_columns(
     df: pd.DataFrame, 
     used_cols: Sequence[str], 
@@ -527,6 +549,10 @@ def _normalize_used_columns(
                     baseline_info["anchor_applied"] = "local"
                 baseline_info["standardization_center"] = float(t_median)
                 baseline_info["standardization_scale"] = float(t_mad)
+                if baseline_info["anchor_applied"] == "local":
+                    baseline_info.update(_fit_population_evidence(df, mask))
+                else:
+                    baseline_info.update({"fit_scope": "external_anchor_population_not_recorded_here", "fit_population_hash": None})
                 transformed[mask] = (t_finite - t_median) / (t_mad + 1e-9)
                 applied_steps.append("robust_z")
             elif step_str == "z":
@@ -544,6 +570,10 @@ def _normalize_used_columns(
                     baseline_info["anchor_applied"] = "local"
                 baseline_info["standardization_center"] = float(mu)
                 baseline_info["standardization_scale"] = float(sigma)
+                if baseline_info["anchor_applied"] == "local":
+                    baseline_info.update(_fit_population_evidence(df, mask))
+                else:
+                    baseline_info.update({"fit_scope": "external_anchor_population_not_recorded_here", "fit_population_hash": None})
                 transformed[mask] = (t_finite - mu) / (sigma + 1e-9)
                 applied_steps.append("z")
             elif step_str == "clip":

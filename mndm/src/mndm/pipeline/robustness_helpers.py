@@ -544,6 +544,8 @@ def compute_window_time_audit(
     dt_sec_runtime: float,
     dt_sec_config: float,
     window_sec_config: float,
+    dt_sec_epoch_config: float | None = None,
+    window_sec_epoch_config: float | None = None,
 ) -> Dict[str, Any]:
     """Audit realized MNPS step size and window length from the exported time bounds."""
     time_arr = np.asarray(time, dtype=float).reshape(-1)
@@ -605,6 +607,12 @@ def compute_window_time_audit(
         and np.isfinite(dt_sec_config)
         and abs(dt_median - float(dt_sec_config)) <= config_dt_tol
     )
+    effective_dt_config = float(dt_sec_epoch_config) if dt_sec_epoch_config is not None else float(dt_sec_config)
+    effective_window_config = float(window_sec_epoch_config) if window_sec_epoch_config is not None else float(window_sec_config)
+    effective_dt_tol = max(1e-6, 0.01 * abs(effective_dt_config)) if np.isfinite(effective_dt_config) else 1e-6
+    effective_window_tol = max(1e-6, 0.01 * abs(effective_window_config)) if np.isfinite(effective_window_config) else 1e-6
+    dt_matches_epoch_config = bool(np.isfinite(dt_median) and np.isfinite(effective_dt_config) and abs(dt_median - effective_dt_config) <= effective_dt_tol)
+    window_len_matches_epoch_config = bool(np.isfinite(window_len_median) and np.isfinite(effective_window_config) and abs(window_len_median - effective_window_config) <= effective_window_tol)
     window_len_matches_config = bool(
         np.isfinite(window_len_median)
         and np.isfinite(window_sec_config)
@@ -628,8 +636,8 @@ def compute_window_time_audit(
         warnings.append(
             "Time grid: recovered dt disagrees with runtime dt used for derivatives/Jacobians"
         )
-    if positive_window_lengths.size > 0 and not window_len_matches_config:
-        warnings.append("Time grid: recovered window length disagrees with configured window_sec")
+    if positive_window_lengths.size > 0 and not window_len_matches_epoch_config:
+        warnings.append("Time grid: recovered window length disagrees with effective epoching length_s")
 
     return {
         "status": "warning" if warnings else "ok",
@@ -643,6 +651,10 @@ def compute_window_time_audit(
         "dt_matches_runtime": dt_matches_runtime,
         "dt_matches_config_formula": dt_matches_config,
         "window_len_matches_config": window_len_matches_config,
+        "dt_sec_epoch_config": effective_dt_config,
+        "window_sec_epoch_config": effective_window_config,
+        "dt_matches_epoch_config": dt_matches_epoch_config,
+        "window_len_matches_epoch_config": window_len_matches_epoch_config,
         "nonpositive_dt_count": nonpositive_dt_count,
         "nonpositive_window_len_count": nonpositive_window_len_count,
         "dt_intervals_sec": dt_summary,
@@ -1000,6 +1012,36 @@ def apply_standard_jacobian_window_policy(
             filtered_diagnostics[key] = arr[valid_mask] if arr.ndim >= 1 and arr.shape[0] == valid_mask.size else arr
             continue
         filtered_diagnostics[key] = value
+
+    # Scalar per-recording medians (e.g. rel_mse_baseline_median) summarize
+    # the raw per-window arrays above. The array branch already re-filters
+    # e.g. rel_mse_baseline_windows to the retained window set; recompute the
+    # matching scalar medians here so a downstream consumer reading only the
+    # scalar (such as the Jacobian-metrics fit-fidelity gate) is not silently
+    # left with a stale value describing the pre-filter window population.
+    for scalar_key, array_key in (
+        ("local_fit_mse_median", "local_fit_mse_windows"),
+        ("local_fit_mse_baseline_median", "local_fit_mse_baseline_windows"),
+        ("rel_mse_baseline_median", "rel_mse_baseline_windows"),
+        ("rel_mse_baseline_oos_median", "rel_mse_baseline_oos_windows"),
+        ("n_neighborhood_samples_median", "n_neighborhood_samples"),
+    ):
+        if scalar_key not in filtered_diagnostics:
+            continue
+        filtered_array = filtered_diagnostics.get(array_key)
+        if not isinstance(filtered_array, np.ndarray) or filtered_array.shape[0] != int(np.sum(valid_mask)):
+            continue
+        finite = np.asarray(filtered_array, dtype=np.float64)
+        finite = finite[np.isfinite(finite)]
+        filtered_diagnostics[scalar_key] = float(np.median(finite)) if finite.size else float("nan")
+
+    n_samples_arr = filtered_diagnostics.get("n_neighborhood_samples")
+    if "n_neighborhood_samples_min" in filtered_diagnostics and isinstance(n_samples_arr, np.ndarray):
+        finite_n = np.asarray(n_samples_arr, dtype=np.float64)
+        finite_n = finite_n[np.isfinite(finite_n)]
+        filtered_diagnostics["n_neighborhood_samples_min"] = (
+            float(np.min(finite_n)) if finite_n.size else float("nan")
+        )
 
     filtered_j_hat = j_hat[valid_mask]
     spacing = float(filtered_diagnostics.get("j_dot_dt", diagnostics.get("j_dot_dt", 1.0)) or 1.0)

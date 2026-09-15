@@ -18,7 +18,20 @@ _DEFAULT_SCHEMA_VERSION = "time_reference.v1"
 _DEFAULT_BINS_HOURS: tuple[float, ...] = (0.0, 24.0, 48.0, 72.0)
 _SECONDS_PER_DAY = 24.0 * 3600.0
 _CLOCK_RE = re.compile(
-    r"^\s*(?P<hours>\d{1,2}):(?P<minutes>\d{2})(?::(?P<seconds>\d{2}(?:\.\d+)?))?\s*(?P<plus>\+*)\s*$"
+    # Hour field is widened, not unbounded: some WFDB sources (e.g.
+    # PhysioNet I-CARE) encode elapsed recording hours / hours-since-ROSC in
+    # this field rather than a 24-hour civil clock, so 3+ digit hour values
+    # (e.g. "100:00:00") are a valid elapsed-time encoding, not a malformed
+    # clock. ``parse_wfdb_clock_value`` below converts hours*3600+minutes*60
+    # +seconds regardless of magnitude; nothing downstream assumes hours<24
+    # except the day-rollover ``+`` suffix handling, which is unaffected
+    # because it already branches on ``hours < 24``. Capped at 6 digits
+    # (up to 999999h, ~114 years) so a malformed/corrupt header field cannot
+    # produce an astronomically large hour count that overflows ``float()``
+    # (a Python arbitrary-precision int is silently convertible almost
+    # everywhere except that final cast) -- such input still explicitly
+    # fails to match and returns None rather than raising.
+    r"^\s*(?P<hours>\d{1,6}):(?P<minutes>\d{2})(?::(?P<seconds>\d{2}(?:\.\d+)?))?\s*(?P<plus>\+*)\s*$"
 )
 _WFDB_START_RE = re.compile(r"^#\s*start\s*time\s*:\s*(?P<value>.+?)\s*$", re.IGNORECASE)
 _WFDB_END_RE = re.compile(r"^#\s*end\s*time\s*:\s*(?P<value>.+?)\s*$", re.IGNORECASE)
@@ -138,7 +151,17 @@ def resolve_time_reference_config(config: Optional[Mapping[str, Any]], dataset_i
 
 
 def parse_wfdb_clock_value(raw_value: str) -> Optional[float]:
-    """Parse WFDB clock value (e.g. ``22:59:08`` or ``24:00:00+``) into seconds."""
+    """Parse WFDB clock value (e.g. ``22:59:08``, ``24:00:00+``, or a 3+ digit
+    elapsed-hours encoding such as ``100:00:00``) into seconds.
+
+    The hour field is not restricted to 0-23: some WFDB sources (e.g.
+    PhysioNet I-CARE) encode elapsed recording hours / hours-since-ROSC here
+    rather than a civil clock. Both conventions convert identically to
+    ``hours*3600 + minutes*60 + seconds``; this function does not attempt to
+    distinguish "wall clock" from "elapsed hours" semantics, since both
+    resolve to the same seconds-since-some-reference quantity that
+    downstream unwrapping/anchoring already treats as monotonic-within-file.
+    """
     text = str(raw_value or "").strip()
     if not text:
         return None
@@ -155,13 +178,21 @@ def parse_wfdb_clock_value(raw_value: str) -> Optional[float]:
         return None
     if seconds < 0 or seconds >= 60:
         return None
-    total = float(hours * 3600 + minutes * 60 + seconds)
-    plus_count = len(match.group("plus") or "")
-    if plus_count > 0:
-        # ``24:00:00+`` should map to exactly one-day rollover (86400 sec),
-        # while values like ``00:10:00+`` add one full day.
-        day_rollovers = plus_count if hours < 24 else max(0, plus_count - 1)
-        total += float(day_rollovers) * _SECONDS_PER_DAY
+    try:
+        total = float(hours * 3600 + minutes * 60 + seconds)
+        plus_count = len(match.group("plus") or "")
+        if plus_count > 0:
+            # ``24:00:00+`` should map to exactly one-day rollover (86400 sec),
+            # while values like ``00:10:00+`` add one full day.
+            day_rollovers = plus_count if hours < 24 else max(0, plus_count - 1)
+            total += float(day_rollovers) * _SECONDS_PER_DAY
+    except OverflowError:
+        # Defense in depth beyond the regex's 6-digit hour cap: an
+        # arbitrary-precision int product that is still too large to
+        # represent as a float must fail explicitly, not propagate an
+        # uncaught OverflowError out of a parser that is documented to
+        # return Optional[float].
+        return None
     return total
 
 
@@ -471,10 +502,37 @@ def _as_sort_int(token: Optional[str]) -> tuple[int, str]:
     return (10**9, text)
 
 
-def _unwrap_subject_timeline(entries: list[dict[str, Any]]) -> tuple[Dict[str, tuple[float, Optional[float]]], Optional[float]]:
-    """Unwrap daily clock times into monotonic elapsed seconds."""
+# The day-rollover repair loop below exists for genuine civil-clock midnight
+# wraps within one subject's recording (e.g. "23:50" then "00:10" the next
+# calendar day -> +1 day). It is not designed to reconcile two fundamentally
+# different clock conventions (a civil clock vs. I-CARE's elapsed
+# hours-since-ROSC encoding) that happen to sort adjacently by run/acq token.
+# Capping the number of automatic rollovers per transition means a genuine
+# multi-day midnight-wrap sequence (rare but plausible for very long civil
+# clock recordings) still resolves, while a magnitude mismatch between
+# conventions (e.g. a >=100h elapsed-hours row followed by a small
+# civil-clock-like value) is surfaced as an explicit unresolved-ordering
+# warning instead of silently accepting an arbitrarily large invented offset.
+_MAX_AUTO_DAY_ROLLOVERS = 3
+
+
+def _unwrap_subject_timeline(
+    entries: list[dict[str, Any]],
+) -> tuple[Dict[str, tuple[float, Optional[float]]], Optional[float], Dict[str, str]]:
+    """Unwrap daily clock times into monotonic elapsed seconds.
+
+    Returns ``(timeline_by_path, anchor_start_abs, ambiguous_by_path)`` where
+    ``ambiguous_by_path`` maps a row's ``path`` to a reason string when that
+    row's start (and/or end) time could not be reconciled into the running
+    monotonic sequence within ``_MAX_AUTO_DAY_ROLLOVERS`` day-rollovers. Such
+    a row is still included in the timeline (its unreconciled candidate value
+    is kept rather than dropped, so the recording is not silently made
+    NaN/invisible), but callers should surface the ambiguity explicitly
+    (e.g. via ``time_reference_status``) rather than treating it as an
+    ordinary, fully-resolved anchor offset.
+    """
     if not entries:
-        return {}, None
+        return {}, None, {}
     sorted_entries = sorted(
         entries,
         key=lambda row: (
@@ -484,30 +542,41 @@ def _unwrap_subject_timeline(entries: list[dict[str, Any]]) -> tuple[Dict[str, t
         ),
     )
     out: Dict[str, tuple[float, Optional[float]]] = {}
+    ambiguous: Dict[str, str] = {}
     day_offset = 0.0
     prev_start: Optional[float] = None
     for row in sorted_entries:
         start_clock = row.get("run_start_clock_sec")
         if start_clock is None:
             continue
+        path_key = str(row.get("path"))
         start_val = float(start_clock)
         candidate_start = start_val + day_offset
+        rollovers = 0
         while prev_start is not None and candidate_start < prev_start - 1e-6:
+            if rollovers >= _MAX_AUTO_DAY_ROLLOVERS:
+                ambiguous[path_key] = "ambiguous_clock_convention_unresolved_ordering"
+                break
             day_offset += _SECONDS_PER_DAY
             candidate_start = start_val + day_offset
+            rollovers += 1
         end_clock = row.get("run_end_clock_sec")
         candidate_end: Optional[float] = None
         if end_clock is not None:
             candidate_end = float(end_clock) + day_offset
+            end_rollovers = 0
             while candidate_end < candidate_start - 1e-6:
+                if end_rollovers >= _MAX_AUTO_DAY_ROLLOVERS:
+                    ambiguous.setdefault(path_key, "ambiguous_clock_convention_unresolved_ordering")
+                    break
                 candidate_end += _SECONDS_PER_DAY
-        path_key = str(row.get("path"))
+                end_rollovers += 1
         out[path_key] = (candidate_start, candidate_end)
         prev_start = candidate_start
     if not out:
-        return {}, None
+        return {}, None, ambiguous
     anchor_start = min(v[0] for v in out.values())
-    return out, float(anchor_start)
+    return out, float(anchor_start), ambiguous
 
 
 def _build_disabled_result(status: str, schema_version: str, source: str, anchor: str) -> Dict[str, Any]:
@@ -658,7 +727,7 @@ def build_time_reference_for_run(
         merged.update(parsed)
         parsed_entries.append(merged)
 
-    timeline_by_path, anchor_start_abs = _unwrap_subject_timeline(parsed_entries)
+    timeline_by_path, anchor_start_abs, timeline_ambiguous = _unwrap_subject_timeline(parsed_entries)
     current_start_abs: Optional[float] = None
     current_end_abs: Optional[float] = None
     cur_path_key = str(current_header_path)
@@ -695,6 +764,19 @@ def build_time_reference_for_run(
         status = "ok_with_warnings"
     elif status == "ok" and run_start_elapsed_sec is None:
         status = "ok_without_anchor_alignment"
+    if cur_path_key in timeline_ambiguous and status in ("ok", "ok_with_warnings"):
+        # This run's clock could not be reconciled into the subject's
+        # monotonic timeline within a plausible number of day-rollovers
+        # (likely a civil-clock vs. elapsed-hours convention mismatch across
+        # runs). The offset was still computed (not dropped to NaN), but
+        # must not be reported as an ordinary, fully-resolved anchor
+        # alignment.
+        status = "ok_with_warnings"
+
+    run_parse_errors = list(current_parse.get("parse_errors", []) or [])
+    ambiguous_reason = timeline_ambiguous.get(cur_path_key)
+    if ambiguous_reason and ambiguous_reason not in run_parse_errors:
+        run_parse_errors.append(ambiguous_reason)
 
     header_rel = str(current_row.get("rel_path", ""))
     if not header_rel:
@@ -723,7 +805,7 @@ def build_time_reference_for_run(
         "subject_anchor_start_sec": np.float32(anchor_start_abs if anchor_start_abs is not None else np.nan),
         "bins_hours": np.asarray(bins_hours, dtype=np.float32),
         "bins_seconds": bins_sec,
-        "parse_errors": np.asarray(list(current_parse.get("parse_errors", []) or []), dtype="<U64"),
+        "parse_errors": np.asarray(run_parse_errors, dtype="<U64"),
     }
     extension = {
         "run": run_payload,

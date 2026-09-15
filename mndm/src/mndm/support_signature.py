@@ -267,6 +267,36 @@ def build_support_signature(
     for name, record in coordinates.items():
         validate_write_coordinate(**record)
     capability = capability_for_modality(normalized)
+    e_m = coordinates.get("e_m", {})
+    if e_m.get("source") == SOURCE_FALLBACK and e_m.get("semantic_equivalence") == "false":
+        # e_m (embodied arousal proxy) is one of the 9 canonical 9D
+        # subcoordinates. When it is a non-semantically-equivalent fallback
+        # (e.g. EEG eeg_highfreq_power_30_45 standing in for ecg_rmssd), the
+        # static per-modality mnj_9d/mnj_3d class ("yes"/"limited"/"conditional")
+        # would otherwise advertise full Jacobian/MNJ availability on a file
+        # where one of the contributing axes is not the contracted
+        # measurement. Downgrade to the existing "gated" capability token so
+        # a reader cannot miss this per-file condition by reading only the
+        # static modality table (see
+        # project/mnps_v3/tests/ingest_jacobian_fidelity_handover_2.md item
+        # 8). Do not "upgrade" an already-conservative not_assessed class.
+        #
+        # mnj_3d IS affected, not just mnj_9d: every active dataset config's
+        # canonical mnps_3d.from_v2.map (and the AXIS_CHILDREN mapping this
+        # module already uses to derive axes_3d) composes the 3D "e" axis
+        # from exactly (e_e, e_s, e_m) via a fixed weighted projection --
+        # confirmed across the EEG/iEEG/fMRI common configs
+        # (config_ingest_common_eeg.yaml, config_ingest_common_ephys.yaml,
+        # config_ingest_common_fmri.yaml). A non-equivalent e_m fallback
+        # therefore contributes to the 3D "e" axis value whenever
+        # mode="from_v2" (the standard path), not only to coords_9d. An
+        # earlier version of this fix downgraded only mnj_9d on the
+        # (incorrect) assumption that the 3D chart does not consume the 9D
+        # subcoordinate split; corrected per independent review.
+        if capability.get("mnj_9d") not in (None, "not_assessed"):
+            capability = {**capability, "mnj_9d": "gated"}
+        if capability.get("mnj_3d") not in (None, "not_assessed"):
+            capability = {**capability, "mnj_3d": "gated"}
     validate_write_capability(capability)
     return {
         "schema_version": SUPPORT_SIGNATURE_SCHEMA_VERSION,

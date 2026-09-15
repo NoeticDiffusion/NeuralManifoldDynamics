@@ -137,6 +137,61 @@ def test_eeg_capability_matrix_row() -> None:
     validate_write_support_signature(signature)
 
 
+def test_e_m_fallback_downgrades_mnj_9d_and_mnj_3d_to_gated() -> None:
+    """capability/mnj_9d and capability/mnj_3d must not advertise unconditional
+    Jacobian/MNJ availability while e_m is a non-semantically-equivalent
+    fallback.
+
+    Regression guard for ingest_jacobian_fidelity_handover_2.md item 8: EEG's
+    static mnj_9d="conditional" and iEEG's static mnj_9d="yes" both describe
+    the *modality class*, not this file's actual e_m support. A reader that
+    only consults the static per-modality table would otherwise miss a
+    per-file e_m fallback.
+
+    mnj_3d is also gated (corrected via independent review): every active
+    dataset config's mnps_3d.from_v2.map composes the 3D "e" axis from
+    exactly (e_e, e_s, e_m) via a fixed weighted projection, so a
+    non-equivalent e_m fallback contributes to the 3D chart too, not only to
+    coords_9d.
+    """
+    eeg_signature = build_support_signature(
+        modality="eeg",
+        metric_policies=EEG_POLICIES,
+        actual_metrics={"e_m": "eeg_highfreq_power_30_45"},
+    )
+    assert eeg_signature["coordinates"]["e_m"]["source"] == "fallback"
+    assert eeg_signature["coordinates"]["e_m"]["semantic_equivalence"] == "false"
+    assert eeg_signature["capability"]["mnj_9d"] == "gated"
+    assert eeg_signature["capability"]["mnj_3d"] == "gated"
+    validate_write_support_signature(eeg_signature)
+
+    ieeg_signature = build_support_signature(
+        modality="ieeg",
+        metric_policies=EEG_POLICIES,
+        actual_metrics={"e_m": "eog_blink_rate"},
+    )
+    # iEEG's static class is "yes" for both; a non-equivalent e_m fallback
+    # must still downgrade both, not leave them advertising unconditional
+    # MNJ support.
+    assert ieeg_signature["capability"]["mnj_9d"] == "gated"
+    assert ieeg_signature["capability"]["mnj_3d"] == "gated"
+
+    # No fallback -> capability stays at the static per-modality class.
+    unaffected = build_support_signature(modality="eeg", metric_policies=EEG_POLICIES)
+    assert unaffected["capability"]["mnj_9d"] == "conditional"
+    assert unaffected["capability"]["mnj_3d"] == "yes"
+
+    # unknown modality's mnj_9d/mnj_3d are already maximally conservative
+    # (not_assessed) and must not be "upgraded" to gated.
+    unknown_signature = build_support_signature(
+        modality="unknown",
+        metric_policies=EEG_POLICIES,
+        actual_metrics={"e_m": "eeg_highfreq_power_30_45"},
+    )
+    assert unknown_signature["capability"]["mnj_9d"] == "not_assessed"
+    assert unknown_signature["capability"]["mnj_3d"] == "not_assessed"
+
+
 def test_fmri_mnj_is_limited() -> None:
     signature = build_support_signature(modality="fmri")
     assert signature["capability"]["mnj_3d"] == "limited"

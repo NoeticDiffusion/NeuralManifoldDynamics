@@ -81,6 +81,8 @@ from .summary_utils import (
     apply_fd_censoring,
     build_dir_suffix,
     extract_time_bounds,
+    h5_recording_is_complete,
+    recording_h5_path,
 )
 from .time_reference import build_time_reference_for_run
 from .phase_continuous_export import build_phase2_extensions_for_run
@@ -106,14 +108,43 @@ from .robustness_helpers import (
     compute_robust_and_reliability_summaries,
 )
 from .. import nwb_intervals, preprocess
+from ..features.epoch_selection import resolve_epoch_params
 from core.io import json_writer
 from .. import anchors, jacobian, projection, robustness, schema
 from ..dynamics.finite_time_response import compute_finite_time_response
-from ..dynamics.jacobian_metrics import compute_jacobian_metrics
+from ..dynamics.jacobian_metrics import compute_jacobian_metrics, resolve_fit_fidelity_gate_input
 from ..dynamics.stochastic_reachability import (
     compute_stochastic_reachability_from_gate_e,
     estimate_transition_residual_covariance_proxy,
 )
+
+
+def resolve_effective_epoch_contract(
+    config: Mapping[str, Any] | None,
+    dataset_id: str | None,
+    modality: str | None,
+) -> tuple[float, float] | None:
+    """Return an explicit EEG/MEG epoch grid, or ``None`` when inapplicable.
+
+    MNPS/fMRI timing must not inherit the EEG epoch defaults merely because a
+    global ``epoching`` block happens to be present in a composed config.
+    Dataset entries containing only sampling metadata likewise do not establish
+    a timing contract; explicit length and step are required.
+    """
+    if str(modality or "").strip().lower() not in {"eeg", "meg"}:
+        return None
+    if not isinstance(config, Mapping):
+        return None
+    epoching = config.get("epoching")
+    if not isinstance(epoching, Mapping):
+        return None
+    ds_map = epoching.get("datasets")
+    ds_cfg = ds_map.get(dataset_id, {}) if isinstance(ds_map, Mapping) and dataset_id else {}
+    if isinstance(ds_cfg, Mapping) and "length_s" in ds_cfg and "step_s" in ds_cfg:
+        return resolve_epoch_params(config, dataset_id)
+    if "length_s" in epoching and "step_s" in epoching:
+        return resolve_epoch_params(config, dataset_id)
+    return None
 from ..dynamics.transition_residuals import compute_transition_residuals
 from ..dynamical_families.contracts import (
     COMMITTOR_SCHEMA_VERSION,
@@ -126,6 +157,8 @@ from .dynamical_families_export import (
     reject_legacy_family_config_key,
 )
 from .run_manifest import write_run_manifest
+from .signal_support_export import build_signal_support_export, validate_support_record
+from ..progress_log import ProgressTracker
 from ..__about__ import __version__ as _MNDM_VERSION
 from ..reproducibility import resolve_reproducibility_policy
 from ..support_signature import build_support_signature
@@ -684,8 +717,20 @@ def _build_qc_windows_export(
     coords_9d: Optional[np.ndarray],
     x_coverage: np.ndarray,
     min_axis_coverage: float,
+    artifact_qc_applied: Optional[bool] = None,
 ) -> Dict[str, np.ndarray]:
-    """Build a minimal per-window QC surface aligned to `/time`."""
+    """Build a minimal per-window QC surface aligned to `/time`.
+
+    ``artifact_qc_applied`` (from the preprocess QC sidecar's
+    ``artifact.applied`` flag, see :mod:`mndm.preprocess`) says whether an
+    artifact-reduction method actually ran and modified the signal for this
+    recording -- distinct from ``qc_ok_eeg``'s underlying "core EEG bands
+    are finite" check. ``None`` means no sidecar evidence is available at
+    all (legacy / non-EEG datasets); it is treated the same as "not
+    confirmed applied" rather than assumed True, but does not change which
+    epochs are retained (that filter policy is unaffected by this flag; see
+    ``project/mnps_v3/tests/ingest_jacobian_fidelity_handover_2.md`` item 9).
+    """
     n_time = int(len(sub_frame))
     out: Dict[str, np.ndarray] = {
         "retained_after_qc": np.ones(n_time, dtype=np.int8),
@@ -695,6 +740,13 @@ def _build_qc_windows_export(
         if key in sub_frame.columns:
             arr = pd.to_numeric(sub_frame[key], errors="coerce").fillna(1).to_numpy()
             out[key] = np.asarray(arr, dtype=np.int8)
+    if "qc_ok_eeg" in out and artifact_qc_applied is not True:
+        # An artifact method did not confirmedly run: do not report
+        # qc_ok_eeg=1 as if an artifact detector had passed this window.
+        # -1 ("not assessed") is the existing not-testable convention used
+        # elsewhere in this schema (e.g. stable_reactive_flag=-1), distinct
+        # from an active QC failure (0).
+        out["qc_ok_eeg"] = np.full(n_time, -1, dtype=np.int8)
     if x_coverage.size:
         coverage_ok = np.all(np.isfinite(x_coverage) & (x_coverage >= float(min_axis_coverage)), axis=1).astype(np.int8)
         out["coverage_ok"] = coverage_ok
@@ -1385,7 +1437,7 @@ def _resolve_mnps_9d_runtime_config(
 class DatasetSummaryRunner:
     """Encapsulate dataset-level summarization logic."""
 
-    def __init__(self, ctx: SummarizeContext, ds_id: str, subject_filter: Optional[str], h5_mode: str, n_jobs: int = 1):
+    def __init__(self, ctx: SummarizeContext, ds_id: str, subject_filter: Optional[str], h5_mode: str, n_jobs: int = 1, resume_run_dir: Optional[Path] = None):
         """Initialize the instance."""
         config_copy = copy.deepcopy(ctx.config) if isinstance(ctx.config, Mapping) else ctx.config
         self.ctx = _RunnerContextProxy(ctx, config_copy)
@@ -1393,6 +1445,9 @@ class DatasetSummaryRunner:
         self.subject_filter = self._normalize_subject(subject_filter) if subject_filter else None
         self.h5_mode = h5_mode
         self.n_jobs = max(1, int(n_jobs or 1))
+        self.resume_run_dir = (
+            Path(resume_run_dir).expanduser().resolve() if resume_run_dir is not None else None
+        )
         self.config = self.ctx.config
         config_path_raw = getattr(ctx, "config_path", None)
         self.config_path: Optional[Path] = (
@@ -1405,6 +1460,17 @@ class DatasetSummaryRunner:
         self._dataset_csv_lock = Lock()
         self._run_errors_lock = Lock()
         self._run_errors: List[Dict[str, Any]] = []
+        # Explicit skip records: a grouping that reaches SubjectSummaryRunner
+        # but is deliberately not written (coverage too low, all windows
+        # geometry-invalid, etc.) is not an *error* (no exception, no bug),
+        # but it must not be silent either -- an empty sub-*/ output
+        # directory with no H5 and no record forces analysis repos to
+        # rediscover empty stems on their own (see
+        # project/mnps_v3/tests/ingest_jacobian_fidelity_handover_2.md item
+        # 5). Kept separate from _run_errors so a normal, policy-driven skip
+        # does not flip run_status to "completed_with_errors".
+        self._skipped_recordings_lock = Lock()
+        self._skipped_recordings: List[Dict[str, Any]] = []
         self._stage_mapping_qc_lock = Lock()
         self._stage_mapping_qc_entries: List[Dict[str, Any]] = []
         self._block_native_qc_lock = Lock()
@@ -2101,7 +2167,34 @@ class DatasetSummaryRunner:
         enabled = bool(norm_cfg.get("enabled", False))
         method = str(norm_cfg.get("method", "")).strip().lower()
         scope = str(norm_cfg.get("scope", "")).strip().lower()
-        strict = bool(norm_cfg.get("strict", False))
+        # Fail closed by default whenever normalization is explicitly
+        # enabled: a dataset config that turns ComBat on is asserting that
+        # downstream consumers should get harmonized features, so a
+        # fundamental harmonization failure (neuroCombat not importable, or
+        # the harmonization call itself -- and its batch-only fallback --
+        # both raising) must abort the run rather than silently returning
+        # unharmonized features under a config whose provenance would still
+        # say "combat enabled". This is a code-level default, not a
+        # per-dataset opt-in: fixing it only in specific dataset overlays
+        # (as an earlier version of this change did, for the two I-CARE
+        # dynamical_families configs) would leave every other
+        # already-existing ComBat-enabling I-CARE overlay
+        # (config_ingest_physionet_i-care_2_1_part1_0_12h_regional.yaml,
+        # config_ingest_physionet_i-care_2_1_next_140_0_12h_no_regional_subject_anchor_combat.yaml,
+        # and any future dataset that enables ComBat) silently exposed to
+        # the same gap. A config may still explicitly opt out with
+        # ``normalization.strict: false`` if silent-continue-unharmonized is
+        # genuinely wanted for some reason.
+        #
+        # This does NOT cover the more benign, already-explicitly-recorded
+        # skip paths below (missing batch key/metadata for some subjects,
+        # an insufficient batch count after filtering, no numeric feature
+        # columns, unsupported method/scope): those intentionally continue
+        # with the unharmonized table and an explicit status in
+        # /provenance/normalization and normalization_report.json, rather
+        # than aborting an entire multi-thousand-file dataset run over a
+        # per-subject metadata gap.
+        strict = bool(norm_cfg.get("strict", True))
         self._normalization_report = {
             "enabled": bool(enabled),
             "status": "disabled" if not enabled else "pending",
@@ -2537,7 +2630,7 @@ class DatasetSummaryRunner:
 
     def run(self) -> None:
         """Run the main workflow for this component."""
-        logger.info(f"Summarizing {self.ds_id}")
+        logging.getLogger("mndm.progress").info("Summarizing %s", self.ds_id)
         ds_path = self.processed_dir / self.ds_id
         self.participants_df = load_participant_table(self.received_dir, self.ds_id, self.config)
         self._build_participant_meta_map()
@@ -2567,6 +2660,8 @@ class DatasetSummaryRunner:
             return
 
         mnps_dir = self._create_output_dir(ds_path)
+        if self.resume_run_dir is not None:
+            grouping_items = self._filter_resume_groupings(grouping_items, mnps_dir)
         normalization_report_info = self._write_normalization_report_file(mnps_dir)
         self._normalization_report["report_file"] = dict(normalization_report_info)
         stage_mapping_qc_info: Dict[str, Any] = {
@@ -2585,24 +2680,46 @@ class DatasetSummaryRunner:
         try:
             self._prepare_one_shot_anchor(features_df, mnps_dir)
             self._write_features_snapshot(mnps_dir, features_df)
-            max_workers = min(max(1, self.n_jobs), len(grouping_items), multiprocessing.cpu_count())
-            if max_workers > 1:
-                logger.info(
-                    "Using %d summarize workers for %s (%d grouped recordings)",
-                    max_workers,
-                    self.ds_id,
-                    len(grouping_items),
-                )
-                with ThreadPoolExecutor(max_workers=max_workers) as ex:
-                    futures = [
-                        ex.submit(self._process_grouping_item, ds_path, mnps_dir, grouping_key, sub_frame)
-                        for grouping_key, sub_frame in grouping_items
-                    ]
-                    for fut in futures:
-                        fut.result()
-            else:
-                for grouping_key, sub_frame in grouping_items:
-                    self._process_grouping_item(ds_path, mnps_dir, grouping_key, sub_frame)
+            if grouping_items:
+                max_workers = min(max(1, self.n_jobs), len(grouping_items), multiprocessing.cpu_count())
+                progress = ProgressTracker(len(grouping_items))
+
+                def _run_grouping(grouping_key, sub_frame):
+                    sub_id, ses_id, raw_task, run_id, acq_id = self._normalize_grouping_key(grouping_key)
+                    label = build_dataset_label(
+                        ds_id=self.ds_id,
+                        sub_id=sub_id,
+                        ses_id=ses_id,
+                        condition=None,
+                        task=raw_task,
+                        run=run_id,
+                        acq=acq_id,
+                    )
+                    progress.started(label)
+                    try:
+                        self._process_grouping_item(ds_path, mnps_dir, grouping_key, sub_frame)
+                    finally:
+                        progress.finished(label)
+
+                if max_workers > 1:
+                    logging.getLogger("mndm.progress").info(
+                        "Using %d summarize workers for %s (%d grouped recordings)",
+                        max_workers,
+                        self.ds_id,
+                        len(grouping_items),
+                    )
+                    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+                        futures = [
+                            ex.submit(_run_grouping, grouping_key, sub_frame)
+                            for grouping_key, sub_frame in grouping_items
+                        ]
+                        for fut in futures:
+                            fut.result()
+                else:
+                    for grouping_key, sub_frame in grouping_items:
+                        _run_grouping(grouping_key, sub_frame)
+            elif self.resume_run_dir is not None:
+                logger.info("Resume: no missing recordings remain for %s", self.ds_id)
         except Exception as exc:
             run_fatal_error = exc
             self._record_run_error(
@@ -2623,6 +2740,10 @@ class DatasetSummaryRunner:
                 mnps_dir,
                 total_groupings=len(grouping_items),
             )
+            skipped_recordings_info = self._write_skipped_recordings_file(
+                mnps_dir,
+                total_groupings=len(grouping_items),
+            )
             run_status = "completed"
             if run_fatal_error is not None:
                 run_status = "failed"
@@ -2639,6 +2760,22 @@ class DatasetSummaryRunner:
 
             # Write a run-level manifest for quick inspection (humans + LLMs).
             try:
+                signal_support_records: list[Dict[str, Any]] = []
+                qc_dir = ds_path / "qc_artifacts"
+                if qc_dir.exists():
+                    for sidecar in sorted(qc_dir.glob("*.json")):
+                        try:
+                            sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
+                        except Exception:
+                            continue
+                        support = sidecar_data.get("signal_support_provenance") if isinstance(sidecar_data, Mapping) else None
+                        if isinstance(support, Mapping):
+                            source_identity = support.get("source", {})
+                            raw_name = Path(str(source_identity.get("path", ""))).name if isinstance(source_identity, Mapping) else ""
+                            valid, reason = validate_support_record(support, raw_name)
+                            if sidecar.name != f"{Path(raw_name).stem}_qc_artifacts.json":
+                                valid, reason = False, "support_sidecar_identity_mismatch"
+                            signal_support_records.append({**dict(support), "raw_file": raw_name, "validation_status": "valid" if valid else "unknown", "validation_reason": reason})
                 write_run_manifest(
                     mnps_dir=mnps_dir,
                     config=self.config,
@@ -2662,7 +2799,14 @@ class DatasetSummaryRunner:
                         "block_native_qc": block_native_qc_info,
                         "run_status": run_status,
                         "run_errors": run_errors_info,
+                        "skipped_recordings": skipped_recordings_info,
                         "fatal_error": fatal_error_summary,
+                        "signal_support_provenance": {
+                            "schema": "mndm.signal_support_provenance.v1",
+                            "status": "recorded" if signal_support_records and all(r.get("validation_status") == "valid" for r in signal_support_records) else "unknown",
+                            "temporal_support_status": "unknown",
+                            "records": signal_support_records,
+                        },
                     },
                 )
             except Exception:
@@ -2750,6 +2894,11 @@ class DatasetSummaryRunner:
         """Store one run error entry in a thread-safe way."""
         with self._run_errors_lock:
             self._run_errors.append(dict(error_entry))
+
+    def _record_skipped_recording(self, entry: Mapping[str, Any]) -> None:
+        """Store one explicit, non-error recording skip in a thread-safe way."""
+        with self._skipped_recordings_lock:
+            self._skipped_recordings.append(dict(entry))
 
     def _record_stage_mapping_qc_entry(self, entry: Mapping[str, Any]) -> None:
         """Store one per-subject stage-mapping QC entry in a thread-safe way."""
@@ -2968,6 +3117,57 @@ class DatasetSummaryRunner:
             logger.exception("Failed to write run_errors.json for %s (%s)", self.ds_id, out_path)
         return summary
 
+    def _write_skipped_recordings_file(self, mnps_dir: Path, *, total_groupings: int) -> Dict[str, Any]:
+        """Write skipped_recordings.json when a grouping was deliberately not exported.
+
+        Distinct from run_errors.json: entries here are expected, policy-driven
+        skips (insufficient coverage, all-invalid geometry, etc.), not
+        exceptions. An empty sub-*/ output directory with no H5 should always
+        have a matching entry here rather than requiring analysis repos to
+        rediscover empty stems on their own.
+        """
+        with self._skipped_recordings_lock:
+            skipped = [dict(entry) for entry in self._skipped_recordings]
+
+        summary: Dict[str, Any] = {
+            "schema": "mndm.skipped_recordings.v1",
+            "status": "none",
+            "path": None,
+            "count": int(len(skipped)),
+            "groupings_total": int(total_groupings),
+        }
+        if not skipped:
+            return summary
+
+        reason_counts: Dict[str, int] = {}
+        for entry in skipped:
+            reason = str(entry.get("reason", "unknown"))
+            reason_counts[reason] = reason_counts.get(reason, 0) + 1
+
+        payload = {
+            "schema": "mndm.skipped_recordings.v1",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "dataset_id": self.ds_id,
+            "run_dir": str(mnps_dir),
+            "counts": {
+                "skipped_total": int(len(skipped)),
+                "groupings_total": int(total_groupings),
+                "skipped_by_reason": reason_counts,
+            },
+            "skipped": skipped,
+        }
+
+        out_path = mnps_dir / "skipped_recordings.json"
+        try:
+            json_writer.write_json_summary(payload, out_path)
+            summary["status"] = "written"
+            summary["path"] = out_path.name
+        except Exception as exc:
+            summary["status"] = "write_failed"
+            summary["error"] = str(exc)
+            logger.exception("Failed to write skipped_recordings.json for %s (%s)", self.ds_id, out_path)
+        return summary
+
     def _write_normalization_report_file(self, mnps_dir: Path) -> Dict[str, Any]:
         """Write normalization_report.json with pre/post probe metadata."""
         summary: Dict[str, Any] = {
@@ -3144,6 +3344,21 @@ class DatasetSummaryRunner:
         anchor_id = str(auto_cfg.get("anchor_id") or f"{self.ds_id}_all_subjects_{scale_method}_v2_1").strip()
         anchor_source = str(auto_cfg.get("anchor_source") or "all_subjects_features_table").strip()
         cohort_filter = str(auto_cfg.get("cohort_filter") or "all usable rows after summarize QC filters").strip()
+        anchors_dir = mnps_dir / "anchors"
+        existing_anchor_path = anchors_dir / f"{anchor_id}.json"
+        if self.resume_run_dir is not None and existing_anchor_path.is_file():
+            logger.info("Resume: reusing existing cohort anchor %s", existing_anchor_path)
+            anchor_cfg = dict(existing_anchor_cfg) if isinstance(existing_anchor_cfg, Mapping) else {}
+            anchor_cfg.update(
+                {
+                    "enabled": True,
+                    "path": str(existing_anchor_path),
+                    "scale_method": scale_method,
+                    "min_subjects": min_subjects,
+                }
+            )
+            proj_cfg["anchor"] = anchor_cfg
+            return existing_anchor_path
         file_ids = [str(v or "") for v in features_df["file"].tolist()] if "file" in features_df.columns else None
         subject_ids = self._anchor_subject_ids(features_df)
         group_by_subject = self._anchor_group_by_subject(features_df, subject_ids)
@@ -3180,6 +3395,9 @@ class DatasetSummaryRunner:
         try:
             payload = self._build_features_snapshot(features_df)
             out_path = mnps_dir / "features_snapshot.json"
+            if self.resume_run_dir is not None and out_path.is_file():
+                logger.info("Resume: keeping existing features snapshot %s", out_path)
+                return
             out_path.write_text(json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8")
             logger.info("Wrote features snapshot: %s", out_path)
         except Exception:
@@ -3593,10 +3811,116 @@ class DatasetSummaryRunner:
 
     def _create_output_dir(self, ds_path: Path) -> Path:
         """Internal helper: create output dir."""
+        if self.resume_run_dir is not None:
+            if not self.resume_run_dir.is_dir():
+                raise FileNotFoundError(
+                    f"--resume-run directory does not exist: {self.resume_run_dir}"
+                )
+            logger.info("Resuming summarize into existing run directory %s", self.resume_run_dir)
+            return self.resume_run_dir
         ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         mnps_dir = ds_path / f"neuralmanifolddynamics_{self.ds_id}_{ts}"
         mnps_dir.mkdir(parents=True, exist_ok=True)
         return mnps_dir
+
+    @staticmethod
+    def _build_dir_suffix(
+        ses_id: Optional[str],
+        condition: Optional[str],
+        task: Optional[str],
+        run_id: Optional[str] = None,
+        acq_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """Build directory/filename suffix; same helper as SubjectSummaryRunner."""
+        return build_dir_suffix(ses_id, condition, task, run_id, acq_id)
+
+    def _expected_recording_h5(
+        self,
+        mnps_dir: Path,
+        grouping_key: tuple[Any, Any, Any, Any, Any],
+        sub_frame: pd.DataFrame,
+    ) -> Path:
+        """Return the canonical H5 path for one grouping under ``mnps_dir``."""
+        sub_id, ses_id, raw_task, run_id, acq_id = self._normalize_grouping_key(grouping_key)
+        sub_id = sub_id if str(sub_id).startswith("sub-") else f"sub-{str(sub_id).zfill(3)}"
+        representative_file = None
+        if "file" in sub_frame.columns and len(sub_frame) > 0:
+            representative_file = str(sub_frame["file"].iloc[0])
+        participant_meta = (
+            self.participant_meta_for(sub_id, ses_id)
+            if getattr(self, "_session_meta_map", None)
+            else self.participant_meta_for(sub_id)
+        )
+        mapped_meta = extract_mapped_metadata(
+            participant_meta, self.config, self.ds_id, ses_id, filename=representative_file
+        )
+        condition = mapped_meta.get("condition")
+        task = mapped_meta.get("task") or raw_task
+        dir_suffix = self._build_dir_suffix(ses_id, condition, task, run_id, acq_id)
+        return recording_h5_path(mnps_dir, sub_id, dir_suffix)
+
+    def _grouping_has_complete_h5(
+        self,
+        mnps_dir: Path,
+        grouping_key: tuple[Any, Any, Any, Any, Any],
+        sub_frame: pd.DataFrame,
+    ) -> bool:
+        """Return True if this grouping already has a readable MNPS H5."""
+        expected = self._expected_recording_h5(mnps_dir, grouping_key, sub_frame)
+        if h5_recording_is_complete(expected):
+            return True
+        target_dir = expected.parent
+        if not target_dir.is_dir():
+            return False
+        try:
+            candidates = list(target_dir.glob("*.h5"))
+        except OSError:
+            return False
+        return any(h5_recording_is_complete(path) for path in candidates)
+
+    def _filter_resume_groupings(
+        self,
+        grouping_items: list,
+        mnps_dir: Path,
+    ) -> list:
+        """Drop groupings that already have a complete H5 in the resume directory."""
+        remaining = []
+        complete = []
+        remaining_entries = []
+        for grouping_key, sub_frame in grouping_items:
+            if self._grouping_has_complete_h5(mnps_dir, grouping_key, sub_frame):
+                complete.append(grouping_key)
+            else:
+                remaining.append((grouping_key, sub_frame))
+                expected = self._expected_recording_h5(mnps_dir, grouping_key, sub_frame)
+                remaining_entries.append(
+                    {
+                        "grouping_key": [None if v is None else str(v) for v in grouping_key],
+                        "expected_h5": str(expected.relative_to(mnps_dir)),
+                    }
+                )
+        report = {
+            "schema": "mndm.summarize_resume.v1",
+            "run_dir": str(mnps_dir),
+            "groupings_total": int(len(grouping_items)),
+            "complete_skipped": int(len(complete)),
+            "remaining": int(len(remaining)),
+            "remaining_groupings": remaining_entries,
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+        try:
+            out_path = mnps_dir / "resume_report.json"
+            out_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        except Exception:
+            logger.exception("Failed to write resume_report.json for %s", self.ds_id)
+        logger.info(
+            "Resume %s: %d complete H5 skipped, %d remaining of %d groupings",
+            self.ds_id,
+            len(complete),
+            len(remaining),
+            len(grouping_items),
+        )
+        return remaining
 
     def participant_meta_for(self, sub_id: str, session_id: Optional[str] = None) -> Dict[str, Any]:
         """Return participant metadata merged with optional session metadata."""
@@ -3697,6 +4021,96 @@ class SubjectSummaryRunner:
         """Resolve effective dataset root, honoring per-dataset overrides."""
         return bids_index.resolve_dataset_root(self.ctx.config, self.ctx.received_dir, self.dataset.ds_id)
 
+    def _signal_support_provenance(self, sub_frame: pd.DataFrame) -> Dict[str, Any]:
+        """Collect executed preprocessing support metadata from QC sidecars.
+
+        QC sidecars are the only existing handoff from feature workers to the
+        summary stage.  Missing records remain explicitly unknown; this helper
+        never derives support from the exported epoch bounds.
+        """
+        records: list[Dict[str, Any]] = []
+        qc_dir = self.ds_path / "qc_artifacts"
+        if "file" not in sub_frame.columns:
+            return {"schema": "mndm.signal_support_provenance.v1", "status": "unknown", "records": records}
+        for file_name in sorted({Path(str(v)).name for v in sub_frame["file"].dropna()}):
+            sidecar = qc_dir / f"{Path(file_name).stem}_qc_artifacts.json"
+            if not sidecar.exists():
+                records.append({"raw_file": file_name, "status": "unknown", "reason": "missing_qc_sidecar"})
+                continue
+            try:
+                data = json.loads(sidecar.read_text(encoding="utf-8"))
+            except Exception as exc:
+                records.append({"raw_file": file_name, "status": "unknown", "reason": f"invalid_qc_sidecar:{type(exc).__name__}"})
+                continue
+            support = data.get("signal_support_provenance") if isinstance(data, Mapping) else None
+            if isinstance(support, Mapping):
+                valid, reason = validate_support_record(support, file_name)
+                if not valid:
+                    records.append({"raw_file": file_name, "status": "unknown", "reason": reason})
+                    continue
+                records.append({"raw_file": file_name, **dict(support)})
+            else:
+                records.append({"raw_file": file_name, "status": "unknown", "reason": "support_record_absent"})
+        statuses = {str(r.get("status", "unknown")) for r in records}
+        return {
+            "schema": "mndm.signal_support_provenance.v1",
+            "status": "recorded" if records and statuses == {"completed"} else "unknown",
+            "temporal_support_status": "unknown",
+            "records": records,
+        }
+
+    def _artifact_qc_applied(self, sub_frame: pd.DataFrame) -> Optional[bool]:
+        """Whether an artifact-reduction method actually ran, per QC sidecars.
+
+        Reuses the same ``qc_artifacts/{stem}_qc_artifacts.json`` handoff as
+        ``_signal_support_provenance``. Returns ``None`` only when *no*
+        sidecar file exists for *any* underlying file (nothing to confirm or
+        deny -- e.g. this dataset never writes QC sidecars at all); ``True``
+        only when *every* underlying file's sidecar exists, parses, and
+        reports ``artifact.applied is True``; ``False`` otherwise (a sidecar
+        exists but is missing/malformed/unreadable, method not configured,
+        configured but skipped/failed, or a sidecar reports ``applied``
+        missing/False for at least one file). A malformed or unreadable
+        sidecar counts as evidence (resolves toward False), not as an
+        absence of evidence (None).
+        """
+        if "file" not in sub_frame.columns:
+            return None
+        qc_dir = self.ds_path / "qc_artifacts"
+        file_names = sorted({Path(str(v)).name for v in sub_frame["file"].dropna()})
+        if not file_names:
+            return None
+        found_any = False
+        all_applied = True
+        for file_name in file_names:
+            sidecar = qc_dir / f"{Path(file_name).stem}_qc_artifacts.json"
+            if not sidecar.exists():
+                # No sidecar for this file at all: no evidence either way
+                # for it specifically.
+                all_applied = False
+                continue
+            # The sidecar's mere existence is evidence, even if its content
+            # turns out to be malformed/unreadable or missing the expected
+            # "artifact" key. A corrupt or incomplete QC sidecar must not be
+            # silently folded into "no evidence" alongside a genuinely
+            # absent file -- per the docstring contract above, it must
+            # resolve towards False (not confirmed), not None. Fixed per
+            # independent review of
+            # project/mnps_v3/tests/ingest_jacobian_fidelity_handover_2.md
+            # item 9.
+            found_any = True
+            try:
+                data = json.loads(sidecar.read_text(encoding="utf-8"))
+            except Exception:
+                all_applied = False
+                continue
+            artifact = data.get("artifact") if isinstance(data, Mapping) else None
+            if not (isinstance(artifact, Mapping) and artifact.get("applied") is True):
+                all_applied = False
+        if not found_any:
+            return None
+        return bool(all_applied)
+
     def run(
         self,
         sub_id: str,
@@ -3727,6 +4141,12 @@ class SubjectSummaryRunner:
         representative_file = None
         if "file" in sub_frame.columns and len(sub_frame) > 0:
             representative_file = str(sub_frame["file"].iloc[0])
+        signal_support_provenance = self._signal_support_provenance(sub_frame)
+        # Computed once and reused for both /qc/windows/qc_ok_eeg (below) and
+        # the conventional_eeg extension's artifact_qc provenance, so both
+        # surfaces agree on whether an artifact method actually ran for this
+        # recording.
+        artifact_qc_applied = self._artifact_qc_applied(sub_frame)
 
         mapped_meta = extract_mapped_metadata(
             participant_meta, config, self.dataset.ds_id, ses_id, filename=representative_file
@@ -3787,7 +4207,7 @@ class SubjectSummaryRunner:
             if np.isfinite(_measured_dt) and _measured_dt > 0:
                 dt = _measured_dt
                 if abs(dt - _cfg_dt) > 0.1:
-                    logger.info(
+                    logger.debug(
                         "Epoch step %.3f s (from t_start) differs from mnps config formula"
                         " %.3f s (window_sec=%.1f, overlap=%.4f). "
                         "Using measured step for time axis and Jacobian dt.",
@@ -3824,6 +4244,27 @@ class SubjectSummaryRunner:
                 coverage_seconds_assumed,
                 min_epochs_eff,
                 min_seconds_eff,
+            )
+            self.dataset._record_skipped_recording(
+                {
+                    "reason": "coverage_too_low",
+                    "dataset_id": self.dataset.ds_id,
+                    "dataset_label": dataset_label,
+                    "subject": sub_id,
+                    "session": ses_id,
+                    "task": raw_task,
+                    "run": run_id,
+                    "acq": acq_id,
+                    "target_dir": str(target_dir),
+                    "epochs": int(len(sub_frame)),
+                    "coverage_seconds_effective": float(coverage_seconds_effective),
+                    "coverage_seconds_assumed": float(coverage_seconds_assumed),
+                    "coverage_method": str(coverage_method),
+                    "coverage_tag": coverage_tag,
+                    "required_epochs": int(min_epochs_eff),
+                    "required_seconds": float(min_seconds_eff),
+                    "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                }
             )
             return
 
@@ -4230,9 +4671,45 @@ class SubjectSummaryRunner:
                     min_epochs_eff,
                     min_seconds_eff,
                 )
+                self.dataset._record_skipped_recording(
+                    {
+                        "reason": "coverage_too_low_after_nan_cov_mask",
+                        "dataset_id": self.dataset.ds_id,
+                        "dataset_label": dataset_label,
+                        "subject": sub_id,
+                        "session": ses_id,
+                        "task": raw_task,
+                        "run": run_id,
+                        "acq": acq_id,
+                        "target_dir": str(target_dir),
+                        "epochs": int(len(sub_frame)),
+                        "dropped_missing_axis_epochs": int(dropped_missing_axis_epochs),
+                        "coverage_seconds_effective": float(coverage_seconds_effective_post),
+                        "coverage_method": str(coverage_method_post),
+                        "coverage_tag": coverage_tag,
+                        "required_epochs": int(min_epochs_eff),
+                        "required_seconds": float(min_seconds_eff),
+                        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    }
+                )
                 return
             if len(sub_frame) == 0:
                 logger.warning("Skipping %s: all epochs dropped by missing-axis policy", dataset_label)
+                self.dataset._record_skipped_recording(
+                    {
+                        "reason": "all_epochs_dropped_by_missing_axis_policy",
+                        "dataset_id": self.dataset.ds_id,
+                        "dataset_label": dataset_label,
+                        "subject": sub_id,
+                        "session": ses_id,
+                        "task": raw_task,
+                        "run": run_id,
+                        "acq": acq_id,
+                        "target_dir": str(target_dir),
+                        "missing_axis_policy": str(missing_axis_policy),
+                        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    }
+                )
                 return
 
         geometry_contract = compute_standard_geometry_contract(
@@ -4284,9 +4761,46 @@ class SubjectSummaryRunner:
                     min_epochs_eff,
                     min_seconds_eff,
                 )
+                self.dataset._record_skipped_recording(
+                    {
+                        "reason": "coverage_too_low_after_geometry_invalidity_policy",
+                        "dataset_id": self.dataset.ds_id,
+                        "dataset_label": dataset_label,
+                        "subject": sub_id,
+                        "session": ses_id,
+                        "task": raw_task,
+                        "run": run_id,
+                        "acq": acq_id,
+                        "target_dir": str(target_dir),
+                        "epochs": int(len(sub_frame)),
+                        "dropped_geometry_invalid_epochs": int(dropped_geometry_invalid_epochs),
+                        "geometry_invalidity_policy": STANDARD_GEOMETRY_POLICY_VERSION,
+                        "coverage_seconds_effective": float(coverage_seconds_effective_post),
+                        "coverage_method": str(coverage_method_post),
+                        "coverage_tag": coverage_tag,
+                        "required_epochs": int(min_epochs_eff),
+                        "required_seconds": float(min_seconds_eff),
+                        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    }
+                )
                 return
             if len(sub_frame) == 0:
                 logger.warning("Skipping %s: all epochs dropped by standard geometry invalidity policy", dataset_label)
+                self.dataset._record_skipped_recording(
+                    {
+                        "reason": "all_epochs_dropped_by_geometry_invalidity_policy",
+                        "dataset_id": self.dataset.ds_id,
+                        "dataset_label": dataset_label,
+                        "subject": sub_id,
+                        "session": ses_id,
+                        "task": raw_task,
+                        "run": run_id,
+                        "acq": acq_id,
+                        "target_dir": str(target_dir),
+                        "geometry_invalidity_policy": STANDARD_GEOMETRY_POLICY_VERSION,
+                        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                    }
+                )
                 return
 
         # Time index and derivatives.
@@ -4299,6 +4813,11 @@ class SubjectSummaryRunner:
         else:
             time = projection.build_time_index(len(sub_frame), mnps_cfg["window_sec"], mnps_cfg["overlap"])
         window_start, window_end = self._extract_time_bounds(sub_frame, time, mnps_cfg["window_sec"])
+        # Epoching is the effective feature-grid contract for continuous EEG
+        # profiles. If no epoching section is configured (for example a
+        # modality with its own MNPS timebase), retain the generic MNPS audit
+        # fields and do not manufacture an 8/4 epoch contract.
+        effective_epoch = resolve_effective_epoch_contract(config, self.dataset.ds_id, modality)
         geometry_contract["time_grid"] = compute_window_time_audit(
             time=time,
             window_start=window_start,
@@ -4306,6 +4825,8 @@ class SubjectSummaryRunner:
             dt_sec_runtime=float(dt),
             dt_sec_config=float(_cfg_dt),
             window_sec_config=float(mnps_cfg["window_sec"]),
+            dt_sec_epoch_config=effective_epoch[1] if effective_epoch is not None else None,
+            window_sec_epoch_config=effective_epoch[0] if effective_epoch is not None else None,
         )
         time_reference_result = build_time_reference_for_run(
             config=config if isinstance(config, Mapping) else {},
@@ -4405,6 +4926,7 @@ class SubjectSummaryRunner:
                 ridge_alpha=mnps_cfg["ridge_alpha"],
                 distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                 j_dot_dt=float(dt),
+                knn_k=mnps_cfg["knn_k"],
             )
             jac_res, primary_geometry_jacobian = apply_standard_jacobian_window_policy(
                 jac_res,
@@ -4452,6 +4974,7 @@ class SubjectSummaryRunner:
                         ridge_alpha=mnps_cfg["ridge_alpha"],
                         distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                         j_dot_dt=float(dt),
+                        knn_k=mnps_cfg["knn_k"],
                     )
                     jac_res_v2, coords_9d_geometry_jacobian = apply_standard_jacobian_window_policy(
                         jac_res_v2,
@@ -4557,6 +5080,7 @@ class SubjectSummaryRunner:
                 ridge_alpha=mnps_cfg["ridge_alpha"],
                 distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                 j_dot_dt=float(dt),
+                knn_k=mnps_cfg["knn_k"],
             )
             layer_jac, _ = apply_standard_jacobian_window_policy(
                 layer_jac,
@@ -4940,6 +5464,7 @@ class SubjectSummaryRunner:
                 sub_frame=sub_frame,
                 config=config,
                 dataset_id=self.dataset.ds_id,
+                artifact_qc_applied=artifact_qc_applied,
             )
             if conventional_eeg_summary is not None:
                 extensions_payload = dict(extensions_payload) if isinstance(extensions_payload, Mapping) else {}
@@ -5015,11 +5540,35 @@ class SubjectSummaryRunner:
             dynamics_cfg = config.get("local_dynamics", {}) if isinstance(config, Mapping) else {}
             metrics_cfg = dynamics_cfg.get("jacobian_metrics", {}) if isinstance(dynamics_cfg, Mapping) else {}
             metrics_cfg = metrics_cfg if isinstance(metrics_cfg, Mapping) else {}
+            # Fit-fidelity gate is opt-in per dataset overlay
+            # (local_dynamics.jacobian_metrics.fit_fidelity_gate.enabled).
+            # The threshold is provisional (see
+            # project/mnps_v3/tests/ingest_jacobian_fidelity_handover.md) and
+            # not yet frozen against a non-clinical qualification set; do not
+            # silently roll this semantic change out to every dataset that
+            # happens to compute Jacobian metrics. When disabled (default),
+            # no fit diagnostics are passed and behavior is byte-for-byte
+            # unchanged from the prior release.
+            fit_gate_cfg = metrics_cfg.get("fit_fidelity_gate", {})
+            fit_gate_cfg = fit_gate_cfg if isinstance(fit_gate_cfg, Mapping) else {}
+            fit_fidelity_gate_enabled = bool(fit_gate_cfg.get("enabled", False))
+            fit_fidelity_threshold = float(fit_gate_cfg.get("threshold", 0.9))
+
             if jac_res is not None:
+                jac_diag = jac_res.diagnostics or {}
                 jacobian_metrics = compute_jacobian_metrics(
                     jac_res.j_hat,
                     stability_zero_tolerance=float(metrics_cfg.get("stability_zero_tolerance", 1e-8)),
                     reactivity_zero_tolerance=float(metrics_cfg.get("reactivity_zero_tolerance", 1e-8)),
+                    rel_mse_baseline_median=resolve_fit_fidelity_gate_input(
+                        jac_diag.get("rel_mse_baseline_median"), gate_enabled=fit_fidelity_gate_enabled
+                    ),
+                    rel_mse_baseline_windows=(
+                        jac_diag.get("rel_mse_baseline_windows") if fit_fidelity_gate_enabled else None
+                    ),
+                    fit_fidelity_threshold=fit_fidelity_threshold,
+                    nominal_dt_sec=jac_diag.get("j_dot_dt"),
+                    estimator_diagnostics=jac_diag,
                 )
                 jacobian_metrics["provenance"].update(
                     {
@@ -5032,10 +5581,20 @@ class SubjectSummaryRunner:
                     }
                 )
             if jac_res_v2 is not None:
+                jac_diag_v2 = jac_res_v2.diagnostics or {}
                 jacobian_metrics_v2 = compute_jacobian_metrics(
                     jac_res_v2.j_hat,
                     stability_zero_tolerance=float(metrics_cfg.get("stability_zero_tolerance", 1e-8)),
                     reactivity_zero_tolerance=float(metrics_cfg.get("reactivity_zero_tolerance", 1e-8)),
+                    rel_mse_baseline_median=resolve_fit_fidelity_gate_input(
+                        jac_diag_v2.get("rel_mse_baseline_median"), gate_enabled=fit_fidelity_gate_enabled
+                    ),
+                    rel_mse_baseline_windows=(
+                        jac_diag_v2.get("rel_mse_baseline_windows") if fit_fidelity_gate_enabled else None
+                    ),
+                    fit_fidelity_threshold=fit_fidelity_threshold,
+                    nominal_dt_sec=jac_diag_v2.get("j_dot_dt"),
+                    estimator_diagnostics=jac_diag_v2,
                 )
                 jacobian_metrics_v2["provenance"].update(
                     {
@@ -5156,6 +5715,7 @@ class SubjectSummaryRunner:
                         transition_residuals,
                         max_dt_deviation_sec=float(transition_cfg.get("max_dt_deviation_sec", 1e-6)),
                         min_eigenvalue=float(transition_cfg.get("min_eigenvalue", 1e-8)),
+                        precision="float64",
                     )
                 if jac_res_v2 is not None:
                     transition_residuals_v2 = compute_transition_residuals(
@@ -5176,6 +5736,7 @@ class SubjectSummaryRunner:
                         transition_residuals_v2,
                         max_dt_deviation_sec=float(transition_cfg.get("max_dt_deviation_sec", 1e-6)),
                         min_eigenvalue=float(transition_cfg.get("min_eigenvalue", 1e-8)),
+                        precision="float64",
                     )
         except Exception:
             logger.exception("Failed to compute transition residuals for %s", dataset_label)
@@ -5198,10 +5759,14 @@ class SubjectSummaryRunner:
                     stochastic_reachability = compute_stochastic_reachability_from_gate_e(
                         transition_residuals,
                         residual_covariance_proxy,
+                        precision="float64",
+                        jacobian_fit_gate=(jacobian_metrics or {}).get("summary"),
                     )
                     stochastic_reachability_v2 = compute_stochastic_reachability_from_gate_e(
                         transition_residuals_v2,
                         residual_covariance_proxy_v2,
+                        precision="float64",
+                        jacobian_fit_gate=(jacobian_metrics_v2 or {}).get("summary"),
                     )
         except Exception:
             logger.exception("Failed to compute stochastic reachability for %s", dataset_label)
@@ -5469,6 +6034,7 @@ class SubjectSummaryRunner:
             coords_9d=np.asarray(coords_9d, dtype=np.float32) if coords_9d is not None else None,
             x_coverage=np.asarray(x_coverage, dtype=np.float32),
             min_axis_coverage=float(min_axis_coverage),
+            artifact_qc_applied=artifact_qc_applied,
         )
         coverage_export = _build_coverage_export(
             x_coverage=np.asarray(x_coverage, dtype=np.float32),
@@ -5556,6 +6122,13 @@ class SubjectSummaryRunner:
             },
             "anchor_state": anchor_state_diagnostics,
             "geometry_contract": geometry_contract,
+            "signal_support_provenance": build_signal_support_export(
+                sub_frame,
+                signal_support_provenance.get("records", [])
+                if isinstance(signal_support_provenance, Mapping)
+                else [],
+                feature_baselines=merged_baselines,
+            ),
         }
         if mapping_provenance:
             provenance_export["mapping"] = mapping_provenance

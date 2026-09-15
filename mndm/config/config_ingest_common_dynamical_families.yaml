@@ -1,20 +1,56 @@
-# Standard non-MNPS measurement families; opt-in by dataset overlay.
+# Standard non-MNPS measurement families plus local-dynamics defaults.
 # Import only from explicit qualification/dataset overlays; this file is
 # intentionally not imported by the common EEG, fMRI, or ephys configs.
+#
+# Family schema IDs are unchanged from v3.0.0:
+#   diffusion   -> mndm.diffusion_geometry.v1
+#   destination -> mndm.committor.v1
+#   resilience  -> mndm.finite_amplitude_resilience.v1
+# Local-dynamics schema IDs (v2.6 / v3.0):
+#   jacobian_metrics              -> mndm.jacobian_metrics.v1
+#   finite_time_response          -> mndm.finite_time_response.v1
+#   transition_residuals          -> mndm.transition_residuals.v1
+#   residual_covariance (Gate E)  -> derived from transition residuals
+#   stochastic_reachability       -> mndm.stochastic_reachability.v1
+#
+# There is no family YAML flag named `spread`. Opt-in discrete W_Q is
+# local_dynamics.stochastic_reachability and writes /stochastic_reachability/v1.
+#
+# Translation-qualification (TQ) gating is NOT uniform across families:
+#   diffusion:              TQ id/hash are a provenance method tag ONLY.
+#                            `qualified` is never read; computation proceeds
+#                            whenever diffusion.enabled=true and the estimator
+#                            has support, regardless of TQ state.
+#   destination/resilience: TQ IS a hard gate. `qualified: true` PLUS a
+#                            non-empty qualification_id AND
+#                            qualification_contract_hash are all required, or
+#                            the family is written as computation_status
+#                            "not_testable" with an explicit failure_reason
+#                            instead of being computed.
+# (see mndm/src/mndm/pipeline/dynamical_families_export.py)
 dynamical_families:
   enabled: false
   coordinate_layer: subject_anchored
   diffusion:
     enabled: false
+    # Informational only: no other estimator is wired, and `qualified` above
+    # is never read as a gate (only qualification_id/hash are copied into
+    # provenance once computed). Changing this string does not change which
+    # function runs.
     estimator: local_increment_covariance
     # Method tags only. When enabled, ingest computes if the estimator has
-    # support. qualification_id / hash do not gate computation.
+    # support. qualification_id / hash do not gate computation. `qualified`
+    # itself is not read by ingest at all (see header note above).
     translation_qualification:
       qualified: false
       qualification_id: null
       qualification_contract_hash: null
     # C1 alignment_only is library-qualified (DF-DRIFT-C1 M1–M2). Ingest does
     # not supply a vector. C2 residualize_increments is not authorized.
+    # Only `enabled`, `mode`, and `source` are read by
+    # dynamical_families/chart_drift.py; qualification_id/
+    # qualification_contract_hash below are reserved for a future authorized
+    # drift source and are not consumed by any current code path.
     drift:
       enabled: false
       mode: alignment_only
@@ -26,11 +62,24 @@ dynamical_families:
     min_neighborhood_samples: 10
     max_gap_sec: null
     max_dt_relative_deviation: 0.05
+    # Minimum finite-row fraction required before the estimator will attempt
+    # a fit; explicit here because destination's identically named estimator
+    # kwarg is NOT wired to any YAML key (always uses its own 0.1 default).
+    min_valid_fraction: 0.1
     psd_floor: 1.0e-8
   destination:
     enabled: false
     # Only an explicit first-hit label column and scalar reaction-coordinate
     # column may activate the O2b adapter; no stage/coordinate inference.
+    # To actually activate destination, an overlay must set the EXACT
+    # sentinel values below (any other string leaves this "not_testable"):
+    #   regime_source: explicit_first_hit_labels
+    #   label_key: stage
+    #   reaction_coordinate.source: explicit_column   (already set)
+    #   reaction_coordinate.key: <a real feature/column name>
+    # plus translation_qualification.qualified: true with non-null,
+    # non-empty qualification_id and qualification_contract_hash, plus a
+    # positive, finite diffusion_coefficient (see below).
     regime_source: null
     label_key: null
     reaction_coordinate:
@@ -39,13 +88,24 @@ dynamical_families:
       name: reaction_coordinate
       boundaries: [-0.8, 0.8]
     estimator: local_law_dense_grid_o2b
+    # Unlike diffusion, `qualified` here IS a hard gate: it plus non-empty
+    # qualification_id/qualification_contract_hash are all required before
+    # ingest will compute destination at all (see header note above).
     translation_qualification:
       qualified: false
       qualification_id: null
       qualification_contract_hash: null
+    # Hard minimum enforced by the estimator: values below 65 are refused
+    # (o2b_grid_resolution_below_minimum), not silently clamped.
     grid_resolution: 65
     set_A: []
     set_B: []
+    # Must be overridden to a positive, finite float before destination can
+    # compute; a `null` (as templated here) is now coerced to NaN in ingest
+    # and yields an explicit computation_status=invalid /
+    # failure_reason=diffusion_coefficient_must_be_positive result rather
+    # than crashing, but destination will never actually compute until this
+    # is set.
     diffusion_coefficient: null
     min_samples: 30
     min_support_per_grid: 30
@@ -55,15 +115,65 @@ dynamical_families:
     enabled: false
     # Requires explicit observed perturbation outcomes. No spontaneous
     # trajectory, Jacobian, reachability, or centroid fallback is permitted.
+    # protocol_source must literally equal explicit_perturbation_outcomes,
+    # and amplitude/returned arrays must actually be supplied by the caller
+    # (not just this YAML) before resilience is testable at all.
     protocol_source: null
     estimator: observed_perturbation_outcome_summary
     amplitude_key: null
     returned_key: null
     survived_key: null
     recovery_time_key: null
+    # When protocol_source is set, `protocol` must be a complete mapping
+    # with non-empty string values for: perturbation_direction,
+    # perturbation_time, reference_attractor_or_state, return_criterion,
+    # escape_criterion, observation_horizon, plus a boolean
+    # non_return_is_escape. An empty {} (as templated here) always fails
+    # incomplete_perturbation_protocol by design (fail-closed).
     protocol: {}
     min_trials_per_amplitude: 20
+    # Same hard-gate rule as destination (see header note above): `qualified`
+    # here IS enforced, unlike diffusion's.
     translation_qualification:
       qualified: false
       qualification_id: null
       qualification_contract_hash: null
+
+# v2.6 / v3.0 local-dynamics defaults. Jacobian metrics are computed whenever
+# J_hat exists. FTR, Gate E transition residuals, and Gate F W_Q remain
+# opt-in. Residual-covariance proxy is derived from Gate E and is not a
+# separate YAML family. Common EEG/fMRI/ephys profiles must not import this
+# file; overlays re-enable the flags they actually want.
+local_dynamics:
+  jacobian_metrics:
+    stability_zero_tolerance: 1.0e-8
+    reactivity_zero_tolerance: 1.0e-8
+    # fit_fidelity_gate is opt-in and defaults to disabled here (no key set).
+    # Overlays that need it (e.g. config_ingest_physionet_i-care_2_1_*) set
+    # local_dynamics.jacobian_metrics.fit_fidelity_gate.enabled/threshold
+    # explicitly. See project/mnps_v3/tests/ingest_jacobian_fidelity_handover.md.
+  finite_time_response:
+    enabled: false
+    propagator_mode: time_ordered_expm
+    horizon_steps: [1, 2, 4]
+    max_gap_sec: null
+    validation_level: model_derived
+  transition_residuals:
+    enabled: false
+    # Cross-fitted one-step residual construction itself only reads
+    # `enabled` and `crossfit_embargo_steps`. `max_dt_deviation_sec` and
+    # `min_eigenvalue` below are NOT read by the residual step — they
+    # parameterize the derived Gate E residual-covariance-proxy (Q) that in
+    # turn feeds Gate F stochastic_reachability below. They live here
+    # because that is where ingest reads them (pipeline/summary.py), not
+    # because they gate transition-residual computation itself.
+    crossfit_embargo_steps: 4
+    max_dt_deviation_sec: 1.0e-6
+    min_eigenvalue: 1.0e-8
+  stochastic_reachability:
+    # Gate F. Setting enabled: true here is a no-op unless
+    # transition_residuals.enabled above is also true: ingest requires the
+    # Gate E residual/Q-proxy pipeline to already be running, and otherwise
+    # writes computation_status=unavailable /
+    # failure_reason=transition_residuals_not_requested instead of W_Q.
+    enabled: false

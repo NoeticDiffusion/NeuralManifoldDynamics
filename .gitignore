@@ -234,3 +234,4 @@ project/
 logs/
 results/
 .cursor/
+.work

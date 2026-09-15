@@ -1,0 +1,28 @@
+# ds005555 — explicit continuous-recording dynamical-families feasibility pilot.
+#
+# This is a separate opt-in overlay for coarse sleep dynamics. It keeps the
+# parent 30 s epoch/feature contract and disables only stage-stratified epoch
+# sampling, so the full recording is eligible for the existing v3 estimators.
+# It is not a spindle or biological-contrast configuration.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_dynamical_families.yaml"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro"
+  processed_dir: "H:/SourceRepo2/NeuralManifoldDynamics/processed/ds005555_dynamical_families_continuous_pilot"
+
+epoching:
+  datasets:
+    ds005555:
+      profile: "sleep_continuous_dynamical_families_v1"
+      length_s: 30.0
+      step_s: 30.0
+      sampling:
+        enabled: false
+        stage_columns: ["stage_hum", "stage_ai", "stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+

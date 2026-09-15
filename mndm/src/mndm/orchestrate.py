@@ -34,7 +34,11 @@ from .parallel import (
 )
 from .pipeline.context import ResolvedConfig, SummarizeContext
 from .pipeline.summary import DatasetSummaryRunner
-from .pipeline.check_structure import run_structure_check
+from .progress_log import (
+    ProgressTracker,
+    joblib_verbose,
+    verbose_logs_enabled,
+)
 from .prerequisite_check import format_prerequisite_report, report_to_json, run_prerequisite_check
 
 logger = logging.getLogger(__name__)
@@ -424,6 +428,21 @@ def cmd_features(
                 except Exception as e:
                     logger.warning("Failed to read file_index.csv for %s: %s", ds_id, e)
                     continue
+            index_df, parse_filled = bids_index.enrich_index_with_filename_parse(
+                index_df,
+                config=config,
+                dataset_id=ds_id,
+            )
+            if parse_filled > 0:
+                logger.info(
+                    "Filled %s index rows from metadata_extraction.filename_parse for %s",
+                    parse_filled,
+                    ds_id,
+                )
+                try:
+                    index_df.to_csv(index_path, index=False)
+                except Exception as e:
+                    logger.warning("Failed to rewrite file_index.csv after filename_parse fill for %s: %s", ds_id, e)
             if subject:
                 subj_str = _normalize_subject_token(subject)
                 index_df = index_df[
@@ -667,6 +686,8 @@ def cmd_features(
 
             failed_files = []
             successful_count = 0
+            progress = ProgressTracker(n_files)
+            verbose_logs = verbose_logs_enabled(config if isinstance(config, dict) else None)
 
             class MemoryLimitExceeded(Exception):
                 pass
@@ -678,91 +699,98 @@ def cmd_features(
                     file_path_obj = Path(res.file_path)
                 except Exception:
                     file_path_obj = None
-
-                if res.success:
-                    t_write0 = time.perf_counter()
-                    t_temp = 0.0
-                    t_intermediate = 0.0
-                    t_qc = 0.0
-                    if res.features_df is not None and len(res.features_df) > 0:
-                        t0 = time.perf_counter()
-                        file_hash = hashlib.md5(str(res.file_path).encode()).hexdigest()[:8]
-                        write_temp_features_csv(
-                            res.features_df,
-                            ds_path / "features.csv",
-                            file_hash,
-                            io_policy=io_policy,
-                        )
-                        t_temp = float(time.perf_counter() - t0)
-                    t1 = time.perf_counter()
-                    write_intermediate_json(
-                        res.features_df,
-                        intermediate_dir,
-                        file_path_obj.name if file_path_obj is not None else "unknown",
-                        cache_meta=_intermediate_cache_meta,
-                    )
-                    t_intermediate = float(time.perf_counter() - t1)
-                    qc_dir = ds_path / "qc_artifacts"
-                    t2 = time.perf_counter()
-                    write_qc_json(
-                        getattr(res, "meta", None),
-                        qc_dir,
-                        file_path_obj.name if file_path_obj is not None else "unknown",
-                    )
-                    t_qc = float(time.perf_counter() - t2)
-                    t_write_total = float(time.perf_counter() - t_write0)
-                    worker_total = float((getattr(res, "timings", {}) or {}).get("worker_total", 0.0) or 0.0)
-                    end_to_end = worker_total + t_write_total
-                    if end_to_end > 0:
-                        logger.info(
-                            "Stage timings for %s (end-to-end): worker=%.2fs (%.1f%%), write_temp=%.2fs (%.1f%%), write_intermediate=%.2fs (%.1f%%), write_qc=%.2fs (%.1f%%), write_total=%.2fs (%.1f%%), total=%.2fs (100.0%%)",
-                            file_path_obj.name if file_path_obj is not None else str(res.file_path),
-                            worker_total,
-                            100.0 * worker_total / end_to_end,
-                            t_temp,
-                            100.0 * t_temp / end_to_end,
-                            t_intermediate,
-                            100.0 * t_intermediate / end_to_end,
-                            t_qc,
-                            100.0 * t_qc / end_to_end,
-                            t_write_total,
-                            100.0 * t_write_total / end_to_end,
-                            end_to_end,
-                        )
-                    # Calibration log: compare pre-run heuristic vs observed per-worker RSS.
-                    try:
-                        meta = getattr(res, "meta", {}) or {}
-                        obs_peak = float(meta.get("worker_rss_gb_peak", 0.0) or 0.0)
-                        obs_delta = float(meta.get("worker_rss_gb_delta_peak", 0.0) or 0.0)
-                        est_item = file_mem_estimates.get(str(file_path_obj)) if file_path_obj is not None else None
-                        if est_item and obs_peak > 0:
-                            logger.info(
-                                "Memory calibration for %s: heuristic=%.2f GB (model=%s), observed_worker_peak_rss=%.2f GB, observed_delta=%.2f GB",
-                                file_path_obj.name if file_path_obj is not None else str(res.file_path),
-                                float(est_item.get("est_gb", 0.0) or 0.0),
-                                str(est_item.get("model", "n/a")),
-                                obs_peak,
-                                obs_delta,
+                label = (
+                    file_path_obj.name
+                    if file_path_obj is not None
+                    else str(getattr(res, "file_path", "unknown") or "unknown")
+                )
+                try:
+                    if res.success:
+                        t_write0 = time.perf_counter()
+                        t_temp = 0.0
+                        t_intermediate = 0.0
+                        t_qc = 0.0
+                        if res.features_df is not None and len(res.features_df) > 0:
+                            t0 = time.perf_counter()
+                            file_hash = hashlib.md5(str(res.file_path).encode()).hexdigest()[:8]
+                            write_temp_features_csv(
+                                res.features_df,
+                                ds_path / "features.csv",
+                                file_hash,
+                                io_policy=io_policy,
                             )
-                    except Exception:
-                        logger.debug("Memory calibration log skipped for %s", res.file_path)
-                    successful_count += 1
-                else:
-                    try:
-                        rel_base = ds_root
-                        rel_path = str(Path(res.file_path).resolve().relative_to(rel_base.resolve()))
-                    except Exception:
-                        rel_path = Path(res.file_path).name if file_path_obj is not None else str(res.file_path)
-                    failed_files.append((rel_path, res.error))
-                    logger.error("Failed to process %s: %s", rel_path, res.error)
+                            t_temp = float(time.perf_counter() - t0)
+                        t1 = time.perf_counter()
+                        write_intermediate_json(
+                            res.features_df,
+                            intermediate_dir,
+                            file_path_obj.name if file_path_obj is not None else "unknown",
+                            cache_meta=_intermediate_cache_meta,
+                        )
+                        t_intermediate = float(time.perf_counter() - t1)
+                        qc_dir = ds_path / "qc_artifacts"
+                        t2 = time.perf_counter()
+                        write_qc_json(
+                            getattr(res, "meta", None),
+                            qc_dir,
+                            file_path_obj.name if file_path_obj is not None else "unknown",
+                        )
+                        t_qc = float(time.perf_counter() - t2)
+                        t_write_total = float(time.perf_counter() - t_write0)
+                        worker_total = float((getattr(res, "timings", {}) or {}).get("worker_total", 0.0) or 0.0)
+                        end_to_end = worker_total + t_write_total
+                        if end_to_end > 0:
+                            logger.debug(
+                                "Stage timings for %s (end-to-end): worker=%.2fs (%.1f%%), write_temp=%.2fs (%.1f%%), write_intermediate=%.2fs (%.1f%%), write_qc=%.2fs (%.1f%%), write_total=%.2fs (%.1f%%), total=%.2fs (100.0%%)",
+                                file_path_obj.name if file_path_obj is not None else str(res.file_path),
+                                worker_total,
+                                100.0 * worker_total / end_to_end,
+                                t_temp,
+                                100.0 * t_temp / end_to_end,
+                                t_intermediate,
+                                100.0 * t_intermediate / end_to_end,
+                                t_qc,
+                                100.0 * t_qc / end_to_end,
+                                t_write_total,
+                                100.0 * t_write_total / end_to_end,
+                                end_to_end,
+                            )
+                        # Calibration log: compare pre-run heuristic vs observed per-worker RSS.
+                        try:
+                            meta = getattr(res, "meta", {}) or {}
+                            obs_peak = float(meta.get("worker_rss_gb_peak", 0.0) or 0.0)
+                            obs_delta = float(meta.get("worker_rss_gb_delta_peak", 0.0) or 0.0)
+                            est_item = file_mem_estimates.get(str(file_path_obj)) if file_path_obj is not None else None
+                            if est_item and obs_peak > 0:
+                                logger.debug(
+                                    "Memory calibration for %s: heuristic=%.2f GB (model=%s), observed_worker_peak_rss=%.2f GB, observed_delta=%.2f GB",
+                                    file_path_obj.name if file_path_obj is not None else str(res.file_path),
+                                    float(est_item.get("est_gb", 0.0) or 0.0),
+                                    str(est_item.get("model", "n/a")),
+                                    obs_peak,
+                                    obs_delta,
+                                )
+                        except Exception:
+                            logger.debug("Memory calibration log skipped for %s", res.file_path)
+                        successful_count += 1
+                    else:
+                        try:
+                            rel_base = ds_root
+                            rel_path = str(Path(res.file_path).resolve().relative_to(rel_base.resolve()))
+                        except Exception:
+                            rel_path = Path(res.file_path).name if file_path_obj is not None else str(res.file_path)
+                        failed_files.append((rel_path, res.error))
+                        logger.error("Failed to process %s: %s", rel_path, res.error)
 
-                if successful_count > 0 and successful_count % 10 == 0:
-                    mem_gb = _monitor_memory()
-                    if mem_gb > effective_mem_budget_gb * 0.95:
-                        logger.error("Memory limit exceeded: %.2f GB (budget: %.2f GB). Aborting to prevent OOM.", mem_gb, effective_mem_budget_gb)
-                        raise MemoryLimitExceeded("Memory limit exceeded.")
-                    elif mem_gb > effective_mem_budget_gb * 0.8:
-                        logger.warning("Memory usage high: %.2f GB (budget: %.2f GB)", mem_gb, effective_mem_budget_gb)
+                    if successful_count > 0 and successful_count % 10 == 0:
+                        mem_gb = _monitor_memory()
+                        if mem_gb > effective_mem_budget_gb * 0.95:
+                            logger.error("Memory limit exceeded: %.2f GB (budget: %.2f GB). Aborting to prevent OOM.", mem_gb, effective_mem_budget_gb)
+                            raise MemoryLimitExceeded("Memory limit exceeded.")
+                        elif mem_gb > effective_mem_budget_gb * 0.8:
+                            logger.warning("Memory usage high: %.2f GB (budget: %.2f GB)", mem_gb, effective_mem_budget_gb)
+                finally:
+                    progress.finished(label)
 
             def _process_subject_files(
                 sub_id: str,
@@ -796,7 +824,7 @@ def cmd_features(
                                 n_jobs=max_workers,
                                 backend="loky",
                                 prefer="processes",
-                                verbose=10,
+                                verbose=joblib_verbose(verbose_logs=verbose_logs),
                                 return_as="generator",
                             )(
                                 delayed(_process_subject_files)(sub_id, files, config)
@@ -814,7 +842,7 @@ def cmd_features(
                                 n_jobs=max_workers,
                                 backend="loky",
                                 prefer="processes",
-                                verbose=10,
+                                verbose=joblib_verbose(verbose_logs=verbose_logs),
                             )(
                                 delayed(_process_subject_files)(sub_id, files, config)
                                 for sub_id, files in batch
@@ -835,7 +863,7 @@ def cmd_features(
                                     _handle_result(res)
                 else:
                     for sub_id, files in subject_task_list:
-                        logger.info("Processing subject %s (%s file(s))", sub_id, len(files))
+                        logger.debug("Processing subject %s (%s file(s))", sub_id, len(files))
                         for res in _process_subject_files(sub_id, files, config):
                             _handle_result(res)
             except MemoryLimitExceeded as e:
@@ -887,9 +915,16 @@ def cmd_summarize(
     n_jobs: int = 1,
     mnps_overrides: Optional[Dict[str, Any]] = None,
     anchor_fit_options: Optional[Dict[str, Any]] = None,
+    resume_run: Path | None = None,
 ) -> int:
     """Project features to MNPS tensors and write HDF5/JSON outputs."""
     try:
+        if bool(config.get("summarize_forbidden")):
+            logger.error(
+                "summarize_forbidden is set; this overlay is a features-only Type-C extract "
+                "and must not be projected to MNPS."
+            )
+            return 1
         config_for_run = copy.deepcopy(config)
         if anchor_fit_options:
             proj_cfg = config_for_run.setdefault("mnps_projection", {})
@@ -910,7 +945,9 @@ def cmd_summarize(
     ctx_for_run: Any = ctx
     if config_path is not None:
         ctx_for_run = _SummarizeContextWithConfigPath(ctx, config_path)
-    return _summarize_with_context(ctx_for_run, dataset_ids, subject, h5_mode, n_jobs=n_jobs)
+    return _summarize_with_context(
+        ctx_for_run, dataset_ids, subject, h5_mode, n_jobs=n_jobs, resume_run=resume_run
+    )
 
 
 def cmd_check_structure(
@@ -983,11 +1020,14 @@ def _summarize_with_context(
     subject: str | None = None,
     h5_mode: str = "subject",
     n_jobs: int = 1,
+    resume_run: Path | None = None,
 ) -> int:
     """Internal helper that assumes `SummarizeContext` has been resolved."""
     try:
         for ds_id in dataset_ids:
-            DatasetSummaryRunner(ctx, ds_id, subject, h5_mode, n_jobs=n_jobs).run()
+            DatasetSummaryRunner(
+                ctx, ds_id, subject, h5_mode, n_jobs=n_jobs, resume_run_dir=resume_run
+            ).run()
 
         return 0
     except Exception as e:

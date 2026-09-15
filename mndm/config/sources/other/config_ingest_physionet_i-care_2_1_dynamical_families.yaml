@@ -1,0 +1,273 @@
+# PhysioNet I-CARE 2.1 — v3 dynamical-families overlay.
+#
+# Global MNPS 3D/9D only: no regional MNPS, no regional Jacobian metrics,
+# no block Jacobians. Family adapters plus Jacobian-derived local dynamics
+# on the existing I-CARE contract. Eligibility / refusal test, not a
+# translation-qualified production analysis.
+#
+# Expected write states:
+#   diffusion:   computed when estimator support holds
+#                (measurement_validity=not_assessed; no OD-TQ1 copy)
+#   destination: not_testable (no explicit first-hit A/B or reaction coordinate)
+#   resilience:  not_testable / no_perturbation_protocol
+#   jacobian metrics: computed when J_hat exists AND local-fit fidelity
+#                passes the opt-in fit_fidelity_gate below (else
+#                insufficient_support with failure_reason=
+#                local_linear_fit_not_better_than_baseline /
+#                fit_fidelity_unknown); measurement_validity=not_assessed
+#   FTR: computed when Jacobian support allows (validation_level=model_derived)
+#   Gate E residuals + Q proxy: computed when J_hat and regular dt allow
+#   Gate F W_Q: computed only when Gate E Q is admissible
+#                (discrete chart-space spread; not process noise;
+#                not analysis-repo I-CARE coma tubes)
+#   grain + certificate + /support_signature/v1: written on new files
+#
+# Do not copy OD-TQ1 hashes here.
+#
+# 2026-09-11 (ingest_jacobian_fidelity_handover_2.md items 10-12, by explicit
+# user decision, not a silent default change):
+#   - ComBat harmonization: enabled here (hospital batch_key; site E is
+#     almost pure CPC5). A no-ComBat twin overlay is kept at
+#     config_ingest_physionet_i-care_2_1_dynamical_families_no_combat.yaml
+#     (same processed_dir root minus this override) so both a harmonized and
+#     an unharmonized export exist side by side.
+#   - Cohort-anchored coordinates: added alongside (not instead of)
+#     subject-anchored, via mnps_projection.export_contracts +
+#     anchor_auto_fit. dynamical_families.coordinate_layer stays
+#     subject_anchored (within-subject dynamics); cohort-anchored layers are
+#     the contract's intended chart for the CPC1-vs-CPC5 between-subject
+#     comparison, but direct_between_subject_inference remains forbidden at
+#     the certificate level regardless of which layer is read.
+#   - conventional_eeg (qEEG comparator pack): enabled for incremental
+#     validity vs NDT geometry. NOT gated by dropping windows on qc_ok_eeg
+#     (I-CARE preprocess.artifacts.method is "none", so qc_ok_eeg would
+#     always be -1/not_assessed and the pack would be silently empty);
+#     instead /extensions/conventional_eeg/artifact_qc explicitly stamps
+#     not_assessed so readers cannot mistake this for artifact-QC-passed
+#     descriptives. See mndm/src/mndm/pipeline/conventional_summary.py.
+#   Both changes require a features re-extract (new eeg_conventional_*
+#   columns, ComBat-transformed features) and a summarize re-run on the
+#   actual I-CARE dump; this repo checkout has no local copy of that raw
+#   data, so re-running the pipeline on the real cohort is a follow-up
+#   pipeline-runner operation, not something validated in this change.
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_physionet_i-care_2_1.yaml"
+  - "../../config_ingest_common_dynamical_families.yaml"
+
+datasets:
+  - physionet_icare_2_1
+
+paths:
+  processed_dir: "K:/processed/physionet_icare_2_1_dynamical_families"
+
+robustness:
+  ensembles:
+    enabled: false
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: false
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+
+  diffusion:
+    enabled: true
+    estimator: local_increment_covariance
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+    neighborhood: {k: 20}
+    min_samples: 30
+    min_neighborhood_samples: 10
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    psd_floor: 1.0e-8
+
+  destination:
+    enabled: true
+    regime_source: null
+    label_key: null
+    reaction_coordinate:
+      source: explicit_column
+      key: null
+      name: reaction_coordinate
+      boundaries: [-0.8, 0.8]
+    estimator: local_law_dense_grid_o2b
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+    grid_resolution: 65
+    set_A: []
+    set_B: []
+    diffusion_coefficient: null
+    min_samples: 30
+    min_support_per_grid: 30
+    min_transition_segments: 5
+    max_dt_relative_deviation: 0.05
+
+  resilience:
+    enabled: true
+    protocol_source: null
+    estimator: observed_perturbation_outcome_summary
+    amplitude_key: null
+    returned_key: null
+    survived_key: null
+    recovery_time_key: null
+    protocol: {}
+    min_trials_per_amplitude: 20
+    translation_qualification:
+      qualified: false
+      qualification_id: null
+      qualification_contract_hash: null
+
+local_dynamics:
+  jacobian_metrics:
+    stability_zero_tolerance: 1.0e-8
+    reactivity_zero_tolerance: 1.0e-8
+    # Opt-in fit-fidelity gate, explicitly enabled only on this dataset
+    # overlay (default off everywhere else - see
+    # config_ingest_common_dynamical_families.yaml). See
+    # project/mnps_v3/tests/ingest_jacobian_fidelity_handover.md: on the
+    # 20260904 I-CARE dump, rel_mse_baseline_median was 0.90-0.98 (40/40
+    # sampled files), i.e. the local linear fit did not beat the no-dynamics
+    # baseline on this cohort. Recordings at/above this threshold are
+    # reported insufficient_support instead of a plausible-looking
+    # alpha/omega regime classification, and downstream stochastic
+    # reachability (below) is skipped for the same recordings rather than
+    # running the W-recursion to numerical overflow. threshold=0.9 is
+    # provisional (taken directly from this dataset's own audit evidence,
+    # not frozen against a non-clinical qualification set) and scoped to
+    # this overlay only until that qualification exercise is done.
+    fit_fidelity_gate:
+      enabled: true
+      threshold: 0.9
+  finite_time_response:
+    enabled: true
+    propagator_mode: time_ordered_expm
+    horizon_steps: [1, 2, 4]
+    max_gap_sec: null
+    validation_level: model_derived
+  transition_residuals:
+    enabled: true
+    crossfit_embargo_steps: 4
+    max_dt_deviation_sec: 1.0e-6
+    min_eigenvalue: 1.0e-8
+  stochastic_reachability:
+    enabled: true
+
+# Cohort-anchored coordinates alongside subject-anchored (item 11). Pooled
+# one-shot anchor fit across all available I-CARE recordings in this
+# processed_dir; see mndm/tests/test_fmri_summarize.py
+# test_cmd_summarize_one_shot_fit_anchor_writes_cohort_layers for the
+# mechanism this mirrors.
+mnps_projection:
+  export_contracts:
+    subject_anchored: true
+    cohort_anchored: true
+  anchor_auto_fit:
+    enabled: true
+    anchor_id: "physionet_icare_2_1_dynamical_families_cohort_iqr_v2_1"
+    anchor_source: "physionet_icare_2_1_dynamical_families_all_subjects_features"
+    scale_method: "iqr"
+    min_subjects: 3
+
+# ComBat harmonization (item 10), batch=hospital. Twin overlay
+# config_ingest_physionet_i-care_2_1_dynamical_families_no_combat.yaml keeps
+# an unharmonized export of the same contract.
+normalization:
+  enabled: true
+  method: "combat"
+  scope: "post_features"
+  batch_key: "hospital"
+  covariates: ["group", "age", "sex"]
+  reference_policy: "within_dataset"
+  # Explicit here for clarity, though this is now also the code-level
+  # default (mndm/src/mndm/pipeline/summary.py::_apply_feature_normalization)
+  # for ANY dataset that enables ComBat: fail closed on a fundamental
+  # ComBat failure (neuroCombat not importable, or the harmonization call
+  # itself -- and its batch-only fallback -- both raising) rather than
+  # silently continuing with unharmonized features under a config that
+  # explicitly enables ComBat. Per independent review of
+  # ingest_jacobian_fidelity_handover_2.md item 10. Note this does NOT
+  # cover every skip path (e.g. missing hospital metadata for some
+  # subjects, or an insufficient batch count after filtering still return
+  # the unharmonized table with an explicit status in
+  # /provenance/normalization and normalization_report.json, rather than
+  # aborting the whole dataset run over a per-subject metadata gap) --
+  # check normalization_report.json's "status" field either way before
+  # treating a re-export as ComBat-harmonized.
+  strict: true
+  combat:
+    chunk_size: 24
+    min_batch_size: 2
+    min_feature_observations: 16
+    winsorize_quantiles: [0.005, 0.995]
+    family_wise:
+      enabled: false
+      strategy: "prefix"
+      delimiter: "_"
+      min_family_columns: 2
+      regex_map: {}
+  validation:
+    enabled: true
+    max_rows: 150000
+    max_features: 256
+    min_group_size: 20
+    max_levels: 24
+    batch_key: "auto"
+    target_keys: ["group", "cpc"]
+    metrics:
+      batch_eta2: true
+      target_eta2: true
+      perturbation: true
+  datasets:
+    physionet_icare_2_1:
+      enabled: true
+      batch_key: "hospital"
+      covariates: ["group", "age", "sex"]
+
+# Conventional qEEG comparator pack (item 12). artifact_qc is a
+# non-blocking provenance stamp (see header note above and
+# Output_variables_guide.md); it does not gate this pack's write.
+conventional_eeg:
+  enabled: true
+  packs: ["tier1", "complexity", "coma"]
+  export:
+    per_epoch_columns: true
+    summaries: true
+  coma:
+    suppression_ratio: true
+    burst_suppression_proxy: true
+    continuity_proxy: true
+    alpha_delta_ratio: true
+    suppression:
+      amplitude_floor: 0.01
+      relative_to_rms: 0.20
+      envelope_smoothing_sec: 0.25
+    reactivity_proxy:
+      enabled: true
+      diff_features:
+        - eeg_conventional_coma_alpha_delta_ratio
+        - eeg_conventional_coma_continuity_proxy
+        - eeg_permutation_entropy
+        - eeg_highfreq_power_30_45
+      eps: 1.0e-6
+      clip_at: 5.0
+  datasets:
+    physionet_icare_2_1:
+      enabled: true

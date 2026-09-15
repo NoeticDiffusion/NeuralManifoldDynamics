@@ -359,6 +359,7 @@ def _summarize_surrogate(
         ridge_alpha=float(ridge_alpha),
         distance_weighted=bool(distance_weighted),
         j_dot_dt=float(dt_sec),
+        knn_k=int(knn_k),
     )
     tau = compute_tau_summary(x, AXIS_NAMES, dt_sec=float(dt_sec), nan_policy="interpolate")
     tier2 = compute_tier2_jacobian_metrics(jac_res.j_hat, jacobian_diagnostics=jac_res.diagnostics)

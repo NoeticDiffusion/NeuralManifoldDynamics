@@ -36,6 +36,17 @@ from uuid import uuid4
 
 from .bdf_adapter import apply_bdf_adapter_policy, interpolate_configured_bdf_bads
 from .reproducibility import resolve_component_seed
+from .signal_support_provenance import (
+    build_signal_support_provenance,
+    callable_signature,
+    file_sha256,
+    finish_operation,
+    actual_crop_bounds,
+    refresh_source_hash,
+    quality_interval,
+    original_raw_annotation_start,
+    start_operation,
+)
 
 # Disable numba JIT to avoid long import stalls on Windows/venv
 os.environ.setdefault("MNE_USE_NUMBA", "false")
@@ -2099,6 +2110,9 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             file_path_for_mne = patched
 
     # Load raw with delayed data load to avoid reading entire file
+    signal_support_provenance = build_signal_support_provenance(
+        Path(file_path), target_sfreq=target_sfreq, source_datatype=source_datatype
+    )
     raw = None
     t_load0 = time.perf_counter()
     try:
@@ -2185,6 +2199,103 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         str(sfreq_policy.get("selection_mode", "unknown")),
         str(sfreq_policy.get("ratio", "n/a")),
     )
+    signal_support_provenance["input_sfreq_hz"] = original_sfreq
+    signal_support_provenance["configured_target_sfreq_hz"] = signal_support_provenance.get("target_sfreq_hz")
+    signal_support_provenance["target_sfreq_hz"] = float(target_sfreq)
+    signal_support_provenance["sampling_policy"] = sfreq_policy
+    original_first_samp = int(getattr(raw, "first_samp", 0))
+    original_first_time_sec = float(getattr(raw, "first_time", 0.0) or 0.0)
+    raw_file_str = str(file_path)
+    signal_support_provenance["raw_clock_before_crop"] = {
+        "sfreq_hz": original_sfreq,
+        "first_time_sec": original_first_time_sec,
+        "first_samp": int(getattr(raw, "first_samp", 0)),
+        "n_times": int(raw.n_times),
+        "duration_sec": float(raw.n_times / original_sfreq) if original_sfreq > 0 else None,
+    }
+    dataset_id = _infer_dataset_id(file_path, config)
+    # Preserve source quality intervals before crop. These records are
+    # observational only: they do not alter annotations, masks, or samples.
+    quality_intervals: List[Dict[str, Any]] = []
+    annotations = getattr(raw, "annotations", None)
+    annotation_status = "unavailable"
+    if annotations is not None:
+        try:
+            annotation_status = "none_observed"
+            for onset, duration, description in zip(
+                annotations.onset, annotations.duration, annotations.description
+            ):
+                description_text = str(description)
+                if not description_text.upper().startswith("BAD"):
+                    continue
+                # MNE annotation onset is in the raw time frame and includes
+                # Raw.first_time for nonzero first_samp recordings.
+                start_sec = original_raw_annotation_start(float(onset), original_first_time_sec)
+                duration_sec = float(duration)
+                quality_intervals.append(quality_interval(
+                    source_kind="mne_raw_annotation",
+                    start_sec=start_sec,
+                    duration_sec=duration_sec,
+                    raw_file=raw_file_str,
+                    description=description_text,
+                    raw_first_samp=original_first_samp,
+                ))
+                annotation_status = "observed"
+        except Exception as exc:
+            annotation_status = "error"
+            signal_support_provenance["source_quality_intervals_error"] = str(exc)
+
+    event_status = "not_applicable"
+    events_path = _find_events_file(file_path, {"suffix_candidates": ["_events.tsv"]}) if dataset_id == "ds005555" else None
+    if dataset_id == "ds005555" and events_path is None:
+        event_status = "unavailable"
+    if events_path is not None:
+        try:
+            event_hash_before = file_sha256(events_path)
+            events_df = pd.read_csv(events_path, sep="\t")
+            event_hash_after = file_sha256(events_path)
+            if event_hash_before != event_hash_after:
+                raise RuntimeError("source_events_changed_during_read")
+            if "stage_hum" in events_df.columns and "onset" in events_df.columns and "duration" in events_df.columns:
+                event_status = "none_observed"
+                stage_values = pd.to_numeric(events_df["stage_hum"], errors="coerce")
+                onsets = pd.to_numeric(events_df["onset"], errors="coerce")
+                durations = pd.to_numeric(events_df["duration"], errors="coerce")
+                for row_idx in events_df.index[stage_values.eq(8) & onsets.notna() & durations.notna()]:
+                    start_sec = float(onsets.loc[row_idx])
+                    duration_sec = float(durations.loc[row_idx])
+                    quality_intervals.append(quality_interval(
+                        source_kind="source_stage_hum_code_8",
+                        start_sec=start_sec,
+                        duration_sec=duration_sec,
+                        raw_file=raw_file_str,
+                        source_row=int(row_idx),
+                        stage_code=8,
+                        source_path=str(events_path),
+                        source_sha256=event_hash_before,
+                        source_column="stage_hum",
+                    ))
+                    event_status = "observed"
+            else:
+                event_status = "error"
+                signal_support_provenance["source_events_quality_error"] = "stage_hum_onset_duration_columns_missing"
+        except Exception as exc:
+            event_status = "error"
+            signal_support_provenance["source_events_quality_error"] = str(exc)
+    overall_quality_status = "observed" if quality_intervals else (
+        "error" if "error" in {annotation_status, event_status} else (
+            "unavailable" if "unavailable" in {annotation_status, event_status} else "none_observed"
+        )
+    )
+    signal_support_provenance["source_quality_intervals"] = {
+        "status": overall_quality_status,
+        "clock": "original_raw_seconds",
+        "intervals": quality_intervals,
+        "annotation_status": annotation_status,
+        "source_stage_hum_code_8_status": event_status,
+        "raw_file": raw_file_str,
+        "analysis_admissibility": "not_assessed_here",
+    }
 
     # Determine crop window (event-based preferred, falling back to static crop)
     dataset_id = _infer_dataset_id(file_path, config)
@@ -2200,7 +2311,13 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                 crop_window[0],
                 crop_window[1] if crop_window[1] is not None else (float(raw.n_times) / float(raw.info["sfreq"])),
             )
-    crop_window_info: Optional[Tuple[float, Optional[float]]] = crop_window
+    crop_record: Dict[str, Any] = {
+        "requested": None,
+        "applied": False,
+        "actual_tmin_sec": None,
+        "actual_tmax_sec": None,
+        "reason": "not_configured",
+    }
     if crop_window is None:
         crop_cfg = _resolve_crop_config(config, dataset_id)
         if crop_cfg:
@@ -2211,6 +2328,8 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
 
     if crop_window is not None:
         tmin, tmax = crop_window
+        crop_record["requested"] = {"tmin_sec": float(tmin), "tmax_sec": float(tmax) if tmax is not None else None}
+        crop_record["reason"] = "configured"
         if tmax is not None and tmax <= tmin:
             logger.warning("Invalid crop window for %s (tmin=%.2f, tmax=%.2f); skipping crop", file_path.name, tmin, tmax)
         else:
@@ -2221,6 +2340,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             tmax_target = raw_duration if tmax is None else tmax
             tmax_clamped = min(raw_duration - eps, tmax_target)
             if tmax_clamped <= tmin_clamped:
+                crop_record["reason"] = "invalid_after_clamp"
                 logger.warning(
                     "Clamped crop window invalid for %s (tmin=%.2f, tmax=%.2f); skipping crop",
                     file_path.name,
@@ -2229,6 +2349,21 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                 )
             else:
                 raw.crop(tmin=tmin_clamped, tmax=tmax_clamped)
+                actual_first_samp = int(getattr(raw, "first_samp", original_first_samp))
+                crop_record.update(
+                    {
+                        "applied": True,
+                        **actual_crop_bounds(
+                            original_first_samp=original_first_samp,
+                            actual_first_samp=actual_first_samp,
+                            actual_n_times=int(raw.n_times),
+                            sfreq_hz=original_sfreq,
+                            original_first_time_sec=original_first_time_sec,
+                        ),
+                    }
+                )
+
+    signal_support_provenance["crop"] = crop_record
 
     # Load only the cropped data
     raw.load_data(verbose=False)
@@ -2338,7 +2473,23 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             "Skipping resample for concatenated epoched EEGLAB stream (%s) to avoid boundary artifacts",
             file_path.name,
         )
+        skipped = start_operation(
+            signal_support_provenance,
+            "resample_early",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"target_sfreq_hz": target_sfreq},
+            actual_kwargs={"skipped": True, "reason": "eeglab_concatenated_epoch_policy"},
+        )
+        finish_operation(skipped, status="skipped", output_sfreq=float(raw.info["sfreq"]))
     elif raw.info["sfreq"] != target_sfreq:
+        operation = start_operation(
+            signal_support_provenance,
+            "resample_early",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"target_sfreq_hz": target_sfreq},
+            actual_kwargs={"target_sfreq": target_sfreq, "n_jobs": n_jobs_resample, "verbose": False},
+        )
+        operation["actual_kwargs"]["call_signature"] = callable_signature(raw.resample)
         logger.info(
             "Early resample from %.1f Hz to %.1f Hz for %s (n_jobs=%s)",
             raw.info["sfreq"],
@@ -2346,7 +2497,21 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             file_path.name,
             n_jobs_resample,
         )
-        raw.resample(target_sfreq, n_jobs=n_jobs_resample, verbose=False)
+        try:
+            raw.resample(target_sfreq, n_jobs=n_jobs_resample, verbose=False)
+        except Exception as exc:
+            finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
+            raise
+        finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+    else:
+        skipped = start_operation(
+            signal_support_provenance,
+            "resample_early",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"target_sfreq_hz": target_sfreq},
+            actual_kwargs={"skipped": True, "reason": "already_at_target_sfreq"},
+        )
+        finish_operation(skipped, status="skipped", output_sfreq=float(raw.info["sfreq"]))
     preprocess_timings["resample_early"] = float(time.perf_counter() - t_resample_early0)
 
     # If we patched an EDF copy, it is now safe to remove it (raw is in-memory).
@@ -2362,13 +2527,13 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     art_cfg = artifact_cfg or {}
     art_method = str(art_cfg.get("method", "none")).lower()
 
-    def _apply_eog_regression(r: mne.io.BaseRaw) -> None:
-        """Internal helper: apply eog regression."""
+    def _apply_eog_regression(r: mne.io.BaseRaw) -> bool:
+        """Internal helper: apply eog regression. Returns True iff it actually applied."""
         eeg_picks = mne.pick_types(r.info, eeg=True)
         eog_picks = mne.pick_types(r.info, eog=True)
         if len(eeg_picks) == 0 or len(eog_picks) == 0:
             logger.info("EOG regression skipped: missing EEG or EOG channels")
-            return
+            return False
         data = r.get_data()  # shape: [n_channels, n_times]
         eeg_data = data[eeg_picks, :]
         eog_data = data[eog_picks, :].T  # [T, K]
@@ -2383,10 +2548,12 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             # Write back
             r._data[eeg_picks, :] = corrected  # type: ignore[attr-defined]
             logger.info("Applied EOG regression to %d EEG channels using %d EOG predictors", len(eeg_picks), len(eog_picks))
+            return True
         except Exception as exc:
             logger.warning("EOG regression failed (%s); continuing without regression", exc)
+            return False
 
-    def _apply_ica(r: mne.io.BaseRaw) -> None:
+    def _apply_ica(r: mne.io.BaseRaw) -> bool:
         """Internal helper: apply ICA artifact removal.
 
         Supports EOG proxy channels (e.g. Fp1/Fp2) for datasets without
@@ -2395,11 +2562,11 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         """
         if ICA is None:
             logger.info("ICA not available; skipping ICA artifacts removal")
-            return
+            return False
         eeg_picks = mne.pick_types(r.info, eeg=True)
         if len(eeg_picks) == 0:
             logger.info("ICA skipped: no EEG channels")
-            return
+            return False
         n_comp = int(art_cfg.get("ica_n_components", min(20, len(eeg_picks))))
         random_state, _ = resolve_component_seed(
             config,
@@ -2478,14 +2645,32 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                 "Applied ICA (n_components=%d); excluded %d components (eog_proxy=%s, ecg=%s)",
                 n_comp, len(ica.exclude), retyped_as_eog or "none", ecg_ch_names or "none",
             )
+            # ica.apply(r) with an empty exclude list is a no-op: the signal
+            # is byte-for-byte unmodified. "Applied" must mean a confirmed
+            # artifact component was actually removed (e.g. no EOG/ECG
+            # channels were present to detect against, or detection found
+            # nothing), not merely that the ICA fit-and-apply call sequence
+            # ran without raising. Per independent review of
+            # ingest_jacobian_fidelity_handover_2.md item 9: qc_ok_eeg's
+            # artifact_qc_applied signal must not be True for a window whose
+            # signal was never actually touched.
+            return len(ica.exclude) > 0
         except Exception as exc:
             logger.warning("ICA artifact removal failed (%s); continuing without ICA", exc)
+            return False
 
     t_artifact0 = time.perf_counter()
+    # Whether an artifact-reduction method actually executed and modified the
+    # signal (not merely configured) -- see project/mnps_v3/tests/
+    # ingest_jacobian_fidelity_handover_2.md item 9. `art_method` alone
+    # records what was *configured*; a skip (missing EOG/EEG channels, ICA
+    # unavailable) or exception still leaves art_method=="ica"/"eog_reg" even
+    # though nothing ran.
+    artifact_applied = False
     if art_method == "eog_reg":
-        _apply_eog_regression(raw)
+        artifact_applied = _apply_eog_regression(raw)
     elif art_method == "ica":
-        _apply_ica(raw)
+        artifact_applied = _apply_ica(raw)
     elif art_method not in {"", "none", "null"}:
         logger.info("Unknown artifact method '%s'; skipping artifact reduction", art_method)
     preprocess_timings["artifact_reduction"] = float(time.perf_counter() - t_artifact0)
@@ -2531,10 +2716,27 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                 resp=True,
                 bio=True,
             )
+        operation = start_operation(
+            signal_support_provenance,
+            "notch_filter",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"freqs_hz": notch_hz, "picked_channels": int(len(notch_picks))},
+            actual_kwargs={"freqs": notch_hz, "picks_count": int(len(notch_picks)), "verbose": False},
+        )
+        operation["actual_kwargs"]["call_signature"] = callable_signature(raw.notch_filter)
         if len(notch_picks) > 0:
-            raw.notch_filter(freqs=notch_hz, picks=notch_picks, verbose=False)
+            try:
+                raw.notch_filter(freqs=notch_hz, picks=notch_picks, verbose=False)
+            except Exception as exc:
+                finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
+                raise
+            finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
         else:
+            finish_operation(operation, status="skipped", output_sfreq=float(raw.info["sfreq"]), fallback="no_eligible_channels")
             logger.info("Skipping notch filter for %s: no eligible channels after typing", file_path.name)
+    else:
+        skipped = start_operation(signal_support_provenance, "notch_filter", input_sfreq=float(raw.info["sfreq"]), actual_kwargs={"skipped": True, "reason": "disabled_or_time_filter_policy"})
+        finish_operation(skipped, status="skipped", output_sfreq=float(raw.info["sfreq"]))
     preprocess_timings["notch"] = float(time.perf_counter() - t_notch0)
 
     # Treat intracranial EEG (sEEG/ECoG) as EEG for ingest purposes.
@@ -2546,32 +2748,63 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     t_bandpass0 = time.perf_counter()
     eeg_chans = eeg_like_chans
     if len(eeg_chans) > 0 and eeg_bandpass is not None and len(eeg_bandpass) == 2 and not skip_time_filters:
+        operation = start_operation(signal_support_provenance, "eeg_bandpass", input_sfreq=float(raw.info["sfreq"]), parameters={"bandpass_hz": eeg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in eeg_chans]}, actual_kwargs={"l_freq": eeg_bandpass[0], "h_freq": eeg_bandpass[1], "picks_count": int(len(eeg_chans)), "verbose": False})
+        operation["actual_kwargs"]["call_signature"] = callable_signature(raw.filter)
         try:
             raw.filter(l_freq=eeg_bandpass[0], h_freq=eeg_bandpass[1], picks=eeg_chans, verbose=False)
-        except Exception:
+            finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+        except Exception as primary_exc:
             # Fallback to mne.filter.filter_data on array if raw.filter fails
-            data = raw.get_data(picks=eeg_chans)
-            filtered = mne.filter.filter_data(data, raw.info["sfreq"], eeg_bandpass[0], eeg_bandpass[1], verbose=False)
-            raw._data[eeg_chans, :] = filtered  # type: ignore[attr-defined]
+            try:
+                data = raw.get_data(picks=eeg_chans)
+                filtered = mne.filter.filter_data(data, raw.info["sfreq"], eeg_bandpass[0], eeg_bandpass[1], verbose=False)
+                raw._data[eeg_chans, :] = filtered  # type: ignore[attr-defined]
+                finish_operation(operation, status="fallback", output_sfreq=float(raw.info["sfreq"]), fallback="mne.filter.filter_data", error=primary_exc)
+            except Exception as fallback_exc:
+                finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), fallback="mne.filter.filter_data", error=fallback_exc)
+                raise
+    else:
+        skipped = start_operation(signal_support_provenance, "eeg_bandpass", input_sfreq=float(raw.info["sfreq"]), actual_kwargs={"skipped": True, "reason": "no_eligible_channels_or_disabled"})
+        finish_operation(skipped, status="skipped", output_sfreq=float(raw.info["sfreq"]))
     preprocess_timings["bandpass"] = float(time.perf_counter() - t_bandpass0)
 
     # Optional MEG bandpass for FIF-based M/EEG recordings.
     t_meg_bandpass0 = time.perf_counter()
     meg_chans = mne.pick_types(raw.info, meg=True, ref_meg=False)
     if len(meg_chans) > 0 and meg_bandpass is not None and len(meg_bandpass) == 2 and not skip_time_filters:
+        operation = start_operation(signal_support_provenance, "meg_bandpass", input_sfreq=float(raw.info["sfreq"]), parameters={"bandpass_hz": meg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in meg_chans]}, actual_kwargs={"l_freq": meg_bandpass[0], "h_freq": meg_bandpass[1], "picks_count": int(len(meg_chans)), "verbose": False})
+        operation["actual_kwargs"]["call_signature"] = callable_signature(raw.filter)
         try:
             raw.filter(l_freq=meg_bandpass[0], h_freq=meg_bandpass[1], picks=meg_chans, verbose=False)
-        except Exception:
+            finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+        except Exception as primary_exc:
             data = raw.get_data(picks=meg_chans)
-            filtered = mne.filter.filter_data(data, raw.info["sfreq"], meg_bandpass[0], meg_bandpass[1], verbose=False)
-            raw._data[meg_chans, :] = filtered  # type: ignore[attr-defined]
+            try:
+                filtered = mne.filter.filter_data(data, raw.info["sfreq"], meg_bandpass[0], meg_bandpass[1], verbose=False)
+                raw._data[meg_chans, :] = filtered  # type: ignore[attr-defined]
+                finish_operation(operation, status="fallback", output_sfreq=float(raw.info["sfreq"]), fallback="mne.filter.filter_data", error=primary_exc)
+            except Exception as fallback_exc:
+                finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), fallback="mne.filter.filter_data", error=fallback_exc)
+                raise
+    else:
+        skipped = start_operation(signal_support_provenance, "meg_bandpass", input_sfreq=float(raw.info["sfreq"]), actual_kwargs={"skipped": True, "reason": "no_eligible_channels_or_disabled"})
+        finish_operation(skipped, status="skipped", output_sfreq=float(raw.info["sfreq"]))
     preprocess_timings["meg_bandpass"] = float(time.perf_counter() - t_meg_bandpass0)
 
     # Resample once for all channels if needed
     # (Note: we already resampled early to save memory, so this is now usually a no-op).
     t_resample_late0 = time.perf_counter()
     if raw.info["sfreq"] != target_sfreq and not (is_eeglab_epoched_concat and not eeglab_concat_policy.get("resample_concatenated_epochs", False)):
-        raw.resample(target_sfreq, verbose=False)
+        operation = start_operation(signal_support_provenance, "resample_late", input_sfreq=float(raw.info["sfreq"]), parameters={"target_sfreq_hz": target_sfreq}, actual_kwargs={"target_sfreq": target_sfreq, "verbose": False})
+        try:
+            raw.resample(target_sfreq, verbose=False)
+        except Exception as exc:
+            finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
+            raise
+        finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+    else:
+        skipped = start_operation(signal_support_provenance, "resample_late", input_sfreq=float(raw.info["sfreq"]), actual_kwargs={"skipped": True, "reason": "already_at_target_or_eeglab_policy"})
+        finish_operation(skipped, status="skipped", output_sfreq=float(raw.info["sfreq"]))
     preprocess_timings["resample_late"] = float(time.perf_counter() - t_resample_late0)
 
     # Detect and drop obviously bad EEG-like channels (simple heuristics) BEFORE CAR reref.
@@ -2602,12 +2835,16 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     eeg_csd_cfg = _resolve_eeg_csd_config(config, dataset_id)
     csd_applied = False
     csd_reason: Optional[str] = None
+    csd_operation = start_operation(signal_support_provenance, "eeg_csd", operation_class="spatial", input_sfreq=float(raw.info["sfreq"]), parameters={"enabled": bool(eeg_csd_cfg.get("enabled", False)), "lambda2": eeg_csd_cfg.get("lambda2", 1e-5), "stiffness": eeg_csd_cfg.get("stiffness", 4.0), "n_legendre_terms": eeg_csd_cfg.get("n_legendre_terms", 50)}, actual_kwargs={"copy": False, "scalp_channels": []})
     if source_datatype != "ecg" and bool(eeg_csd_cfg.get("enabled", False)):
         if compute_current_source_density is None:
             csd_reason = "mne_csd_unavailable"
+            finish_operation(csd_operation, status="skipped", output_sfreq=float(raw.info["sfreq"]), fallback=csd_reason)
             logger.warning("EEG CSD requested but mne.compute_current_source_density is unavailable")
         else:
             eeg_scalp_picks = mne.pick_types(raw.info, eeg=True, seeg=False, ecog=False)
+            csd_operation["actual_kwargs"]["scalp_channels"] = [raw.ch_names[int(i)] for i in eeg_scalp_picks]
+            csd_operation["actual_kwargs"]["call_signature"] = callable_signature(compute_current_source_density)
             min_eeg_channels = int(eeg_csd_cfg.get("min_eeg_channels", 16) or 16)
             if len(eeg_scalp_picks) < min_eeg_channels:
                 csd_reason = f"insufficient_scalp_channels:{len(eeg_scalp_picks)}<{min_eeg_channels}"
@@ -2617,6 +2854,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                     len(eeg_scalp_picks),
                     min_eeg_channels,
                 )
+                finish_operation(csd_operation, status="skipped", output_sfreq=float(raw.info["sfreq"]), fallback=csd_reason)
             else:
                 lambda2 = float(eeg_csd_cfg.get("lambda2", 1e-5) or 1e-5)
                 stiffness = float(eeg_csd_cfg.get("stiffness", 4.0) or 4.0)
@@ -2631,6 +2869,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                     )
                     csd_applied = True
                     csd_reason = "applied"
+                    finish_operation(csd_operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
                     logger.info(
                         "Applied EEG CSD for %s (lambda2=%g, stiffness=%.2f, n_legendre_terms=%d)",
                         file_path.name,
@@ -2640,6 +2879,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                     )
                 except Exception as exc:
                     csd_reason = f"failed:{exc}"
+                    finish_operation(csd_operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
                     on_error = str(eeg_csd_cfg.get("on_error", "warn")).strip().lower()
                     if on_error in {"raise", "fail", "error"}:
                         raise RuntimeError(
@@ -2648,22 +2888,29 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                     logger.warning("EEG CSD failed for %s (%s); continuing without CSD", file_path.name, exc)
     else:
         csd_reason = "disabled"
+        finish_operation(csd_operation, status="skipped", output_sfreq=float(raw.info["sfreq"]), fallback=csd_reason)
     preprocess_timings["eeg_csd"] = float(time.perf_counter() - t_csd0)
 
     # Average re-reference for EEG-like channels if requested.
     # We do manual referencing so iEEG (seeg/ecog) is also covered.
     t_reref0 = time.perf_counter()
     eeg_chans = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True) if source_datatype != "ecg" else np.array([], dtype=int)
+    reref_operation = start_operation(signal_support_provenance, "average_rereference", operation_class="spatial", input_sfreq=float(raw.info["sfreq"]), parameters={"requested": reref == "average", "channels": [raw.ch_names[int(i)] for i in eeg_chans]}, actual_kwargs={})
     if reref == "average" and len(eeg_chans) > 0:
         if csd_applied:
+            finish_operation(reref_operation, status="skipped", output_sfreq=float(raw.info["sfreq"]), fallback="csd_reference_free")
             logger.info("Skipping average reref for %s because EEG CSD is already reference-free", file_path.name)
         else:
             try:
                 eeg_data = raw.get_data(picks=eeg_chans)
                 eeg_ref = eeg_data - np.mean(eeg_data, axis=0, keepdims=True)
                 raw._data[eeg_chans, :] = eeg_ref  # type: ignore[attr-defined]
+                finish_operation(reref_operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
             except Exception as exc:
+                finish_operation(reref_operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
                 logger.warning("Average reference failed for %s (%s); continuing without reref", file_path.name, exc)
+    else:
+        finish_operation(reref_operation, status="skipped", output_sfreq=float(raw.info["sfreq"]), fallback="disabled_or_no_channels")
     preprocess_timings["reref"] = float(time.perf_counter() - t_reref0)
 
     # Collect per-modality arrays
@@ -2770,11 +3017,27 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         channels_dict["eda"] = [raw.ch_names[i] for i in eda_chans]
     preprocess_timings["collect_modalities"] = float(time.perf_counter() - t_collect0)
     preprocess_timings["total"] = float(time.perf_counter() - t_pre0)
+    signal_support_provenance["raw_clock_after_crop"] = {
+        "sfreq_hz": float(raw.info["sfreq"]),
+        "first_time_sec": float(getattr(raw, "first_time", 0.0) or 0.0),
+        "first_samp": int(getattr(raw, "first_samp", 0)),
+        "n_times": int(raw.n_times),
+        "duration_sec": float(raw.n_times / float(raw.info["sfreq"])) if float(raw.info["sfreq"]) > 0 else None,
+    }
+    refresh_source_hash(signal_support_provenance)
+    signal_support_provenance["status"] = "completed"
 
     logger.info(f"Preprocessed {file_path.name}: {list(modality_signals.keys())}")
 
     artifact_meta: Dict[str, Any] = {
         "method": art_method,
+        # "applied" is True only when the configured method actually ran and
+        # modified the signal; a skip (missing channels, ICA unavailable) or
+        # an exception leaves this False even though "method" still names
+        # the configured method. Downstream QC (qc_ok_eeg) must consult this
+        # flag rather than treating a configured-but-not-executed method as
+        # if artifact rejection had run.
+        "applied": bool(artifact_applied),
         "bad_eeg_channels": bad_eeg_channels,
         "bad_eeg_reasons": bad_info.get("reasons", {}),
     }
@@ -2786,8 +3049,14 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         "target_sfreq_resolved": float(target_sfreq),
         "sfreq_policy": sfreq_policy,
         "crop_window": {
-            "tmin": float(crop_window_info[0]) if crop_window_info is not None else None,
-            "tmax": float(crop_window_info[1]) if (crop_window_info is not None and crop_window_info[1] is not None) else None,
+            "tmin": crop_record["requested"]["tmin_sec"] if crop_record["requested"] else None,
+            "tmax": crop_record["requested"]["tmax_sec"] if crop_record["requested"] else None,
+        },
+        "crop_window_applied": {
+            "applied": bool(crop_record["applied"]),
+            "tmin": crop_record["actual_tmin_sec"],
+            "tmax": crop_record["actual_tmax_sec"],
+            "reason": crop_record["reason"],
         },
         "artifact": artifact_meta,
         "bdf_adapter": bdf_adapter_meta,
@@ -2800,6 +3069,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             "n_legendre_terms": int(eeg_csd_cfg.get("n_legendre_terms", 50) or 50),
         },
         "timings": preprocess_timings,
+        "signal_support_provenance": signal_support_provenance,
     }
     if eeglab_import_meta is not None:
         meta["eeglab_import"] = eeglab_import_meta

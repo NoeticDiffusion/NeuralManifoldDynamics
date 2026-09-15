@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
@@ -70,6 +71,41 @@ def build_dir_suffix(
     if acq_id:
         parts.append(acq_id)
     return "_".join(parts) if parts else None
+
+
+def recording_output_dir(mnps_dir: Path, sub_id: str, dir_suffix: Optional[str]) -> Path:
+    """Return the per-recording output directory under a summarize run."""
+    return Path(mnps_dir) / (f"{sub_id}_{dir_suffix}" if dir_suffix else sub_id)
+
+
+def recording_h5_path(mnps_dir: Path, sub_id: str, dir_suffix: Optional[str]) -> Path:
+    """Return the canonical per-recording H5 path under a summarize run."""
+    target_dir = recording_output_dir(mnps_dir, sub_id, dir_suffix)
+    basename = f"{sub_id}_{dir_suffix}.h5" if dir_suffix else f"{sub_id}.h5"
+    return target_dir / basename
+
+
+def h5_recording_is_complete(path: Path) -> bool:
+    """Return True when ``path`` is a readable H5 with ``/mnps_3d``.
+
+    Truncated or empty files left by a killed summarize are treated as missing
+    so ``--resume-run`` can rewrite them.
+    """
+    h5_path = Path(path)
+    try:
+        if not h5_path.is_file() or h5_path.stat().st_size < 256:
+            return False
+    except OSError:
+        return False
+    try:
+        import h5py
+    except Exception:
+        return False
+    try:
+        with h5py.File(h5_path, "r") as handle:
+            return "mnps_3d" in handle
+    except Exception:
+        return False
 
 
 def extract_time_bounds(

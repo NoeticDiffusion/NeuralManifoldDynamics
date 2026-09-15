@@ -431,6 +431,77 @@ def test_apply_standard_jacobian_window_policy_filters_near_singular_windows():
     assert filtered.diagnostics["hard_invalid_centers"].tolist() == [2]
 
 
+def test_apply_standard_jacobian_window_policy_recomputes_rel_mse_baseline_median():
+    """Scalar fit-fidelity medians must track the retained (filtered) windows.
+
+    Regression guard: filtering rel_mse_baseline_windows down to the retained
+    set without recomputing the paired scalar median would leave a stale
+    summary that describes the pre-filter window population instead of the
+    J_hat actually exported downstream (see review of diary 361).
+    """
+    from mndm.jacobian import JacobianResult
+    from mndm.pipeline.robustness_helpers import apply_standard_jacobian_window_policy
+
+    j_hat = np.array(
+        [
+            np.eye(3, dtype=np.float32),
+            np.diag([1.0, 1e-12, 1e-12]).astype(np.float32),
+            (2.0 * np.eye(3, dtype=np.float32)),
+        ]
+    )
+    j_dot = np.gradient(j_hat, axis=0).astype(np.float32)
+    jac = JacobianResult(
+        j_hat=j_hat,
+        j_dot=j_dot,
+        centers=np.array([1, 2, 3], dtype=np.int32),
+        diagnostics={
+            "condition_number_windows": np.array([1.0, 1e12, 2.0], dtype=np.float32),
+            "rel_mse_baseline_windows": np.array([0.1, 0.99, 0.2], dtype=np.float32),
+            # Stale pre-filter scalar: median of all three raw windows.
+            "rel_mse_baseline_median": 0.2,
+            "n_neighborhood_samples": np.array([20, 12, 30], dtype=np.int32),
+            "n_neighborhood_samples_median": 20.0,
+            "n_neighborhood_samples_min": 12.0,
+        },
+    )
+
+    filtered, _summary = apply_standard_jacobian_window_policy(jac, condition_number_max=1e10)
+
+    assert filtered is not None
+    assert np.allclose(filtered.diagnostics["rel_mse_baseline_windows"], [0.1, 0.2])
+    # median([0.1, 0.2]) == 0.15, not median([0.1, 0.99, 0.2]) == 0.2.
+    assert np.isclose(filtered.diagnostics["rel_mse_baseline_median"], 0.15)
+    assert np.array_equal(filtered.diagnostics["n_neighborhood_samples"], np.array([20, 30], dtype=np.int32))
+    assert np.isclose(filtered.diagnostics["n_neighborhood_samples_median"], 25.0)
+    assert np.isclose(filtered.diagnostics["n_neighborhood_samples_min"], 20.0)
+
+
+def test_apply_standard_jacobian_window_policy_recomputes_oos_rel_mse_median():
+    from mndm.jacobian import JacobianResult
+    from mndm.pipeline.robustness_helpers import apply_standard_jacobian_window_policy
+
+    j_hat = np.array(
+        [
+            np.eye(3, dtype=np.float32),
+            np.diag([1.0, 1e-12, 1e-12]).astype(np.float32),
+            (2.0 * np.eye(3, dtype=np.float32)),
+        ]
+    )
+    jac = JacobianResult(
+        j_hat=j_hat,
+        j_dot=np.gradient(j_hat, axis=0).astype(np.float32),
+        centers=np.array([1, 2, 3], dtype=np.int32),
+        diagnostics={
+            "condition_number_windows": np.array([1.0, 1e12, 2.0], dtype=np.float32),
+            "rel_mse_baseline_oos_windows": np.array([0.2, 1.4, 0.4], dtype=np.float32),
+            "rel_mse_baseline_oos_median": 0.4,
+        },
+    )
+    filtered, _summary = apply_standard_jacobian_window_policy(jac, condition_number_max=1e10)
+    assert filtered is not None
+    assert np.allclose(filtered.diagnostics["rel_mse_baseline_oos_windows"], [0.2, 0.4])
+    assert np.isclose(filtered.diagnostics["rel_mse_baseline_oos_median"], 0.3)
+
 def test_compute_mnps_mnj_sanity_flags_9d_and_mnj_instability():
     """Sanity helper should flag broken 9D support and ill-conditioned MNJ fits."""
     from mndm.pipeline.robustness_helpers import compute_mnps_mnj_sanity

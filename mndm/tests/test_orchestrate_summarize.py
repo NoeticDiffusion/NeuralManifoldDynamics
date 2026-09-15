@@ -47,7 +47,7 @@ def test_cmd_summarize_builds_context_and_delegates(monkeypatch):
 
     monkeypatch.setattr(orchestrate.SummarizeContext, "from_resolved", classmethod(fake_from_resolved))
 
-    def fake_runner(ctx, dataset_ids, subject, h5_mode, n_jobs=1):
+    def fake_runner(ctx, dataset_ids, subject, h5_mode, n_jobs=1, resume_run=None):
         """Handle fake runner."""
         captured["runner"] = (ctx, dataset_ids, subject, h5_mode, n_jobs)
         return 42
@@ -142,7 +142,7 @@ def test_cmd_summarize_attaches_config_path_to_context(monkeypatch):
         classmethod(lambda cls, resolved: dummy_ctx),
     )
 
-    def fake_runner(ctx, dataset_ids, subject, h5_mode, n_jobs=1):
+    def fake_runner(ctx, dataset_ids, subject, h5_mode, n_jobs=1, resume_run=None):
         """Capture proxied context."""
         captured["config_path"] = getattr(ctx, "config_path", None)
         return 0
@@ -158,4 +158,48 @@ def test_cmd_summarize_attaches_config_path_to_context(monkeypatch):
 
     assert rc == 0
     assert captured["config_path"] == Path("/tmp/config_ingest.yaml")
+
+
+def test_cmd_summarize_forwards_resume_run(monkeypatch):
+    """--resume-run should reach DatasetSummaryRunner via _summarize_with_context."""
+    captured = {}
+    dummy_resolved = SimpleNamespace(
+        raw={"paths": {}},
+        paths=SimpleNamespace(received_dir=Path("/recv"), processed_dir=Path("/proc")),
+        coverage=SimpleNamespace(min_seconds=0.0, min_epochs=0),
+        weights={},
+        normalize_override=None,
+        ingest_meta={},
+        mnps_cfg={},
+        derivative_cfg={},
+        extensions_cfg={},
+    )
+
+    monkeypatch.setattr(
+        orchestrate.ResolvedConfig,
+        "from_mapping",
+        classmethod(lambda cls, cfg, out_dir, cli_data_dir=None, mnps_overrides=None: dummy_resolved),
+    )
+    monkeypatch.setattr(
+        orchestrate.SummarizeContext,
+        "from_resolved",
+        classmethod(lambda cls, resolved: object()),
+    )
+
+    def fake_runner(ctx, dataset_ids, subject, h5_mode, n_jobs=1, resume_run=None):
+        captured["resume_run"] = resume_run
+        return 0
+
+    monkeypatch.setattr(orchestrate, "_summarize_with_context", fake_runner)
+
+    resume = Path("/existing/run")
+    rc = orchestrate.cmd_summarize(
+        config={"paths": {"received_dir": "/tmp/recv", "processed_dir": "/tmp/proc"}},
+        dataset_ids=["ds001"],
+        out_dir=Path("/custom/out"),
+        resume_run=resume,
+    )
+
+    assert rc == 0
+    assert captured["resume_run"] == resume
 

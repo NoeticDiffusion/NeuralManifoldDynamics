@@ -457,6 +457,14 @@ def test_write_h5_writes_jacobian_diagnostics_group(require_real_h5py):
         "windows": 3.0,
         "rel_mse_baseline_median": 0.92,
         "rel_mse_baseline_windows": np.array([0.8, 0.9, 1.1], dtype=np.float32),
+        "knn_k": 20,
+        "super_window": 3,
+        "ridge_alpha": 1.0,
+        "distance_weighted": True,
+        "min_samples": 4,
+        "n_neighborhood_samples": np.array([21, 22, 19], dtype=np.int32),
+        "n_neighborhood_samples_median": 21.0,
+        "n_neighborhood_samples_min": 19.0,
     }
 
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -471,6 +479,15 @@ def test_write_h5_writes_jacobian_diagnostics_group(require_real_h5py):
             assert "rel_mse_baseline_windows" in dgrp
             assert np.allclose(dgrp["rel_mse_baseline_windows"][()], np.array([0.8, 0.9, 1.1], dtype=np.float32))
             assert float(dgrp.attrs["rel_mse_baseline_median"]) == pytest.approx(0.92)
+            assert int(dgrp.attrs["knn_k"]) == 20
+            assert int(dgrp.attrs["super_window"]) == 3
+            assert float(dgrp.attrs["ridge_alpha"]) == pytest.approx(1.0)
+            assert bool(dgrp.attrs["distance_weighted"]) is True
+            assert int(dgrp.attrs["min_samples"]) == 4
+            assert "n_neighborhood_samples" in dgrp
+            assert np.array_equal(dgrp["n_neighborhood_samples"][()], np.array([21, 22, 19], dtype=np.int32))
+            assert float(dgrp.attrs["n_neighborhood_samples_median"]) == pytest.approx(21.0)
+            assert float(dgrp.attrs["n_neighborhood_samples_min"]) == pytest.approx(19.0)
 
 
 def test_write_h5_supports_unicode_label_arrays(require_real_h5py):

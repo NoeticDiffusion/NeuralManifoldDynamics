@@ -54,6 +54,22 @@ def test_compute_eeg_features_shape():
     assert "eeg_hjorth_mobility" in out.columns
     assert "eeg_hjorth_complexity" in out.columns
     assert "eeg_highfreq_power_30_45" in out.columns
+    assert "eeg_hjorth_activity" not in out.columns
+
+
+def test_hjorth_activity_is_opt_in():
+    from mndm.features.eeg import compute_eeg_features
+
+    eeg_data = np.random.randn(4, 250 * 8)
+    signals = {"signals": {"eeg": eeg_data}, "sfreq": 250}
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 4.0},
+        "features": {"hjorth_activity": True, "eeg_bands": {"alpha": [8, 12]}},
+    }
+    out = compute_eeg_features(signals, config)
+    assert "eeg_hjorth_activity" in out.columns
+    assert np.all(np.isfinite(out["eeg_hjorth_activity"]))
+    assert np.all(out["eeg_hjorth_activity"] >= 0)
 
 
 def test_compute_eeg_features_values():

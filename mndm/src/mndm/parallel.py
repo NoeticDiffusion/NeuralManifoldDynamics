@@ -352,13 +352,19 @@ def _build_signal_payload(
     file_path_for_features: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Normalize preprocessed output to the dict consumed by feature extractors."""
+    # Keep the executed preprocessing support contract attached to the payload
+    # consumed by feature handlers.  This is descriptive provenance only; an
+    # absent/unknown field must not be replaced by inferred epoch bounds.
+    meta = dict(preprocessed.meta or {})
+    if "signal_support_provenance" in meta:
+        meta["signal_support_provenance"] = meta.get("signal_support_provenance")
     return {
         "signals": preprocessed.signals,
         "sfreq": preprocessed.sfreq,
         "channels": preprocessed.channels,
         "dataset_id": preprocessed.meta.get("dataset_id"),
         "file_path": file_path_for_features or preprocessed.meta.get("file"),
-        "meta": dict(preprocessed.meta or {}),
+        "meta": meta,
     }
 
 
@@ -374,6 +380,7 @@ def _compute_features_from_preprocessed(
         file_path_for_features=file_path_for_features,
     )
     feature_dfs: list[pd.DataFrame] = []
+    produced_modalities: list[str] = []
     feature_stage_times: Dict[str, float] = {}
     mod_handlers = _get_modality_handlers()
     available_modalities = set(preprocessed.signals.keys())
@@ -401,10 +408,40 @@ def _compute_features_from_preprocessed(
         feature_stage_times[f"feature_{mod_name}"] = float(time.perf_counter() - t_mod0)
         if isinstance(mod_features, pd.DataFrame) and len(mod_features) > 0:
             feature_dfs.append(mod_features)
+            produced_modalities.append(mod_name)
     if not feature_dfs:
         return None, feature_stage_times
     t_merge0 = time.perf_counter()
     merged = _merge_feature_frames(feature_dfs)
+    support_records = [
+        frame.attrs.get("signal_support_provenance")
+        for frame in feature_dfs
+        if isinstance(getattr(frame, "attrs", None), Mapping)
+        and isinstance(frame.attrs.get("signal_support_provenance"), Mapping)
+    ]
+    base_support = preprocessed.meta.get("signal_support_provenance")
+    if support_records or isinstance(base_support, Mapping):
+        canonical = dict(base_support if isinstance(base_support, Mapping) else support_records[0])
+        operations = list(canonical.get("operations", []) or [])
+        seen = {str(op.get("operation_id")) for op in operations}
+        for record in support_records:
+            for operation in record.get("operations", []) or []:
+                identifier = str(operation.get("operation_id"))
+                if identifier not in seen:
+                    operations.append(operation)
+                    seen.add(identifier)
+        canonical["operations"] = operations
+        # These extractors use start_idx / sfreq and end_idx / sfreq against
+        # the supplied cropped arrays. Other modalities remain unqualified.
+        if set(produced_modalities).issubset({"eeg", "eog", "emg", "ppg"}):
+            canonical["feature_time_clock"] = {
+                "reference": "preprocessed_array_start",
+                "modalities": produced_modalities,
+                "sampling_frequency_hz": float(preprocessed.sfreq),
+                "bounds_convention": "half_open_nominal_input_window",
+                "effective_filter_support": "unknown",
+            }
+        merged.attrs["signal_support_provenance"] = canonical
     feature_stage_times["merge_modalities"] = float(time.perf_counter() - t_merge0)
     return merged, feature_stage_times
 
@@ -444,6 +481,9 @@ def worker_init(base_seed: int = 0, worker_id: int = 0):
 
     # Do not set RNG here: per-file seeds in process_single_file ensure
     # deterministic outputs independent of task scheduling/worker assignment.
+    from .progress_log import configure_runtime_logging, verbose_logs_enabled
+
+    configure_runtime_logging(verbose=verbose_logs_enabled())
     logger.debug("Worker %s initialized (BLAS threads pinned to 1)", worker_id)
 
 
@@ -508,6 +548,9 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
         )
         return out
     try:
+        from .progress_log import log_file_started
+
+        log_file_started(file_path.name)
         # Deterministic per-file RNG seed (so parallel vs sequential runs match).
         try:
             base_seed, _ = resolve_base_seed(config)
@@ -547,7 +590,7 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
 
         t0 = time.perf_counter()
         from . import preprocess
-        
+
         preprocessed = preprocess.preprocess_file(file_path, config)
         _track_rss()
         t1 = time.perf_counter()
@@ -573,10 +616,14 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
         stage_times["feature_extract_total"] = float(time.perf_counter() - t1)
 
         if merged is not None and len(merged) > 0:
+            merged_meta = dict(preprocessed.meta or {})
+            feature_support = getattr(merged, "attrs", {}).get("signal_support_provenance")
+            if feature_support:
+                merged_meta["signal_support_provenance"] = feature_support
             merged["file"] = str(file_path.name)
             total = float(time.perf_counter() - t0)
             stage_times["worker_total"] = total
-            logger.info(
+            logger.debug(
                 "Stage timings for %s (worker): %s",
                 file_path.name,
                 _format_timing_breakdown(stage_times, total_key="worker_total"),
@@ -585,13 +632,13 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
                 success=True,
                 file_path=str(file_path),
                 features_df=merged,
-                meta=_attach_memory_meta(preprocessed.meta),
+                meta=_attach_memory_meta(merged_meta),
                 timings=stage_times,
             )
         
         total = float(time.perf_counter() - t0)
         stage_times["worker_total"] = total
-        logger.info(
+        logger.debug(
             "Stage timings for %s (worker): %s",
             file_path.name,
             _format_timing_breakdown(stage_times, total_key="worker_total"),
@@ -654,6 +701,9 @@ def process_file_bundle(bundle_records: list[Dict[str, Any]], dataset_root: Path
     representative_path = dataset_root / representative_rel if representative_rel else dataset_root
     representative_file_name = Path(representative_rel).name if representative_rel else "unknown_bundle"
     bundle_key = str(preferred.get("bundle_key", "") or "")
+    from .progress_log import log_file_started
+
+    log_file_started(representative_file_name)
 
     try:
         merged_bundle_frames: list[pd.DataFrame] = []
@@ -826,7 +876,7 @@ def write_qc_json(meta: Optional[Dict[str, Any]], target_dir: Path, file_name: s
     try:
         with qc_path.open("w", encoding="utf-8") as f:
             json.dump(meta, f, indent=2, default=_json_numpy_default)
-        logger.info("Wrote QC JSON: %s", qc_path)
+        logger.debug("Wrote QC JSON: %s", qc_path)
     except Exception as exc:
         logger.warning("Failed to write QC JSON %s: %s", qc_path, exc)
         return
@@ -870,7 +920,7 @@ def write_intermediate_json(
             detect staleness without running ``--force-features``.
     """
     if features_df is None or len(features_df) == 0:
-        logger.info("Skipping intermediate JSON for %s: empty features", file_name)
+        logger.debug("Skipping intermediate JSON for %s: empty features", file_name)
         return
 
     target_dir.mkdir(parents=True, exist_ok=True)
@@ -878,7 +928,7 @@ def write_intermediate_json(
     json_path = target_dir / f"{stem}.json"
     try:
         features_df.to_json(json_path, orient="records")
-        logger.info("Wrote intermediate JSON: %s (%d rows)", json_path, len(features_df))
+        logger.debug("Wrote intermediate JSON: %s (%d rows)", json_path, len(features_df))
     except Exception as exc:
         logger.warning("Failed to write intermediate JSON %s: %s", json_path, exc)
         return

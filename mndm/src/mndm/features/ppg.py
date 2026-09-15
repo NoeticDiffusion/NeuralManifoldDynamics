@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
@@ -10,6 +12,7 @@ import pandas as pd
 from scipy import signal
 
 from . import epoch_selection
+from ..signal_support_provenance import build_signal_support_provenance, finish_operation, start_operation
 
 logger = logging.getLogger(__name__)
 
@@ -99,21 +102,53 @@ def compute_ppg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     if hi <= lo:
         lo = 0.4
         hi = min(8.0, nyquist * 0.99)
+    inherited = signals.get("meta", {}).get("signal_support_provenance") if isinstance(signals.get("meta", {}), Mapping) else None
+    provenance = deepcopy(inherited) if isinstance(inherited, Mapping) else build_signal_support_provenance(
+        Path(str(signals.get("file_path"))) if signals.get("file_path") else Path("<unknown-ppg-source>"),
+        input_sfreq=sfreq,
+        target_sfreq=sfreq,
+        source_datatype="ppg",
+    )
+    ppg_filter = start_operation(
+        provenance,
+        "ppg_bandpass_filtfilt",
+        input_sfreq=sfreq,
+        parameters={"low_hz": lo, "high_hz": hi, "order": bandpass_order},
+        actual_kwargs={"method": "scipy.signal.filtfilt", "b": "recorded_below", "a": "recorded_below"},
+    )
     try:
         b, a = signal.butter(bandpass_order, [lo / nyquist, hi / nyquist], btype="bandpass")
+        ppg_filter["actual_kwargs"]["b"] = np.asarray(b).tolist()
+        ppg_filter["actual_kwargs"]["a"] = np.asarray(a).tolist()
         filtered_full = signal.filtfilt(b, a, ppg_channel)
-    except Exception:
+        finish_operation(ppg_filter, status="applied", output_sfreq=sfreq)
+    except Exception as primary_exc:
         logger.exception("PPG bandpass failed; falling back to demeaned signal for pulse detection")
         filtered_full = ppg_channel - np.nanmedian(ppg_channel)
+        finish_operation(ppg_filter, status="fallback", output_sfreq=sfreq, fallback="demeaned_signal", error=primary_exc)
 
     centered = filtered_full - np.nanmedian(filtered_full)
     abs_sig = np.abs(centered)
     mad = float(np.nanmedian(np.abs(centered))) + 1e-8
     prominence = max(1e-6, prominence_mult * mad)
     min_dist = max(1, int(round(refractory_s * sfreq)))
+    peak_operation = start_operation(
+        provenance,
+        "ppg_peak_detection",
+        input_sfreq=sfreq,
+        parameters={
+            "distance_samples": min_dist,
+            "prominence": prominence,
+            "prominence_mult": prominence_mult,
+            "threshold_fit_scope": "whole_stream_median_and_MAD",
+        },
+        actual_kwargs={"distance": min_dist, "prominence": prominence},
+    )
     peaks, props = signal.find_peaks(abs_sig, distance=min_dist, prominence=prominence)
     peaks = np.asarray(peaks, dtype=int)
     prominences = np.asarray(props.get("prominences", np.asarray([], dtype=float)), dtype=float)
+    finish_operation(peak_operation, status="applied", output_sfreq=sfreq)
+    peak_operation["result"] = {"peaks_count": int(peaks.size), "global_threshold": True}
 
     records: List[Dict[str, Any]] = []
     for epoch_idx in range(n_epochs):
@@ -151,5 +186,6 @@ def compute_ppg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         )
 
     df = pd.DataFrame(records)
+    df.attrs["signal_support_provenance"] = provenance
     logger.info("Computed %d PPG epochs", len(df))
     return df

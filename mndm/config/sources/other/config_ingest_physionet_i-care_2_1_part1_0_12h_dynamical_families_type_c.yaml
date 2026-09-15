@@ -1,0 +1,75 @@
+# PhysioNet I-CARE 2.1 part1 0-12h — Type-C-1 feature extract (SL-005).
+#
+# This is NOT MNPS-v2-but-faster. It does not define [m,d,e] or coords_9d.
+# The scientific object is a frozen EEG feature state z^C on a 2 s / 2 s grid.
+# Run `features` only. Do not summarize. Do not inspect CPC or alpha_C.
+#
+# Overlay filename contains dynamical_families as required for I-CARE family
+# work; dynamical_families adapters and Jacobian metrics are disabled here.
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_physionet_i-care_2_1_part1_0_12h_dynamical_families.yaml"
+
+datasets:
+  - physionet_icare_2_1
+
+paths:
+  processed_dir: "K:/processed/physionet_icare_2_1_part1_0_12h_dynamical_families_type_c_20260914"
+  dataset_received_dirs:
+    physionet_icare_2_1: "E:/Science_Datasets/physionet/received/i-care_2_1_random100_longitudinal/training"
+
+epoching:
+  length_s: 2.0
+  step_s: 2.0
+
+mnps:
+  window_sec: 2.0
+  overlap: 0.0
+  jacobian:
+    enabled: false
+
+mnps_9d:
+  enabled: false
+
+mnps_projection:
+  export_contracts:
+    subject_anchored: false
+    cohort_anchored: false
+  anchor_auto_fit:
+    enabled: false
+
+dynamical_families:
+  enabled: false
+
+local_dynamics:
+  jacobian_metrics:
+    fit_fidelity_gate:
+      enabled: false
+  finite_time_response:
+    enabled: false
+  transition_residuals:
+    enabled: false
+  stochastic_reachability:
+    enabled: false
+
+normalization:
+  enabled: false
+
+conventional_eeg:
+  enabled: false
+  packs: []
+  datasets:
+    physionet_icare_2_1:
+      enabled: false
+
+features:
+  hjorth_activity: true
+
+robustness:
+  ensembles:
+    enabled: false
+
+type_c_1_features_only: true
+summarize_forbidden: true

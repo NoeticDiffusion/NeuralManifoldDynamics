@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, Mapping, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -22,8 +22,109 @@ class JacobianResult:
     affine_intercept: Optional[np.ndarray] = None
 
 
+SUPPORT_MODE_KNN = "knn"
+SUPPORT_MODE_TIME_LOCAL = "time_local"
+VALID_SUPPORT_MODES: Tuple[str, ...] = (SUPPORT_MODE_KNN, SUPPORT_MODE_TIME_LOCAL)
+
+NEIGHBORHOOD_PROVENANCE_KEYS: Tuple[str, ...] = (
+    "support_mode",
+    "knn_k",
+    "super_window",
+    "ridge_alpha",
+    "distance_weighted",
+    "min_samples",
+    "n_neighborhood_samples_median",
+    "n_neighborhood_samples_min",
+    "n_affine_parameters",
+)
+
+OOS_HOLDOUT_STRIDE = 4
+OOS_PROVENANCE_KEYS: Tuple[str, ...] = (
+    "rel_mse_baseline_oos_median",
+    "oos_holdout_stride",
+)
+
+
+def infer_knn_k(nn_idx: np.ndarray, knn_k: Optional[int] = None) -> int:
+    """Return the chart-neighborhood width actually present in ``nn_idx``.
+
+    ``build_knn_indices`` may cap requested ``k`` to ``T-1``. Provenance must
+    record that effective width, not the possibly larger requested ``knn_k``.
+    """
+    arr = np.asarray(nn_idx)
+    if arr.ndim == 2:
+        return int(arr.shape[1])
+    if knn_k is not None:
+        return int(knn_k)
+    return 0
+
+
+def neighborhood_config_fields(
+    *,
+    knn_k: int,
+    super_window: int,
+    ridge_alpha: float,
+    distance_weighted: bool,
+    dim: int,
+    support_mode: str = SUPPORT_MODE_KNN,
+) -> Dict[str, Any]:
+    """Estimator settings that determine Jacobian neighborhood support."""
+    n_params = int(dim) * (int(dim) + 1)
+    min_samples = int(dim) + 1
+    if str(support_mode) == SUPPORT_MODE_TIME_LOCAL:
+        # In-sample rel_mse on fewer rows than affine parameters is an overfit
+        # trap (3D: 7 samples vs 12 parameters can beat baseline on noise).
+        min_samples = max(min_samples, n_params)
+    return {
+        "support_mode": str(support_mode),
+        "knn_k": int(knn_k),
+        "super_window": int(super_window),
+        "ridge_alpha": float(ridge_alpha),
+        "distance_weighted": bool(distance_weighted),
+        "min_samples": int(min_samples),
+        "n_affine_parameters": n_params,
+    }
+
+
+def summarize_neighborhood_sample_counts(counts: Sequence[int]) -> Dict[str, Any]:
+    """Summarize per-window unique samples actually used in the affine fit."""
+    arr = np.asarray(list(counts), dtype=np.int32)
+    if arr.size == 0:
+        return {
+            "n_neighborhood_samples": arr,
+            "n_neighborhood_samples_median": float("nan"),
+            "n_neighborhood_samples_min": float("nan"),
+        }
+    values = arr.astype(np.float64)
+    return {
+        "n_neighborhood_samples": arr,
+        "n_neighborhood_samples_median": float(np.median(values)),
+        "n_neighborhood_samples_min": float(np.min(values)),
+    }
+
+
+def neighborhood_support_provenance(diagnostics: Mapping[str, Any] | None) -> Dict[str, Any]:
+    """Copy neighborhood estimator settings into Jacobian-metrics provenance."""
+    if not isinstance(diagnostics, Mapping):
+        return {}
+    out: Dict[str, Any] = {}
+    for key in NEIGHBORHOOD_PROVENANCE_KEYS + OOS_PROVENANCE_KEYS:
+        if key not in diagnostics:
+            continue
+        value = diagnostics[key]
+        if isinstance(value, np.bool_):
+            out[key] = bool(value)
+        elif isinstance(value, np.floating):
+            out[key] = float(value)
+        elif isinstance(value, np.integer):
+            out[key] = int(value)
+        else:
+            out[key] = value
+    return out
+
+
 def _gather_indices(center: int, nn_idx: np.ndarray, super_window: int, total: int) -> np.ndarray:
-    """Internal helper: gather indices."""
+    """Gather unique chart-kNN indices from ``super_window`` time neighbors."""
     half = super_window // 2
     candidates: list[np.ndarray] = []
     for offset in range(-half, half + 1):
@@ -36,6 +137,101 @@ def _gather_indices(center: int, nn_idx: np.ndarray, super_window: int, total: i
     if not candidates:
         return np.zeros((0,), dtype=np.int32)
     return np.unique(np.concatenate(candidates, axis=0))
+
+
+def _gather_time_local_indices(center: int, super_window: int, total: int) -> np.ndarray:
+    """Gather a contiguous time window around ``center`` (no chart kNN).
+
+    ``super_window`` is the same odd length used by the kNN estimator: the
+    gathered set is ``[center - half, center + half]`` clipped to ``[0, total)``.
+    This is an experimental support mode for mixing-vs-identification tests.
+    It is not the production Jacobian neighborhood.
+    """
+    half = max(0, int(super_window) // 2)
+    lo = max(0, int(center) - half)
+    hi = min(int(total), int(center) + half + 1)
+    if hi <= lo:
+        return np.zeros((0,), dtype=np.int32)
+    return np.arange(lo, hi, dtype=np.int32)
+
+
+def _normalize_support_mode(support_mode: Optional[str]) -> str:
+    mode = str(support_mode or SUPPORT_MODE_KNN).strip().lower()
+    if mode not in VALID_SUPPORT_MODES:
+        raise ValueError(
+            f"Unsupported Jacobian support_mode={support_mode!r}; "
+            f"expected one of {VALID_SUPPORT_MODES}"
+        )
+    return mode
+
+
+def summarize_oos_rel_mse(
+    values: Sequence[float],
+    holdout_counts: Sequence[int],
+    *,
+    stride: int = OOS_HOLDOUT_STRIDE,
+) -> Dict[str, Any]:
+    """Summarize per-window holdout relative MSE (does not alter J_hat)."""
+    arr = np.asarray(list(values), dtype=np.float32)
+    counts = np.asarray(list(holdout_counts), dtype=np.int32)
+    finite = arr.astype(np.float64)
+    finite = finite[np.isfinite(finite)]
+    return {
+        "rel_mse_baseline_oos_windows": arr,
+        "rel_mse_baseline_oos_median": float(np.median(finite)) if finite.size else float("nan"),
+        "n_holdout_samples": counts,
+        "oos_holdout_stride": int(stride),
+    }
+
+
+def _holdout_split(indices: np.ndarray, stride: int = OOS_HOLDOUT_STRIDE) -> Tuple[np.ndarray, np.ndarray]:
+    """Deterministic train/holdout split of sorted unique support indices."""
+    order = np.unique(np.asarray(indices, dtype=np.int32))
+    if order.size == 0:
+        empty = np.zeros((0,), dtype=np.int32)
+        return empty, empty
+    ranks = np.arange(order.size)
+    holdout_mask = (ranks % max(int(stride), 2)) == (max(int(stride), 2) - 1)
+    return order[~holdout_mask], order[holdout_mask]
+
+
+def _affine_rel_mse(
+    x_eval: np.ndarray,
+    xdot_eval: np.ndarray,
+    jacobian: np.ndarray,
+    intercept: np.ndarray,
+    reference: np.ndarray,
+) -> float:
+    """Relative MSE of an affine map vs mean-ẋ on an evaluation set.
+
+    The baseline is the mean of ``xdot_eval`` (the scored points), matching
+    the in-sample ``rel_mse_baseline`` definition. This is test-set
+    mean-normalized scoring, not a train-only intercept baseline.
+    """
+    if x_eval.shape[0] == 0:
+        return float("nan")
+    pred = (x_eval - np.asarray(reference, dtype=np.float32).reshape(1, -1)) @ np.asarray(
+        jacobian, dtype=np.float32
+    ).T + np.asarray(intercept, dtype=np.float32).reshape(1, -1)
+    residual = xdot_eval - pred
+    mse_model = float(np.mean(residual**2))
+    baseline = xdot_eval - np.mean(xdot_eval, axis=0, keepdims=True)
+    mse_baseline = float(np.mean(baseline**2))
+    if not np.isfinite(mse_baseline) or mse_baseline <= 1e-12:
+        return float("nan")
+    return float(mse_model / mse_baseline)
+
+
+def _gather_support_indices(
+    center: int,
+    nn_idx: np.ndarray,
+    super_window: int,
+    total: int,
+    support_mode: str,
+) -> np.ndarray:
+    if support_mode == SUPPORT_MODE_TIME_LOCAL:
+        return _gather_time_local_indices(center, super_window, total)
+    return _gather_indices(center, nn_idx, super_window, total)
 
 
 def _fit_ridge(design: np.ndarray, target: np.ndarray, alpha: float, sample_weights: Optional[np.ndarray] = None) -> Tuple[np.ndarray, np.ndarray]:
@@ -80,6 +276,7 @@ def fit_local_affine_at_center(
     distance_weighted: bool,
     exclude_indices: Optional[Sequence[int]] = None,
     neighbour_indices: Optional[np.ndarray] = None,
+    min_samples: Optional[int] = None,
 ) -> Optional[Dict[str, Any]]:
     """Fit the local affine derivative model at one center.
 
@@ -88,6 +285,7 @@ def fit_local_affine_at_center(
     :func:`estimate_local_jacobians`.
     """
     dim = int(x.shape[1])
+    required = int(min_samples) if min_samples is not None else dim + 1
     if neighbour_indices is None:
         neighbours = _gather_indices(int(center), nn_idx, int(super_window), x.shape[0])
     else:
@@ -95,14 +293,14 @@ def fit_local_affine_at_center(
     if exclude_indices is not None and len(exclude_indices) > 0:
         excluded = np.asarray(list(exclude_indices), dtype=np.int32)
         neighbours = neighbours[~np.isin(neighbours, excluded)]
-    if neighbours.size < dim + 1:
+    if neighbours.size < required:
         return None
     x_samples = x[neighbours]
     xdot_samples = x_dot[neighbours]
     finite_mask = np.isfinite(x_samples).all(axis=1) & np.isfinite(xdot_samples).all(axis=1)
     x_samples = x_samples[finite_mask]
     xdot_samples = xdot_samples[finite_mask]
-    if x_samples.shape[0] < dim + 1:
+    if x_samples.shape[0] < required:
         return None
 
     x_mean = np.mean(x_samples, axis=0, keepdims=True)
@@ -134,7 +332,55 @@ def fit_local_affine_at_center(
         "mse_baseline": mse_baseline,
         "rel_mse_baseline": float(mse_model / mse_baseline) if np.isfinite(mse_baseline) and mse_baseline > 1e-12 else float("nan"),
         "support_indices": neighbours,
+        "n_fit_samples": int(x_samples.shape[0]),
     }
+
+
+def _holdout_rel_mse_at_center(
+    x: np.ndarray,
+    x_dot: np.ndarray,
+    nn_idx: np.ndarray,
+    center: int,
+    *,
+    neighbour_idx: np.ndarray,
+    super_window: int,
+    ridge_alpha: float,
+    distance_weighted: bool,
+    min_samples: int,
+) -> Tuple[float, int]:
+    """Fit on a train split of the neighborhood; score relative MSE on holdout.
+
+    Canonical ``J_hat`` is unchanged: this is an auxiliary diagnostic.
+    """
+    train_idx, holdout_idx = _holdout_split(neighbour_idx, OOS_HOLDOUT_STRIDE)
+    if train_idx.size < int(min_samples) or holdout_idx.size < 1:
+        return float("nan"), 0
+    oos_fit = fit_local_affine_at_center(
+        x,
+        x_dot,
+        nn_idx,
+        int(center),
+        super_window=super_window,
+        ridge_alpha=ridge_alpha,
+        distance_weighted=distance_weighted,
+        neighbour_indices=train_idx,
+        min_samples=min_samples,
+    )
+    if oos_fit is None:
+        return float("nan"), 0
+    hold_x = x[holdout_idx]
+    hold_xd = x_dot[holdout_idx]
+    finite = np.isfinite(hold_x).all(axis=1) & np.isfinite(hold_xd).all(axis=1)
+    if int(finite.sum()) < 1:
+        return float("nan"), 0
+    rel = _affine_rel_mse(
+        hold_x[finite],
+        hold_xd[finite],
+        oos_fit["jacobian"],
+        oos_fit["affine_intercept"],
+        oos_fit["affine_reference"],
+    )
+    return float(rel), int(finite.sum())
 
 
 def estimate_local_jacobians(
@@ -145,26 +391,56 @@ def estimate_local_jacobians(
     ridge_alpha: float = 1.0,
     distance_weighted: bool = False,
     j_dot_dt: Optional[float] = None,
+    knn_k: Optional[int] = None,
+    support_mode: str = SUPPORT_MODE_KNN,
 ) -> JacobianResult:
-    """Estimate windowed Jacobians from MNPS trajectories."""
+    """Estimate windowed Jacobians from MNPS trajectories.
+
+    Each center is one MNPS window. The production ``support_mode="knn"`` fit
+    is a local affine map on unique indices gathered from ``super_window``
+    time neighbors, each contributing ``knn_k`` chart neighbors. The 8 s / 4 s
+    grid is the center lattice, not the sample size of the fit.
+
+    ``support_mode="time_local"`` is experimental: the same affine fit, but
+    only on a contiguous time window. It is for synthetic mixing tests and
+    bounded replays. It does not change the default summarize estimator.
+    """
     if x.ndim != 2 or x_dot.ndim != 2:
         raise ValueError("estimate_local_jacobians expects 2D arrays for x and x_dot")
     if x.shape != x_dot.shape:
         raise ValueError("x and x_dot must have the same shape")
 
     dim = x.shape[1]
+    super_window = max(1, int(super_window))
+    if super_window % 2 == 0:
+        super_window += 1
+    support_mode = _normalize_support_mode(support_mode)
+    effective_knn_k = (
+        0 if support_mode == SUPPORT_MODE_TIME_LOCAL else infer_knn_k(nn_idx, knn_k)
+    )
+    neighborhood_cfg = neighborhood_config_fields(
+        knn_k=effective_knn_k,
+        super_window=super_window,
+        ridge_alpha=ridge_alpha,
+        distance_weighted=distance_weighted,
+        dim=dim,
+        support_mode=support_mode,
+    )
+    min_samples = int(neighborhood_cfg["min_samples"])
 
     if x.size == 0 or x_dot.size == 0:
         return JacobianResult(
             j_hat=np.zeros((0, dim, dim), dtype=np.float32),
             j_dot=np.zeros((0, dim, dim), dtype=np.float32),
             centers=np.zeros((0,), dtype=np.int32),
-            diagnostics={"windows": 0, "failed": 0},
+            diagnostics={
+                "windows": 0,
+                "failed": 0,
+                **neighborhood_cfg,
+                **summarize_neighborhood_sample_counts([]),
+                **summarize_oos_rel_mse([], [], stride=OOS_HOLDOUT_STRIDE),
+            },
         )
-
-    super_window = max(1, super_window)
-    if super_window % 2 == 0:
-        super_window += 1
 
     half = super_window // 2
     centers = np.arange(half, x.shape[0] - half, dtype=np.int32)
@@ -177,12 +453,17 @@ def estimate_local_jacobians(
     local_fit_mse: list[float] = []
     local_fit_mse_baseline: list[float] = []
     rel_mse_baseline: list[float] = []
+    rel_mse_baseline_oos: list[float] = []
+    n_holdout_samples: list[int] = []
+    n_neighborhood_samples: list[int] = []
     affine_reference_list: list[np.ndarray] = []
     affine_intercept_list: list[np.ndarray] = []
 
     for center in centers:
-        neighbour_idx = _gather_indices(center, nn_idx, super_window, x.shape[0])
-        if neighbour_idx.size < dim + 1:  # minimum to solve dim params + intercept
+        neighbour_idx = _gather_support_indices(
+            center, nn_idx, super_window, x.shape[0], support_mode
+        )
+        if neighbour_idx.size < min_samples:
             failures += 1
             failed_centers.append(int(center))
             failed_insufficient_neighbours += 1
@@ -196,6 +477,7 @@ def estimate_local_jacobians(
             ridge_alpha=ridge_alpha,
             distance_weighted=distance_weighted,
             neighbour_indices=neighbour_idx,
+            min_samples=min_samples,
         )
         if fit is None:
             failures += 1
@@ -207,6 +489,20 @@ def estimate_local_jacobians(
         local_fit_mse.append(float(fit["mse_model"]))
         local_fit_mse_baseline.append(float(fit["mse_baseline"]))
         rel_mse_baseline.append(float(fit["rel_mse_baseline"]))
+        n_neighborhood_samples.append(int(fit["n_fit_samples"]))
+        oos_rel, n_hold = _holdout_rel_mse_at_center(
+            x,
+            x_dot,
+            nn_idx,
+            int(center),
+            neighbour_idx=np.asarray(fit["support_indices"], dtype=np.int32),
+            super_window=super_window,
+            ridge_alpha=ridge_alpha,
+            distance_weighted=distance_weighted,
+            min_samples=min_samples,
+        )
+        rel_mse_baseline_oos.append(float(oos_rel))
+        n_holdout_samples.append(int(n_hold))
         affine_reference_list.append(np.asarray(fit["affine_reference"], dtype=np.float32))
         affine_intercept_list.append(np.asarray(fit["affine_intercept"], dtype=np.float32))
 
@@ -223,6 +519,9 @@ def estimate_local_jacobians(
                 "failed_insufficient_neighbours": float(failed_insufficient_neighbours),
                 "failed_nonfinite_samples": float(failed_nonfinite_samples),
                 "condition_number_windows": np.zeros((0,), dtype=np.float64),
+                **neighborhood_cfg,
+                **summarize_neighborhood_sample_counts([]),
+                **summarize_oos_rel_mse([], [], stride=OOS_HOLDOUT_STRIDE),
             },
         affine_reference=np.zeros((0, dim), dtype=np.float32),
         affine_intercept=np.zeros((0, dim), dtype=np.float32),
@@ -269,6 +568,11 @@ def estimate_local_jacobians(
         "failed_centers": np.asarray(failed_centers, dtype=np.int32),
         "failed_insufficient_neighbours": float(failed_insufficient_neighbours),
         "failed_nonfinite_samples": float(failed_nonfinite_samples),
+        **neighborhood_cfg,
+        **summarize_neighborhood_sample_counts(n_neighborhood_samples),
+        **summarize_oos_rel_mse(
+            rel_mse_baseline_oos, n_holdout_samples, stride=OOS_HOLDOUT_STRIDE
+        ),
     }
 
     return JacobianResult(

@@ -230,8 +230,8 @@ def build_dynamical_families_export(
                 coordinate_layer=coordinate_layer,
                 coordinate_names=coordinate_names,
             )
-        elif not str(destination_qualification.get("qualification_id", "")).strip() or not str(
-            destination_qualification.get("qualification_contract_hash", "")
+        elif not str(destination_qualification.get("qualification_id") or "").strip() or not str(
+            destination_qualification.get("qualification_contract_hash") or ""
         ).strip():
             export["destination"] = unavailable_result(
                 COMMITTOR_SCHEMA_VERSION,
@@ -252,6 +252,17 @@ def build_dynamical_families_export(
                     coordinate_names=coordinate_names,
                 )
             else:
+                # A YAML `null` returns None from `.get(...)`, overriding the
+                # `np.nan` default; coerce explicitly so an unset/None value
+                # still reaches the estimator's graceful
+                # `diffusion_coefficient_must_be_positive` invalid-state check
+                # instead of raising TypeError from float(None).
+                _raw_diffusion_coefficient = destination_cfg.get("diffusion_coefficient")
+                diffusion_coefficient = (
+                    float(_raw_diffusion_coefficient)
+                    if _raw_diffusion_coefficient is not None
+                    else np.nan
+                )
                 result = estimate_committor_local_law_dense_grid_o2b(
                     state,
                     time,
@@ -261,7 +272,7 @@ def build_dynamical_families_export(
                     set_B=destination_cfg.get("set_B", []),
                     grid_min=float(boundaries[0]),
                     grid_max=float(boundaries[1]),
-                    diffusion_coefficient=float(destination_cfg.get("diffusion_coefficient", np.nan)),
+                    diffusion_coefficient=diffusion_coefficient,
                     segment_id=segment_id,
                     coordinate_layer=coordinate_layer,
                     coordinate_names=coordinate_names,

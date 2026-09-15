@@ -114,6 +114,143 @@ def _extract_subject_candidate(token: str) -> Optional[str]:
     return candidate
 
 
+def _missing_entity(value: Any) -> bool:
+    """True when an index entity is absent or blank."""
+    if value is None:
+        return True
+    try:
+        if pd.isna(value):
+            return True
+    except (TypeError, ValueError):
+        pass
+    return not str(value).strip()
+
+
+def _filename_parse_config(
+    config: Mapping[str, Any] | None,
+    dataset_id: str | None,
+) -> Dict[str, Any]:
+    """Return metadata_extraction.filename_parse for a dataset, if configured."""
+    if not isinstance(config, Mapping):
+        return {}
+    md_spec = config.get("metadata_extraction", {})
+    if not isinstance(md_spec, Mapping):
+        return {}
+    parse_cfg = md_spec.get("filename_parse", {})
+    if dataset_id:
+        ds_spec = (md_spec.get("datasets", {}) or {}).get(dataset_id, {})
+        if isinstance(ds_spec, Mapping) and isinstance(ds_spec.get("filename_parse"), Mapping):
+            parse_cfg = ds_spec.get("filename_parse", {})
+    return dict(parse_cfg) if isinstance(parse_cfg, Mapping) else {}
+
+
+def parse_filename_entities(
+    file_name: str,
+    config: Mapping[str, Any] | None = None,
+    dataset_id: str | None = None,
+) -> Dict[str, Optional[str]]:
+    """Parse subject/session/task/run/acq from a non-BIDS filename regex.
+
+    Uses ``metadata_extraction.datasets.<id>.filename_parse`` when present,
+    otherwise top-level ``metadata_extraction.filename_parse``. Digit-only
+    subjects are zero-padded with ``subject_pad`` (default 3). The regex is
+    applied to the basename so directory prefixes do not break ``^`` anchors.
+    """
+    out: Dict[str, Optional[str]] = {
+        "subject": None,
+        "session": None,
+        "task": None,
+        "run": None,
+        "acq": None,
+    }
+    parse_cfg = _filename_parse_config(config, dataset_id)
+    regex = str(parse_cfg.get("regex", "") or "").strip()
+    if not regex:
+        return out
+    basename = Path(str(file_name)).name
+    match = re.search(regex, basename)
+    if not match:
+        return out
+    groups = match.groupdict()
+    subject_raw = groups.get("subject")
+    if subject_raw:
+        subject_s = str(subject_raw)
+        if subject_s.startswith("sub-"):
+            out["subject"] = subject_s[4:]
+        elif subject_s.isdigit():
+            pad = int(parse_cfg.get("subject_pad", 3) or 3)
+            out["subject"] = subject_s.zfill(pad)
+        else:
+            out["subject"] = subject_s
+    session_raw = groups.get("session")
+    if session_raw:
+        session_s = str(session_raw)
+        out["session"] = session_s[4:] if session_s.startswith("ses-") else session_s
+    task_raw = groups.get("task")
+    if task_raw:
+        out["task"] = str(task_raw)
+    run_raw = groups.get("run")
+    if run_raw:
+        run_s = str(run_raw)
+        out["run"] = run_s[4:] if run_s.startswith("run-") else run_s
+    acq_raw = groups.get("acq")
+    if acq_raw:
+        acq_s = str(acq_raw)
+        out["acq"] = acq_s[4:] if acq_s.startswith("acq-") else acq_s
+    return out
+
+
+def _fill_record_from_filename_parse(
+    record: Dict[str, Any],
+    config: Mapping[str, Any] | None,
+    dataset_id: str | None,
+) -> bool:
+    """Fill missing index entities from filename_parse. Returns True if changed."""
+    parsed = parse_filename_entities(str(record.get("path") or ""), config, dataset_id)
+    changed = False
+    for key in ("subject", "session", "task", "run", "acq"):
+        if _missing_entity(record.get(key)) and parsed.get(key):
+            record[key] = parsed[key]
+            changed = True
+    if changed:
+        record["bundle_key"] = _build_bundle_key(
+            record.get("subject"),
+            record.get("session"),
+            record.get("task"),
+            record.get("run"),
+            record.get("acq"),
+        )
+    return changed
+
+
+def enrich_index_with_filename_parse(
+    index_df: pd.DataFrame,
+    config: Mapping[str, Any] | None = None,
+    dataset_id: str | None = None,
+) -> tuple[pd.DataFrame, int]:
+    """Fill blank subject/session/task/run/acq cells from filename_parse.
+
+    Returns the (possibly copied) frame and the number of rows changed.
+    Used both when building a new index and when loading a stale CSV that
+    predates filename_parse support.
+    """
+    if index_df is None or index_df.empty or "path" not in index_df.columns:
+        return index_df, 0
+    parse_cfg = _filename_parse_config(config, dataset_id)
+    if not str(parse_cfg.get("regex", "") or "").strip():
+        return index_df, 0
+    out = index_df.copy()
+    changed = 0
+    missing_mask = out["subject"].map(_missing_entity) if "subject" in out.columns else pd.Series(True, index=out.index)
+    for idx in out.index[missing_mask.fillna(True)]:
+        record = out.loc[idx].to_dict()
+        if _fill_record_from_filename_parse(record, config, dataset_id):
+            for key in ("subject", "session", "task", "run", "acq", "bundle_key"):
+                out.at[idx, key] = record.get(key)
+            changed += 1
+    return out, changed
+
+
 def _infer_non_bids_subject(parts: tuple[str, ...], stem: str) -> Optional[str]:
     """Best-effort subject fallback for non-BIDS datasets."""
     parts_list = list(parts)
@@ -761,6 +898,10 @@ def build_file_index(
                     "fmri_events_tsv": None,
                 }
             )
+
+    if records:
+        for record in records:
+            _fill_record_from_filename_parse(record, config, dataset_id)
 
     columns = [
         "path",

@@ -49,12 +49,12 @@
 
 = Abstract
 #par(first-line-indent: 0pt)[
-  NeuralManifoldDynamics (v 2.5.0) is a versioned ingest-layer measurement contract for constructing and serializing low-dimensional and stratified neural-manifold proxy trajectories from EEG, MEG, fMRI, and selected NWB/ecephys feature tables, together with optional local Jacobian-based summaries. The contract is NDT-aligned but operational rather than definitional: it fixes a canonical 3D chart (`mnps_3d = [m, d, e]`), an optional stratified 9D chart (`coords_9d`), and optional Jacobian exports as auditable measurement objects rather than direct measurements of the full theoretical constructs. Relative to the older MNPS 1.2 generation, the current release adds stricter coverage and estimator hygiene, explicit feature-standardization pipelines, self-describing HDF5 outputs, geometry-validity reporting, regional trajectories, explicit subject/cohort anchoring, additive embodied surfaces, block-native sidecars, exploratory MEG shadow mapping, BDF/Figshare and NWB/Neuropixels/LFP adapters, optional phase-aware features, and stronger provenance. HRV v0.1 and derived anchor indices were validated at export scale on ds003838 (130 completed subjects); the listen–mem13 `vagal_index` contrast (`d = 1.995`) was estimated on a separate corrected-ECG complete-case sample of `N = 62`. MEG remains exploratory (five-subject pilot, readiness 0.7879), and the primary contribution is a stable, auditable, modality-aware measurement contract rather than comparative superiority over alternative latent-state or clustering frameworks.
+  NeuralManifoldDynamics (v 3.0.0) is a versioned ingest-layer measurement contract for constructing and serializing low-dimensional and stratified neural-manifold proxy trajectories from EEG, MEG, fMRI, and selected NWB/ecephys feature tables, together with optional local Jacobian-based summaries and gated dynamical-family exports. The contract is NDT-aligned but operational rather than definitional: it fixes a canonical 3D chart (`mnps_3d = [m, d, e]`), an optional stratified 9D chart (`coords_9d`), and optional family and Jacobian exports as auditable measurement objects rather than direct measurements of the full theoretical constructs. Version 3.0.0 keeps the MNPS order and fixed projection while making family namespaces, support signatures, computation and measurement validity, grain, and claim status explicit. The primary contribution is a stable, auditable, modality-aware measurement contract rather than comparative superiority over alternative latent-state or clustering frameworks.
 ]
 
 = Author Summary
 #par(first-line-indent: 0pt)[
-  NeuralManifoldDynamics (v 2.5.0) describes how this repository turns EEG, MEG, fMRI, and selected NWB/ecephys feature tables into auditable manifold-proxy measurements for downstream analysis. The system no longer stops at a single 3D coordinate summary: it now supports a canonical 3D trajectory, an optional stratified 9D chart, explicit subject-anchored and cohort-anchored coordinate layers, regional manifold outputs for fMRI networks and EEG channel groups, stricter epoch-quality controls, explicit provenance, self-describing HDF5 outputs, an additive embodied/interoceptive layer (`anchor_state`, `anchor_quality`, optional `anchor_coupling`) implemented through ECG-based HRV (`vagal_index`, `sympathetic_index`), PPG, and pupillometry and aligned to the same time grid, an exploratory MEG ingest extension with shadow mapping through the existing 9D contract, and an exploratory Neuropixels/ecephys ingest extension for spike-rate and LFP features. The purpose is not to interpret cognition at ingest time, infer diagnosis, or claim that this chart family is already the best available state-space representation. The purpose is to provide a stable, reproducible, and inspectable measurement contract that downstream analysis can compare, filter, and reinterpret.
+  NeuralManifoldDynamics (v 3.0.0) describes how this repository turns EEG, MEG, fMRI, and selected NWB/ecephys feature tables into auditable manifold-proxy measurements and explicitly gated dynamical-family objects. The canonical 3D and optional stratified 9D charts remain fixed; v3.0 adds a named `/dynamical_families/` namespace, fail-closed support and validity fields, and a clear boundary between ingest measurements and analysis-owned estimator experiments. The purpose is not to interpret cognition at ingest time, infer diagnosis, or claim that this chart family is already the best available state-space representation. The purpose is to provide a stable, reproducible, and inspectable measurement contract that downstream analysis can compare, filter, and reinterpret.
 ]
 
 #par(first-line-indent: 0pt)[
@@ -103,6 +103,7 @@ For neuroimaging readers, it is important to distinguish this role from several 
   MNDM (the package/CLI name for NeuralManifoldDynamics used in code, configs, and file paths throughout this manuscript) 2.1 made coordinate anchoring explicit through subject-anchored and cohort-anchored layer names plus embedded `feature_anchors` provenance. \
   MNDM 2.3 keeps those coordinate contracts and adds an additive embodied anchor surface `a_t` serialized separately from the canonical chart. \
   MNDM 2.4 retains those contracts and further adds geometry-validity diagnostics (`standard_invalidity_v1`), HRV v0.1 superwindow columns, block-native v2 sidecar exports with inter-network coupling columns, and MEG shadow mapping. \
+  MNDM 3.0 retains the chart and projection contracts while placing diffusion, destination, and resilience under the gated `/dynamical_families/*/v1` namespace with explicit support signatures, computation and measurement validity, grain, and claim metadata. \
   Projection weights, anchor identities, axis names, and serialization paths are versioned and auditable. \
   They should not be read as claims of unique biological identifiability.
 ]
@@ -124,7 +125,7 @@ For neuroimaging readers, it is important to distinguish this role from several 
 #figure(
   image("figures/neuralmanifolddynamics_flow.svg", width: 100%),
   caption: [
-    Operational flow of the current NeuralManifoldDynamics ingest-layer measurement contract. Raw datasets are indexed, preprocessed, and converted into per-epoch feature tables before projection-time standardization is applied to weighted features for `coords_9d` and derived `mnps_3d`. In the 2.1 release line, the raw feature surface can additionally drive frozen cohort/external anchors, yielding explicit subject-anchored and cohort-anchored coordinate layers. In version 2.3, the same epoch-aligned surface can also feed an additive embodied anchor layer (`anchor_state`, `anchor_quality`, optional `anchor_coupling`) without redefining the canonical 3D chart. Optional Jacobians, regional outputs, and self-describing HDF5 artifacts are then serialized for downstream analysis.
+    Operational flow of the current NeuralManifoldDynamics ingest-layer measurement contract. Raw datasets are indexed, preprocessed, and converted into per-epoch feature tables before projection-time standardization is applied to weighted features for `coords_9d` and derived `mnps_3d`. In the 2.1 release line, the raw feature surface can additionally drive frozen cohort/external anchors, yielding explicit subject-anchored and cohort-anchored coordinate layers. In version 2.3, the same epoch-aligned surface can also feed an additive embodied anchor layer (`anchor_state`, `anchor_quality`, optional `anchor_coupling`) without redefining the canonical 3D chart. In version 3.0, gated dynamical-family objects and their support/claim metadata are serialized beside the chart; analysis-owned estimator studies remain outside ingest. Optional Jacobians, regional outputs, and self-describing HDF5 artifacts are then serialized for downstream analysis.
   ],
 )
 
@@ -189,7 +190,7 @@ This is therefore best read as a release-bound operational choice rather than as
 #figure(
   image("figures/version_timeline.svg", width: 100%),
   caption: [
-    Cumulative version timeline from the older MNPS 1.2 generation through the current v2.5.0 release. Each version retains the coordinate and provenance contracts of earlier releases while adding the surfaces shown; full per-version detail is given in the bullet lists below and in S6 Changelog.
+    Cumulative version timeline from the older MNPS 1.2 generation through the current v3.0.0 contract generation. Milestones indicate introduced surfaces; v3.0 retains the frozen MNPS 3D/9D and `J_hat` contracts while adding the namespace migration and certificate fields described in S6.
   ],
 )
 
@@ -240,6 +241,40 @@ Major changes relative to v2.4:
   degenerate-scale safeguards, and configuration overlay hardening.
 - Release documentation now separates completed exports, inferential samples,
   smoke tests, internal validation, exploratory findings, and negative results.
+
+*Version 2.6.0 (local-dynamics interpretation layer).*  Version 2.6 adds
+versioned Jacobian metrics and opt-in finite-time response summaries on the
+unchanged `J_hat` estimator. These are model-derived provenance outputs, not
+S3-licensed empirical NDT quantities. The opt-in discrete `W_Q` surface uses
+only Gate E recording-level transition-residual covariance with its declared
+one-step semantics; it is not `a_hat`, Itô process noise, or a default family
+export. Common profiles leave it disabled.
+
+*Version 3.0.0 (current contract generation).*
+Version 3.0.0 keeps the canonical `[m, d, e]` order, the stratified 9D names,
+and the configured 9D-to-3D projection. It promotes dynamical families to a
+versioned, fail-closed export layer beside the chart:
+
+- canonical writes use `/dynamical_families/{diffusion,destination,resilience}/v1`,
+  while `/orthogonal_dynamics/` is read-only legacy input;
+- family schema identifiers remain versioned and unchanged, and family YAML is
+  disabled by default for common EEG, fMRI, and ephys profiles;
+- diffusion uses the local increment-covariance object `a_hat`; ingest keeps
+  `drift=None` on the ingest path, so `A_bD` and `R_b_over_a` remain
+  `not_testable`;
+- every computed family retains `computation_status`, `measurement_validity`,
+  grain, provenance, and `claim_status = no_biological_claim`; the separate
+  file-level `/support_signature/v1` records coordinate support and capabilities
+  fields. Grain distinguishes recording/subject/window levels; windows are
+  not biological replicates.
+- opt-in discrete `W_Q` remains under `/stochastic_reachability/v1`, fed only
+  by Gate E recording-level transition-residual covariance with the frozen
+  one-step semantics. It is not `a_hat` or process noise.
+
+The v3.0 contract therefore makes the measurement boundary more explicit. An
+analysis repository may study estimator choice, cross-fitting, null controls,
+or scientific contrasts, but those studies do not silently become ingest
+measurements or biological qualifications.
 
 == Stronger Measurement Robustness
 The updated measurement model enforces explicit bounds on estimator support. Epoch inclusion is no longer a minimal pass/fail step. Instead, the pipeline tracks coverage in terms of available seconds, available epochs, and direct axis support. Missing weighted features are handled by per-axis renormalization rather than silent zero-filling. Windows or trajectories with insufficient support, all-non-finite stratified coordinates, or inconsistent dimensionality are now surfaced explicitly rather than silently propagated.
@@ -490,7 +525,7 @@ The same reference configurations construct global `mnps_3d` and `coords_9d` as 
 ]
 
 = Jacobians, Block Jacobians, and Anisotropy
-The current 2.5 release line extends the dynamical output family beyond a single primary Jacobian. This is directly aligned with the idea that first-order position in manifold space and second-order transformation structure should be reported separately rather than collapsed into one scalar summary [@langell2025_mnj].
+The current 3.0 release line extends the dynamical output family beyond a single primary Jacobian. This is directly aligned with the idea that first-order position in manifold space and second-order transformation structure should be reported separately rather than collapsed into one scalar summary [@langell2025_mnj].
 
 When enabled, the current implementation exports:
 
@@ -513,6 +548,39 @@ Jacobian export is conditional on support and numerical validity rather than gua
 - withholding or skipping of regional/block Jacobians when the modality/configuration is not empirically supportable, most notably regional 9D block Jacobians for fMRI, which are disabled by default because per-network trajectories are typically rank-deficient at available window counts.
 
 Accordingly, Jacobian-derived exports should be read as valid only within these support constraints. The contract serializes the resulting diagnostics and provenance; it does not imply that every requested Jacobian is estimable for every dataset, modality, or regional decomposition.
+
+== Bounded CHART and Analysis-Owned M3 Validation
+The v3.0 development cycle includes two bounded validation packages whose
+claim ceilings are deliberately separate from the ingest contract. CHART
+checks the existing candidate under coordinate transformations. Orthogonal and
+isotropic transformations preserve the expected vector and covariance
+identities within the frozen tolerance (maximum discrepancy about
+`2.9 × 10^-14`). Anisotropic scaling changes Euclidean neighbourhoods and
+therefore changes local estimates, as expected; it is a sensitivity result,
+not a failed coordinate identity. A separate 3D-to-2D construction shows that
+projection can lose information when a hidden coordinate changes the expected
+future. The scalar CHART alignment is an unregularized diagnostic and is not
+the production C1 `A_bD` object.
+
+The analysis-owned M3 extension evaluates the unchanged local mean and local
+affine candidates on six synthetic systems: full linear and nonlinear 3D and
+9D systems, a linear latent 9D system observed in 3D, and a noisy linear 3D
+system. Twelve independent training fits are scored at the same 144 held-out
+query sources in each case, with fixed evaluation neighbourhoods and raw
+observed increment covariance. The integrated 117-test suite, including 18
+dedicated extension tests, and independent artifact checks support the
+implementation evidence. Local mean has lower
+velocity error in five cases, while local linear is better in the noisy case;
+the resulting bias--variance trade-off does not select a universal estimator.
+The simulated 9D coordinates are not the canonical neural features.
+
+These M3 results are synthetic discrete conditional-velocity evidence. They do
+not establish empirical drift, an Itô drift, Markov sufficiency, production C1
+serialization, biological validity, or a universal state representation. The
+analytic one-lag memory witness is approximately `6.58 × 10^-9` for the
+partial-observation case and `0.0441` in the noisy case; the latter shows that
+recovering a current-observation target does not certify an autonomous observed
+state. This witness is a model-derived diagnostic, not a qualification gate.
 
 == Chart Stability as Future Validation Target
 The present manuscript defines the current release contract, not full embedding-family invariance. In particular, it fixes one NDT-aligned chart family, one set of subcoordinate definitions per release, and one auditable 9D->3D projection contract. Future validation should therefore assess chart stability under reasonable feature substitutions, weighting perturbations, and projection changes, so that release stability can be distinguished from calibration dependence.
@@ -554,12 +622,15 @@ The HDF5 contract is more explicit than before. Important paths now include:
 - `labels/stage`
 - `regional_mnps/<network>/mnps`
 - `regional_mnps/<network>/jacobian`
+- `dynamical_families/{diffusion,destination,resilience}/v1` with support,
+  validity, grain, provenance, and claim metadata when explicitly
+  enabled
 - `extensions/tabular_exports/*`
 
 The previous ambiguity of short names such as `x` has been removed. In the 2.4 release line, the main compatibility wrinkle is that some embedded sub-schema tags still retain their 2.1 naming (`mndm.coordinate_layer.v2.1`, `mndm.feature_anchors.v2.1`) because those coordinate-layer contracts remain valid while newer additive layers are introduced around them.
 
 == Self-Description Through Manifests
-Each run writes `run_manifest.json`, which now includes a field guide describing the meaning of key HDF5 paths. Capability probes in the same manifest can also report extension presence (including `time_reference`) so that downstream tooling can branch on available temporal metadata without schema guessing. In the 2.1 release line, the same manifest also exposed whether subject-anchored and cohort-anchored coordinate layers and embedded feature anchors are present, so a downstream analysis does not need to infer the intended primary coordinate contract from naming folklore or source-code inspection. In the current 2.5 release line, the manifest similarly reports embodied-anchor, event/stage provenance, geometry-contract, block-native, and expanded source-lineage capability surfaces, keeping these additions auditable without collapsing them into the canonical coordinate export.
+Each run writes `run_manifest.json`, which now includes a field guide describing the meaning of key HDF5 paths. Capability probes in the same manifest can also report extension presence (including `time_reference`) so that downstream tooling can branch on available temporal metadata without schema guessing. In the 2.1 release line, the same manifest also exposed whether subject-anchored and cohort-anchored coordinate layers and embedded feature anchors are present, so a downstream analysis does not need to infer the intended primary coordinate contract from naming folklore or source-code inspection. In the current 3.0 release line, the manifest similarly reports embodied-anchor, event/stage provenance, geometry-contract, block-native, expanded source-lineage, and gated dynamical-family capability surfaces, keeping these additions auditable without collapsing them into the canonical coordinate export.
 
 Selected summary tables that were previously emitted only as CSV files are now also embedded into HDF5 as columnar exports under `extensions/tabular_exports`. This makes the HDF5 file a more self-contained artifact.
 
@@ -580,18 +651,18 @@ The manuscript should also be read against data-adaptive state-space and brain-s
 Accordingly, the main claim of NeuralManifoldDynamics is not that every ingredient is novel in isolation, nor that the repository currently establishes a new performance baseline against clustering-based, HMM-family, or latent-embedding methods. The narrower and more defensible claim is that the repository combines multimodal ingest, a fixed 3D/9D proxy-chart family, optional first-layer Jacobian exports, self-describing HDF5 outputs, and manifest-level provenance into one auditable measurement contract. In publication terms, this places the work closer to a methods-oriented software/resource contribution than to a full comparative benchmark paper.
 
 = Relationship to the Older MNPS 1.2 Generation
-The appropriate way to think about versions 2.3–2.5.0 is not as a cosmetic rename, but as a stricter and broader measurement model. The version-by-version list of additions is given above under Key Methodological Advances and in full in S6 Changelog; this section states only the two structural differences that separate the entire 2.x line from MNPS 1.2, rather than repeating that list.
+The appropriate way to think about versions 2.3–3.0.0 is not as a cosmetic rename, but as a stricter and broader measurement model. The version-by-version list of additions is given above under Key Methodological Advances and in full in S6 Changelog; this section states only the two structural differences that separate the 2.x and 3.0 lines from MNPS 1.2, rather than repeating that list.
 
 First, MNPS 1.2 treated feature export and coordinate export as effectively one contract, with a single weighted trajectory and limited summary exports. The 2.x line formalizes the distinction between raw/standardized feature surfaces, the 3D and 9D coordinate charts, and explicit subject- or cohort-anchored coordinate layers, so that within-subject geometry and between-group comparability are no longer forced through one implicit normalization.
 
 Second, MNPS 1.2 had no explicit coverage, geometry-validity, or provenance layer: estimator support was a pass/fail gate rather than an audited quantity. The 2.x line makes coverage, geometry validity, Jacobian support, and reproducibility hashes part of the exported contract itself, and extends the same self-describing philosophy to regional EEG/fMRI outputs, event-locked and block-native derived layers, and the additive embodied-anchoring surface. The theoretical object remains a manifold-based description of neural dynamics, but the implementation is now better aligned with estimator hygiene, provenance, and reproducible export semantics.
 
 = Methods-Oriented Discussion
-The most important conceptual shift in NeuralManifoldDynamics 2.5.0 is methodological rather than rhetorical. The ingest layer is no longer treated as a lightweight staging area before “real” analysis begins. Instead, it is treated as the place where the measurement contract is fixed.
+The most important conceptual shift in NeuralManifoldDynamics 3.0.0 is methodological rather than rhetorical. The ingest layer is no longer treated as a lightweight staging area before “real” analysis begins. Instead, it is treated as the place where the measurement contract is fixed, while estimator experiments and scientific contrasts remain analysis-owned.
 
 This has several consequences. First, naming matters, because ambiguous path names lead to ambiguous downstream assumptions. Second, coverage matters, because local linear estimators fail silently when support is poor. Third, regional EEG cannot be justified merely by averaging channels; it must be coupled to a defensible preprocessing pathway. Fourth, regional fMRI and regional EEG should share a common export logic where possible, while still preserving their modality-specific limits. Fifth, normalization and anchoring policy must be visible in the exported contract rather than hidden inside one local scaling routine when those choices materially affect between-group interpretation.
 
-Under this design, NeuralManifoldDynamics 2.5.0 is best understood as an auditable, NDT-aligned measurement contract. Downstream analysis may compare groups, estimate clinical effects, or test theoretical predictions, but those later steps should inherit a stable coordinate system rather than redefine it. The same principle now extends to embodied covariates: body-state surfaces should be serialized explicitly beside the canonical chart, not smuggled into it as unnamed preprocessing side effects.
+Under this design, NeuralManifoldDynamics 3.0.0 is best understood as an auditable, NDT-aligned measurement contract with gated family surfaces. Downstream analysis may compare groups, estimate clinical effects, or test theoretical predictions, but those later steps should inherit a stable coordinate system rather than redefine it. The same principle now extends to embodied covariates and dynamical families: body-state and family surfaces should be serialized explicitly beside the canonical chart, not smuggled into it as unnamed preprocessing side effects.
 
 = Limitations
 The current manuscript has several important limitations that should be read as part of the contract definition rather than as post hoc caveats.
@@ -611,7 +682,7 @@ The current manuscript has several important limitations that should be read as 
 - The present manuscript now includes a version-timeline figure and a 9D-to-3D projection schematic, but still does not include a dedicated figure panel of reference-run trajectories, QC distributions, or subject-level output examples; these require access to exported run artifacts beyond the current documentation bundle.
 
 = Conclusions
-NeuralManifoldDynamics 2.5.0 is the current implementation name for the manifold measurement system in this repository. It builds on the 2.3 and 2.4 releases and together supersedes the older MNPS 1.2-style ingest contract by making the coordinate hierarchy, anchoring policy, robustness logic, regionalization strategy, provenance surface, and output semantics substantially more explicit.
+NeuralManifoldDynamics 3.0.0 is the current implementation name for the manifold measurement system in this repository. It builds on the 2.3--2.5 release line and supersedes the older MNPS 1.2-style ingest contract by making the coordinate hierarchy, anchoring policy, robustness logic, regionalization strategy, provenance surface, and output semantics substantially more explicit. Its gated dynamical-family namespace does not automatically qualify an empirical drift or biological interpretation.
 
 The present release is best understood as a methods-oriented software and data resource with nine defining properties:
 

@@ -1,12 +1,23 @@
 ### HDF5 output schema (MNDM 3.0 release line)
 
-This file documents **all nodes (datasets + groups) and relevant HDF5 attributes** written by the MNDM summarization pipeline into each `*.h5`.
+This file documents the **canonical groups/datasets and the attributes needed to
+interpret them**, written by the MNDM summarization pipeline into each `*.h5`.
+`payload.attrs` are copied through to `h5.attrs` largely as-is and are **not**
+fully enumerated here (see "Root: HDF5 attributes" below) — treat the attribute
+list there as illustrative, not exhaustive. Verified 2026-09-11 against
+`core/src/core/io/h5_writer.py` and two real `ds005555` exports; see
+`project/diary/` for the audit that produced this revision.
 
 Release-version note:
 - This document describes the **NeuralManifoldDynamics 3.0** measurement surface.
 - Some embedded sub-schema identifiers intentionally still carry `v2.1` names
   (for example the explicit anchored-coordinate layer schema) because those
   subcontracts were introduced in the 2.1 release line and remain valid in 3.0.
+- The root `h5.attrs["schema_version"]` tensor-spec identifier itself has moved
+  past `v2_1` in current 3.0 exports (observed `mnps_tensor_spec_v2_4`); do not
+  assume a fixed literal value — read it from the file. The **coordinate-layer**
+  group attr `schema_version = "mndm.coordinate_layer.v2.1"` is a separate,
+  intentionally stable sub-schema id (see "Groups: MNDM 2.1 coordinate layers").
 
 Notation:
 - **T**: number of MNPS timepoints (per-window/epoch on the MNPS grid)
@@ -23,6 +34,7 @@ Each summarize run directory also writes JSON sidecars outside HDF5, notably:
 - `run_manifest.json` (run capabilities + provenance + config digest)
 - `features_snapshot.json` (feature-table snapshot for the run)
 - `run_errors.json` (captured grouping/runtime failures, when present)
+- `skipped_recordings.json` (`mndm.skipped_recordings.v1`, added 2026-09-11; explicit, non-error, policy-driven skips such as `coverage_too_low`, `coverage_too_low_after_nan_cov_mask`, `all_epochs_dropped_by_missing_axis_policy`, `coverage_too_low_after_geometry_invalidity_policy`, `all_epochs_dropped_by_geometry_invalidity_policy` — written whenever any grouping reaches `SubjectSummaryRunner.run` but is deliberately not exported, so an empty `sub-*/` output directory always has a matching record instead of requiring analysis repos to rediscover empty stems. Distinct from `run_errors.json`: entries here are expected outcomes of coverage/geometry policy, not exceptions, and do not flip `run_manifest.json`'s `run_status` to `completed_with_errors`. Mirrored into `run_manifest.json` extra as `skipped_recordings`.)
 - `normalization_report.json` (normalization runtime summary + pre/post probe results)
 - `stage_mapping_qc.json` (run-level aggregate + per-subject stage/event mapping QC, when available)
 - `block_native_qc.json` (run-level aggregate + per-subject block-native QC, when available)
@@ -122,8 +134,10 @@ Relevant config knobs (dataset override under `epoching.datasets.<id>.sampling`)
 ### Root: HDF5 attributes (top-level `h5.attrs`)
 
 - **`dataset_id`** *(str)*: dataset label used throughout the pipeline (often `dsXXXX:sub-YYY:<condition>_<task>_<run>[_acq]`).
-- **`manifest`** *(str, JSON)*: JSON string containing the same general information as `summary.json` (meta-indices, samples, coords_v2 metadata, etc.). This is also where Tier 1/2 “new measurements” are stored (see below).
+- **`manifest`** *(str, JSON)*: JSON string containing the same general information as `summary.json` (meta-indices, samples, coords_9d metadata, etc.). This is also where Tier 1/2 “new measurements” are stored (see below). Only present when the JSON is small enough (`manifest_bytes <= 65535`); the full manifest always exists as the sibling root **dataset** `/manifest_json` (UTF-8 JSON string), which has no size cap.
+- **`manifest_bytes`** *(int)*: byte length of the manifest JSON; use this to decide whether `h5.attrs["manifest"]` was populated or whether to read `/manifest_json` instead.
 - **`subject_id`** *(str)*: always attempted; prefers payload `subject_id`, otherwise derived from `dataset_id`.
+- **`mnps_axis_names`** *(list[str])*: unconditionally set to `[m, d, e]`; the canonical MNPS axis order (v1.2 spec).
 
 Payload attributes (`payload.attrs`) are also copied into `h5.attrs` when not `None`, e.g.:
 - **`dataset`** *(str)*: dataset id (e.g. `ds005555`)
@@ -132,11 +146,12 @@ Payload attributes (`payload.attrs`) are also copied into `h5.attrs` when not `N
 - **`window_sec`** *(float)*, **`overlap`** *(float)*: MNPS windowing (for MNPS projection / derivative grid)
 - **`stage_codebook`** *(obj)*: codebook for stage labels (often serialized)
 - **`stage_source`** *(str|None)*, **`stage_column`** *(str|None)*
-- **`coords_v2_names`** *(list[str]|None)*: v2 coordinate names (if v2 exists)
-- **`schema_version`** *(str)*: often `mnps_tensor_spec_v2_1` when the explicit anchored-coordinate sub-contract is present. In the 2.3 release line this identifier is still retained for backward-compatible coordinate-layer schema naming.
+- **`coords_9d_names`** *(list[str]|None)*: 9D coordinate names (if `coords_9d` exists); this is the actual attr name (an earlier revision of this document called it `coords_v2_names`, which does not exist in current exports).
+- **`schema_version`** *(str)*: the root tensor-spec identifier. Current 3.0 exports write `mnps_tensor_spec_v2_4`; do not hardcode `v2_1` — always read this value from the file rather than assuming it.
 - **`mndm_version`** *(str)*: software/measurement-contract release line recorded in the export metadata; current documentation tracks `3.0.0`.
 - **`primary_coordinate_layer`** *(str)*: usually `coords_3d_cohort_anchored` when a cohort/external anchor is configured, otherwise `coords_3d_subject_anchored`.
 - **`primary_coordinate_contract`** *(str)*: `cohort_anchored` or `subject_anchored`.
+- **`available_jacobian_layers`** *(list[str])*: names of the additive anchored-Jacobian-layer groups written for this file (e.g. `[jacobian_subject_anchored, jacobian_9D_subject_anchored]`); see "Groups: MNDM 2.1 Jacobian layers" below. Mirrored under `/provenance/anchoring/available_jacobian_layers`.
 - **`anchor_id`**, **`anchor_hash`** *(str|None)*: identity and hash of the feature-anchor artifact used for cohort-anchored coordinates.
 - **`geometry_invalidity_policy`** *(str)*: always-on hard-invalidity contract version for canonical MNPS/MNJ exports, currently `standard_invalidity_v1`.
 - **`geometry_contract_status`** *(str)*: status of the always-on geometry contract for this export, typically `ok` or `adjusted`.
@@ -145,6 +160,23 @@ Derived convenience attrs (best-effort; may be absent):
 - **`meta_<field>`** *(str/int/float)*: flattens scalar fields from `participant_meta` (participants.tsv) into top-level attrs.
 - **`group`** *(str)*: may be derived/normalized from `participant_meta` if not already set.
 - **`condition`** *(str)*: may be derived from session-/meta-fields if not already set.
+
+Additional **structural** (non-hash) root attrs observed in real 3.0 exports that
+are part of the measurement contract and worth knowing about, even though the
+list above is illustrative rather than exhaustive:
+- **`coverage_seconds_{assumed,effective,measured}`**, **`coverage_seconds_method`**, **`coverage_min_seconds_effective`**, **`coverage_min_epochs_effective`**, **`coverage_rule_tag`**: coverage-threshold provenance for this export.
+- **`epochs_raw`**, **`epochs_after_nan_mask`**, **`epochs_after_qc`**, **`epochs_after_geometry_policy`**: epoch-count funnel through the pipeline stages.
+- **`direct_axis_coverage_{m,d,e}_{mean,min}`**, **`direct_axis_renorm`**, **`missing_axis_policy`**, **`missing_weighted_feature_rate_{direct,v2}`**: per-axis direct-feature support and missing-data policy.
+- **`dropped_geometry_invalid_epochs`**, **`dropped_missing_axis_epochs`**, **`geometry_jacobian_invalid_windows`**, **`geometry_jacobian_9d_invalid_windows`**: counts of rows/windows removed by the standard invalidity policy (summarized in `/provenance/geometry_contract`).
+- **`mde_from_v2_*`** (`aggregation`, `aggregation_requested`, `map`, `pooling_legacy`, `v1_mapping_hash`, `v1_mapping_input`, `v1_mapping_matrix`, `v1_mapping_matrix_rows`, `v1_mapping_normalized`, `v1_mapping_source`) and **`mde_mode_{effective,requested}`**: provenance for deriving the 3D `[m,d,e]` surface from the 9D construction when applicable.
+- **`mnps_9d_constructs`**, **`mnps_9d_definition_version`**, **`x_definition`**, **`v2_definition`**, **`v2_missing_policy`**, **`subcoords_hash_v2`**, **`weights_hash_direct`**: definitional/version provenance for the 3D and 9D coordinate construction.
+- **`time_reference_{enabled,status,source,anchor_mode,schema_version}`**: whether/how an explicit external time reference was applied to this export's time base.
+- **`reproducibility_seed`**, **`reproducibility_seed_source`**, **`pip_freeze_hash`**, **`env_hash`**, **`python_version`**, **`platform`**: run-environment reproducibility provenance.
+- **`*_hash_saved`** (`x_hash_saved`, `x_hash_jacobian_input`, `x_hash_knn_input`, `jacobian_hash_saved`, `jacobian_dot_hash_saved`, `jacobian_9d_hash_saved`, `jacobian_9d_dot_hash_saved`, `coords_9d_hash_saved`, `coords_9d_hash_jacobian_input`, `coords_9d_hash_knn_input`, `nn_indices_hash_saved`, `features_raw_hash_saved`, `features_robust_z_hash_saved`, `feature_export_names_hash`): content-hash provenance per exported surface, for deterministic-replay checks.
+- **`feature_export_scope`**, **`feature_metadata_fields`**, **`features_raw_column_count`**, **`features_robust_z_column_count`**: feature-table export scope/shape provenance.
+- **`coords_9d_{allow_all_non_finite_columns,allow_duplicate_columns,allow_duplicate_constant_columns,degraded_mode,duplicate_count,duplicate_constant_count,all_non_finite_count}`**, **`e_e_{backend,construct,degraded_mode,metric}`**: 9D-construction policy flags and per-axis fallback provenance (`e_e` is the entropy-energy subcoordinate).
+- **`normalize_mode`**, **`export_contract_version`**: export-contract identifiers.
+- **`anchor_state_names`**: present even when the `/anchor_state` values matrix itself is empty for this run (see "Groups: anchored coordinates vs embodied anchors").
 
 ---
 
@@ -155,7 +187,7 @@ These are **analysis-agnostic descriptive blocks** embedded in the manifest JSON
 - **`geometry_contract`** *(object)*: always-on mathematical invalidity contract for canonical geometry export.
   - **`policy_version`**: currently `standard_invalidity_v1`.
   - **`status`**: `ok` when no mathematically invalid geometry had to be removed, `adjusted` when invalid epochs or Jacobian windows were dropped or retained surfaces are degraded.
-  - **`shared_time_grid`**: counts for `epochs_before_policy`, `epochs_retained`, `epochs_dropped`, `drop_fraction`, and `drop_reason_counts`.
+  - **`shared_time_grid`**: counts for `epochs_before_policy`, `epochs_retained`, `epochs_dropped`, `drop_fraction`, and `drop_reason_counts`. This object is serialized verbatim under **`/provenance/geometry_contract/shared_time_grid/*`**. Do **not** confuse it with the unrelated, same-named **`/coverage/shared_time_grid`** dataset, which is a plain scalar `int8` flag (1 = the exported surfaces share one time grid), not this epoch-drop-count object.
   - **`time_grid`**: realized time-base audit for the exported grid, including recovered inter-window `dt`, recovered window lengths, match/mismatch booleans against runtime/config values, and any warnings about non-finite or non-positive bounds.
   - **`mnps_3d`**: finite-row fraction before policy plus any degenerate/all-NaN axes.
   - **`coords_9d`**: whether the 9D surface is available, shape-matched to the shared time grid, and whether non-finite rows remained on the retained shared grid.
@@ -189,6 +221,22 @@ These are **analysis-agnostic descriptive blocks** embedded in the manifest JSON
 - **`conventional_eeg`** *(object; EEG only, optional)*: config-driven conventional qEEG comparator summaries.
   - `schema_version = "mndm.conventional_eeg.v1"`
   - `packs`: enabled comparator packs, currently including `tier1`, `complexity`, `connectivity`, and `coma`
+  - `artifact_qc` *(added 2026-09-11)*: `{status, reason}` where `status` is
+    `confirmed_applied` (an artifact-reduction method, e.g. ICA/EOG
+    regression, was confirmed to have actually run for this recording),
+    `not_confirmed` (a method was configured but did not confirmedly run,
+    or ran with no sidecar evidence either way), or `not_assessed` (no
+    artifact-QC sidecar evidence at all). This is an explicit, **non-blocking**
+    provenance flag: the extension is still computed and written when
+    `status != confirmed_applied` (withholding it entirely would make this
+    family unusable on every dataset that has not yet enabled ICA/EOG
+    regression, e.g. PhysioNet I-CARE, whose `preprocess.artifacts.method`
+    is `none`). Readers must consult this field before trusting
+    family-average band-power / connectivity descriptives, which can be
+    outlier-heavy without artifact rejection (see
+    `project/mnps_v3/tests/ingest_jacobian_fidelity_handover_2.md` items 9
+    and 12). Mirrors the same evidence used for `/qc/windows/qc_ok_eeg`'s
+    `-1` (not assessed) state.
   - `columns`: emitted feature-table columns such as:
     - `eeg_conventional_relative_<band>`
     - `eeg_conventional_ratio_<name>`
@@ -237,7 +285,8 @@ Optional root datasets:
 Created if `stage` or other label arrays exist.
 
 - **`/labels/stage`** *(int8, shape `[T]`)*: stage code per MNPS timepoint.
-- **`/labels/<name>`** *(shape `[T]`)*: optional aligned label series. Depending on the source, this may be integer-coded, binary, or UTF-8 string labels such as task-state labels.
+- **`/labels/<name>`** *(shape `[T]`)*: optional aligned label series. Depending on the source, this may be integer-coded, binary, or UTF-8 string labels such as task-state labels. For sleep-stage runs this commonly includes one-hot-style per-stage series such as `/labels/wake`, `/labels/n1`, `/labels/n2`, `/labels/n3`, `/labels/rem`, `/labels/r` alongside `/labels/stage`.
+- Group attrs on `/labels`: **`alignment`** = `per_timepoint`, and (when the payload carries them) **`stage_source`**, **`stage_column`**, **`stage_codebook`** (JSON string) — the same values also copied to the root attrs of the same names.
 
 ---
 
@@ -368,9 +417,10 @@ Created when summarize exports explicit codebooks.
 - **`/codebooks/stage/codes`** *(int32, shape `[C]`)*
 - **`/codebooks/stage/labels`** *(utf-8 strings, shape `[C]`)*
 - **`/codebooks/stage/label_keys`** *(utf-8 strings, shape `[C]`)*: concise helper keys such as `eyes_closed`
-- Group attrs:
+- Group attrs (on `/codebooks/stage`, and each other emitted codebook subgroup):
   - **`_schema_version`** = `mndm.codebook.v1`
   - optional source metadata such as `source`, `column`, `events_path`
+- The parent **`/codebooks`** group itself also carries **`_schema_version`** = `mndm.codebooks.v1` (plural; distinct from the per-codebook `mndm.codebook.v1` singular tag on each child group).
 
 ---
 
@@ -387,19 +437,24 @@ Created if `payload.nn_indices` exists.
 Always created (may be empty if Jacobians were not computed).
 
 - **`/jacobian/J_hat`** *(float32, shape `[W,D,D]`)*: MNPS Jacobian estimates.
-- **`/jacobian/J_dot`** *(float32, shape `[W-1,D,D]`)*: temporal difference of the Jacobian.
+- **`/jacobian/J_dot`** *(float32, shape `[W,D,D]`)*: per-window Jacobian derivative estimate. **Not** `[W-1,D,D]`: `J_dot` is required to have the same shape as `J_hat` (one derivative estimate per retained window, not a temporal finite difference between consecutive windows). The payload contract enforces `J_dot.shape == J_hat.shape` (see `mndm/src/mndm/schema.py`).
 - **`/jacobian/centers`** *(int32, shape `[W]`)*: center index for each Jacobian window.
-- **`/jacobian/affine_reference`** *(float32, shape `[W,D]`, optional)*: local fit-neighborhood reference used by the affine derivative model.
+- **`/jacobian/affine_reference`** *(float32, shape `[W,D]`, optional)*: local fit-neighborhood reference used by the affine derivative model, when the payload sets it directly.
 - **`/jacobian/affine_intercept`** *(float32, shape `[W,D]`, optional)*: local derivative intercept paired with `affine_reference`; it does not alter `J_hat` semantics.
+  - In practice, the current summarize pipeline routes the affine fit outputs through `/jacobian/diagnostics/affine_reference_windows` and `/jacobian/diagnostics/affine_intercept_windows` (same `[W,D]` shape) rather than the top-level `affine_reference`/`affine_intercept` paths; check both locations when reading a file.
+- **`/jacobian/diagnostics/*`** *(optional)*: local-fit diagnostics alongside the hard-invalidity fields below. Observed additional fields include `attempted_centers` `[W]`, `condition_number_windows` `[W]`, `failed_centers`, `hard_invalid_centers`, `hard_invalid_window_mask` `[W]` (int8), `local_fit_mse_windows`, `local_fit_mse_baseline_windows`, `rel_mse_baseline_windows` `[W]`, plus group attrs such as `failed`, `failed_insufficient_neighbours`, `failed_nonfinite_samples`, `hard_invalid_condition_number_windows`, `hard_invalid_nonfinite_windows`, and `j_dot_dt`. Additive holdout fields (2026-09-13): `rel_mse_baseline_oos_windows` `[W]`, `n_holdout_samples` `[W]`, and attrs `rel_mse_baseline_oos_median`, `oos_holdout_stride`. These score an auxiliary train/holdout refit of the same neighborhood (every 4th sorted index held out). Baseline is the holdout-set mean ẋ, matching in-sample `rel_mse_baseline`. They do **not** replace the in-sample fit-fidelity gate; `computed` still uses `rel_mse_baseline_median`. NaN means the split had too few train or holdout rows. An experimental discrete one-step map `x_{t+h} ≈ Φ(x_t − x̄) + b` lives in `mndm.jacobian_discrete` and is **not** serialized on `/jacobian`. It does not use `x_dot`, is not wired into summarize, and a passing next-state `rel_mse` is not a Family B `computed` claim.
 - **`/jacobian/diagnostics/hard_invalid_centers`** *(int32, optional)*: center indices of Jacobian windows removed by the standard invalidity policy.
 - **`/jacobian/diagnostics/hard_invalid_windows`** *(scalar attr, optional)*: number of canonical windows removed after Jacobian estimation.
 - **`/jacobian/diagnostics/hard_invalid_condition_number_threshold`** *(scalar attr, optional)*: hard condition-number threshold used by the standard policy.
-- **`/jacobian/derived_metrics/v1/`** *(optional)*: `mndm.jacobian_metrics.v1` semantic local-dynamics metrics. Its `series/` datasets are per valid-Jacobian-window fields (`spectral_abscissa`, `numerical_abscissa`, `symmetric_rate_min`, `reactivity_gap`, `stable_reactive_flag`, magnitude/deformation/rotation diagnostics); `summary/` carries support counts and `stable_reactive_fraction`; `provenance/` carries zero tolerances and metric semantics. Sibling certificate fields: `computation_status` (`computed` if any finite metric windows, else `insufficient_support`), `measurement_validity` (`not_assessed` when computed, else `not_applicable`), `claim_status` (`no_biological_claim` on new writes). These are mathematical provenance on `J_hat`, not S3-licensed empirical NDT \(\alpha/\omega\).
+- **`/jacobian/derived_metrics/v1/`** *(optional)*: `mndm.jacobian_metrics.v1` semantic local-dynamics metrics. Its `series/` datasets are per valid-Jacobian-window fields (`spectral_abscissa`, `numerical_abscissa`, `symmetric_rate_min`, `reactivity_gap`, `stable_reactive_flag`, magnitude/deformation/rotation diagnostics, `rel_mse_baseline`); `summary/` carries support counts, `stable_reactive_fraction`, `rel_mse_baseline_median`, and `fit_identified`; `provenance/` carries zero tolerances, metric semantics, `operator_semantics`, `abscissa_units`, `nominal_dt_sec`, and the fit-fidelity gate fields below. Sibling certificate fields: `computation_status` (`computed` only if the fit-fidelity gate passes **and** any finite metric windows exist, else `insufficient_support` with a `failure_reason`), `measurement_validity` (`not_assessed` when computed, else `not_applicable`), `claim_status` (`no_biological_claim` on new writes). These are mathematical provenance on `J_hat`, not S3-licensed empirical NDT \(\alpha/\omega\).
   - Full `series/` fields are `spectral_abscissa`, `numerical_abscissa`,
     `symmetric_rate_min`, `symmetric_rate_max`, `reactivity_gap`,
     `stable_reactive_flag`, `dynamical_regime`, `spectral_radius`,
-    `frobenius_norm`, `trace`, `rotation_norm`, and `henrici_departure`.
+    `frobenius_norm`, `trace`, `rotation_norm`, `henrici_departure`, and
+    `rel_mse_baseline` (per-window local-fit fidelity, when the estimator's
+    diagnostics were supplied to the gate; else `NaN`).
   - Theory \(\Omega\) appears only as the scalar `rotation_norm`, not as a matrix. Theory \(G_{\mathrm{peak}}\) is **not** in this group. FTR `g_peak_over_horizons` is a peak-gain analogue, not licensed NDT \(G_{\mathrm{peak}}\).
+  - **Fit-fidelity gate (added 2026-09-11, provisional threshold, opt-in per dataset overlay):** `alpha`/`omega` and the regime/flag classification derived from them require the local affine fit behind `J_hat` to beat the no-dynamics (trajectory-mean) baseline. This gate is **disabled by default** (`local_dynamics.jacobian_metrics.fit_fidelity_gate.enabled: false`, see `config_ingest_common_dynamical_families.yaml`) and only evaluated on dataset overlays that explicitly opt in (currently the PhysioNet I-CARE 2.1 overlays only — see `config_ingest_physionet_i-care_2_1_dynamical_families.yaml`); every other dataset's `computation_status`/series/summary are byte-for-byte unchanged from the prior release. `provenance/rel_mse_baseline_median` mirrors `/jacobian/diagnostics/rel_mse_baseline_median` — but is recomputed from the *retained* (post-geometry-filter) `rel_mse_baseline_windows` array whenever both are supplied, rather than trusting a possibly-stale pre-filter scalar. `provenance/fit_fidelity_threshold` (default `0.9`) and `provenance/fit_fidelity_gate` record the gate state: `not_evaluated` (disabled, or the caller supplied neither diagnostic at all), `rel_mse_baseline_median` (evaluated, resolved to a finite value), or `rel_mse_baseline_unknown` (evaluated but unresolvable — e.g. all-NaN windows — which **fails closed**, not open, the same as a value that fails the threshold). When the recording-level `rel_mse_baseline_median >= fit_fidelity_threshold`, or is unresolvable, `summary/fit_identified=False`, `computation_status="insufficient_support"`, `failure_reason` is `local_linear_fit_not_better_than_baseline` or `fit_fidelity_unknown` respectively, and every window's `stable_reactive_flag`/`dynamical_regime` stays at its invalid/not-testable fill value (`-1`). **Even when the recording-level median passes**, individual windows whose own `rel_mse_baseline` (from the per-window array) fails the same threshold are still withheld one-by-one (`summary/n_windows_fit_unidentified`, `series/spectral_abscissa` etc. `NaN`, `stable_reactive_flag=-1`, `dynamical_regime=-1` for exactly those windows) — the recording-level median is a coarse admission gate, not a license to classify every window in an admitted recording. `fit_fidelity_threshold=0.9` is the provisional value from the I-CARE CPC1-vs-CPC5 audit (`project/mnps_v3/tests/ingest_jacobian_fidelity_handover.md`); it is **not yet frozen** against a non-clinical qualification set. When neither `rel_mse_baseline_median` nor `rel_mse_baseline_windows` diagnostics are supplied at all (the default everywhere except the opted-in overlays above), `summary/fit_identified` is `None` (gate not evaluated) and prior-release unconditional behavior is preserved exactly.
 
 Interpretation note:
 
@@ -415,6 +470,7 @@ Created when summarize exports the per-epoch empirical feature surface.
 - **`/features_raw/values`** *(float32, shape `[T,K]`)*: raw feature matrix in original scale.
 - **`/features_raw/names`** *(utf-8 strings, shape `[K]`)*: feature column names aligned to `values`.
 - **`/features_raw/metadata/*`** *(shape `[K]` per field)*: machine-readable per-feature metadata, including usage flags and provenance.
+- Group attrs on `/features_raw` (and identically on `/features_robust_z`, `/features_projection_z`): **`alignment`** = `per_timepoint`, **`export_transform`** (`none` / `strict_robust_z` / `projection_z`), **`feature_contract_version`** = `v1`, **`feature_order_hash`** (sha256 of the JSON-serialized `names` order), **`n_features`**.
 
 When `conventional_eeg.enabled: true`, the exported feature surface may also
 contain Tier 1 qEEG comparator columns prefixed with `eeg_conventional_`.
@@ -431,9 +487,19 @@ paired diagnostic and combined MEG columns:
 `/features_projection_z` is the transform-aware export surface: each row is
 aligned exactly to `/time`, `/mnps_3d`, and `/features_raw`, while values have
 the configured feature pipeline applied (for example `log10 → robust_z → clip`
-for MEG power). `/row_source` contains additive row-aligned source lineage
-(`raw_file`, source-format and modality flags); `/epoch_id` is an additive
-per-row identity when available.
+for MEG power). It is written for **any** modality when the projection-transform
+pipeline runs, not only MEG shadow-mapping runs — an EEG-only run with no MEG
+channels at all can still emit `/features_projection_z` alongside
+`/features_raw` and `/features_robust_z`. `/epoch_id` is an additive per-row
+identity when available.
+
+`/row_source` contains additive row-aligned source lineage. Standard columns
+(`schema.py`'s `row_source_columns`, also confirmed in real exports):
+- **`row_source`** *(str)*: e.g. `"set_eeg"`, `"fif_meeg"`, `"unknown"`.
+- **`raw_file`** *(str)*: basename of the source file for each row.
+- **`source_format`** *(str)*: `"neuromag_fif"`, `"eeglab_set"`, `"unknown"`.
+- **`has_meg`**, **`has_eeg`**, **`has_mag`**, **`has_grad`** *(int8, 0/1)*: per-row modality/channel-family presence flags.
+- **`is_simultaneous`** *(int8, 0/1)*: 1 when the row's EEG and MEG (or other paired modality) source signals were recorded simultaneously rather than paired from separate sessions/files (written by `mndm/src/mndm/pipeline/summary.py`).
 
 Sensor-topographic QC reports are external JSON/CSV artifacts. They report
 frozen helmet-sector coverage and reliability only. They do not add regional
@@ -515,7 +581,8 @@ Created when summarize exports the strict robust-z feature surface.
 Important:
 - this surface is **strict robust-z only**
 - projection-only steps such as `log10` and `clip` remain represented in provenance metadata and `feature_baselines`, not baked into `features_robust_z`
-- new guarded exports add `robust_z_valid` (`int8`), `robust_z_invalid_reason`
+- new guarded exports add `robust_z_valid` (**`int32`**, not `int8` — see
+  "Compression / dtypes" below), `robust_z_invalid_reason`
   (`""`, `degenerate_scale`, or `insufficient_support`), and
   `robust_z_finite_count` to `/features_robust_z/metadata/*`
 - under the default `degenerate_scale_policy: nan`, a low-support or
@@ -558,6 +625,25 @@ Coordinate-layer group attrs include:
 - **`coordinate_contract`** = `subject_anchored` or `cohort_anchored`
 - **`anchor_id`**, **`anchor_hash`**, **`anchor_source`** for cohort-anchored layers
 - **`role`**: human-readable intended use, e.g. `within_subject_geometry` or `clinical_group_comparison`
+- **`alignment`** = `per_timepoint`, and (best-effort) **`normalize_mode`** copied from the layer payload when set.
+
+---
+
+### Groups: MNDM 2.1 Jacobian layers
+
+Parallel to the coordinate layers above, the writer additively serializes
+Jacobian estimates keyed by coordinate contract, via `payload.jacobian_layers`
+(`_write_jacobian_layers_group` in `core/src/core/io/h5_writer.py`). This group
+family is also recorded in the root attr `available_jacobian_layers` (see
+"Root: HDF5 attributes" above), and is written whenever the pipeline computes
+an anchored Jacobian.
+
+- **`/jacobian_subject_anchored/J_hat`** *(float32, shape `[W,D,D]`)*, **`/jacobian_subject_anchored/J_dot`** *(float32, shape `[W,D,D]`)*, **`/jacobian_subject_anchored/centers`** *(int32, shape `[W]`)*: Jacobian estimated directly on `/coords_3d_subject_anchored` values.
+- **`/jacobian_9D_subject_anchored/J_hat`**, **`/jacobian_9D_subject_anchored/J_dot`** *(float32, shape `[W2,K,K]`)*, **`/jacobian_9D_subject_anchored/centers`** *(int32, shape `[W2]`)*: Jacobian estimated directly on `/coords_9d_subject_anchored` values.
+- Cohort-anchored counterparts (`/jacobian_cohort_anchored/*`, `/jacobian_9D_cohort_anchored/*`) follow the same pattern when a cohort/external anchor is configured, mirroring `/coords_3d_cohort_anchored` / `/coords_9d_cohort_anchored`.
+- Group attrs: **`schema_version`** = `mndm.jacobian_layer.v2.1` (defaulted if absent).
+- The set of layer names actually written for a given file is recorded in the root attr **`available_jacobian_layers`** and in **`/provenance/anchoring/available_jacobian_layers`** (see "Group: `/provenance`").
+- These layers are additive copies alongside the canonical `/jacobian` and `/jacobian_9D` groups (which are estimated on the un-anchored, legacy `/mnps_3d` / `/coords_9d` values); they do not replace or alter `/jacobian` or `/jacobian_9D` semantics.
 
 ---
 
@@ -645,9 +731,9 @@ Participant metadata remain embedded as JSON and attrs for low-friction joins.
 
 Created when summarize exports explicit cross-layer coverage metadata.
 
-- **`/coverage/axis_fraction`** *(float32, shape `[T,3]`)*: direct-axis coverage per MNPS window for `[m,d,e]`
+- **`/coverage/axis_fraction`** *(float32, shape `[T,3]`)*: **measured** per-window direct-axis coverage for `[m,d,e]`, in `[0,1]`. This is the achieved-coverage quantity; on fully-supported files it can be identically `1.0`.
 - **`/coverage/axis_names`** *(utf-8 strings, shape `[3]`)*
-- **`/coverage/min_axis_coverage`** *(scalar float32)*
+- **`/coverage/min_axis_coverage`** *(scalar float32)*: **not a measurement** — a policy floor copied verbatim from config (`mnps_projection.min_axis_coverage`, default `0.30`), matching the existing `min_*`-prefixed admission-policy convention (`coverage_min_seconds_effective`, `coverage_min_epochs_effective`). Windows with `axis_fraction < min_axis_coverage` on any axis fail `/qc/windows/coverage_ok` and may be dropped under `missing_axis_policy: nan_mask_v1`. Do not read `axis_fraction == 1.0` alongside `min_axis_coverage == 0.30` as "only 30% coverage was achieved" — those are two different, independently-scaled fields. Also copied as the root attr `min_axis_coverage`. Distinct from root attrs `direct_axis_coverage_{m,d,e}_min`, which *are* measured per-axis minima of `axis_fraction`.
 - **`/coverage/coordinate_layers_present`** *(utf-8 strings, shape `[L]`)*
 - **`/coverage/coordinate_contracts_present`** *(utf-8 strings, shape `[Lc]`)*
 - **`/coverage/jacobian_centers`**, **`/coverage/jacobian_9d_centers`** *(int32, optional)*: explicit mappings back to the shared MNPS time index
@@ -660,11 +746,13 @@ Created when summarize exports explicit cross-layer coverage metadata.
 
 Created when summarize exports structured additive provenance blocks.
 
-- **`/provenance/contract/*`**: export-contract metadata such as `export_contract_version`, `config_digest_sha256`, `run_manifest_ref`
-- **`/provenance/geometry_contract/*`**: always-on mathematical invalidity contract for canonical geometry exports
-- **`/provenance/anchoring/*`**: explicit coordinate contracts/layers available in this H5 plus primary contract/layer and optional anchor identity
+- **`/provenance/contract/*`**: export-contract metadata such as `export_contract_version`, `config_digest_sha256`, `config_filename`, `run_manifest_ref`, `geometry_contract_status`, `geometry_invalidity_policy`
+- **`/provenance/geometry_contract/*`**: always-on mathematical invalidity contract for canonical geometry exports (same object as `manifest.geometry_contract`, serialized as a first-class H5 group: `policy_version`, `primary_requires_coords_9d`, `status`, `shared_time_grid/*`, `time_grid/*`, `mnps_3d/*`, `coords_9d/*`, `jacobian/*`, `jacobian_9d/*`)
+- **`/provenance/anchoring/*`**: explicit coordinate contracts/layers available in this H5 plus primary contract/layer and optional anchor identity. Observed fields: `available_coordinate_contracts`, `available_coordinate_layers`, `available_jacobian_layers`, `primary_coordinate_contract`, `primary_coordinate_layer`, `realized_contracts`, `requested_contracts`, `skipped_contracts_with_reason`
+- **`/provenance/anchor_state`** *(optional, additive)*: reserved for future embodied-anchor provenance mirrored from `payload.provenance["anchor_state"]`; may be written as an **empty group** (no children) when no embodied-anchor provenance is populated for a run — this is expected, not an error. See the separate root `/anchor_state/*` values matrix under "Groups: anchored coordinates vs embodied anchors", which is a different, unrelated node despite the similar name.
 - **`/provenance/normalization/*`**: concise normalization status/method/scope and sidecar references
 - **`/provenance/event_stage_mapping/*`**: event/stage mapping versioning, source column/path, and codebook hash
+- **`/provenance/signal_support_provenance/*`** *(optional)*: signal-support / temporal-continuity provenance for this export, distinct from `geometry_contract` and `coverage`. Observed fields: `schema` (e.g. `mndm.signal_support_export.v1`), `status`, `temporal_support_status` (e.g. `unknown` when effective filter/continuity support is not certified by epoch bounds alone), `temporal_support_reason`, `source_quality_status`, `source_quality_intervals_json` (JSON blob of source-signal quality intervals), `execution_records_json` (JSON blob of the concrete preprocessing/extraction steps executed for this file), `per_epoch_input_extent_json` (JSON blob of per-epoch raw-input extent), and `reference_fit_population/{status,features/*}` when a reference-population fit was used. This is validity-relevant provenance — a `temporal_support_status` other than a fully-certified value means downstream continuity-sensitive analyses should treat the epoch bounds alone as insufficient evidence of continuous coverage.
 - **`/provenance/mapping/*`** *(optional)*: modality-specific mapping contract
   metadata for runs such as ds003645 MEG shadow mapping. Typical fields include
   `modality`, `mapping_family`, `mapping_reference`, `sensor_types`,
@@ -680,14 +768,15 @@ Created when summarize exports additive per-window QC.
 
 - **`/qc/windows/retained_after_qc`** *(int8, shape `[T]`)*
 - **`/qc/windows/rejected_flag`** *(int8, shape `[T]`)*
-- **`/qc/windows/qc_ok_eeg`**, **`/qc/windows/qc_ok_ecg`**, **`/qc/windows/qc_ok_eog`** *(int8, optional)*
-- **`/qc/windows/coverage_ok`** *(int8, shape `[T]`, optional)*
+- **`/qc/windows/qc_ok_eeg`**, **`/qc/windows/qc_ok_ecg`**, **`/qc/windows/qc_ok_eog`** *(int8, optional)*: two-stage gate, added 2026-09-11. Stage 1 (feature-table level, computed unconditionally): `1` = core bands finite, `0` = core bands not finite. Stage 2 (export level, per-recording): if an artifact-reduction method (ICA / EOG regression) is **not confirmed** to have actually run and modified the signal for this recording (per the preprocess QC sidecar's `artifact.applied`), the *entire* exported array is overwritten to **`-1` (not assessed)**, regardless of whether the underlying stage-1 value was `0` or `1` — a `0` can therefore never appear in the export unless `artifact.applied is True` for every underlying file in this recording's grouping. `1` only ever appears in the export when both stages pass: core bands finite AND artifact-reduction confirmed. Do not read `qc_ok_eeg=1` as "an artifact detector passed this window" unless it is actually `1` under this rule, and do not read `qc_ok_eeg=0` as "this dataset has an artifact detector but this window failed it" -- `-1` is the far more common outcome for any dataset that has not configured/confirmed artifact rejection (e.g. I-CARE, whose `preprocess.artifacts.method` is `"none"`). This does not change epoch retention: the `eeg_only` QC filter policy reads the unmodified stage-1 feature-table column, not this export, and is unaffected by the `-1` state (see `Output_variables_guide.md`'s coverage/QC filter notes), matching pre-2026-09-11 behavior for datasets that never configure artifact rejection at all.
+- **`/qc/windows/coverage_ok`** *(int8, shape `[T]`, optional)*: `1` iff `axis_fraction >= min_axis_coverage` (both defined above) on all three axes for that window, else `0`.
 - **`/qc/windows/mnps_3d_valid`** *(int8, shape `[T]`, optional)*: per-window finite validity for retained 3D MNPS rows.
 - **`/qc/windows/coords_9d_valid`** *(int8, shape `[T]`, optional)*: per-window finite validity for retained stratified coordinates.
 - **`/qc/windows/geometry_valid`** *(int8, shape `[T]`, optional)*: joint retained-window validity across available geometry surfaces.
 - **`/qc/windows/stage_transition_flag`** *(int8, shape `[T]`, optional)*
-- Group attrs:
+- Group attrs (on `/qc/windows`):
   - **`_schema_version`** = `mndm.qc.windows.v1`
+- The parent **`/qc`** group itself also carries **`_schema_version`** = `mndm.qc.v1` (distinct from the child `/qc/windows` tag).
 
 This group intentionally carries only the light-weight, per-window contract.
 Heavier QC summaries still live in `qc_summary.json` and `qc_reliability.json`.
@@ -720,7 +809,7 @@ The per-subject bad-channel list is also echoed into `run_manifest.json` under
 Created if v2 Jacobians exist.
 
 - **`/jacobian_9D/J_hat`** *(float32, shape `[W2,K,K]`)*: Jacobian in Stratified MNPS v2 space.
-- **`/jacobian_9D/J_dot`** *(float32, shape `[W2-1,K,K]`)*: temporal difference.
+- **`/jacobian_9D/J_dot`** *(float32, shape `[W2,K,K]`)*: per-window Jacobian derivative estimate. Same shape as `J_hat` (see the `/jacobian/J_dot` note above — this is **not** a `[W2-1,K,K]` temporal difference).
 - **`/jacobian_9D/centers`** *(int32, shape `[W2]`)*: center index.
 - **`/jacobian_9D/affine_reference`**, **`/jacobian_9D/affine_intercept`** *(float32, shape `[W2,K]`, optional)*: affine fit parameters for the directly estimated 9D Jacobian.
 - **`/jacobian_9D/derived_metrics/v1/`** *(optional)*: the same Jacobian Metrics v1 contract evaluated directly on the 9D Jacobian; it is not synthesized from 3D outputs. Same Round-2 certificate siblings as `/jacobian/derived_metrics/v1/`.
@@ -734,13 +823,28 @@ Optional subgroup:
 - **`/residual_covariance_proxy/v1/`**: PSD-regularized residual covariance proxy and mandatory time-semantic/QC provenance. The current subject summarize pipeline does not emit this surface because it lacks an exported one-step transition residual. New writes carry the same three-way certificate; computed proxies are `not_assessed`, not NDT-licensed.
 - **`/transition_residuals/v1/{primary,stratified_9d}/`**: opt-in, cross-fitted one-step state prediction and residual series. Each record carries source/target window and center indices, observed `dt_sec`, predicted state, residual, and coordinate/fit provenance. Sibling certificate fields as above (`not_assessed` only when `computation_status=computed`).
 - **`/transition_residual_covariance_proxy/v1/{primary,stratified_9d}/`**: recording-level covariance of accepted cross-fitted transition residuals. It is unavailable for materially irregular transition steps or insufficient support. This proxy is not biological process noise. Under the Gate F freeze it is the only admissible Q for opt-in discrete `W_Q`.
+  - Each branch carries `covariance` (`[D,D]` or `[K,K]` float64) plus a wider provenance field set that determines whether `covariance` should be trusted as a usable Q. The most validity-relevant fields (not exhaustive): `crossfit_status`, `degrees_of_freedom_policy`, `prediction_fit_policy`, `effective_rank`, `q_rank`, `q_min_eigenvalue`, `q_psd_correction` (bool: whether a PSD projection/floor was applied), `q_psd_post_dtype` / `q_floor_met_post_dtype` (bool: whether the PSD/floor condition still holds after the final output dtype cast), `q_regularization`, `q_shrinkage`, `q_requested_min_eigenvalue`, `q_max_dt_deviation_sec`, `q_n_samples`, `q_scope`, `q_semantics`, `q_time_semantics`, `q_units`, `q_input_scale` / `q_output_scale` / `q_output_dtype`, `coordinate_contract`, `coordinate_layer`, `conversion_model`, `numerical_precision`, `residual_mean` / `residual_mean_norm`. Reading `covariance` without checking `q_psd_correction`/`q_psd_post_dtype`/`crossfit_status` risks treating an ill-conditioned or non-PSD-corrected residual estimate as a clean Q.
+  - `/stochastic_reachability/v1/*` carries the same `q_*`/`w_q_projection_qc/*` provenance vocabulary (prefixed `w_q_*` there) alongside its own `a_q`, `c_1_q`, `d_eff`, `v_norm`, `conversion_model`, `n_propagator_steps` fields — see the `failure_reason` note below for how a branch reports non-computability instead of a degraded numeric `w_q`.
 - **`/stochastic_reachability/v1/{primary,stratified_9d}/`**: opt-in (`local_dynamics.stochastic_reachability.enabled`, default false) discrete reachability \(W\leftarrow\Phi W\Phi^\top+Q\) from Gate E Q and \(\Phi=\mathrm{expm}(J_{\mathrm{crossfit}}\Delta t)\). Not `/dynamical_families/spread`. Certificate when computed: `not_assessed` / `no_biological_claim`. Grain: `recording_horizon`. Analysis-repo I-CARE / coma reachability products (for example `tube_d_eff_median`) are **not** this schema.
+  - **`primary` and `stratified_9d` fail independently.** Each branch carries its own `computation_status`; one branch can be `computed` (with a full numeric `w_q`, `a_q`, `c_1_q`, `d_eff`, `v_norm`, and `w_q_projection_qc/*` block) while the other is `invalid`/`unavailable` with a `failure_reason` string (observed values include `post_dtype_psd_failure`, `reachability_numerical_overflow`, and `upstream_jacobian_local_fit_not_identified`) and **no** `w_q`/numeric fields at all. Do not assume both branches succeed or fail together, and do not treat a missing `w_q` on one branch as evidence about the other branch's validity.
+  - **Upstream Jacobian fit-fidelity gate (added 2026-09-11):** the summarize pipeline passes the sibling `/jacobian/derived_metrics/v1` (or `/jacobian_9D/derived_metrics/v1` for `stratified_9d`) fit-fidelity gate (`summary/fit_identified`, `summary/rel_mse_baseline_median`) into this computation. When that gate says the local affine fit behind Φ did not beat the no-dynamics baseline (`fit_identified=False`), reachability reports `computation_status="unavailable"`, `failure_reason="upstream_jacobian_local_fit_not_identified"`, and `provenance/upstream_rel_mse_baseline_median`, **before** attempting the \(W\leftarrow\Phi W\Phi^\top+Q\) recursion. This targets the failure mode where an unidentified/expanding generator (\(\alpha>0\)) pushed through `expm` makes `reachability_numerical_overflow` the modal outcome instead of a rare numerical accident (see `project/mnps_v3/tests/ingest_jacobian_fidelity_handover.md`, evidence S2). When the upstream gate was not evaluated (older callers, or the Jacobian family unavailable), this check is skipped and prior-release behavior is unchanged.
+
+### `failure_reason` field
+
+Several v1 groups above carry an additional sibling dataset `failure_reason`
+(a UTF-8 string) whenever `computation_status` is **not** `computed`. It is
+populated on:
+- `/jacobian/derived_metrics/v1/failure_reason` and `/jacobian_9D/derived_metrics/v1/failure_reason` when `computation_status != computed` (observed reasons include `no_finite_metric_windows`, and, when the opt-in fit-fidelity gate is enabled and evaluated, `local_linear_fit_not_better_than_baseline` and `fit_fidelity_unknown` — see the fit-fidelity gate note above);
+- `/dynamical_families/destination/v1/failure_reason` and `/dynamical_families/resilience/v1/failure_reason` when their `computation_status` is `not_testable` (observed reasons include `explicit_A_B_reaction_coordinate_contract_not_configured` and `no_perturbation_protocol`);
+- `/dynamical_families/diffusion/v1/summary.drift_alignment_failure_reason` for the specific `A_bD`/`R_b_over_a` sub-metrics (`independent_drift_not_supplied`) even while the rest of diffusion is `computed`;
+- `/stochastic_reachability/v1/{primary,stratified_9d}/failure_reason` when that branch's `computation_status=invalid` (see above).
+`failure_reason` is absent (not an empty string) when the branch is `computed`. This is the explicit-invalid contract in practice: prefer reading `failure_reason` over inferring failure from a missing numeric field.
 
 ### Validity certificate (v3 R2)
 
 Every family and local-dynamics v1 group above may carry three sibling datasets:
 
-- `computation_status`
+- `computation_status`: possible values include `computed`, `insufficient_support` (Jacobian metrics, when no finite metric windows exist **or** the fit-fidelity gate rejects the recording's local linear fit, `failure_reason="local_linear_fit_not_better_than_baseline"`), `not_testable` (observed on destination/resilience families when their required contract inputs — e.g. explicit reaction coordinate, perturbation protocol — are not configured), `unavailable` (observed on `/stochastic_reachability/v1/*` when a required upstream input, including the Jacobian fit-fidelity gate, is missing or rejected), and `invalid` (observed on local-dynamics branches such as `/stochastic_reachability/v1/*` that attempted computation but failed numerically). When `computation_status` is anything other than `computed`, the group typically also carries a sibling `failure_reason` string (see the `failure_reason` note under "Local-dynamics extension groups" above).
 - `measurement_validity`
 - `claim_status`
 
@@ -815,6 +919,18 @@ of the CONFIG_GUIDE table), not HDF5 presence. `spread` is `gated` (Gate F).
 `resilience` is `perturbational_only`. `destination` is
 `no_generic_ingest`. `diffusion` is `overlay_only`. Capability `yes` is not
 an NDT license.
+
+**`mnj_9d` per-file downgrade (added 2026-09-11):** the static per-modality
+class (EEG/MEG `conditional`, iEEG `yes`, fMRI `limited`) describes the
+*modality*, not this file's actual 9D subcoordinate support. When
+`coordinates/e_m/{source,semantic_equivalence}` is `fallback`/`false` (e.g.
+EEG `e_m` falling back to `eeg_highfreq_power_30_45` instead of
+`ecg_rmssd`/`eog_blink_rate`), `capability/mnj_9d` is downgraded to `gated`
+for that file regardless of the static class, so a reader consulting only
+`capability/mnj_9d` cannot miss the non-equivalent axis. `mnj_3d` is
+unaffected (the 3D canonical chart does not consume the 9D split). An
+already-`not_assessed` `mnj_9d` (unknown modality) is left as-is, never
+"upgraded" to `gated`.
 
 **Legacy read:** missing `/support_signature/v1` or missing children are
 `not_recorded`. Do not infer `chart_3d=yes` from `/mnps_3d`. Do not infer
@@ -927,7 +1043,7 @@ Created if extensions exist. The structure is **free-form** and mirrors nested d
 
 Rule:
 - dict → subgroup
-- scalar/array → dataset (gzip-compressed unless scalar)
+- scalar/array → dataset (gzip-compressed only above the writer's size threshold; see "Compression / dtypes" below)
 
 ---
 
@@ -1000,7 +1116,8 @@ Per-network attrs (best-effort):
 
 ### Compression / dtypes (practical details)
 
-- All non-scalar datasets are written with **gzip compression** (`compression_opts=4`).
+- Datasets are **not** unconditionally gzip-compressed. The writer (`core/src/core/io/h5_writer.py`, `_create_dataset`) applies **gzip** (`compression_opts=4`) with chunking/shuffle only when the array is large enough to benefit: `chunks`/`shuffle` are enabled once `arr.size >= 10_000` elements, and gzip is enabled only once `arr.nbytes >= 256_000` bytes. Most per-timepoint `[T]` arrays (e.g. `int8` labels/QC flags, small `float32` series) are therefore written **uncompressed**; large 2D/3D arrays (feature matrices, Jacobian stacks, coordinate matrices) typically cross the threshold and are gzip-compressed. True scalar datasets are never compressed (HDF5 does not support chunking for scalars).
 - `time` is `float64`; most other numeric arrays are `float32` for disk/IO.
 - `labels/*` is `int8`; `events/*` is `int64` or `float64`; `nn/indices` is `int32`.
+- `/features_raw/metadata/robust_z_valid` (and the equivalent field on `/features_robust_z/metadata/*`, `/features_projection_z/metadata/*`) is written as **`int32`**, not `int8`, in current exports.
 
