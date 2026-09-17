@@ -1,0 +1,20 @@
+# Explicit history + turning coverage PILOT for the four first-hour I-CARE
+# smoke recordings (diary 429). Not required after the common overlay
+# defaulted these families on; kept as an explicit named pilot.
+#
+# CPC is a selection key only. Do not retune one_step 0.9.
+# history L3/L4 remain withheld.
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_physionet_i-care_2_1_next_140_0_12h_dynamical_families.yaml"
+
+paths:
+  processed_dir: "K:/processed/smoke_icare_history_turning_20260917/next140"
+
+dynamical_families:
+  history:
+    enabled: true
+  turning:
+    enabled: true

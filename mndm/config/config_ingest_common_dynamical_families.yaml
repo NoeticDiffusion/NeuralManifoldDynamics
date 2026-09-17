@@ -2,10 +2,24 @@
 # Import only from explicit qualification/dataset overlays; this file is
 # intentionally not imported by the common EEG, fMRI, or ephys configs.
 #
-# Family schema IDs are unchanged from v3.0.0:
+# Family schema IDs:
 #   diffusion   -> mndm.diffusion_geometry.v1
 #   destination -> mndm.committor.v1
 #   resilience  -> mndm.finite_amplitude_resilience.v1
+#   drift       -> mndm.chart_drift.v1  (SL-LEV-MES-003 identities; default on in this overlay)
+#   one_step    -> mndm.affine_one_step.v1 (fit-fidelity-gated lag-1 map + generator proxies; default on)
+#   amplification -> mndm.amplification.v1 (same-pair neighbor gain q90; default on)
+#   history       -> mndm.history.v1 (frozen M0/M1 OOS + nested M1 operator; default on)
+#   turning       -> mndm.turning.v1 (realized successive-increment turning; default on)
+# This overlay defaults dynamical_families.enabled and the writable family
+# flags (diffusion, destination, resilience, drift, one_step, amplification,
+# history, turning) plus local_dynamics FTR / Gate E residuals / Gate F W_Q
+# to true. Common EEG/fMRI/ephys profiles still do not import this file.
+# Destination and resilience still fail closed without protocol + TQ.
+# C1 nested diffusion.drift.enabled stays false (no independent b).
+# one_step_rel_mse_threshold stays 0.9; declared_lags stays [1] here.
+# Compatibility table (003 §8) maps field names to identities; it does not
+# enable families or write /local_dynamics/.
 # Local-dynamics schema IDs (v2.6 / v3.0):
 #   jacobian_metrics              -> mndm.jacobian_metrics.v1
 #   finite_time_response          -> mndm.finite_time_response.v1
@@ -15,12 +29,28 @@
 #
 # There is no family YAML flag named `spread`. Opt-in discrete W_Q is
 # local_dynamics.stochastic_reachability and writes /stochastic_reachability/v1.
+# 002 future-spread names under dynamical_families are refused. State-matched
+# future spread is level1, not level0. Multi-step W_Q is not level2.
+# W_Q is not conditional_future_spread_level1; w_q_as_conditional_future_spread_level1
+# is refused. Nested dynamical_families.local_dynamics / possible_futures /
+# perturbation are logical 003 paths, not writable HDF5 roots. Top-level
+# local_dynamics.stochastic_reachability remains the opt-in W_Q switch.
+# Attractor, basin, persistence, and recurrence YAML keys are refused,
+# including the 002 measurement names and headings. Recurrence is not an
+# attractor. -log(P_RR)/dt is not an escape rate. Hysteresis, recovery,
+# and 002/003 return-path names are refused. Matching is not automatically
+# level2. Hysteresis is not FAR. recovery_time_level1 is not
+# excursion_recovery_time_median_level1.
 #
 # Translation-qualification (TQ) gating is NOT uniform across families:
 #   diffusion:              TQ id/hash are a provenance method tag ONLY.
 #                            `qualified` is never read; computation proceeds
 #                            whenever diffusion.enabled=true and the estimator
 #                            has support, regardless of TQ state.
+#   drift / one_step:       no TQ gate. computed/insufficient_support when
+#                            enabled and the estimator has support. Never
+#                            translation_qualified. one_step identification
+#                            is mndm.one_step_fit_fidelity.v1, not OD-TQ.
 #   destination/resilience: TQ IS a hard gate. `qualified: true` PLUS a
 #                            non-empty qualification_id AND
 #                            qualification_contract_hash are all required, or
@@ -29,10 +59,19 @@
 #                            instead of being computed.
 # (see mndm/src/mndm/pipeline/dynamical_families_export.py)
 dynamical_families:
-  enabled: false
+  enabled: true
   coordinate_layer: subject_anchored
   diffusion:
-    enabled: false
+    enabled: true
+    # Register identity of series/a_hat is conditional_covariance_rate_level1
+    # (centered increment covariance / nominal dt, convention a not D/2).
+    # Nested increment_covariance_level0 is unconditional Cov(ΔX), not /dt,
+    # not local kNN, and not a_hat. YAML nested name is refused.
+    # That is not a rename of a_hat and not ito_diffusion_tensor_level3.
+    # d_diff / c_diff are derived scalars of a_hat, not
+    # diffusion_effective_dimension_level1 or diffusion_condition_number_level1.
+    # Lag-1 source_idx / transition_support_id are support metadata, not a
+    # new family. YAML remains the only enable switch; this overlay defaults on.
     # Informational only: no other estimator is wired, and `qualified` above
     # is never read as a gate (only qualification_id/hash are copied into
     # provenance once computed). Changing this string does not change which
@@ -67,8 +106,160 @@ dynamical_families:
     # kwarg is NOT wired to any YAML key (always uses its own 0.1 default).
     min_valid_fraction: 0.1
     psd_floor: 1.0e-8
+  # SL-LEV-MES-003 chart-drift identities. Default on in this overlay. This is
+  # not Family B,
+  # not /mnps_3d_dot, and not an independent b for A_bD / R_b/a. Never write
+  # ito_qualified or ito_drift_level3. Old nested keys
+  # finite_lag/crossfit/ito_candidate are refused. Nested
+  # crossfit_local_chart_b is refused; using it as drift.source stays
+  # resolver-closed (crossfit_not_authorized_before_m3) and is not an
+  # independent b for A_bD.
+  drift:
+    enabled: true
+    # SL-LEV-MES-003 identities. Pooled lag-1 source_idx shares
+    # transition_support_id with diffusion when both compute. Cross-fit is a
+    # variant subset with its own support_id; embargo_semantics=index_steps.
+    estimator: local_conditional_increment_mean
+    neighborhood: {k: 20}
+    min_samples: 30
+    # Frozen 3D floor: max(10, 3d+1) = 10. Not Jacobian's 90-parameter burden.
+    min_neighborhood_samples: 10
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    max_neighborhood_radius: null
+    min_temporal_span_sec: null
+    min_valid_fraction: 0.1
+    weight_mode: inverse_distance
+    realized_velocity_level0:
+      enabled: true
+    conditional_mean_rate_level1:
+      pooled:
+        enabled: true
+      blocked_crossfit:
+        enabled: true
+        n_blocks: 2
+        embargo_steps: 4
+      lag_diagnostics:
+        enabled: true
+        lags: [1, 2, 4]
+        consistency_rel_tol: 0.5
+  # Generic fit-fidelity-gated lag-1 affine map (SL-LEV-MES-003 level 2) plus
+  # generator proxies (level 3) from logm(Phi)/dt. Default on in this overlay.
+  # I-CARE dynamical-families overlays may set declared_lags: [1, 2];
+  # that is an overlay opt-in, not an I-CARE-tuned estimator and not TQ.
+  # Not the production Jacobian, not expm(J_hat dt), not jacobian_metrics
+  # abscissa, and not ito_drift_level3. v1 fits one recording-level map
+  # with two chronological folds and an index embargo
+  # (embargo_semantics=index_steps). Identified iff the median of the two
+  # blocked-holdout rel-MSE scores is strictly < 0.9 vs the mean-next-state
+  # baseline (mndm.one_step_fit_fidelity.v1), distinct from the I-CARE
+  # jacobian_metrics fit_fidelity_gate. neighborhood.k is logged and unused
+  # for Phi. Grain is native=recording, repeated_measure=false:
+  # window-shaped series are broadcasts of one operator, not T replicates.
+  # Nested identities: affine_one_step_map_level2,
+  # conditional_affine_mean_rate_level2, innovation_covariance_level2
+  # (affine residual, not diffusion a_hat; C2 stays closed). Level 2
+  # qualification_status is one_step_identified or one_step_not_identified.
+  # Level 3 (spectral/numerical_abscissa, divergence,
+  # generator_rotation_norm) only if the map is identified and logm is
+  # real; qualification_status is
+  # generator_proxy_from_qualified_one_step_not_ito. reactivity_gap_level3
+  # (omega-alpha) is withheld; jacobian_metrics reactivity_gap is not that
+  # identity. operator_gain_anisotropy_level2 and
+  # generator_symmetric_anisotropy_level3 are withheld. Forbidden YAML keys:
+  # ito_drift_level3, ito_qualified, jacobian_expm,
+  # jacobian_expm_as_fitted_phi, multi_step_rollout,
+  # one_step_iteration_as_level2, phi_one_composed_as_lag2, affine_two_step,
+  # two_step, abscissa_from_unidentified_operator,
+  # innovation_as_diffusion_a_hat, mnps_xdot_as_one_step_map,
+  # reactivity_gap_level3, abscissa_difference_as_reactivity_gap,
+  # jacobian_reactivity_gap_as_level3, operator_gain_anisotropy_level2,
+  # generator_symmetric_anisotropy_level3. Not a
+  # drift_source for A_bD. 3D subject-anchored only. declared_lags: [1]
+  # is the implemented default. Direct lag-2 writes under declared_lag_2/
+  # when declared_lags includes 2. Composing Phi_1 is not that identity;
+  # Phi_1 applied twice is iterated_one_step_horizon_map_level4 when the
+  # lag-1 map is identified and horizon holdout at 2 dt beats 0.9.
+  # embargo_steps must be >= declared_lag_steps; default 4 covers lag 1
+  # and lag 2. Lag-2 generator proxies write under declared_lag_2/ from
+  # logm(Phi_2)/nominal_dt when that map is identified. Still not Ito.
+  # Euclidean functionals of a qualified Phi (max-gain, volume-gain,
+  # polar rotation) write at the requested lag. They are not spectral
+  # abscissa, not finite_time_peak_gain_level4 / Phi powers, and not
+  # epsilon-rescued. iterated_one_step_horizon_map_level4 is a separate
+  # object. Common declared_lags stays [1]. I-CARE dynamical-families overlays
+  # may set declared_lags: [1, 2] as a coverage opt-in; they do not
+  # retune one_step_rel_mse_threshold.
+  one_step:
+    enabled: true
+    estimator: recording_affine_discrete_map
+    neighborhood: {k: 20}
+    min_samples: 30
+    min_neighborhood_samples: 10
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    ridge_alpha: 1.0e-4
+    one_step_rel_mse_threshold: 0.9
+    n_blocks: 2
+    embargo_steps: 4
+    declared_lags: [1]
+  amplification:
+    # 001 amplification L1: q90 of same-pair Euclidean neighbor gains
+    # at lag 1, plus nested same-pair separation, gain-rate, and
+    # cloud-volume identities. Not operator max-gain, not spectral
+    # abscissa, not operator volume. YAML nested names are refused.
+    # History predictive gain is a separate family. Default on in this overlay.
+    enabled: true
+    estimator: same_pair_neighbor_gain_q90
+    neighborhood: {k: 20}
+    min_samples: 30
+    min_neighborhood_samples: 10
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    q: 0.90
+    distance_epsilon: 1.0e-12
+  history:
+    # 001 history L1: OOS MSE(M0)-MSE(M1) on the same lag-1 triples.
+    # Frozen affine M0: x_t -> x_{t+1}. Frozen affine M1:
+    # (x_t, x_{t-1}) -> x_{t+1}. Nested L2 writes when M1 passes
+    # the frozen 0.9 one-step OOS gate. YAML key
+    # history_conditioned_operator_level2 is refused (not a toggle).
+    # history_augmented_generator_level3 / propagator_level4 remain
+    # withheld: not logm of 3x6 M1, not M1 iteration, not Ito.
+    # Not Markov restoration. Not lag-1 Phi. Default on in this overlay.
+    enabled: true
+    estimator: frozen_affine_m0_m1_oos
+    min_samples: 30
+    min_triples: 20
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    ridge_alpha: 1.0e-4
+    n_blocks: 2          # frozen; any other value is not_testable
+    embargo_steps: 4     # frozen; any other value is not_testable
+  turning:
+    # 001 rotation L0: angle between consecutive lag-1 displacements,
+    # and that angle over observed dt. Insufficient displacement is
+    # undefined, not zero. Not operator rotation. Cloud volume writes
+    # under amplification, not turning. Default on in this overlay.
+    enabled: true
+    estimator: successive_increment_turning
+    min_samples: 30
+    min_pairs: 20
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    min_displacement: 1.0e-12
   destination:
-    enabled: false
+    enabled: true
+    # 002 destination identities under 003: ingest O2b q_A_to_B is
+    # restricted_1d_local_law_quadrature_q, not generator_committor_level3.
+    # First-hit q_A_to_B is destination_first_hit_fraction_resolved_level1
+    # (x-conditioned, not level0). Series name is not renamed.
+    # destination_hit_probability_level1 (including unresolved) and
+    # destination_unresolved_fraction_level1 remain withheld. YAML nested
+    # names and substitutions (resolved_q_as_..., include_unresolved_in_first_hit_q)
+    # are refused. YAML keys committor / generator_committor_level3 /
+    # transition_model_first_hit_probability_level2 /
+    # transition_model_first_hit_probability_level4 are refused.
     # Only an explicit first-hit label column and scalar reaction-coordinate
     # column may activate the O2b adapter; no stage/coordinate inference.
     # To actually activate destination, an overlay must set the EXACT
@@ -112,7 +303,18 @@ dynamical_families:
     min_transition_segments: 5
     max_dt_relative_deviation: 0.05
   resilience:
-    enabled: false
+    enabled: true
+    # 002 FAR identities under 003: ingest amplitude_curve is
+    # far_recovery_probability_level4 when a perturbation protocol exists.
+    # Spontaneous return / excursion recovery are not FAR. YAML keys
+    # spontaneous_return_fraction_level0, excursion_recovery_probability_level1,
+    # excursion_recovery_time_median_level1,
+    # matched_perturbation_recovery_level2, matched_perturbation_recovery_level1,
+    # far_threshold_p50_level4, and far_threshold_p90_level4 are refused.
+    # Substitutions amplitude_curve_as_spontaneous_return and
+    # r50_as_far_threshold_p50 are also refused.
+    # Existing r50 is discrete_first_bin_at_or_below_half,
+    # not the 002 supremum threshold.
     # Requires explicit observed perturbation outcomes. No spontaneous
     # trajectory, Jacobian, reachability, or centroid fallback is permitted.
     # protocol_source must literally equal explicit_perturbation_outcomes,
@@ -140,10 +342,10 @@ dynamical_families:
       qualification_contract_hash: null
 
 # v2.6 / v3.0 local-dynamics defaults. Jacobian metrics are computed whenever
-# J_hat exists. FTR, Gate E transition residuals, and Gate F W_Q remain
-# opt-in. Residual-covariance proxy is derived from Gate E and is not a
+# J_hat exists. In this overlay FTR, Gate E transition residuals, and Gate F
+# W_Q default on. Residual-covariance proxy is derived from Gate E and is not a
 # separate YAML family. Common EEG/fMRI/ephys profiles must not import this
-# file; overlays re-enable the flags they actually want.
+# file. Destination/resilience still require protocol + TQ to compute.
 local_dynamics:
   jacobian_metrics:
     stability_zero_tolerance: 1.0e-8
@@ -153,13 +355,13 @@ local_dynamics:
     # local_dynamics.jacobian_metrics.fit_fidelity_gate.enabled/threshold
     # explicitly. See project/mnps_v3/tests/ingest_jacobian_fidelity_handover.md.
   finite_time_response:
-    enabled: false
+    enabled: true
     propagator_mode: time_ordered_expm
     horizon_steps: [1, 2, 4]
     max_gap_sec: null
     validation_level: model_derived
   transition_residuals:
-    enabled: false
+    enabled: true
     # Cross-fitted one-step residual construction itself only reads
     # `enabled` and `crossfit_embargo_steps`. `max_dt_deviation_sec` and
     # `min_eigenvalue` below are NOT read by the residual step — they
@@ -171,9 +373,7 @@ local_dynamics:
     max_dt_deviation_sec: 1.0e-6
     min_eigenvalue: 1.0e-8
   stochastic_reachability:
-    # Gate F. Setting enabled: true here is a no-op unless
-    # transition_residuals.enabled above is also true: ingest requires the
-    # Gate E residual/Q-proxy pipeline to already be running, and otherwise
+    # Gate F. Requires transition_residuals.enabled above: otherwise ingest
     # writes computation_status=unavailable /
     # failure_reason=transition_residuals_not_requested instead of W_Q.
-    enabled: false
+    enabled: true

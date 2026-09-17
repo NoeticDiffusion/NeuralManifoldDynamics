@@ -2,17 +2,18 @@
 
 Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation for EEG and fMRI workflows.
 
-Current documented release line: **NeuralManifoldDynamics 3.0.0**.
+Current documented release line: **NeuralManifoldDynamics 3.0.1**.
 
-Version 3.0.0 keeps the frozen MNPS chart introduced in the 2.1 coordinate-contract
-release and carried through v2.6: canonical `mnps_3d = [m,d,e]`, stratified
-`coords_9d`, Jacobian estimator `J_hat`, and the additive embodied/interoceptive
-layer (`anchor_state`, `anchor_quality`, and optional `anchor_coupling`). It adds
-the dynamical-families write surface, validity/grain/support certificates, and
-opt-in discrete chart-space \(W_Q\). Biological inference, empirical C1-M3,
-observational FAR, and committor overlays remain downstream in `nmd-analysis`.
+Version 3.0.1 keeps the frozen MNPS chart from v3.0.0 / 2.1: canonical
+`mnps_3d = [m,d,e]`, stratified `coords_9d`, Jacobian estimator `J_hat`, and the
+additive embodied/interoceptive layer (`anchor_state`, `anchor_quality`, and
+optional `anchor_coupling`). It adds locked level identities on the
+dynamical-families write surface, grain/status siblings, and default-on
+writable families in the dynamical-families overlay only. Biological inference,
+empirical C1-M3, observational FAR, and committor overlays remain downstream in
+`nmd-analysis`.
 
-See `release_notes/RELEASE_NOTES_v3.0.0.md` and `CHANGELOG.md`.
+See `release_notes/RELEASE_NOTES_v3.0.1.md` and `CHANGELOG.md`.
 
 This root README is intentionally high-level. Package-specific usage, schema details, and command references live in each subproject.
 
@@ -127,7 +128,7 @@ embodied/task-aware runs where:
 
 ## Where To Read Next
 
-- Release notes: `release_notes/RELEASE_NOTES_v3.0.0.md`
+- Release notes: `release_notes/RELEASE_NOTES_v3.0.1.md`
 - Changelog: `CHANGELOG.md`
 - MNDM usage and output contracts: `mndm/README.md`
 - MNDM generic config template: `mndm/config/config_template.yaml`

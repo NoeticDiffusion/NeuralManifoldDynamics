@@ -2,13 +2,16 @@
 
 A practical reference for neuroscientists adding a new EEG or fMRI dataset.
 
-Documented for **NeuralManifoldDynamics 3.0.0**. Canonical MNPS `[m,d,e]` / 9D,
-`J_hat`, and family schema IDs are unchanged from v2.6. This guide covers the
+Documented for **NeuralManifoldDynamics 3.0.1**. Canonical MNPS `[m,d,e]` / 9D
+and `J_hat` are unchanged from v2.6. Existing family schema IDs
+(`mndm.diffusion_geometry.v1`, `mndm.committor.v1`,
+`mndm.finite_amplitude_resilience.v1`) remain; v3 also adds
+`mndm.chart_drift.v1` and `mndm.affine_one_step.v1`. This guide covers the
 additive v3 surfaces (`dynamical_families`, validity certificates, inferential
 grain, support signatures, and opt-in Gate F \(W_Q\)) plus the existing
 local-dynamics and dataset overlay YAML.
 
-Release notes: [`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md).
+Release notes: [`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md).
 
 ## Local dynamics extension
 
@@ -51,7 +54,10 @@ it on. Do not enable FTR on those profiles.
 v2.6 Jacobian Metrics (`spectral_abscissa` \(\alpha\), `numerical_abscissa`
 \(\omega\)) and Finite-Time Response are per-recording mathematical
 provenance when `J_hat` exists. They are not S3-licensed empirical NDT
-\(\alpha/\omega/G_{\mathrm{peak}}\). The FTR peak-gain analogue is
+\(\alpha/\omega/G_{\mathrm{peak}}\). They are also not the one-step family
+generator proxies (`spectral_abscissa_level3` / `numerical_abscissa_level3`
+from `logm(Φ)/Δt`). Jacobian-metrics `reactivity_gap` is \(\omega-\alpha\) of
+`J_hat`, not `reactivity_gap_level3`. The FTR peak-gain analogue is
 `g_peak_over_horizons`, not a jacobian_metrics field. I-CARE /
 analysis-repo coma reachability (`tube_d_eff_median` and related) is
 **not** `mndm.stochastic_reachability.v1`. Computed `W_Q` is written only
@@ -69,6 +75,11 @@ dynamical_families:
   enabled: false
   coordinate_layer: subject_anchored
   diffusion: { enabled: false }
+  drift: { enabled: false }         # chart identities; schema mndm.chart_drift.v1
+  one_step: { enabled: false }      # fit-fidelity-gated lag-1 map; schema mndm.affine_one_step.v1
+  amplification: { enabled: false } # same-pair neighbor gain q90; schema mndm.amplification.v1
+  history: { enabled: false }       # frozen M0/M1 OOS error reduction; schema mndm.history.v1
+  turning: { enabled: false }       # realized successive-increment turning; schema mndm.turning.v1
   destination: { enabled: false }   # committor object; schema mndm.committor.v1
   resilience: { enabled: false }    # FAR object; schema mndm.finite_amplitude_resilience.v1
 ```
@@ -78,9 +89,14 @@ Historical protocol IDs (`OD-TQ*`, `OD-EPI-*`, `OD-SLP-*`, `FAR-*`) are
 unchanged. The pre-v3 YAML key `orthogonal_dynamics` is refused; there is no
 alias.
 
-| family_id | family object | schema (unchanged) | write path | default |
+| family_id | family object | schema | write path | default |
 |---|---|---|---|---|
 | `diffusion` | diffusion geometry | `mndm.diffusion_geometry.v1` | `/dynamical_families/diffusion/v1` | off |
+| `drift` | chart drift identities | `mndm.chart_drift.v1` | `/dynamical_families/drift/v1` | off |
+| `one_step` | affine one-step operator | `mndm.affine_one_step.v1` | `/dynamical_families/one_step/v1` | off |
+| `amplification` | same-pair neighbor gain | `mndm.amplification.v1` | `/dynamical_families/amplification/v1` | off |
+| `history` | frozen M0/M1 OOS error reduction | `mndm.history.v1` | `/dynamical_families/history/v1` | off |
+| `turning` | realized successive-increment turning | `mndm.turning.v1` | `/dynamical_families/turning/v1` | off |
 | `spread` | stochastic reachability | `mndm.stochastic_reachability.v1` | not under `/dynamical_families`; opt-in `/stochastic_reachability/v1` | registry `gate_closed`; no family YAML flag |
 | `destination` | committor | `mndm.committor.v1` | `/dynamical_families/destination/v1` | off |
 | `resilience` | FAR | `mndm.finite_amplitude_resilience.v1` | `/dynamical_families/resilience/v1` | off |
@@ -100,8 +116,10 @@ estimator has support (samples, gaps, regular \(dt\)).
 `claim_status=no_biological_claim`. OD-TQ1 id/hash, if present in YAML,
 are copied to `provenance` as a method tag
 (`validation_level=mndm_translation_validated`). They do not unlock the
-family and do not set `translation_qualified`. Destination and FAR still
-require protocol inputs plus an adapter stamp before `computed`.
+family and do not set `translation_qualified`. Chart-drift and one-step
+are also not TQ-gated: they compute when enabled and supported, and stay
+`not_assessed`. Destination and FAR still require protocol inputs plus an
+adapter stamp before `computed`.
 
 `contract_status=standard` on family provenance is the schema-contract
 class. It is not an experimental/licensed scientific claim and is not
@@ -124,10 +142,147 @@ authorized. MNPS \(\dot x\), Jacobian intercepts, and same-sample
 increment means are refused as \(b\). Under C1, `a_semantics` is
 `raw_increment_covariance` and `ratio_semantics` is
 `chart_velocity_to_increment_spread` (not an Itô drift-to-diffusion
-ratio).
+ratio). The opt-in chart-drift family is not a `drift_source` for these
+alignment scalars. Nested `increment_covariance_level0` is the
+unconditional centered increment covariance, not divided by \(\Delta t\),
+not local kNN, and not `a_hat`. YAML key `increment_covariance_level0`
+is refused as a toggle. `d_diff` remains a derived scalar of `a_hat`, not
+`diffusion_effective_dimension_level1`. YAML keys
+`diffusion_effective_dimension_level1`, `diffusion_condition_number_level1`,
+`diffusion_directional_entropy_level1`, and
+`d_diff_as_diffusion_effective_dimension_level1` are refused.
 
-Common EEG/fMRI/ephys profiles do not import the family YAML. Do not
-enable families on those defaults.
+`dynamical_families.drift` (schema `mndm.chart_drift.v1`) writes 3D
+subject-anchored identities `realized_velocity_level0` and
+`conditional_mean_rate_level1` (`pooled`, `blocked_crossfit`,
+`lag_diagnostics`). Cross-fit is a level-1 `variant_id`, not a level
+upgrade. `ito_drift_level3` is not written. `/mnps_3d_dot` is a
+separate Savitzky–Golay identity.
+
+`dynamical_families.one_step` (schema `mndm.affine_one_step.v1`) writes a
+recording-level lag-1 affine map \(x_{t+\Delta}\approx\Phi(x_t-\bar x)+c\)
+when the median of two chronological blocked-holdout rel-MSE scores is
+**strictly less than** 0.9 versus a mean-next-state baseline
+(`mndm.one_step_fit_fidelity.v1`). That gate is **not** translation
+qualification and **not** the I-CARE `jacobian_metrics.fit_fidelity_gate`.
+Identified maps stamp `qualification_status=one_step_identified`; denied
+maps stamp `one_step_not_identified`. Euclidean functionals of a qualified
+\(\Phi\) (`operator_max_gain_rate_level2`, `operator_volume_gain_rate_level2`,
+`operator_rotation_rate_level2`) stamp
+`qualification_status=one_step_functional_of_qualified_map_not_independent_oos`.
+They are SVD / det / polar of \(\Phi\), not spectral abscissa, not peak
+gain from \(\Phi\) powers, and not generator-proxy rotation. Rank-deficient
+volume is not epsilon-rescued. If identified, level-3 leaves are a
+real `logm(Φ)/Δt` (spectral/numerical abscissa, divergence, rotation) with
+`qualification_status=generator_proxy_from_qualified_one_step_not_ito`.
+They are generator *proxies*, not `ito_drift_level3` and not
+`/jacobian/derived_metrics` abscissa. `reactivity_gap_level3` (\(\omega-\alpha\))
+is withheld; jacobian-metrics `reactivity_gap` is not that identity.
+`operator_gain_anisotropy_level2` is withheld; it is not
+`operator_max_gain_rate_level2`. Nested series include `phi_hat`,
+`affine_reference`, `affine_intercept`, `affine_mean_rate`,
+`innovation_covariance`, `rel_mse_baseline`, `operator_max_gain_rate`,
+`operator_volume_gain_rate`, `operator_rotation_rate`, and on level 3
+`generator_log_ok`. `innovation_covariance_level2` is the affine residual
+of this map, not diffusion `a_hat`. Iterating \(\Phi\) is level 4
+(`iterated_one_step_horizon_map_level4`) with its own holdout at horizon
+\(2\Delta t\); YAML `multi_step_rollout` / `phi_one_composed_as_lag2`
+remain refused as level-2 aliases. YAML `declared_lags` defaults to `[1]`; `{1}`, `{2}`,
+and `{1, 2}` are implemented. Direct lag-2 identities write under
+`declared_lag_2/` from pairs \((x_t, x_{t+2\Delta})\), not from
+\(\Phi_1^2\). Lag-2 generator proxies write under the same nested group
+from \(\logm(\Phi_2)/\mathrm{nominal\_dt}\) when that map is identified
+(`nominal_dt` ≈ \(2\Delta t\)). They are still not Itô. Common YAML stays
+`declared_lags: [1]`. Composing \(\Phi_1\) is not the lag-2 identity.
+YAML keys `ito_drift_level3`, `ito_qualified`,
+`jacobian_expm`, `jacobian_expm_as_fitted_phi`, `multi_step_rollout`,
+`one_step_iteration_as_level2`, `phi_one_composed_as_lag2`,
+`affine_two_step`, `two_step`, `abscissa_from_unidentified_operator`,
+`innovation_as_diffusion_a_hat`, `mnps_xdot_as_one_step_map`,
+`peak_gain_from_phi_powers`, `finite_time_peak_gain_level4`, `operator_gain_as_spectral_abscissa`,
+`epsilon_rescued_volume_gain`, `reactivity_gap_level3`,
+`abscissa_difference_as_reactivity_gap`, `jacobian_reactivity_gap_as_level3`,
+`operator_gain_anisotropy_level2`, and `generator_symmetric_anisotropy_level3` are
+refused. 3D subject-anchored only; 9D is
+`one_step_subject_anchored_3d_only`.
+
+`dynamical_families.amplification` (schema `mndm.amplification.v1`) writes
+the window-level identity `neighbor_gain_q90_level1`: the 0.90 quantile of
+same-pair Euclidean neighbor gains \((d_{ij}^{(1)}+\varepsilon)/(d_{ij}^{(0)}+\varepsilon)\)
+at lag 1. Neighbors are selected among lag-1 sources and followed one real
+step; they are not re-selected at the successor. The written series is the
+**per-source** q90, not a pooled pair-level \(Q_{0.90}\). \(\varepsilon\) is a
+documented distance floor (`distance_epsilon`, default `1e-12`), not a
+volume rescue. The identity is not `operator_max_gain_rate_level2`, not
+spectral abscissa, and not peak gain.
+`history_predictive_gain_level1` is a separate family, not written here.
+Nested same-pair identities `neighbor_separation_rate_level1`,
+`neighbor_gain_rate_q90_level1`, and `cloud_volume_change_rate_level1`
+write when the family is enabled; they are not YAML toggles. Separation
+is the per-source median of \(\log((d_1+\varepsilon)/(d_0+\varepsilon))/\mathrm{nominal\_dt}\).
+Gain-rate is \(\log G_{q90}/\mathrm{nominal\_dt}\) of the already written
+q90. Cloud volume is
+\((\log\det(C_1+\varepsilon I)-\log\det(C_0+\varepsilon I))/(2\,\mathrm{nominal\_dt})\)
+on the same neighbor cloud; \(\varepsilon\) is a documented logdet floor,
+not operator-volume rescue. YAML keys
+`resample_neighbors_at_target`, `neighbor_gain_as_operator_max_gain`,
+`neighbor_gain_as_spectral_abscissa`, `history_predictive_gain_level1`,
+`neighbor_separation_rate_level1`, `neighbor_gain_rate_q90_level1`,
+`cloud_volume_change_rate_level1`, `neighbor_separation_as_spectral_abscissa`,
+and `cloud_volume_as_operator_volume` are refused. `q` is frozen at 0.90; any other value is
+`neighbor_gain_q_not_implemented`. 3D subject-anchored only.
+
+`dynamical_families.history` (schema `mndm.history.v1`) writes the
+recording-level identity `history_predictive_gain_level1` and nested
+`history_conditioned_operator_level2`. L1 is out-of-sample
+\(H_{\mathrm{gain}}=\mathrm{MSE}(M_0)-\mathrm{MSE}(M_1)\) on the same
+lag-1 triples. Frozen affine \(M_0\) is \(x_t\to x_{t+1}\); frozen affine
+\(M_1\) is \((x_t,x_{t-1})\to x_{t+1}\). Two chronological folds with
+`embargo_steps=4` (`embargo_semantics=index_steps`). Nested L2 is
+identified only when M1 itself passes the frozen one-step OOS gate
+(`mndm.one_step_fit_fidelity.v1`, median fold rel-MSE strictly less than
+0.9). Positive \(H_{\mathrm{gain}}\) is not identification. The map is
+\(3\times 6\), not lag-1 \(\Phi\). This is not Markov restoration.
+Grain is `native=recording`, `repeated_measure=false` (window series are
+holdout broadcasts). YAML keys `history_as_markov_restoration`,
+`history_conditioned_operator_level2`, `history_augmented_generator_level3`,
+`history_augmented_propagator_level4`, `mnps_xdot_as_history_model`,
+`one_step_phi_as_history_m0`, `logm_of_history_m1`, `history_m1_as_ito_drift`,
+and `m1_iteration_as_history_propagator` are refused; L2 is a nested
+identity, not a YAML toggle. `n_blocks` is frozen at 2; any other value is
+`history_n_blocks_not_implemented`. `embargo_steps` is frozen at 4;
+any other value is `history_embargo_steps_not_implemented`. The 0.9
+threshold is frozen (`history_rel_mse_threshold_not_implemented`). Both
+chronological OOS folds must succeed (`history_both_folds_required`).
+Level-3/4 history rungs remain withheld: not \(\logm\) of the \(3\times 6\)
+M1 map, not `ito_drift_level3`, and not iteration of M1. 3D subject-anchored only.
+
+`dynamical_families.turning` (schema `mndm.turning.v1`) writes the
+window-level identities `turning_angle_level0` and `turning_rate_level0`:
+the Euclidean angle between consecutive lag-1 displacements, and that
+angle divided by the observed first-step \(\Delta t\). If either
+displacement norm is below `min_displacement` (default \(10^{-12}\)),
+the value is undefined (NaN), not zero. This is not
+`operator_rotation_rate_level2` and not `generator_rotation_norm_level3`.
+`cloud_volume_change_rate_level1` writes under amplification, not turning.
+YAML keys `operator_rotation_as_turning`, `generator_rotation_as_turning`,
+`mnps_xdot_as_turning`, `zero_fill_undefined_direction`, and
+`cloud_volume_change_rate_level1` are refused. 3D subject-anchored only.
+
+Common default for `drift`, `one_step`, `amplification`, `history`, and `turning` is off. PhysioNet I-CARE
+2.1 overlays `config_ingest_physionet_i-care_2_1_dynamical_families.yaml`
+and `config_ingest_physionet_i-care_2_1_next_140_0_12h_dynamical_families.yaml`
+may set `enabled: true` as a coverage opt-in; they do not retune the 0.9
+one-step threshold. The same overlays may set `declared_lags: [1, 2]` so
+direct lag-2 maps, lag-2 generator proxies, and lag-2 operator
+functionals write under
+`declared_lag_2/`. Common YAML stays `declared_lags: [1]`. Those overlays
+do **not** enable `amplification`, `history`, or `turning`. Named smoke pilots
+`config_ingest_physionet_i-care_2_1_part1_0_12h_amplification_pilot.yaml` and
+`config_ingest_physionet_i-care_2_1_next_140_0_12h_amplification_pilot.yaml`
+set `amplification.enabled: true` for bounded first-hour coverage only;
+they are not production overlays. Common EEG/fMRI/ephys profiles do not import the
+family YAML. Do not enable families on those defaults.
 
 Observational ingest without a perturbation protocol reports FAR as
 `not_testable` / `no_perturbation_protocol`.
@@ -157,7 +312,8 @@ claim_status           NDT / biology licensed
 - `translation_qualified` — destination or resilience computed **and**
   provenance already records a non-empty `qualification_id` and
   `qualification_contract_hash` (those families still require protocol
-  inputs plus the YAML adapter stamp)
+  inputs plus the YAML adapter stamp). Chart-drift and one-step never
+  use this token.
 
 `claim_status` on **all new writes** is `no_biological_claim`. Round 2 does
 not emit `ndt_licensed`.
@@ -200,7 +356,8 @@ Native grain by surface (schema metadata; attached even when not computed):
 | Transition residuals | transition | recording | true |
 | Q / residual-covariance proxy | recording | subject | false |
 | Stochastic reachability | recording_horizon | recording | true |
-| Diffusion / destination | window | recording | true |
+| Diffusion / destination / chart drift | window | recording | true |
+| Affine one-step | recording | recording | false |
 | Resilience (FAR) | event | recording | true |
 
 Do not treat 40,000 windows from 20 people as `N=40,000`. Ingest records

@@ -2,14 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Any, Sequence
+from functools import wraps
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
 from .contracts import COMMITTOR_SCHEMA_VERSION, build_provenance, unavailable_result
 from ..measurement_certificate import attach_certificate
 from ..inferential_grain import attach_grain_for_schema
+from .measurement_register import (
+    MEASUREMENT_ID_DESTINATION_RESOLVED,
+    MEASUREMENT_ID_O2B_QUADRATURE,
+    stamp_register_fields,
+)
 from .validity import chunked_nearest_neighbors, increment_pairs, validate_trajectory
+
+
+def _stamp_identity(measurement_id: str) -> Callable:
+    def decorator(fn: Callable) -> Callable:
+        @wraps(fn)
+        def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return stamp_register_fields(fn(*args, **kwargs), measurement_id)
+
+        return wrapped
+
+    return decorator
 
 
 def _next_hit_outcomes(labels: np.ndarray, segments: np.ndarray, set_a: set[int], set_b: set[int]) -> np.ndarray:
@@ -36,6 +53,7 @@ def _next_hit_outcomes(labels: np.ndarray, segments: np.ndarray, set_a: set[int]
     return out
 
 
+@_stamp_identity(MEASUREMENT_ID_DESTINATION_RESOLVED)
 def estimate_committor(
     state: np.ndarray,
     time: np.ndarray,
@@ -207,6 +225,7 @@ def estimate_committor(
     }))
 
 
+@_stamp_identity(MEASUREMENT_ID_O2B_QUADRATURE)
 def estimate_committor_local_law_dense_grid_o2b(
     state: np.ndarray,
     time: np.ndarray,

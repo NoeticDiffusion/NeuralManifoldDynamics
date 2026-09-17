@@ -15,7 +15,10 @@ from typing import Any, Dict, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
 
-from .dynamical_families.registry import validate_writable_family_payload
+from .dynamical_families.registry import (
+    refuse_withheld_compatibility_keys,
+    validate_writable_family_payload,
+)
 
 
 MNPS_AXIS_NAMES = ("m", "d", "e")
@@ -635,6 +638,19 @@ def normalize_payload(payload: MNPSPayload) -> MNPSPayload:
     payload.provenance = dict(payload.provenance) if isinstance(payload.provenance, Mapping) else {}
     payload.coverage = dict(payload.coverage) if isinstance(payload.coverage, Mapping) else {}
     payload.dynamical_families = validate_writable_family_payload(payload.dynamical_families)
+    for attr in (
+        "jacobian_derived_metrics",
+        "jacobian_9D_derived_metrics",
+        "finite_time_response",
+        "finite_time_response_9D",
+        "transition_residuals",
+        "transition_residuals_9D",
+        "residual_covariance_proxy",
+        "residual_covariance_proxy_9D",
+        "stochastic_reachability",
+        "stochastic_reachability_9D",
+    ):
+        refuse_withheld_compatibility_keys(getattr(payload, attr), label=attr)
     payload.support_signature = (
         dict(payload.support_signature) if isinstance(payload.support_signature, Mapping) else {}
     )

@@ -147,11 +147,30 @@ def resolve_effective_epoch_contract(
     return None
 from ..dynamics.transition_residuals import compute_transition_residuals
 from ..dynamical_families.contracts import (
+    AFFINE_ONE_STEP_SCHEMA_VERSION,
+    AMPLIFICATION_SCHEMA_VERSION,
+    HISTORY_SCHEMA_VERSION,
+    TURNING_SCHEMA_VERSION,
+    CHART_DRIFT_SCHEMA_VERSION,
     COMMITTOR_SCHEMA_VERSION,
     DIFFUSION_GEOMETRY_SCHEMA_VERSION,
     FINITE_AMPLITUDE_RESILIENCE_SCHEMA_VERSION,
     unavailable_result as family_unavailable_result,
 )
+from ..dynamical_families.measurement_register import (
+    MEASUREMENT_ID_AFFINE_MAP,
+    MEASUREMENT_ID_FAR_RECOVERY,
+    MEASUREMENT_ID_O2B_QUADRATURE,
+    reject_forbidden_amplification_config_keys,
+    reject_forbidden_diffusion_config_keys,
+    reject_forbidden_history_config_keys,
+    reject_forbidden_turning_config_keys,
+    stamp_register_fields,
+)
+from ..dynamical_families.amplification import unavailable_amplification_family
+from ..dynamical_families.diffusion_geometry import unavailable_diffusion_geometry
+from ..dynamical_families.history import unavailable_history_family
+from ..dynamical_families.turning import unavailable_turning_family
 from .dynamical_families_export import (
     build_dynamical_families_export,
     reject_legacy_family_config_key,
@@ -820,6 +839,10 @@ def _build_dynamical_families_export_for_layers(
     reject_legacy_family_config_key(config if isinstance(config, Mapping) else None)
     family_cfg = config.get("dynamical_families", {}) if isinstance(config, Mapping) else {}
     family_cfg = family_cfg if isinstance(family_cfg, Mapping) else {}
+    reject_forbidden_turning_config_keys(family_cfg.get("turning"))
+    reject_forbidden_history_config_keys(family_cfg.get("history"))
+    reject_forbidden_amplification_config_keys(family_cfg.get("amplification"))
+    reject_forbidden_diffusion_config_keys(family_cfg.get("diffusion"))
     family_layer = (
         str(family_cfg.get("coordinate_layer", "subject_anchored"))
         if family_cfg
@@ -853,14 +876,52 @@ def _build_dynamical_families_export_for_layers(
             perturbation_protocol=perturbation_protocol,
         )
 
-    return {
-        name: family_unavailable_result(
+    def _layer_unavailable(name: str, schema_version: str) -> dict[str, Any]:
+        result = family_unavailable_result(
             schema_version,
             status="not_testable",
             failure_reason="requested_coordinate_layer_not_available",
             coordinate_layer=family_layer_name,
             coordinate_names=["m", "d", "e"],
         )
+        if name == "destination":
+            return stamp_register_fields(result, MEASUREMENT_ID_O2B_QUADRATURE)
+        if name == "resilience":
+            return stamp_register_fields(result, MEASUREMENT_ID_FAR_RECOVERY)
+        if name == "one_step":
+            return stamp_register_fields(result, MEASUREMENT_ID_AFFINE_MAP)
+        if name == "diffusion":
+            return unavailable_diffusion_geometry(
+                status="not_testable",
+                failure_reason="requested_coordinate_layer_not_available",
+                coordinate_layer=family_layer_name,
+                coordinate_names=["m", "d", "e"],
+            )
+        if name == "amplification":
+            return unavailable_amplification_family(
+                status="not_testable",
+                failure_reason="requested_coordinate_layer_not_available",
+                coordinate_layer=family_layer_name,
+                coordinate_names=["m", "d", "e"],
+            )
+        if name == "history":
+            return unavailable_history_family(
+                status="not_testable",
+                failure_reason="requested_coordinate_layer_not_available",
+                coordinate_layer=family_layer_name,
+                coordinate_names=["m", "d", "e"],
+            )
+        if name == "turning":
+            return unavailable_turning_family(
+                status="not_testable",
+                failure_reason="requested_coordinate_layer_not_available",
+                coordinate_layer=family_layer_name,
+                coordinate_names=["m", "d", "e"],
+            )
+        return result
+
+    return {
+        name: _layer_unavailable(name, schema_version)
         for name, schema_version, enabled in (
             (
                 "diffusion",
@@ -876,6 +937,31 @@ def _build_dynamical_families_export_for_layers(
                 "resilience",
                 FINITE_AMPLITUDE_RESILIENCE_SCHEMA_VERSION,
                 bool((family_cfg.get("resilience", {}) or {}).get("enabled", False)),
+            ),
+            (
+                "drift",
+                CHART_DRIFT_SCHEMA_VERSION,
+                bool((family_cfg.get("drift", {}) or {}).get("enabled", False)),
+            ),
+            (
+                "one_step",
+                AFFINE_ONE_STEP_SCHEMA_VERSION,
+                bool((family_cfg.get("one_step", {}) or {}).get("enabled", False)),
+            ),
+            (
+                "amplification",
+                AMPLIFICATION_SCHEMA_VERSION,
+                bool((family_cfg.get("amplification", {}) or {}).get("enabled", False)),
+            ),
+            (
+                "history",
+                HISTORY_SCHEMA_VERSION,
+                bool((family_cfg.get("history", {}) or {}).get("enabled", False)),
+            ),
+            (
+                "turning",
+                TURNING_SCHEMA_VERSION,
+                bool((family_cfg.get("turning", {}) or {}).get("enabled", False)),
             ),
         )
         if isinstance(family_cfg, Mapping)

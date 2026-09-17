@@ -21,6 +21,10 @@ from mndm.dynamical_families.chart_drift import (
     resolve_ingest_chart_drift,
 )
 from mndm.dynamical_families.diffusion_geometry import estimate_local_diffusion_geometry
+from mndm.dynamical_families.measurement_register import (
+    MEASUREMENT_ID_CONDITIONAL_COVARIANCE,
+    QUALIFICATION_ITO_NOT_QUALIFIED,
+)
 from mndm.pipeline.dynamical_families_export import build_dynamical_families_export
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -61,6 +65,18 @@ def test_gate_c1_a_alignment_drift_leaves_a_hat_byte_identical_to_no_drift() -> 
     assert none["computation_status"] == c1["computation_status"] == "computed"
     for key in ("a_hat", "D_total", "d_diff", "c_diff", "valid"):
         assert np.array_equal(none["series"][key], c1["series"][key], equal_nan=True)
+    assert none["measurement_id"] == c1["measurement_id"] == MEASUREMENT_ID_CONDITIONAL_COVARIANCE
+    assert none["interpretation_level"] == 1
+    assert none["qualification_status"] == QUALIFICATION_ITO_NOT_QUALIFIED
+    assert none["summary"]["estimand"] == "centered_increment_covariance_over_nominal_dt"
+    assert none["summary"]["diffusion_convention"] == "a_not_D_over_2"
+    assert none["summary"]["not_ito_diffusion_tensor"] is True
+    assert "ito_qualified" not in (
+        none["computation_status"],
+        none["qualification_status"],
+        c1["computation_status"],
+        c1["qualification_status"],
+    )
     assert none["summary"]["A_bD_computation_status"] == "not_testable"
     assert c1["summary"]["A_bD_computation_status"] == "computed"
     assert c1["summary"]["a_semantics"] == "raw_increment_covariance"
@@ -89,6 +105,8 @@ def test_residualize_increments_is_invalid_until_c2_authorized() -> None:
     assert with_field["computation_status"] == "invalid"
     assert with_field["failure_reason"] == REASON_C2_CLOSED
     assert "a_hat" not in with_field.get("series", {})
+    assert with_field["measurement_id"] == MEASUREMENT_ID_CONDITIONAL_COVARIANCE
+    assert MEASUREMENT_ID_CONDITIONAL_COVARIANCE not in with_field.get("series", {})
 
 
 def test_forbidden_chart_drift_sources_do_not_return_a_field() -> None:
@@ -171,6 +189,10 @@ def test_ingest_export_stays_not_supplied_even_if_yaml_requests_xdot() -> None:
     )
     result = export["diffusion"]
     assert result["computation_status"] == "computed"
+    assert result["measurement_id"] == MEASUREMENT_ID_CONDITIONAL_COVARIANCE
+    assert "a_hat" in result["series"]
+    assert "ito_diffusion_tensor_level3" not in result
+    assert "innovation_covariance_level2" not in result
     assert result["summary"]["A_bD_computation_status"] == "not_testable"
     assert result["summary"]["drift_alignment_failure_reason"] == "mnps_xdot_as_sde_drift"
     assert result["provenance"]["settings"]["drift_residualization"] == "none"
@@ -192,5 +214,8 @@ def test_common_family_yaml_keeps_drift_disabled() -> None:
     assert drift["enabled"] is False
     assert drift["mode"] == "alignment_only"
     assert drift["source"] == "not_supplied"
-    assert parsed["dynamical_families"]["enabled"] is False
-    assert parsed["dynamical_families"]["diffusion"]["enabled"] is False
+    assert parsed["dynamical_families"]["enabled"] is True
+    assert parsed["dynamical_families"]["diffusion"]["enabled"] is True
+    assert parsed["dynamical_families"]["drift"]["enabled"] is True
+    assert parsed["dynamical_families"]["drift"]["weight_mode"] == "inverse_distance"
+    assert parsed["dynamical_families"]["drift"]["min_neighborhood_samples"] == 10

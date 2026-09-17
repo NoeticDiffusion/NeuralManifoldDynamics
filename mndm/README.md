@@ -2,8 +2,8 @@
 
 MNPS computation pipeline that computes per-epoch features and produces MNPS summaries, Jacobians, and derived outputs.
 
-Documented for **NeuralManifoldDynamics 3.0.0**. See
-[`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md).
+Documented for **NeuralManifoldDynamics 3.0.1**. See
+[`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md).
 
 Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package covers feature extraction, summarization, packing, and structure checks.
 
@@ -15,7 +15,7 @@ Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package co
 | [`CONFIG_GUIDE.md`](CONFIG_GUIDE.md) | Step-by-step YAML config guide with recipes |
 | [`Command_cheat_sheet.md`](Command_cheat_sheet.md) | All CLI commands in one place |
 | [`Output_variables_guide.md`](Output_variables_guide.md) | Full HDF5 schema and variable reference |
-| [`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md) | v3.0.0 measurement-contract release notes |
+| [`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md) | v3.0.1 measurement-contract release notes |
 
 ## Overview
 
@@ -36,7 +36,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - **MNPS projection**: Maps features to 3D coordinates (m, d, e) representing mobility, diffusivity, and entropy
 - **Stratified MNPS**: Optional 9D subcoordinate chart (m_a, m_e, m_o, d_n, d_l, d_s, e_e, e_s, e_m) for finer chart decomposition
 - **Jacobian estimation**: Local linear approximations of MNPS dynamics with meta-indices (trace, rotation, anisotropy)
-- **MNDM 3.0 dynamical families** (opt-in; not on common EEG/fMRI/ephys profiles): versioned `/dynamical_families/{diffusion,destination,resilience}/v1` writes with validity certificates, inferential grain, and `/support_signature/v1/`. Gate F \(W_Q\) is a separate opt-in under `/stochastic_reachability/v1`. The MNPS chart and `J_hat` are unchanged. See [`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md).
+- **MNDM 3.0 dynamical families** (dynamical-families overlay; not on common EEG/fMRI/ephys profiles): versioned `/dynamical_families/{diffusion,destination,resilience,drift,one_step,amplification,history,turning}/v1` writes with validity certificates, inferential grain, and `/support_signature/v1/`. Gate F \(W_Q\) is `/stochastic_reachability/v1`. The MNPS chart and `J_hat` are unchanged. See [`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md).
 - **MNPS extensions**: E-Kappa (energetic curvature), RFM (resonant frequency modes), O-Koh (organizational coherence), TIG (temporal integrity grade)
 - **Robustness**: Ensemble variance, split-half reliability, PSD multiverse stability, entropy sanity checks, and an always-on mathematical invalidity policy for MNPS/MNJ geometry
 - **Preprocessing robustness**:
@@ -1036,9 +1036,9 @@ This pipeline is the data-preparation / measurement-contract layer. It exports:
 - **MNPS**: operational 3D chart `[m, d, e]`, not a uniquely identified latent manifold
 - **Stratified MNPS**: 9D chart subcoordinates compatible with the 3D export
 - **MNJ**: local chart Jacobian on exported coordinates, not a biophysical Jacobian
-- **Dynamical families (v3.0.0, opt-in)**: fail-closed schema objects beside MNPS, not licensed NDT \(\alpha/\omega/G_{\mathrm{peak}}\)
+- **Dynamical families (v3.0.1 overlay)**: fail-closed schema objects beside MNPS, not licensed NDT \(\alpha/\omega/G_{\mathrm{peak}}\)
 
-See [`../release_notes/RELEASE_NOTES_v3.0.0.md`](../release_notes/RELEASE_NOTES_v3.0.0.md) for claim ceilings.
+See [`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md) for claim ceilings.
 
 ---
 

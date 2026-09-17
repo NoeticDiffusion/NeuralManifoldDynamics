@@ -1,15 +1,18 @@
 """Local diffusion-geometry estimator (``mndm.diffusion_geometry.v1``).
 
 The estimator targets conditional increment covariance ``a(x)`` in chart
-space.  ``contract_status=standard`` names the schema contract, not an
-empirical or NDT license.  The object remains chart-dependent and is not a
-latent Itô tensor.  Jacobian residual covariance is never accepted as
-diffusion.  MNPS ``x_dot`` is not an independently qualified SDE drift.
+space.  Register identity: ``conditional_covariance_rate_level1`` documents
+existing ``a_hat`` (centered increment covariance over nominal ``dt``), not
+a rename and not ``ito_diffusion_tensor_level3``.  ``contract_status=standard``
+names the schema contract, not an empirical or NDT license.  The object
+remains chart-dependent and is not a latent Itô tensor.  Jacobian residual
+covariance is never accepted as diffusion.  MNPS ``x_dot`` is not an
+independently qualified SDE drift.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Mapping
 
 import numpy as np
 
@@ -27,14 +30,181 @@ from .chart_drift import (
     SOURCE_TRUTH_KNOWN,
 )
 from .contracts import DIFFUSION_GEOMETRY_SCHEMA_VERSION, build_provenance, unavailable_result
+from .measurement_register import (
+    MEASUREMENT_ID_CONDITIONAL_COVARIANCE,
+    MEASUREMENT_ID_INCREMENT_COVARIANCE,
+    QUALIFICATION_INCREMENT_COV,
+    stamp_register_fields,
+)
 from ..measurement_certificate import attach_certificate
-from ..inferential_grain import attach_grain_for_schema
+from ..inferential_grain import attach_grain, attach_grain_for_schema
 from .validity import (
     chunked_nearest_neighbors,
-    increment_pairs,
     project_to_psd,
     validate_trajectory,
 )
+from .transition_support import (
+    build_transition_support,
+    support_series_fields,
+    support_settings_fields,
+    support_summary_fields,
+)
+
+
+def _stamp_covariance_identity(result: dict[str, Any]) -> dict[str, Any]:
+    """Document ``a_hat`` as level-1 conditional covariance without renaming it."""
+    return stamp_register_fields(result, MEASUREMENT_ID_CONDITIONAL_COVARIANCE)
+
+
+def _stamp_qualification(result: dict[str, Any], token: str) -> dict[str, Any]:
+    out = dict(result)
+    out["qualification_status"] = token
+    summary = dict(out.get("summary") or {})
+    summary["qualification_status"] = token
+    out["summary"] = summary
+    return out
+
+
+def _increment_covariance_leaf(
+    *,
+    increments: np.ndarray | None,
+    source_idx: np.ndarray | None,
+    n_time: int,
+    dimension: int,
+    coordinate_layer: str,
+    coordinate_names: list[str],
+    extra_summary: Mapping[str, Any] | None = None,
+    extra_settings: Mapping[str, Any] | None = None,
+    status: str | None = None,
+    failure_reason: str | None = None,
+) -> dict[str, Any]:
+    """Recording-level unconditional increment covariance, not a_hat and not /dt."""
+    series_cov = np.full((n_time, dimension, dimension), np.nan, dtype=np.float32)
+    cov = None
+    computed = False
+    reason = failure_reason
+    if increments is not None:
+        finite = np.all(np.isfinite(increments), axis=1)
+        rows = np.asarray(increments, dtype=float)[finite]
+        if rows.shape[0] >= 2 and rows.shape[1] == dimension:
+            cov_raw = np.atleast_2d(np.cov(rows, rowvar=False, ddof=1))
+            if cov_raw.shape == (dimension, dimension) and np.all(np.isfinite(cov_raw)):
+                cov = cov_raw.astype(np.float32)
+                computed = True
+                if source_idx is not None:
+                    for center in np.asarray(source_idx, dtype=np.int32):
+                        t_idx = int(center)
+                        if 0 <= t_idx < n_time:
+                            series_cov[t_idx] = cov
+    if not computed and reason is None:
+        reason = "insufficient_increment_pairs"
+    result = unavailable_result(
+        DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+        status="not_testable",
+        failure_reason=reason or "not_requested",
+        coordinate_layer=coordinate_layer,
+        coordinate_names=coordinate_names,
+    )
+    if computed:
+        result["computation_status"] = "computed"
+        result["failure_reason"] = None
+    else:
+        result["computation_status"] = status or "insufficient_support"
+        result["failure_reason"] = reason
+    result["series"] = {"increment_covariance": series_cov}
+    summary = dict(result.get("summary") or {})
+    if extra_summary:
+        summary.update(dict(extra_summary))
+    summary["not_divided_by_dt"] = True
+    summary["not_local_knn"] = True
+    summary["not_ito_diffusion_tensor"] = True
+    if cov is not None:
+        summary["increment_covariance"] = cov
+        n_pairs = int(np.sum(np.all(np.isfinite(increments), axis=1))) if increments is not None else 0
+        summary["n_increment_pairs"] = n_pairs
+    result["summary"] = summary
+    provenance = dict(result.get("provenance") or {})
+    settings = dict(provenance.get("settings") or {})
+    settings["not_divided_by_dt"] = True
+    settings["not_local_knn"] = True
+    settings["not_ito_diffusion_tensor"] = True
+    if extra_settings:
+        settings.update(dict(extra_settings))
+    provenance["settings"] = settings
+    provenance["estimator"] = "unconditional_increment_covariance"
+    provenance["time_semantics"] = (
+        "within_segment_unconditional_increment_covariance_not_divided_by_dt"
+    )
+    result["provenance"] = provenance
+    leaf = stamp_register_fields(result, MEASUREMENT_ID_INCREMENT_COVARIANCE)
+    leaf = _stamp_qualification(leaf, QUALIFICATION_INCREMENT_COV)
+    leaf = attach_certificate(leaf)
+    return attach_grain(
+        leaf,
+        native="recording",
+        parent="recording",
+        repeated_measure="false",
+    )
+
+
+def _support_increment_kwargs(support: Any, x: np.ndarray) -> dict[str, Any]:
+    return {
+        "increments": support.increments,
+        "source_idx": support.source_idx,
+        "n_time": int(x.shape[0]),
+        "dimension": int(x.shape[1]),
+    }
+
+
+def _attach_increment(parent: dict[str, Any], leaf: dict[str, Any]) -> dict[str, Any]:
+    out = dict(parent)
+    out[MEASUREMENT_ID_INCREMENT_COVARIANCE] = leaf
+    return out
+
+
+def _unavailable_covariance(**kwargs: Any) -> dict[str, Any]:
+    increments = kwargs.pop("increments", None)
+    source_idx = kwargs.pop("source_idx", None)
+    n_time = int(kwargs.pop("n_time", 0) or 0)
+    dimension = kwargs.pop("dimension", None)
+    parent = attach_grain_for_schema(
+        attach_certificate(
+            _stamp_covariance_identity(
+                unavailable_result(DIFFUSION_GEOMETRY_SCHEMA_VERSION, **kwargs)
+            )
+        )
+    )
+    names = list(kwargs.get("coordinate_names") or ["m", "d", "e"])
+    leaf = _increment_covariance_leaf(
+        increments=increments,
+        source_idx=source_idx,
+        n_time=n_time,
+        dimension=int(dimension or max(len(names), 1)),
+        coordinate_layer=str(kwargs.get("coordinate_layer") or "unknown"),
+        coordinate_names=names,
+        status=str(kwargs.get("status") or "insufficient_support"),
+        failure_reason=str(kwargs.get("failure_reason") or "invalid_trajectory"),
+    )
+    return _attach_increment(parent, leaf)
+
+
+def unavailable_diffusion_geometry(
+    *,
+    status: str,
+    failure_reason: str,
+    coordinate_layer: str,
+    coordinate_names: list[str],
+) -> dict[str, Any]:
+    """Schema-complete unavailable diffusion payload with nested increment L0."""
+    names = list(coordinate_names or ["m", "d", "e"])
+    return _unavailable_covariance(
+        status=status,
+        failure_reason=failure_reason,
+        coordinate_layer=coordinate_layer,
+        coordinate_names=names,
+        n_time=0,
+        dimension=max(len(names), 1),
+    )
 
 
 def _tensor_metrics(tensor: np.ndarray, epsilon: float) -> dict[str, float]:
@@ -103,30 +273,20 @@ def estimate_local_diffusion_geometry(
     )
     names = coordinate_names or [f"dim_{idx}" for idx in range(np.asarray(state).shape[1] if np.asarray(state).ndim == 2 else 0)]
     if failure is not None or x is None or t is None or segments is None or finite_state is None:
-        return unavailable_result(
-            DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+        return _unavailable_covariance(
             status="insufficient_support" if failure and "insufficient" in failure else "invalid",
             failure_reason=failure or "invalid_trajectory",
             coordinate_layer=coordinate_layer,
             coordinate_names=names,
         )
     if len(names) != x.shape[1]:
-        return unavailable_result(
-            DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+        return _unavailable_covariance(
             status="invalid",
             failure_reason="coordinate_name_dimension_mismatch",
             coordinate_layer=coordinate_layer,
             coordinate_names=names,
         )
     minimum_dimension_support = max(int(min_neighborhood_samples), 3 * x.shape[1] + 1)
-    if neighborhood_k < minimum_dimension_support:
-        return unavailable_result(
-            DIFFUSION_GEOMETRY_SCHEMA_VERSION,
-            status="invalid",
-            failure_reason="neighborhood_k_below_dimension_aware_minimum_support",
-            coordinate_layer=coordinate_layer,
-            coordinate_names=names,
-        )
     source_token = (
         str(drift_source).strip()
         if drift_source
@@ -138,32 +298,67 @@ def estimate_local_diffusion_geometry(
         residualize_increments = False
         alignment_failure = FORBIDDEN_SOURCE_REASONS[source_token]
     if residualize_increments:
-        return unavailable_result(
-            DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+        # Build lag-1 increments first: C2 refuses a_hat residualization, not L0.
+        support = build_transition_support(
+            x,
+            t,
+            segments,
+            lag=1,
+            max_gap_sec=max_gap_sec,
+            max_dt_relative_deviation=float(max_dt_relative_deviation),
+        )
+        return _unavailable_covariance(
             status="invalid",
             failure_reason=REASON_C2_CLOSED,
             coordinate_layer=coordinate_layer,
             coordinate_names=names,
+            **_support_increment_kwargs(support, x),
         )
-    source_idx, increments, dts = increment_pairs(x, t, segments, max_gap_sec=max_gap_sec)
+    support = build_transition_support(
+        x,
+        t,
+        segments,
+        lag=1,
+        max_gap_sec=max_gap_sec,
+        max_dt_relative_deviation=float(max_dt_relative_deviation),
+    )
+    source_idx = support.source_idx
+    increments = support.increments
+    increment_ctx = _support_increment_kwargs(support, x)
+    if neighborhood_k < minimum_dimension_support:
+        return _unavailable_covariance(
+            status="invalid",
+            failure_reason="neighborhood_k_below_dimension_aware_minimum_support",
+            coordinate_layer=coordinate_layer,
+            coordinate_names=names,
+            **increment_ctx,
+        )
     if increments.shape[0] < int(min_neighborhood_samples):
-        return unavailable_result(
-            DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+        return _unavailable_covariance(
             status="insufficient_support",
             failure_reason="insufficient_valid_increment_pairs",
             coordinate_layer=coordinate_layer,
             coordinate_names=names,
+            **increment_ctx,
         )
-    nominal_dt = float(np.median(dts))
-    relative_deviation = float(np.max(np.abs(dts - nominal_dt)) / nominal_dt)
-    if relative_deviation > float(max_dt_relative_deviation):
-        return unavailable_result(
-            DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+    if support.failure_reason == "non_positive_nominal_dt":
+        return _unavailable_covariance(
+            status="invalid",
+            failure_reason="non_positive_nominal_dt",
+            coordinate_layer=coordinate_layer,
+            coordinate_names=names,
+            **increment_ctx,
+        )
+    if support.failure_reason == "materially_irregular_increment_timestep":
+        return _unavailable_covariance(
             status="not_testable",
             failure_reason="materially_irregular_increment_timestep",
             coordinate_layer=coordinate_layer,
             coordinate_names=names,
+            **increment_ctx,
         )
+    nominal_dt = float(support.nominal_dt_sec)
+    relative_deviation = float(support.observed_dt_relative_deviation)
 
     drift_available = drift is not None
     if drift is None:
@@ -176,12 +371,12 @@ def estimate_local_diffusion_geometry(
     else:
         drift_array = np.asarray(drift, dtype=float)
         if drift_array.shape != x.shape:
-            return unavailable_result(
-                DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+            return _unavailable_covariance(
                 status="invalid",
                 failure_reason="drift_shape_mismatch",
                 coordinate_layer=coordinate_layer,
                 coordinate_names=names,
+                **increment_ctx,
             )
         drift_values = drift_array[source_idx]
         residuals = increments
@@ -241,14 +436,17 @@ def estimate_local_diffusion_geometry(
         valid[center] = 1
 
     if int(np.sum(valid)) < max(1, int(np.ceil(float(min_valid_fraction) * n_time))):
-        return unavailable_result(
-            DIFFUSION_GEOMETRY_SCHEMA_VERSION,
+        return _unavailable_covariance(
             status="insufficient_support",
             failure_reason="insufficient_valid_neighborhood_coverage",
             coordinate_layer=coordinate_layer,
             coordinate_names=names,
+            increments=increments,
+            source_idx=source_idx,
+            n_time=n_time,
+            dimension=dimension,
         )
-    return attach_grain_for_schema(attach_certificate({
+    parent = attach_grain_for_schema(attach_certificate(_stamp_covariance_identity({
         "schema_version": DIFFUSION_GEOMETRY_SCHEMA_VERSION,
         "computation_status": "computed",
         "failure_reason": None,
@@ -268,6 +466,7 @@ def estimate_local_diffusion_geometry(
                 "diffusion_effective_dimension": metrics["d_diff"],
                 "diffusion_concentration": metrics["c_diff"],
                 "drift_diffusion_alignment": metrics["A_bD"],
+            **support_series_fields(support),
         },
         "summary": {
             "n_timepoints": int(n_time),
@@ -286,6 +485,7 @@ def estimate_local_diffusion_geometry(
             ),
             "a_semantics": a_semantics,
             "ratio_semantics": ratio_semantics,
+            **support_summary_fields(support),
         },
         "provenance": build_provenance(
             coordinate_layer=coordinate_layer,
@@ -307,6 +507,18 @@ def estimate_local_diffusion_geometry(
                 "drift_residualization": residualization_token,
                 "a_semantics": a_semantics,
                 "ratio_semantics": ratio_semantics,
+                **support_settings_fields(support),
             },
         ),
-    }))
+    })))
+    increment_leaf = _increment_covariance_leaf(
+        increments=increments,
+        source_idx=source_idx,
+        n_time=n_time,
+        dimension=dimension,
+        coordinate_layer=coordinate_layer,
+        coordinate_names=names,
+        extra_summary=support_summary_fields(support),
+        extra_settings=support_settings_fields(support),
+    )
+    return _attach_increment(parent, increment_leaf)

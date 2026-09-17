@@ -251,6 +251,9 @@ def test_od_tq2_adapter_payload_and_hdf5_chain(tmp_path: Path) -> None:
         family = handle["dynamical_families/destination/v1"]
         assert family.attrs["_schema_version"] == "mndm.committor.v1"
         assert family["computation_status"][()].decode() == "computed"
+        assert family["measurement_id"][()].decode() == "restricted_1d_local_law_quadrature_q"
+        assert family["summary/interpretation_level_token"][()].decode() == "not_numbered"
+        assert "interpretation_level" not in family
         assert family["series/q_grid"].shape == (65,)
         assert family["series/reaction_coordinate"].shape == (state.shape[0],)
         assert family["series/support_count"].shape == (state.shape[0],)

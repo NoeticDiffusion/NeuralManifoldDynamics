@@ -135,8 +135,12 @@ def test_od_tq3_explicit_outcomes_replay_adapter_payload_and_hdf5(tmp_path: Path
         family = handle["dynamical_families/resilience/v1"]
         assert family.attrs["_schema_version"] == "mndm.finite_amplitude_resilience.v1"
         assert family["computation_status"][()].decode() == "computed"
+        assert family["measurement_id"][()].decode() == "far_recovery_probability_level4"
+        assert int(family["interpretation_level"][()]) == 4
         assert family["grain/native"][()].decode() == "event"
         assert "amplitude_curve_json" in family
+        assert "far_threshold_p50_level4" not in family
+        assert "spontaneous_return_fraction_level0" not in family
         curve = json.loads(family["amplitude_curve_json"][()].decode())
         assert [row["return_fraction"] for row in curve] == [1.0, 0.6, 0.3]
         assert family["summary/r50_discrete_first_bin_at_or_below_half"][()] == 2.0
@@ -181,10 +185,15 @@ def test_od_tq3_observational_and_jacobian_only_data_fail_closed(tmp_path: Path)
         family = handle["dynamical_families/resilience/v1"]
         assert family["computation_status"][()].decode() == "not_testable"
         assert family["failure_reason"][()].decode() == "no_perturbation_protocol"
+        assert family["measurement_id"][()].decode() == "far_recovery_probability_level4"
+        assert "spontaneous_return_fraction_level0" not in family
 
     incomplete = _export(_config(), protocol={})["resilience"]
     assert incomplete["computation_status"] == "not_testable"
     assert incomplete["failure_reason"] == "incomplete_perturbation_protocol"
+    assert incomplete["measurement_id"] == "far_recovery_probability_level4"
+    assert incomplete["series"] == {}
+    assert "spontaneous_return_fraction_level0" not in incomplete
 
 
 def test_od_tq3_refuses_unqualified_or_incomplete_certificates() -> None:
@@ -194,6 +203,8 @@ def test_od_tq3_refuses_unqualified_or_incomplete_certificates() -> None:
         unqualified["failure_reason"]
         == "mndm_resilience_adapter_translation_qualification_required"
     )
+    assert unqualified["measurement_id"] == "far_recovery_probability_level4"
+    assert unqualified["series"] == {}
 
     missing_metadata = _export(
         _config(qualified=True, qualification_metadata=False)
@@ -203,12 +214,16 @@ def test_od_tq3_refuses_unqualified_or_incomplete_certificates() -> None:
         missing_metadata["failure_reason"]
         == "resilience_qualification_metadata_required"
     )
+    assert missing_metadata["measurement_id"] == "far_recovery_probability_level4"
+    assert missing_metadata["series"] == {}
 
     unsupported = _export(_config(estimator="jacobian_resilience_proxy"))[
         "resilience"
     ]
     assert unsupported["computation_status"] == "not_testable"
     assert unsupported["failure_reason"] == "unsupported_resilience_estimator"
+    assert unsupported["measurement_id"] == "far_recovery_probability_level4"
+    assert unsupported["series"] == {}
 
 
 def test_od_tq3_refuses_malformed_and_under_supported_outcomes() -> None:

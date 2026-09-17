@@ -7,6 +7,16 @@
 # Expected write states:
 #   diffusion:   computed when estimator support holds
 #                (measurement_validity=not_assessed; no OD-TQ1 copy)
+#   drift:       computed 003 identities when support holds. Not Itô b,
+#                not /mnps_3d_dot, not A_bD.
+#   one_step:    computed recording-level affine map when blocked holdout
+#                beats the generic 0.9 mean-next-state gate; level-3
+#                generator proxies only if identified. declared_lags:
+#                [1, 2] writes direct lag-2 identities and lag-2
+#                generator proxies under declared_lag_2/; Phi_1 twice is
+#                iterated_one_step_horizon_map_level4 at the family root.
+#                Not ito_drift_level3. Common overlay stays default off
+#                with declared_lags: [1].
 #   destination: not_testable (no explicit first-hit A/B or reaction coordinate)
 #   resilience:  not_testable / no_perturbation_protocol
 #   jacobian metrics: computed when J_hat exists AND local-fit fidelity
@@ -98,6 +108,18 @@ dynamical_families:
     max_gap_sec: null
     max_dt_relative_deviation: 0.05
     psd_floor: 1.0e-8
+
+  drift:
+    enabled: true
+
+  # Opt-in for bounded coverage smoke (diary 412/419). Common overlay stays
+  # false and declared_lags: [1]. Threshold and estimator remain the generic
+  # mndm.one_step_fit_fidelity.v1 contract, not an I-CARE-tuned gate.
+  # declared_lags: [1, 2] is a coverage opt-in for direct lag-2 and lag-2
+  # generator proxies. Not ito_drift_level3.
+  one_step:
+    enabled: true
+    declared_lags: [1, 2]
 
   destination:
     enabled: true

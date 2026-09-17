@@ -2,15 +2,26 @@
 
 from __future__ import annotations
 
-from typing import Any, Mapping
+from functools import wraps
+from typing import Any, Callable, Mapping
 
 import numpy as np
 
 from .contracts import FINITE_AMPLITUDE_RESILIENCE_SCHEMA_VERSION, build_provenance, unavailable_result
 from ..measurement_certificate import attach_certificate
 from ..inferential_grain import attach_grain_for_schema
+from .measurement_register import MEASUREMENT_ID_FAR_RECOVERY, stamp_register_fields
 
 
+def _stamp_far_identity(fn: Callable) -> Callable:
+    @wraps(fn)
+    def wrapped(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        return stamp_register_fields(fn(*args, **kwargs), MEASUREMENT_ID_FAR_RECOVERY)
+
+    return wrapped
+
+
+@_stamp_far_identity
 def summarize_finite_amplitude_resilience(
     amplitudes: np.ndarray,
     returned_to_reference: np.ndarray,

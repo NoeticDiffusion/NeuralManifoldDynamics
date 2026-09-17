@@ -2,6 +2,21 @@
 
 ---
 
+## v3.0.1 — Level identities, withheld locks, overlay defaults
+
+Patch on the v3.0.0 measurement contract. Package version `3.0.1`.
+Release notes: `release_notes/RELEASE_NOTES_v3.0.1.md`.
+
+- Writable identities: chart drift L0/L1, one-step / lag-2 / generator
+  proxies, amplification L1, history L1/L2, turning L0.
+- Withheld locks: Itô, peak-gain L4, reactivity-gap L3, anisotropy-001,
+  destination unresolved/L0, observational FAR, p50/p90, empirical future
+  spread, attractors, SOURCE_CROSSFIT as \(b\).
+- Grain + `qualification_status` siblings; no global `qualified` flag.
+- Dynamical-families overlay defaults those families and local-dynamics
+  FTR / Gate E / Gate F to true. Common EEG/fMRI/ephys profiles unchanged.
+  C1 nested `diffusion.drift.enabled` stays false. One-step 0.9 unchanged.
+
 ## v3.0.0 — Dynamical families and measurement certificates
 
 Measurement-contract generation. MNPS `[m,d,e]` / 9D, `J_hat`, and family

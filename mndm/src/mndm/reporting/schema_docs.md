@@ -39,7 +39,11 @@ Datasets and groups:
 - `/mnps_3d` – `float32[T, 3]`  
   - MNPS coordinates `[m, d, e]` at each time point (standard 3D axes).
 - `/mnps_3d_dot` – `float32[T, 3]`  
-  - Time derivatives of `mnps_3d` (`ṁ, ḋ, ė`).
+  - Savitzky–Golay time derivatives of `mnps_3d` (`ṁ, ḋ, ė`). Register
+    identity: `smoothed_velocity_savgol_level0`. This is not
+    `realized_velocity_level0` (per-step forward difference under
+    `/dynamical_families/drift/v1`), not an Itô drift \(b\), and not a legal
+    ingest `drift_source`.
 - `/features_raw/values` – `float32[T, K]`  
   - Raw per-epoch feature matrix in original scale.
 - `/features_raw/names` – `str[K]`  
@@ -160,8 +164,10 @@ Round 3 adds nested `grain/` (`native`, `parent`, `biological_unit`,
 `repeated_measure`, `direct_between_subject_inference`). New writes set
 `biological_unit=subject` and `direct_between_subject_inference=forbidden`.
 A window is not a participant. Grain is present even when the object is not
-computed. Legacy readers fill missing grain fields as `not_recorded` and must
-not infer `window` from series.
+computed. `qualification_status` is a separate sibling of
+`computation_status`; YAML `translation_qualification.qualified` is not a
+global flag and is not a family payload field. Legacy readers fill missing
+grain fields as `not_recorded` and must not infer `window` from series.
 
 Round 4 adds `/support_signature/v1/` (`mndm.support_signature.v1`): per-9D
 coordinate `source` (`direct` / `fallback`) from existing metric policies
@@ -173,34 +179,103 @@ modality capability. Legacy missing fields are `not_recorded`; do not infer
 `chart_3d=yes` from `/mnps_3d` or `spread=gated` from absent reachability.
 
 Standard non-MNPS measurement families, when explicitly requested, are
-written only under `/dynamical_families/{diffusion,destination,resilience}/v1`.
+written only under `/dynamical_families/{diffusion,destination,resilience,drift,one_step,amplification,history,turning}/v1`.
 They do not alter `/mnps_3d`, `/coords_9d`, or `/jacobian`. Schema IDs remain
-`mndm.diffusion_geometry.v1`, `mndm.committor.v1`, and
-`mndm.finite_amplitude_resilience.v1`. Pre-v3 files may still contain
+`mndm.diffusion_geometry.v1`, `mndm.committor.v1`,
+`mndm.finite_amplitude_resilience.v1`, `mndm.chart_drift.v1`,
+`mndm.affine_one_step.v1`, `mndm.amplification.v1`, `mndm.history.v1`, and `mndm.turning.v1`. Pre-v3 files may still contain
 `/orthogonal_dynamics/*`; readers load that tree only when the canonical
-group is missing. The diffusion, committor, and finite-amplitude-resilience
-contracts each carry their own support/status, dataset-eligibility, and
+group is missing. The diffusion, committor, finite-amplitude-resilience, and
+chart-drift contracts each carry their own support/status, dataset-eligibility, and
 translation-qualification requirements. Diffusion, when enabled, is computed
 if the estimator has support and is written `not_assessed`; OD-TQ1 id/hash
 are provenance method tags, not a compute gate. Ingest diffusion uses
 C1 defaults (`drift=None`, `residualize_increments=False`): `computed` is
-raw increment covariance (`a_semantics=raw_increment_covariance`), not
+centered increment covariance over nominal \(\Delta t\)
+(`a_semantics=raw_increment_covariance` = not residualized; register
+identity `conditional_covariance_rate_level1` of existing `a_hat`, not a
+rename and not \(E[\Delta X\Delta X^\top]/\Delta t\)). Nested
+`increment_covariance_level0` is the unconditional centered
+\(\mathrm{Cov}(\Delta X)\) (not divided by \(\Delta t\), not local kNN,
+not `a_hat`). A `computed` object is not
 testable \(A_{bD}\) / \(R_{b/a}\) (`summary.A_bD_computation_status=not_testable`,
 `summary.R_b_over_a_computation_status=not_testable`,
 `independent_drift_not_supplied`; NaN is not zero alignment). Library C1
 may consume an externally qualified chart \(b\) without changing `a_hat`.
-Ingest does not estimate \(b\) (SL-005; nmd-analysis). C2
+The opt-in chart-drift family can serialize `realized_velocity_level0` and
+`conditional_mean_rate_level1` variants; those are not a `drift_source` for \(A_{bD}\)
+and are not identified Itô \(b\). The opt-in one-step family
+(`mndm.affine_one_step.v1`) writes a recording-level lag-1 affine map and,
+when that map is identified, Euclidean functionals of \(\Phi\) (max-gain,
+volume-gain, polar rotation) plus generator proxies from `logm(Φ)/Δt`; it does
+not write `ito_drift_level3`. Direct lag-2 identities under
+`declared_lag_2/` write when `declared_lags` includes 2; composing \(\Phi_1\)
+is not that identity. \(\Phi_1\) applied twice is
+`iterated_one_step_horizon_map_level4` when lag 1 is identified and
+horizon holdout at \(2\Delta t\) beats 0.9. Lag-2 generator proxies write
+under `declared_lag_2/` from `logm(Φ₂)/nominal_dt` when that map is
+identified. Still not `ito_drift_level3`. SVD max-gain is not spectral
+abscissa and not peak gain from \(\Phi\) powers. Rank-deficient volume is
+not epsilon-rescued. `reactivity_gap_level3` remains withheld; it is not
+\(\omega-\alpha\) of the generator proxies and not jacobian-metrics
+`reactivity_gap`. `operator_gain_anisotropy_level2` and
+`generator_symmetric_anisotropy_level3` remain withheld. The opt-in amplification family
+(`mndm.amplification.v1`) writes `neighbor_gain_q90_level1` as a
+same-pair observed neighbor-gain quantile, not operator max-gain, plus
+nested `neighbor_separation_rate_level1`, `neighbor_gain_rate_q90_level1`,
+and `cloud_volume_change_rate_level1` (same-pair cloud logdet rate; not
+operator volume). Nested names are not YAML toggles.
+The opt-in history family (`mndm.history.v1`) writes
+`history_predictive_gain_level1` as frozen M0/M1 OOS error reduction
+and nested `history_conditioned_operator_level2` when M1 itself passes
+the frozen 0.9 one-step OOS gate. Positive \(H_{\mathrm{gain}}\) is not
+identification. The map is \(3\times 6\), not lag-1 \(\Phi\), and not
+Markov restoration. Level-3/4 history rungs remain withheld (not \(\logm\) of
+the \(3\times 6\) M1 map, not iteration of M1, not `ito_drift_level3`).
+`finite_time_peak_gain_level4` remains withheld; it is not \(\Phi\) powers
+and not `iterated_one_step_horizon_map_level4`. The opt-in turning
+family (`mndm.turning.v1`) writes realized successive-increment angle and
+rate; insufficient displacement is undefined, not zero.
+`cloud_volume_change_rate_level1` writes under amplification, not turning.
+Savitzky–Golay `/mnps_3d_dot` and the
+forward-difference `realized_velocity_level0` are separate identities, not
+aliases. Existing `a_hat` is a documented identity, not a rename.
+Pooled lag-1 `series/source_idx` and
+`summary/transition_support_id` identify the same source transitions as
+diffusion when both compute; that is not identical kNN neighborhoods.
+`source_idx` has length `n_increment_pairs`, not \(T\).
+Cross-fit embargo remains `index_steps`. C2
 residualization is not authorized.
 `contract_status=standard` is the schema
 class, not an empirical license. Destination and resilience
 are `measurement_validity=translation_qualified` only when computed with a
 TQ id and contract hash already recorded; otherwise new writes use
-`not_assessed` or `not_applicable`. Production destination is 1-D O2b;
-neither O2b nor the first-hit estimator serializes \(V_{1/2}\) or
-\(\lvert\nabla q\rvert\). Spread as a **family YAML / `/dynamical_families` key**
+`not_assessed` or `not_applicable`. Production destination is 1-D O2b; that `q_A_to_B` is
+`restricted_1d_local_law_quadrature_q`, not `generator_committor_level3`.
+First-hit `q_A_to_B` is `destination_first_hit_fraction_resolved_level1`.
+That resolved-only mean is not `destination_hit_probability_level1`
+(including unresolved) and not `destination_unresolved_fraction_level1`.
+`resolved_first_hit_outcome` remains a 0/1/NaN encoding, not those leaves.
+Neither O2b nor the first-hit estimator serializes \(V_{1/2}\) or
+\(\lvert\nabla q\rvert\). Production resilience `amplitude_curve` /
+`basin_return_probability` is `far_recovery_probability_level4` when a
+perturbation protocol exists. Spontaneous return is not FAR. Existing
+`r50_discrete_first_bin_at_or_below_half` is not `far_threshold_p50_level4`.
+Attractor, basin, persistence, recurrence, hysteresis, and observational
+recovery are not written under `/dynamical_families`. Recurrence is not an
+attractor. Hysteresis is not FAR. Matching is not automatically level2.
+\(-\log(P_{RR})/\Delta t\) is transformed retention, not an escape rate.
+Spread as a **family YAML / `/dynamical_families` key**
 (`stochastic_reachability.v1`) remains registry `gate_closed` and is not
 written there. Opt-in ingest `W_Q` uses `/stochastic_reachability/v1` after
-the Gate F freeze (Gate E Q + crossfit \(\Phi\)). Legacy readers must fill missing
+the Gate F freeze (Gate E Q + crossfit \(\Phi\)). Existing `w_q` is
+`finite_time_reachability_level4` when `n_propagator_steps>1` and
+`transition_reachability_covariance_level2` when the iterator has one step.
+State-matched `observed_future_spread_level0` is superseded; the 003
+identity is withheld `conditional_future_spread_level1`. `W_Q` is predictive
+spread, not controllability or occupancy, and is not that withheld identity. `d_eff` is a derived scalar of
+`W_Q`, not `observed_future_effective_dimension_level0` and not
+`reachability_effective_dimension_level4`. Legacy readers must fill missing
 certificate fields as `not_recorded` and must not infer
 `translation_qualified`. Missing `claim_status` may be copied from
 `provenance/claim_status` when that dataset exists; otherwise it is

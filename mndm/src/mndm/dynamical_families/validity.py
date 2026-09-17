@@ -54,12 +54,53 @@ def increment_pairs(
     max_gap_sec: float | None,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Return source rows, increments, and positive within-segment time steps."""
-    dx = state[1:] - state[:-1]
-    dt = time[1:] - time[:-1]
-    same_segment = segment_id[1:] == segment_id[:-1]
-    valid = same_segment & np.isfinite(dt) & (dt > 0) & np.all(np.isfinite(dx), axis=1)
-    if max_gap_sec is not None:
-        valid &= dt <= float(max_gap_sec)
+    return increment_pairs_at_lag(
+        state, time, segment_id, lag=1, max_gap_sec=max_gap_sec
+    )
+
+
+def increment_pairs_at_lag(
+    state: np.ndarray,
+    time: np.ndarray,
+    segment_id: np.ndarray,
+    *,
+    lag: int = 1,
+    max_gap_sec: float | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Return source rows, lag-n increments, and positive within-segment spans.
+
+    A pair is kept only when every consecutive step inside the lag window stays
+    in the same segment with a positive finite timestep. ``max_gap_sec`` is
+    applied to each consecutive step, not only to the total span.
+    """
+    lag_n = int(lag)
+    if lag_n < 1:
+        raise ValueError("lag must be a positive integer")
+    x = np.asarray(state, dtype=float)
+    t = np.asarray(time, dtype=float).reshape(-1)
+    segments = np.asarray(segment_id).reshape(-1)
+    n_time = int(x.shape[0])
+    if n_time <= lag_n:
+        return (
+            np.zeros(0, dtype=np.int32),
+            np.zeros((0, x.shape[1]), dtype=float),
+            np.zeros(0, dtype=float),
+        )
+    dx = x[lag_n:] - x[:-lag_n]
+    dt = t[lag_n:] - t[:-lag_n]
+    valid = np.isfinite(dt) & (dt > 0) & np.all(np.isfinite(dx), axis=1)
+    n_pairs = n_time - lag_n
+    for offset in range(lag_n + 1):
+        valid &= np.all(np.isfinite(x[offset : offset + n_pairs]), axis=1)
+        valid &= np.isfinite(t[offset : offset + n_pairs])
+    for offset in range(lag_n):
+        left = segments[offset : offset + n_pairs]
+        right = segments[offset + 1 : offset + 1 + n_pairs]
+        valid &= left == right
+        step_dt = t[offset + 1 : offset + 1 + n_pairs] - t[offset : offset + n_pairs]
+        valid &= np.isfinite(step_dt) & (step_dt > 0)
+        if max_gap_sec is not None:
+            valid &= step_dt <= float(max_gap_sec)
     return np.flatnonzero(valid).astype(np.int32), dx[valid], dt[valid]
 
 

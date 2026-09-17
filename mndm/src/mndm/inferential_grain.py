@@ -88,12 +88,42 @@ GRAIN_BY_SCHEMA: dict[str, dict[str, str]] = {
         "parent": "recording",
         "repeated_measure": "true",
     },
+    "mndm.chart_drift.v1": {
+        "native": "window",
+        "parent": "recording",
+        "repeated_measure": "true",
+    },
+    "mndm.affine_one_step.v1": {
+        "native": "recording",
+        "parent": "recording",
+        "repeated_measure": "false",
+    },
+    "mndm.amplification.v1": {
+        "native": "window",
+        "parent": "recording",
+        "repeated_measure": "true",
+    },
+    "mndm.history.v1": {
+        "native": "recording",
+        "parent": "recording",
+        "repeated_measure": "false",
+    },
+    "mndm.turning.v1": {
+        "native": "window",
+        "parent": "recording",
+        "repeated_measure": "true",
+    },
 }
 
 GRAIN_BY_FAMILY_ID: dict[str, dict[str, str]] = {
     "diffusion": GRAIN_BY_SCHEMA["mndm.diffusion_geometry.v1"],
     "destination": GRAIN_BY_SCHEMA["mndm.committor.v1"],
     "resilience": GRAIN_BY_SCHEMA["mndm.finite_amplitude_resilience.v1"],
+    "drift": GRAIN_BY_SCHEMA["mndm.chart_drift.v1"],
+    "one_step": GRAIN_BY_SCHEMA["mndm.affine_one_step.v1"],
+    "amplification": GRAIN_BY_SCHEMA["mndm.amplification.v1"],
+    "history": GRAIN_BY_SCHEMA["mndm.history.v1"],
+    "turning": GRAIN_BY_SCHEMA["mndm.turning.v1"],
 }
 
 

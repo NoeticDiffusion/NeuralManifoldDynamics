@@ -49,6 +49,7 @@ def test_write_h5_writes_standard_dynamical_families_namespace(require_real_h5py
     """Standard non-MNPS families must not be written as Jacobian metrics."""
     import h5py
     from core.io.h5_writer import write_h5
+    from mndm.inferential_grain import GRAIN_BY_FAMILY_ID, attach_grain
     from mndm.schema import MNPSPayload
 
     payload = MNPSPayload(
@@ -56,14 +57,18 @@ def test_write_h5_writes_standard_dynamical_families_namespace(require_real_h5py
         x=np.zeros((2, 3), dtype=np.float32),
         x_dot=np.zeros((2, 3), dtype=np.float32),
         dynamical_families={
-            "diffusion": {
-                "schema_version": "mndm.diffusion_geometry.v1",
-                "computation_status": "not_testable",
-                "failure_reason": "qualification_required",
-                "series": {},
-                "summary": {},
-                "provenance": {},
-            }
+            "diffusion": attach_grain(
+                {
+                    "schema_version": "mndm.diffusion_geometry.v1",
+                    "computation_status": "not_testable",
+                    "qualification_status": "not_assessed",
+                    "failure_reason": "qualification_required",
+                    "series": {},
+                    "summary": {},
+                    "provenance": {},
+                },
+                **GRAIN_BY_FAMILY_ID["diffusion"],
+            )
         },
     )
     output = write_h5(tmp_path / "orthogonal.h5", "test", payload)

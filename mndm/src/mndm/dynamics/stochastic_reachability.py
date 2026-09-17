@@ -10,6 +10,7 @@ import numpy as np
 from .validity import project_to_psd
 from ..measurement_certificate import attach_certificate
 from ..inferential_grain import attach_grain_for_schema
+from ..dynamical_families.measurement_register import stamp_reachability_identity
 
 
 RESIDUAL_COVARIANCE_SCHEMA_VERSION = "mndm.residual_covariance_proxy.v1"
@@ -101,7 +102,10 @@ def _certify_result(fn):
     def wrapped(*args, **kwargs):
         result = fn(*args, **kwargs)
         if isinstance(result, Mapping) and "computation_status" in result:
-            return attach_grain_for_schema(attach_certificate(result))
+            certified = attach_grain_for_schema(attach_certificate(result))
+            if certified.get("schema_version") == STOCHASTIC_REACHABILITY_SCHEMA_VERSION:
+                return stamp_reachability_identity(certified)
+            return certified
         return result
 
     return wrapped
@@ -483,16 +487,18 @@ def _unavailable_reachability(
     }
     if isinstance(extra_provenance, Mapping):
         provenance.update(extra_provenance)
-    return attach_grain_for_schema(
-        attach_certificate(
-            {
-                "schema_version": STOCHASTIC_REACHABILITY_SCHEMA_VERSION,
-                "computation_status": "unavailable",
-                "failure_reason": str(reason),
-                "q_time_semantics": str(contract.get("q_time_semantics") or ""),
-                "q_schema_version": contract.get("schema_version"),
-                "provenance": provenance,
-            }
+    return stamp_reachability_identity(
+        attach_grain_for_schema(
+            attach_certificate(
+                {
+                    "schema_version": STOCHASTIC_REACHABILITY_SCHEMA_VERSION,
+                    "computation_status": "unavailable",
+                    "failure_reason": str(reason),
+                    "q_time_semantics": str(contract.get("q_time_semantics") or ""),
+                    "q_schema_version": contract.get("schema_version"),
+                    "provenance": provenance,
+                }
+            )
         )
     )
 

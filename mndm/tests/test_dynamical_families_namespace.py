@@ -14,6 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "src"))
 
 from core.io.h5_writer import write_h5
 from mndm.dynamical_families import FAMILIES, family_forbids, get_family
+from mndm.inferential_grain import GRAIN_BY_FAMILY_ID, attach_grain
 from mndm.dynamical_families.io import canonical_group_path, read_measurement_certificate, resolve_family_group
 from mndm.pipeline.dynamical_families_export import (
     build_dynamical_families_export,
@@ -91,18 +92,30 @@ def test_write_h5_emits_canonical_family_paths_only(require_real_h5py, tmp_path:
         x=np.zeros((2, 3), dtype=np.float32),
         x_dot=np.zeros((2, 3), dtype=np.float32),
         dynamical_families={
-            "diffusion": {
-                "schema_version": "mndm.diffusion_geometry.v1",
-                "computation_status": "not_testable",
-            },
-            "destination": {
-                "schema_version": "mndm.committor.v1",
-                "computation_status": "not_testable",
-            },
-            "resilience": {
-                "schema_version": "mndm.finite_amplitude_resilience.v1",
-                "computation_status": "not_testable",
-            },
+            "diffusion": attach_grain(
+                {
+                    "schema_version": "mndm.diffusion_geometry.v1",
+                    "computation_status": "not_testable",
+                    "qualification_status": "not_assessed",
+                },
+                **GRAIN_BY_FAMILY_ID["diffusion"],
+            ),
+            "destination": attach_grain(
+                {
+                    "schema_version": "mndm.committor.v1",
+                    "computation_status": "not_testable",
+                    "qualification_status": "not_assessed",
+                },
+                **GRAIN_BY_FAMILY_ID["destination"],
+            ),
+            "resilience": attach_grain(
+                {
+                    "schema_version": "mndm.finite_amplitude_resilience.v1",
+                    "computation_status": "not_testable",
+                    "qualification_status": "not_assessed",
+                },
+                **GRAIN_BY_FAMILY_ID["resilience"],
+            ),
         },
     )
     output = write_h5(tmp_path / "families.h5", "test", payload)

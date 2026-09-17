@@ -372,12 +372,15 @@ def test_od_v1_does_not_change_mnps_or_jacobian_outputs(tmp_path: Path) -> None:
 
 
 def test_od_v1_standard_profiles_do_not_enable_dynamical_families() -> None:
+    # Named coverage pilots are not standard EEG/fMRI/ephys profiles.
     profile_paths = [
         path
         for path in CONFIG_ROOT.rglob("*.yaml")
         if path.name != "config_ingest_common_dynamical_families.yaml"
         and "dynamical_families" not in path.name
         and "od_epi" not in path.name
+        and "amplification_pilot" not in path.name
+        and "history_turning_pilot" not in path.name
     ]
     assert profile_paths
     for path in profile_paths:

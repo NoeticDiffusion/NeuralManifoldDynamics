@@ -17,6 +17,11 @@ from ..inferential_grain import attach_grain_for_schema
 DIFFUSION_GEOMETRY_SCHEMA_VERSION = "mndm.diffusion_geometry.v1"
 COMMITTOR_SCHEMA_VERSION = "mndm.committor.v1"
 FINITE_AMPLITUDE_RESILIENCE_SCHEMA_VERSION = "mndm.finite_amplitude_resilience.v1"
+CHART_DRIFT_SCHEMA_VERSION = "mndm.chart_drift.v1"
+AFFINE_ONE_STEP_SCHEMA_VERSION = "mndm.affine_one_step.v1"
+AMPLIFICATION_SCHEMA_VERSION = "mndm.amplification.v1"
+HISTORY_SCHEMA_VERSION = "mndm.history.v1"
+TURNING_SCHEMA_VERSION = "mndm.turning.v1"
 
 VALID_COMPUTATION_STATUSES = frozenset(
     {"computed", "not_requested", "not_testable", "insufficient_support", "invalid"}
@@ -43,9 +48,10 @@ def unavailable_result(
     result: dict[str, Any] = {
         "schema_version": schema_version,
         "computation_status": status,
+        "qualification_status": "not_assessed",
         "failure_reason": failure_reason,
         "series": {},
-        "summary": {},
+        "summary": {"qualification_status": "not_assessed"},
         "provenance": {
             "coordinate_layer": str(coordinate_layer) if coordinate_layer is not None else None,
             "coordinate_names": [str(name) for name in coordinate_names] if coordinate_names is not None else [],
