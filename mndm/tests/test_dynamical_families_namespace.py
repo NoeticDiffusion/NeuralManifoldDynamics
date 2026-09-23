@@ -28,6 +28,8 @@ def test_registry_diffusion_forbids_jacobian_residual_as_diffusion() -> None:
     assert family_forbids("diffusion", "mnps_xdot_as_sde_drift")
     assert family_forbids("diffusion", "jacobian_intercept_as_sde_drift")
     assert family_forbids("diffusion", "local_increment_mean_as_sde_drift")
+    assert family_forbids("diffusion", "chart_drift_as_independent_b")
+    assert family_forbids("diffusion", "A_bD_from_chart_drift")
     assert get_family("diffusion")["schema"] == "mndm.diffusion_geometry.v1"
     assert get_family("diffusion")["namespace"] == "/dynamical_families/diffusion/v1"
     assert (

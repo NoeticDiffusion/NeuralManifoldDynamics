@@ -2,8 +2,8 @@
 
 C1 uses a supplied chart-space velocity **only** for alignment scalars.
 It does not residualize increments and does not identify an Itô SDE drift.
-MNPS ``x_dot``, Jacobian intercepts, and same-sample increment means are
-not admissible ``b`` sources.
+MNPS ``x_dot``, Jacobian intercepts, same-sample increment means, and
+chart-drift family outputs are not admissible ``b`` sources.
 """
 
 from __future__ import annotations
@@ -27,19 +27,29 @@ ALLOWED_WRITE_SOURCES = frozenset(
     }
 )
 
+REASON_NOT_SUPPLIED = "independent_drift_not_supplied"
+REASON_C2_CLOSED = "c2_residualize_increments_not_authorized"
+REASON_CROSSFIT_BEFORE_M3 = "crossfit_not_authorized_before_m3"
+REASON_PROTOCOL_CLOSED = "protocol_imposed_chart_b_not_authorized"
+REASON_RESIDUALIZE_REQUIRES_DRIFT = "residualize_increments_requires_drift"
+REASON_CHART_DRIFT_AS_B = "chart_drift_as_independent_b"
+
 FORBIDDEN_SOURCE_REASONS: dict[str, str] = {
     "mnps_xdot": "mnps_xdot_as_sde_drift",
     "jacobian_intercept": "jacobian_intercept_as_sde_drift",
     "jacobian_residual": "jacobian_derivative_residual_as_diffusion",
     "local_increment_mean": "local_increment_mean_as_sde_drift",
     "committor_potential_gradient": "committor_potential_gradient_as_drift",
+    "realized_velocity_level0": REASON_CHART_DRIFT_AS_B,
+    "conditional_mean_rate_level1": REASON_CHART_DRIFT_AS_B,
+    "conditional_mean_rate_level1/pooled": REASON_CHART_DRIFT_AS_B,
+    "pooled": REASON_CHART_DRIFT_AS_B,
+    "blocked_crossfit": REASON_CHART_DRIFT_AS_B,
+    "chart_drift": REASON_CHART_DRIFT_AS_B,
+    "b_hat": REASON_CHART_DRIFT_AS_B,
+    "smoothed_velocity_savgol_level0": "mnps_xdot_as_sde_drift",
+    "conditional_affine_mean_rate_level2": REASON_CHART_DRIFT_AS_B,
 }
-
-REASON_NOT_SUPPLIED = "independent_drift_not_supplied"
-REASON_C2_CLOSED = "c2_residualize_increments_not_authorized"
-REASON_CROSSFIT_BEFORE_M3 = "crossfit_not_authorized_before_m3"
-REASON_PROTOCOL_CLOSED = "protocol_imposed_chart_b_not_authorized"
-REASON_RESIDUALIZE_REQUIRES_DRIFT = "residualize_increments_requires_drift"
 
 MODE_ALIGNMENT_ONLY = "alignment_only"
 MODE_RESIDUALIZE = "residualize_increments"
@@ -86,6 +96,12 @@ def _normalize_token(value: str | None, default: str) -> str:
     return token if token else default
 
 
+def source_is_requested(source: str | None) -> bool:
+    """True when a caller named a source other than the ingest default."""
+    token = _normalize_token(source, SOURCE_NOT_SUPPLIED)
+    return token != SOURCE_NOT_SUPPLIED
+
+
 def resolve_chart_drift(
     *,
     source: str | None = None,
@@ -96,7 +112,9 @@ def resolve_chart_drift(
     """Resolve a requested drift source without inventing an alignment field.
 
     Ingest must call this with ``field=None``. A non-None field is only for
-    library / synthetic qualification (truth-known chart ``b``).
+    library / synthetic qualification (truth-known chart ``b``). Chart-drift
+    family outputs are not an independent ``b`` for ``A_bD``. A vector
+    without ``source=truth_known_chart_b`` is not auto-promoted.
     """
     token = _normalize_token(source, SOURCE_NOT_SUPPLIED)
     mode_token = _normalize_token(mode, MODE_ALIGNMENT_ONLY)

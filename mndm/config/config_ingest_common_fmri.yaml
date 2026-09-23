@@ -20,9 +20,12 @@ paths:
   dataset_received_dirs: {}
 
 preprocess:
-  # TR (Repetition Time) is strictly read from BIDS metadata. 
-  # fallback_tr specifies the default if BIDS is missing.
+  # TR order (P0.3): BIDS JSON RepetitionTime beside the BOLD file, then NIfTI
+  # zooms[3], then this fallback. JSON vs zooms mismatch > 1 ms is NOT_TESTABLE.
+  # Do not guess 1.0 s.
   fallback_tr: 2.0 
+  # Canonical session bandpass (P0.4): applied once in fmri_continuous.
+  # preprocess_fmri does not filter even if overlay sets preprocess.fmri.bandpass.
   fmri_bandpass: [0.01, 0.1]  # Standard resting-state BOLD frequencies
   reref: null # Not applicable to fMRI
   gpu: false
@@ -33,6 +36,11 @@ preprocess:
   fmri:
     atlas_path: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
     atlas_labels: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order.tsv"
+    # Nuisance regression is opt-in (P0.5). Default is disabled. If an overlay
+    # sets nuisance_regression.enabled: true, ingest fail-closes unless status
+    # is applied (no silent skip, truncate, or remaining-NaN fillna(0)).
+    # P0.6: same atlas/BOLD shape with a different affine/orientation is
+    # NOT_TESTABLE unless resample_atlas_to_bold and assume_same_space are both true.
     # Optional confounds search roots for FD merge in summary:
     # - confounds_root: explicit root that contains confounds TSV files
     # - derivatives_dir: derivatives root (often .../derivatives or .../derivatives/fmriprep)
@@ -103,6 +111,12 @@ mnps:
   derivative: {method: "sav_gol", window: 5, polyorder: 2} # Reduced window for slow fMRI
   jacobian:
     enabled: true
+    # P5 (2026-09-22): refuse a finite ridge J_hat unless the unique
+    # neighborhood has at least dim*(dim+1) samples. Chart neighbors may
+    # not cross a t_start gap or a file boundary. 3D stays enabled and
+    # capability class limited. This is not an HRF correction.
+    require_determined_support: true
+    forbid_cross_gap: true
   knn: {k: 10, metric: "euclidean"} # Lower k for shorter fMRI sessions
   ridge: {alpha: 1.0, cv_folds: 3, distance_weighted: true}
   whiten: true
@@ -126,6 +140,13 @@ mnps_9d:
         e_e: {fmri_signal_power: 1.0}
         e_s: {fmri_slow4_slow5_ratio: 1.0}
         e_m: {fmri_ar1_coefficient: 1.0}
+  # P5: 9D Jacobian stays off. A short fMRI window count cannot support
+  # 9*10 affine parameters. Turning this on without require_determined_support
+  # would serialize an underdetermined ridge fit.
+  jacobian:
+    enabled: false
+    require_determined_support: true
+    forbid_cross_gap: true
 
 mnps_3d:
   mode: "from_v2"

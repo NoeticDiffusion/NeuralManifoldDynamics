@@ -76,6 +76,18 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger(__name__)
 
 
+def _process_rss_mb() -> Optional[float]:
+    """Current process RSS in MiB, or None if psutil is unavailable."""
+    try:
+        import psutil  # type: ignore
+    except Exception:
+        return None
+    try:
+        return float(psutil.Process().memory_info().rss) / (1024.0 * 1024.0)
+    except Exception:
+        return None
+
+
 def _deep_merge_dict(base: Mapping[str, Any], override: Mapping[str, Any]) -> Dict[str, Any]:
     """Deep merge dictionaries: override wins; nested mappings are merged recursively."""
     out: Dict[str, Any] = dict(base) if isinstance(base, Mapping) else {}
@@ -764,6 +776,60 @@ def _resolve_fmri_config(config: Mapping[str, Any], dataset_id: Optional[str]) -
         if isinstance(ds_cfg, Mapping):
             merged.update(ds_cfg)
     return merged
+
+
+def roi_ts_cache_lookup_args(
+    file_path: Path,
+    config: Mapping[str, Any],
+    nifti_zooms: Optional[Sequence[Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Build ROI-TS cache key/identity args without materializing 4D BOLD."""
+    from .pipeline.fmri_roi_cache import roi_ts_identity_payload
+    from .pipeline.nuisance import DEFAULT_NUISANCE_COLUMNS, confounds_path_for_bold
+    from .pipeline.tr_resolve import resolve_fmri_tr
+
+    dataset_id = _infer_dataset_id(file_path, config)
+    fmri_cfg = _resolve_fmri_config(config, dataset_id)
+    atlas_path = fmri_cfg.get("atlas_path")
+    if not atlas_path:
+        return None
+    atlas_path = Path(atlas_path)
+    atlas_labels_raw = fmri_cfg.get("atlas_labels")
+    atlas_labels_path = Path(atlas_labels_raw) if atlas_labels_raw else None
+    tr_resolution = resolve_fmri_tr(
+        file_path,
+        config=config,
+        nifti_zooms=nifti_zooms,
+    )
+    nuisance_cfg = fmri_cfg.get("nuisance_regression") if isinstance(fmri_cfg.get("nuisance_regression"), Mapping) else {}
+    nuisance_enabled = bool(nuisance_cfg.get("enabled", False))
+    confounds_suffix = str(nuisance_cfg.get("confounds_suffix") or "_desc-confoundsextended_timeseries.tsv")
+    confounds_file = None
+    if nuisance_enabled:
+        candidate = confounds_path_for_bold(file_path, suffix=confounds_suffix)
+        if candidate.exists():
+            confounds_file = candidate
+    columns = list(nuisance_cfg.get("columns") or DEFAULT_NUISANCE_COLUMNS)
+    kwargs = {
+        "bold_path": Path(file_path),
+        "atlas_path": atlas_path,
+        "tr_sec": float(tr_resolution.tr_sec),
+        "tr_source": str(tr_resolution.tr_source),
+        "nuisance_enabled": nuisance_enabled,
+        "confounds_path": confounds_file,
+        "space_flags": fmri_cfg,
+        "atlas_labels_path": atlas_labels_path,
+        "nuisance_columns": columns,
+        "confounds_suffix": confounds_suffix,
+    }
+    identity = roi_ts_identity_payload(**kwargs)
+    return {
+        "dataset_id": dataset_id,
+        "fmri_cfg": fmri_cfg,
+        "tr_resolution": tr_resolution,
+        "kwargs": kwargs,
+        "identity": identity,
+    }
 
 
 def _resolve_event_crop_config(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
@@ -3087,111 +3153,6 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     )
 
 
-_DEFAULT_NUISANCE_COLUMNS: Tuple[str, ...] = (
-    "trans_x",
-    "trans_y",
-    "trans_z",
-    "rot_x",
-    "rot_y",
-    "rot_z",
-    "wm_mean",
-    "csf_mean",
-    "wm_pc1",
-    "wm_pc2",
-    "wm_pc3",
-    "csf_pc1",
-    "csf_pc2",
-    "csf_pc3",
-)
-
-
-def _apply_fmri_nuisance_regression(
-    region_array: np.ndarray,
-    bold_path: Path,
-    nuisance_cfg: Mapping[str, Any],
-    tr: float,
-) -> np.ndarray:
-    """Regress lightweight motion + WM/CSF nuisance confounds out of regional BOLD.
-
-    Looks for an "extended confounds" TSV next to `bold_path`, following the
-    same "<bold-stem-minus-_bold><suffix>" convention as the existing
-    FD-only confounds file (see mndm.pipeline.summary._resolve_confounds_path_for_bold
-    and project/scripts/11_ds007216_fmri_lightweight_norm.py). On any failure
-    to locate/parse the confounds file, logs a warning and returns
-    `region_array` unchanged rather than failing the whole preprocessing run.
-    """
-    suffix = str(nuisance_cfg.get("confounds_suffix", "_desc-confoundsextended_timeseries.tsv"))
-    columns = list(nuisance_cfg.get("columns") or _DEFAULT_NUISANCE_COLUMNS)
-
-    bold_name = bold_path.name
-    bold_base = bold_name.replace(".nii.gz", "").replace(".nii", "")
-    conf_name = f"{bold_base[:-5]}{suffix}" if bold_base.endswith("_bold") else f"{bold_base}{suffix}"
-    conf_path = bold_path.parent / conf_name
-
-    if not conf_path.exists():
-        logger.warning(
-            "Nuisance regression enabled but confounds file not found at %s; skipping for %s",
-            conf_path,
-            bold_name,
-        )
-        return region_array
-
-    try:
-        conf_df = pd.read_csv(conf_path, sep="\t")
-    except Exception as exc:
-        logger.warning("Failed to read nuisance confounds %s: %s; skipping", conf_path, exc)
-        return region_array
-
-    use_cols = [c for c in columns if c in conf_df.columns]
-    missing = [c for c in columns if c not in conf_df.columns]
-    if missing:
-        logger.warning("Nuisance confounds %s missing columns %s; using available subset", conf_path, missing)
-    if not use_cols:
-        logger.warning("No usable nuisance confound columns in %s; skipping regression", conf_path)
-        return region_array
-
-    conf_values = conf_df[use_cols].to_numpy(dtype=float)
-    n_times = region_array.shape[1]
-    if conf_values.shape[0] != n_times:
-        n = min(conf_values.shape[0], n_times)
-        logger.warning(
-            "Nuisance confounds length %d != n_times %d for %s; truncating to %d",
-            conf_values.shape[0],
-            n_times,
-            bold_name,
-            n,
-        )
-        conf_values = conf_values[:n]
-        region_array = region_array[:, :n]
-
-    # nilearn.signal.clean requires finite confound values; the extended
-    # confounds TSV can contain a leading NaN for near-zero-variance motion
-    # frames (see script 21) or short leading/trailing PCA edge effects.
-    conf_values = pd.DataFrame(conf_values).ffill().bfill().fillna(0.0).to_numpy()
-
-    try:
-        from nilearn.signal import clean as nilearn_clean
-
-        cleaned = nilearn_clean(
-            region_array.T,
-            confounds=conf_values,
-            detrend=True,
-            standardize=False,
-            t_r=tr if tr and np.isfinite(tr) and tr > 0 else None,
-        )
-    except Exception as exc:
-        logger.warning("nilearn.signal.clean failed for %s: %s; skipping nuisance regression", bold_name, exc)
-        return region_array
-
-    logger.info(
-        "Applied nuisance regression to %s using columns %s (n_times=%d)",
-        bold_name,
-        use_cols,
-        region_array.shape[1],
-    )
-    return cleaned.T.astype(np.float32)
-
-
 def preprocess_fmri(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
     """Preprocess a single fMRI BOLD file into regional time series.
 
@@ -3215,62 +3176,129 @@ def preprocess_fmri(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     if not atlas_path.exists():
         raise FileNotFoundError(f"Atlas file not found: {atlas_path}")
 
-    # Load BOLD and atlas images
+    from .pipeline.fmri_parcellate import parcellate_label_means
+    from .pipeline.fmri_roi_cache import (
+        build_roi_ts_cache_key,
+        load_cached_atlas,
+        roi_ts_cache_dir,
+        save_roi_ts,
+        try_load_roi_ts,
+    )
+    from .pipeline.nuisance import resolve_fmri_nuisance
+    from .pipeline.spatial_align import (
+        FmriAtlasSpaceNotTestable,
+        orientation_code,
+        resolve_atlas_space,
+        spaces_match,
+    )
+    from .pipeline.tr_resolve import resolution_to_meta
+
+    # Header-only BOLD load (no 4D materialization) for TR + cache key.
     bold_img = nib.load(str(file_path))
+    lookup = roi_ts_cache_lookup_args(
+        file_path, config, nifti_zooms=bold_img.header.get_zooms()
+    )
+    if lookup is None:
+        raise ValueError("preprocess.fmri.atlas_path must be set in the config for fMRI preprocessing")
+    tr_resolution = lookup["tr_resolution"]
+    tr = float(tr_resolution.tr_sec)
+    sfreq = float(tr_resolution.sfreq)
+    tr_meta = resolution_to_meta(tr_resolution)
+    cache_kwargs = lookup["kwargs"]
+    cache_identity = lookup["identity"]
+    cache_key = build_roi_ts_cache_key(**cache_kwargs)
+    cached = try_load_roi_ts(
+        bold_path=file_path,
+        config=config,
+        dataset_id=dataset_id,
+        expected_key=cache_key,
+        config_identity=cache_identity,
+        require_bold_exists=True,
+    )
+    if cached is not None:
+        meta = dict(cached["meta"])
+        meta.update(tr_meta)
+        meta["file"] = str(file_path)
+        meta["dataset_id"] = dataset_id
+        meta["original_sfreq"] = sfreq
+        meta["atlas_path"] = str(atlas_path)
+        meta["atlas_cache_hit"] = int(meta.get("atlas_cache_hit", 0) or 0)
+        logger.info(
+            "Preprocessed fMRI %s: ROI-TS cache hit (%d regions at sfreq=%.3f Hz) rss_mb=%s",
+            file_path.name,
+            int(np.asarray(cached["roi_ts"]).shape[0]),
+            sfreq,
+            None if (rss := _process_rss_mb()) is None else f"{rss:.1f}",
+        )
+        return PreprocessedSignals(
+            signals={"fmri": np.asarray(cached["roi_ts"], dtype=np.float32)},
+            sfreq=sfreq,
+            channels={"fmri": list(cached["names"])},
+            meta=meta,
+        )
+
     bold_data = bold_img.get_fdata()
     if bold_data.ndim != 4:
         raise ValueError(f"Expected 4D BOLD data in {file_path}, got shape {bold_data.shape}")
+    rss_fdata = _process_rss_mb()
+    logger.info(
+        "fMRI RSS after get_fdata %s: rss_mb=%s header_dtype=%s array_dtype=%s shape=%s",
+        file_path.name,
+        None if rss_fdata is None else f"{rss_fdata:.1f}",
+        bold_img.get_data_dtype(),
+        bold_data.dtype,
+        tuple(int(x) for x in bold_data.shape),
+    )
 
-    atlas_img = nib.load(str(atlas_path))
-    atlas_data = atlas_img.get_fdata()
+    atlas_img, atlas_data, atlas_cache_hit = load_cached_atlas(atlas_path)
     atlas_labels_expected = np.unique(atlas_data)
     atlas_labels_expected = atlas_labels_expected[atlas_labels_expected > 0]
-    if atlas_data.shape != bold_data.shape[:3]:
-        # Optionally resample atlas to the BOLD grid if requested in config.
-        # This is useful when using a standard MNI atlas with native-space
-        # BOLD data (e.g., ds000228 Pixar movie), but must be used with care
-        # since it assumes both are in the same anatomical space.
-        if bool(fmri_cfg.get("resample_atlas_to_bold", False)):
-            try:
-                from nibabel.processing import resample_from_to  # type: ignore
-            except Exception as exc:  # pragma: no cover - runtime dependency
-                raise RuntimeError(
-                    "Atlas/BOLD shape mismatch and nibabel.processing.resample_from_to "
-                    "is not available; cannot resample atlas to BOLD space."
-                ) from exc
 
-            logger.warning(
-                "Resampling atlas %s from shape %s to match BOLD shape %s for %s",
-                atlas_path,
-                atlas_data.shape,
-                bold_data.shape[:3],
-                file_path.name,
-            )
-            # Use nearest-neighbour interpolation (order=0) to preserve integer labels.
-            # Target is the 3D spatial grid of the BOLD image (shape + affine),
-            # not the full 4D image, to avoid affine dimensionality mismatches.
-            target = (bold_data.shape[:3], bold_img.affine)
-            atlas_img_resampled = resample_from_to(atlas_img, target, order=0)
-            atlas_img = atlas_img_resampled
-            atlas_data = atlas_img_resampled.get_fdata()
+    space_decision = resolve_atlas_space(
+        atlas_img.affine,
+        bold_img.affine,
+        atlas_data.shape,
+        bold_data.shape[:3],
+        fmri_cfg,
+    )
+    space_meta = space_decision.to_meta()
+    if space_decision.should_resample:
+        try:
+            from nibabel.processing import resample_from_to  # type: ignore
+        except Exception as exc:  # pragma: no cover - runtime dependency
+            raise RuntimeError(
+                "Atlas/BOLD space mismatch and nibabel.processing.resample_from_to "
+                "is not available; cannot resample atlas to BOLD space."
+            ) from exc
 
-            if atlas_data.shape != bold_data.shape[:3]:
-                raise ValueError(
-                    f"Resampled atlas shape {atlas_data.shape} still does not match BOLD spatial "
-                    f"shape {bold_data.shape[:3]} for {file_path}"
-                )
-        else:
+        logger.warning(
+            "Resampling atlas %s from shape %s affine/ornt %s to BOLD shape %s ornt %s for %s",
+            atlas_path,
+            atlas_data.shape,
+            space_decision.atlas_ornt,
+            bold_data.shape[:3],
+            space_decision.bold_ornt,
+            file_path.name,
+        )
+        # Nearest-neighbour (order=0) preserves integer labels. Target is the
+        # 3D spatial grid of the BOLD image (shape + affine), not the 4D volume.
+        target = (bold_data.shape[:3], bold_img.affine)
+        atlas_img = resample_from_to(atlas_img, target, order=0)
+        atlas_data = atlas_img.get_fdata()
+        if atlas_data.shape != bold_data.shape[:3]:
             raise ValueError(
-                f"Atlas shape {atlas_data.shape} does not match BOLD spatial shape {bold_data.shape[:3]} for {file_path}"
+                f"Resampled atlas shape {atlas_data.shape} still does not match BOLD spatial "
+                f"shape {bold_data.shape[:3]} for {file_path}"
             )
-
-    # Derive TR and sampling frequency
-    zooms = bold_img.header.get_zooms()
-    tr = float(zooms[3]) if len(zooms) > 3 else 0.0
-    if not np.isfinite(tr) or tr <= 0:
-        logger.warning("Invalid or missing TR for %s; defaulting to 1.0s", file_path.name)
-        tr = 1.0
-    sfreq = 1.0 / tr
+        if not spaces_match(atlas_img.affine, bold_img.affine):
+            raise FmriAtlasSpaceNotTestable(
+                "NOT_TESTABLE: resampled atlas still does not match BOLD affine/"
+                f"orientation for {file_path}"
+            )
+        space_meta["atlas_ornt"] = orientation_code(atlas_img.affine)
+        space_meta["bold_ornt"] = orientation_code(bold_img.affine)
+        space_meta["atlas_affine_match"] = 1
+        space_meta["atlas_ornt_match"] = 1
 
     # Determine region labels
     labels = np.unique(atlas_data)
@@ -3319,53 +3347,35 @@ def preprocess_fmri(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             except Exception as exc:
                 logger.warning("Failed to read atlas_labels TSV %s: %s", labels_path, exc)
 
-    # Parcellate: mean BOLD per atlas label
-    n_times = bold_data.shape[3]
-    region_ts: List[np.ndarray] = []
-    region_names: List[str] = []
-    for lab in labels.astype(int):
-        mask = atlas_data == lab
-        if not np.any(mask):
-            continue
-        # Extract all voxels for this label and average over space
-        voxels = bold_data[mask, :]
-        if voxels.ndim != 2 or voxels.shape[1] != n_times:
-            voxels = voxels.reshape(-1, n_times)
-        ts = np.nanmean(voxels, axis=0)
-        region_ts.append(ts.astype(np.float32))
-        region_names.append(label_names.get(lab, f"ROI_{lab}"))
-
-    if not region_ts:
+    # Parcellate: mean BOLD per atlas label (finite-weighted bincount).
+    label_ids, region_array = parcellate_label_means(
+        bold_data, atlas_data, labels=labels.astype(int)
+    )
+    rss_parcel = _process_rss_mb()
+    logger.info(
+        "fMRI RSS after parcellation %s: rss_mb=%s n_roi=%s n_times=%s",
+        file_path.name,
+        None if rss_parcel is None else f"{rss_parcel:.1f}",
+        int(region_array.shape[0]),
+        int(region_array.shape[1]) if region_array.ndim == 2 else None,
+    )
+    if region_array.shape[0] == 0:
         raise ValueError(f"No non-empty atlas regions found for {file_path}")
+    region_names = [label_names.get(int(lab), f"ROI_{int(lab)}") for lab in label_ids]
 
-    region_array = np.stack(region_ts, axis=0)  # [n_regions, n_times]
+    region_array, nuisance_meta = resolve_fmri_nuisance(
+        region_array, file_path, fmri_cfg, tr
+    )
 
-    # Optional lightweight motion + WM/CSF nuisance regression (config-gated;
-    # see project/scripts/21_ds007216_fmri_confounds_extract.py for the
-    # extended-confounds TSV producer). Runs before the bandpass filter below
-    # so that confound-related variance is removed prior to any temporal
-    # filtering, mirroring standard fMRIPrep-adjacent ordering.
-    nuisance_cfg = fmri_cfg.get("nuisance_regression")
-    if isinstance(nuisance_cfg, Mapping) and bool(nuisance_cfg.get("enabled", False)):
-        region_array = _apply_fmri_nuisance_regression(
-            region_array, file_path, nuisance_cfg, tr
+    from .features.fmri_continuous import maybe_apply_preprocess_bandpass
+
+    region_array, filter_meta = maybe_apply_preprocess_bandpass(region_array, fmri_cfg)
+    if filter_meta.get("filter_ignored_preprocess_bandpass") is not None:
+        logger.info(
+            "P0.4: skipping preprocess_fmri bandpass %s for %s; canonical stage is fmri_continuous",
+            filter_meta["filter_ignored_preprocess_bandpass"],
+            file_path.name,
         )
-
-    # Optional temporal bandpass on regional time series
-    bandpass = fmri_cfg.get("bandpass")
-    if isinstance(bandpass, (list, tuple)) and len(bandpass) == 2:
-        try:
-            from scipy.signal import butter, filtfilt  # type: ignore
-
-            low, high = float(bandpass[0]), float(bandpass[1])
-            nyq = 0.5 * sfreq
-            if 0.0 < low < high < nyq:
-                b, a = butter(4, [low / nyq, high / nyq], btype="band")
-                region_array = filtfilt(b, a, region_array, axis=1)
-            else:
-                logger.warning("Invalid fMRI bandpass [%s, %s] for sfreq=%.3f; skipping filter", low, high, sfreq)
-        except Exception as exc:  # pragma: no cover - runtime dependency
-            logger.warning("Failed to apply fMRI bandpass filter for %s: %s; continuing unfiltered", file_path.name, exc)
 
     modality_signals: Dict[str, np.ndarray] = {"fmri": region_array.astype(np.float32)}
     channels_dict: Dict[str, List[str]] = {"fmri": region_names}
@@ -3375,7 +3385,30 @@ def preprocess_fmri(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         "dataset_id": dataset_id,
         "original_sfreq": sfreq,
         "atlas_path": str(atlas_path),
+        "atlas_cache_hit": int(bool(atlas_cache_hit)),
+        "roi_ts_cache_hit": 0,
+        "roi_ts_cache_key": cache_key,
+        **tr_meta,
+        **filter_meta,
+        **nuisance_meta,
+        **space_meta,
     }
+    cache_dir = roi_ts_cache_dir(config, dataset_id)
+    if cache_dir is not None:
+        try:
+            persist_meta = {k: v for k, v in meta.items() if k != "roi_ts_cache_hit"}
+            save_roi_ts(
+                cache_dir=cache_dir,
+                key=cache_key,
+                bold_path=file_path,
+                roi_ts=np.asarray(region_array, dtype=np.float32),
+                names=region_names,
+                sfreq=sfreq,
+                meta=persist_meta,
+                identity=cache_identity,
+            )
+        except Exception:
+            logger.debug("Failed to persist ROI-TS cache for %s", file_path, exc_info=True)
 
     logger.info("Preprocessed fMRI %s: %d regions at sfreq=%.3f Hz", file_path.name, region_array.shape[0], sfreq)
 

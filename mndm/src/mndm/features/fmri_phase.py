@@ -1,6 +1,10 @@
+"""Phase synchrony metrics (Kuramoto) for fMRI.
+
+Unused by the ingest feature path as of 2026-09-22. Kuramoto order is
+computed in `fmri_epoch_metrics` from the session Hilbert phase. This
+module is not imported by `features.fmri` or `preprocess`. Do not delete
+in a measurement PR.
 """
-fmri_phase.py
-Phase synchrony metrics (Kuramoto) for fMRI."""
 
 from __future__ import annotations
 

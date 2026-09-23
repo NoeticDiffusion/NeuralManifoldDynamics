@@ -33,10 +33,14 @@ preprocess:
   fmri:
     atlas_path: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order_FSLMNI152_2mm.nii.gz"
     atlas_labels: "E:/Science_Datasets/nilearn_data/schaefer_2018/Schaefer2018_200Parcels_7Networks_order.tsv"
-    bandpass: [0.01, 0.1]
+    # Session bandpass lives on preprocess.fmri_bandpass and is applied once in
+    # fmri_continuous (P0.4). Do not set preprocess.fmri.bandpass.
+    # Nuisance regression is opt-in (P0.5). enabled: true is fail-closed.
+    # P0.6: resample_atlas_to_bold handles shape mismatch. Same-shape affine
+    # mismatch also needs assume_same_space: true (do not set it just to skip
+    # the check).
     datasets:
       YOUR_DATASET_ID:
-        bandpass: [0.01, 0.1]
         resample_atlas_to_bold: true
 
 epoching:

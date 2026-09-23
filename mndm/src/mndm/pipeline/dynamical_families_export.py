@@ -32,6 +32,7 @@ from ..dynamical_families.measurement_register import (
     reject_forbidden_destination_config_keys,
     reject_forbidden_diffusion_config_keys,
     reject_forbidden_drift_config_keys,
+    reject_forbidden_embargo_claim_keys,
     reject_forbidden_hysteresis_config_keys,
     reject_forbidden_logical_root_keys,
     reject_forbidden_one_step_config_keys,
@@ -115,6 +116,7 @@ def reject_legacy_family_config_key(config: Mapping[str, Any] | None) -> None:
     reject_forbidden_spread_config_keys(root)
     reject_forbidden_hysteresis_config_keys(root)
     reject_forbidden_logical_root_keys(root)
+    reject_forbidden_embargo_claim_keys(root)
     for old, new in LEGACY_FAMILY_CONFIG_KEYS.items():
         if old in root:
             raise ValueError(

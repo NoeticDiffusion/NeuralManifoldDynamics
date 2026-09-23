@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "src"))
@@ -18,6 +19,7 @@ from mndm.dynamical_families.finite_lag_drift import (
     _fill_conditional_mean,
 )
 from mndm.dynamical_families.measurement_register import (
+    FORBIDDEN_EMBARGO_CLAIM_KEYS,
     MEASUREMENT_ID_CONDITIONAL_MEAN_RATE,
     PHYSICAL_CROSSFIT_SOURCE_IDX,
     PHYSICAL_DIFFUSION_SOURCE_IDX,
@@ -29,6 +31,7 @@ from mndm.dynamical_families.measurement_register import (
 )
 from mndm.dynamical_families.transition_support import (
     EMBARGO_SEMANTICS_INDEX_STEPS,
+    RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED,
     build_transition_support,
 )
 from mndm.dynamical_families.validity import increment_pairs_at_lag, validate_trajectory
@@ -120,6 +123,14 @@ def test_pooled_and_diffusion_share_lag1_source_idx_and_support_id() -> None:
     assert pooled["summary"]["transition_support_id"] == diffusion["summary"]["transition_support_id"]
     assert pooled["summary"]["embargo_semantics"] == EMBARGO_SEMANTICS_INDEX_STEPS
     assert diffusion["summary"]["embargo_semantics"] == EMBARGO_SEMANTICS_INDEX_STEPS
+    assert (
+        pooled["summary"]["raw_window_support_independence"]
+        == RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED
+    )
+    assert (
+        diffusion["summary"]["raw_window_support_independence"]
+        == RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED
+    )
     support = build_transition_support(state, time, segments, lag=1)
     assert support.support_id == pooled["summary"]["transition_support_id"]
     assert support.failure_reason is None
@@ -161,6 +172,14 @@ def test_crossfit_support_id_is_embargoed_subset() -> None:
     assert crossfit["variant_id"] == VARIANT_BLOCKED_CROSSFIT
     assert crossfit["summary"]["embargo_semantics"] == EMBARGO_SEMANTICS_INDEX_STEPS
     assert crossfit["provenance"]["settings"]["embargo_semantics"] == EMBARGO_SEMANTICS_INDEX_STEPS
+    assert (
+        crossfit["summary"]["raw_window_support_independence"]
+        == RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED
+    )
+    assert (
+        crossfit["provenance"]["settings"]["raw_window_support_independence"]
+        == RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED
+    )
     pooled_idx = pooled["series"]["source_idx"]
     xfit_idx = crossfit["series"]["source_idx"]
     assert xfit_idx.size < pooled_idx.size
@@ -251,6 +270,10 @@ def test_lag_diagnostics_support_ids_differ_per_lag() -> None:
     assert lag4 != lag2
     assert lag4 != lag1
     assert diagnostics["summary"]["embargo_semantics"] == EMBARGO_SEMANTICS_INDEX_STEPS
+    assert (
+        diagnostics["summary"]["raw_window_support_independence"]
+        == RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED
+    )
 
 
 def test_export_stamps_overlap_only_when_both_computed() -> None:
@@ -286,7 +309,73 @@ def test_support_object_is_not_a_measurement_level() -> None:
     assert entry["interpretation_level"] is None
     assert entry["object_kind"] == "transition_support"
     assert entry["embargo_semantics"] == EMBARGO_SEMANTICS_INDEX_STEPS
+    assert entry["raw_window_support_independence"] == RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED
     assert entry["physical_path"] == PHYSICAL_POOLED_SOURCE_IDX
     assert PHYSICAL_DIFFUSION_SOURCE_IDX in entry["also_written_at"]
     assert PHYSICAL_CROSSFIT_SOURCE_IDX in entry["variant_subset_paths"]
     assert PHYSICAL_CROSSFIT_SOURCE_IDX not in entry["also_written_at"]
+
+
+def test_index_embargo_does_not_separate_overlapping_raw_windows() -> None:
+    """Disjoint window indices can still share raw samples (003 §7.1)."""
+    window_length = 30
+    hop = 1
+    embargo_steps = 4
+    n_windows = 40
+    split = n_windows // 2
+
+    def raw_support(window_i: int) -> set[int]:
+        start = window_i * hop
+        return set(range(start, start + window_length))
+
+    fold1 = [i for i in range(n_windows) if i < split - embargo_steps]
+    fold2 = [i for i in range(n_windows) if i > split + embargo_steps]
+    assert fold1 and fold2
+    assert min(fold2) - max(fold1) - 1 == 2 * embargo_steps + 1
+    shared: set[int] = set()
+    for left in fold1:
+        for right in fold2:
+            shared |= raw_support(left) & raw_support(right)
+    assert shared
+
+
+def test_savgol_filter_support_exceeds_frozen_index_embargo() -> None:
+    """A typical Savitzky-Golay window is wider than embargo_steps=4."""
+    savgol_window = 11
+    half_support = savgol_window // 2
+    embargo_steps = 4
+    assert half_support > embargo_steps
+
+
+@pytest.mark.parametrize("claim_key", FORBIDDEN_EMBARGO_CLAIM_KEYS)
+def test_yaml_refuses_raw_window_embargo_claims(claim_key: str) -> None:
+    state, time = _linear_sde(n=80)
+    kwargs = dict(
+        state=state,
+        time=time,
+        stage=None,
+        segment_id=np.zeros(time.size, dtype=np.int32),
+        coordinate_layer="coords_3d_subject_anchored",
+        coordinate_names=["m", "d", "e"],
+    )
+    with pytest.raises(ValueError, match=claim_key):
+        build_dynamical_families_export(
+            config={
+                "dynamical_families": {
+                    "enabled": True,
+                    claim_key: True,
+                    "diffusion": {"enabled": True},
+                }
+            },
+            **kwargs,
+        )
+    with pytest.raises(ValueError, match=claim_key):
+        build_dynamical_families_export(
+            config={
+                "dynamical_families": {
+                    "enabled": True,
+                    "one_step": {"enabled": True, claim_key: True},
+                }
+            },
+            **kwargs,
+        )

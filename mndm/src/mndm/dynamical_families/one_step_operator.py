@@ -60,6 +60,7 @@ from .measurement_register import (
     stamp_register_fields,
 )
 from .transition_support import (
+    embargo_claim_fields,
     build_transition_support,
     support_series_fields,
     support_settings_fields,
@@ -467,7 +468,7 @@ def _recording_affine_at_lag(
         embargo_fields = {
             "declared_lag_steps": lag,
             "embargo_steps": int(embargo_steps),
-            "embargo_semantics": "index_steps",
+            **embargo_claim_fields(),
             "not_composed_one_step": True,
         }
         if lag >= 2:
@@ -499,7 +500,7 @@ def _recording_affine_at_lag(
         "rel_mse_scoring": "blocked_holdout",
         "n_blocks": int(DEFAULT_N_BLOCKS),
         "embargo_steps": int(embargo_steps),
-        "embargo_semantics": "index_steps",
+        **embargo_claim_fields(),
         "declared_lag_steps": int(lag),
         "not_composed_one_step": True,
         "neighborhood_not_used_for_phi": True,
@@ -1036,7 +1037,7 @@ def _estimate_iterated_horizon(
         "not_direct_lag2_map": True,
         "composed_from_lag1": True,
         "embargo_steps": int(embargo_steps),
-        "embargo_semantics": "index_steps",
+        **embargo_claim_fields(),
         "min_embargo_steps": HORIZON_STEPS,
         "one_step_fit_gate_version": ONE_STEP_FIT_GATE_VERSION,
         "one_step_rel_mse_threshold": float(one_step_rel_mse_threshold),

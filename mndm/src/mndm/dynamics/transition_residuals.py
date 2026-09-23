@@ -191,6 +191,8 @@ def compute_transition_residuals(
         "prediction_fit_policy": "leave_one_transition_out_with_temporal_embargo",
         "crossfit_status": "leave_one_transition_out",
         "crossfit_embargo_steps": embargo,
+        "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "coordinate_contract": str(coordinate_contract),
         "coordinate_layer": str(coordinate_layer),
         "coordinate_names": list(coordinate_names or []),

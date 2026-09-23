@@ -2,8 +2,8 @@
 
 MNPS computation pipeline that computes per-epoch features and produces MNPS summaries, Jacobians, and derived outputs.
 
-Documented for **NeuralManifoldDynamics 3.0.1**. See
-[`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md).
+Documented for **NeuralManifoldDynamics 3.0.2**. See
+[`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md).
 
 Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package covers feature extraction, summarization, packing, and structure checks.
 
@@ -15,7 +15,7 @@ Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package co
 | [`CONFIG_GUIDE.md`](CONFIG_GUIDE.md) | Step-by-step YAML config guide with recipes |
 | [`Command_cheat_sheet.md`](Command_cheat_sheet.md) | All CLI commands in one place |
 | [`Output_variables_guide.md`](Output_variables_guide.md) | Full HDF5 schema and variable reference |
-| [`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md) | v3.0.1 measurement-contract release notes |
+| [`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md) | v3.0.2 fMRI contract and NEMAR download |
 
 ## Overview
 
@@ -1037,8 +1037,9 @@ This pipeline is the data-preparation / measurement-contract layer. It exports:
 - **Stratified MNPS**: 9D chart subcoordinates compatible with the 3D export
 - **MNJ**: local chart Jacobian on exported coordinates, not a biophysical Jacobian
 - **Dynamical families (v3.0.1 overlay)**: fail-closed schema objects beside MNPS, not licensed NDT \(\alpha/\omega/G_{\mathrm{peak}}\)
+- **fMRI contract (v3.0.2)**: TR, atlas space, nuisance, and the common-fMRI Jacobian support gate. A finite fMRI `J_hat` remains class `limited`.
 
-See [`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md) for claim ceilings.
+See [`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md) for claim ceilings.
 
 ---
 

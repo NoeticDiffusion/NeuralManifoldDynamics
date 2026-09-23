@@ -1,3 +1,0 @@
-# Local portable Lean runtime and generated build/dependency cache.
-.tools/
-.lake/

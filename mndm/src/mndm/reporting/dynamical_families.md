@@ -126,7 +126,9 @@ older parallel Level 0–3 evidence classes. 3D subject-anchored chart only.
 | `ito_diffusion_tensor_level3` | 3 | withheld | not written |
 
 `blocked_crossfit` embargo is `embargo_semantics=index_steps` (index lag, not
-full raw-window/filter support). Shared lag-1 **source transitions** (not kNN
+full raw-window/filter support). `raw_window_support_independence` is stamped
+`not_established`; overlapping analysis windows, lags, history triples, and
+filter support are not proven independent by disjoint row indices. Shared lag-1 **source transitions** (not kNN
 neighborhoods) are identified by `series/source_idx` and
 `summary/transition_support_id` on pooled drift and on diffusion.
 `source_idx` has length `n_increment_pairs` (typically \(T-1\)), not \(T\);
@@ -138,7 +140,9 @@ diagnostics have per-lag `transition_support_id_lag*`, not the lag-1 id.
 `lag_inconsistent` does not erase `pooled`.
 The string `ito_qualified` is never written. Provenance sets
 `not_sde_drift=true`. None of these fields is a `drift_source` for
-\(A_{bD}\) (`crossfit_not_authorized_before_m3`). 9D drift is out of scope.
+\(A_{bD}\) (`chart_drift_as_independent_b`; cross-fit as
+`crossfit_not_authorized_before_m3`). Ingest C1 leaves `A_bD` /
+`R_b_over_a` `not_testable`. 9D drift is out of scope.
 Coverage is fail-closed (`insufficient_local_support`); missing windows stay
 NaN. Computation, support, and qualification statuses are separate fields.
 
@@ -233,6 +237,8 @@ error reduction on the same lag-1 triples:
 \(H_{\mathrm{gain}}=\mathrm{MSE}(M_0)-\mathrm{MSE}(M_1)\). Both maps
 are fit on two chronological blocked-holdout folds with an index
 embargo (`embargo_semantics=index_steps`, `embargo_steps=4`). The
+index embargo does not establish raw-window or filter independence
+(`raw_window_support_independence=not_established`). The
 comparison does not restore Markovianity. Nested
 `history_conditioned_operator_level2` is identified only when M1 itself
 passes the frozen one-step OOS gate (`mndm.one_step_fit_fidelity.v1`,

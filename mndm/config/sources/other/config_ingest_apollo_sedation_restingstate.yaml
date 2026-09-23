@@ -1,0 +1,104 @@
+version: 2.0
+modality: eeg
+
+# Apollo Cambridge resting-state sedation dataset in epoched EEGLAB .set/.fdt.
+# Dynamical families / local-dynamics writes live in
+# config_ingest_apollo_sedation_restingstate_dynamical_families.yaml.
+# This common EEG profile does not import that overlay.
+imports:
+  - "../../config_ingest_common_eeg.yaml"
+
+datasets:
+  - Sedation-RestingState
+
+source:
+  name: "Apollo Cambridge"
+  platform: "Apollo"
+  format: "EEGLAB"
+  dataset_id: "Sedation-RestingState"
+  dataset_name: "Sedation RestingState"
+  url: null
+
+paths:
+  processed_dir: "E:/Science_Datasets/apollo/processed"
+  dataset_received_dirs:
+    Sedation-RestingState: "G:/Science_Datasets_longtime_storage/apollo/sedation-restingstate/Sedation-RestingState"
+
+preprocess:
+  eeglab:
+    allow_epoched_set: true
+    resample_concatenated_epochs: false
+    filter_concatenated_epochs: false
+    datasets:
+      Sedation-RestingState:
+        allow_epoched_set: true
+        resample_concatenated_epochs: false
+        filter_concatenated_epochs: false
+
+robustness:
+  coverage:
+    datasets:
+      Sedation-RestingState:
+        min_seconds: 30
+        min_epochs: 10
+  ensembles:
+    enabled: true
+    min_channels: 3
+    groups:
+      frontal: ["Fp1", "Fp2", "F3", "F4", "Fz", "F7", "F8"]
+      central: ["FC1", "FC2", "C3", "Cz", "C4"]
+      parietal_occipital: ["P3", "P4", "Pz", "O1", "O2", "PO3", "PO4", "Oz"]
+      temporal: ["T7", "T8", "TP7", "TP8", "T3", "T4", "T5", "T6"]
+    datasets:
+      Sedation-RestingState:
+        # Apollo uses a 91-channel EGI-like montage where many electrodes are
+        # labeled E* plus a sparse set of 10-20 anchors. These groups mirror
+        # the ANPHY naming scheme but are filled using the actual Apollo labels.
+        groups:
+          frontal_left: ["E18", "E19", "E20", "Fp1", "E23", "F3", "E26", "E27", "E28", "F7"]
+          frontal_right: ["E2", "E3", "E4", "Fp2", "E10", "E117", "E118", "F8", "E123", "F4"]
+          frontal_midline: ["E5", "Fz", "E12", "E15", "E16"]
+
+          frontocentral_left: ["E13", "E29", "E30", "E31", "C3", "E37"]
+          frontocentral_right: ["E80", "E87", "C4", "E105", "E111", "E112"]
+          central_midline: ["E6", "E7", "E106", "Cz"]
+
+          temporal_left: ["E34", "E35", "E39", "E40", "E41", "T3"]
+          temporal_right: ["E103", "T4", "E109", "E110", "E116", "E115"]
+
+          parietal_left: ["E42", "E46", "E47", "E50", "E51", "P3", "E53", "E54", "T5", "E59", "E60", "E61"]
+          parietal_right: ["E78", "E79", "E85", "E86", "E91", "P4", "E93", "T6", "E97", "E98", "E101", "E102"]
+          parietal_midline: ["E55", "Pz"]
+
+          occipital_left: ["E65", "E66", "E67", "O1"]
+          occipital_right: ["E77", "O2", "E84", "E90"]
+          occipital_midline: ["E71", "E72", "Oz", "E76"]
+
+regional_mnps:
+  enabled: true
+  stratified:
+    enabled: true
+  block_jacobians:
+    enabled: true
+
+mnps_9d:
+  block_jacobians:
+    enabled: true
+    preset: mde_families_v1
+    csv_output: "stratified_block_jacobians_subjects.csv"
+
+metadata_extraction:
+  datasets:
+    Sedation-RestingState:
+      filename_parse:
+        # Example:
+        #   02-2010-anest 20100210 135.003.set
+        #   02-2010-anest- 20100210 16.003.set
+        regex: "^(?P<subject>\\d+)-\\d{4}-(?P<task>[A-Za-z]+)-?\\s+(?P<session>\\d{8})\\s+(?P<acq>\\d+)\\.(?P<run>\\d{3})\\.[^.]+$"
+        subject_pad: 3
+      group:
+        default: "Healthy"
+      condition:
+        default: "sedation"
+      task:
+        default: "rest"

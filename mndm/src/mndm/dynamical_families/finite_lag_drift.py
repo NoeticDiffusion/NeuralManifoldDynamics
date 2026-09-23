@@ -29,6 +29,7 @@ from ..measurement_certificate import attach_certificate
 from ..inferential_grain import attach_grain_for_schema
 from .transition_support import (
     TransitionSupport,
+    embargo_claim_fields,
     build_transition_support,
     support_series_fields,
     support_settings_fields,
@@ -49,7 +50,6 @@ REASON_LAG_INCONSISTENT = "lag_inconsistent"
 REASON_SUBJECT_ANCHORED_3D = "chart_drift_subject_anchored_3d_only"
 MULTI_LAG_CONSISTENT = "multi_lag_consistent"
 DEFAULT_ITO_LAGS = (1, 2, 4)
-EMBARGO_SEMANTICS_INDEX_STEPS = "index_steps"
 _DISTANCE_FLOOR = 1e-12
 _SUBJECT_ANCHORED_LAYERS = frozenset(
     {"coords_3d_subject_anchored", "subject_anchored"}
@@ -734,6 +734,7 @@ def estimate_crossfit_drift(
             extra_summary={
                 "split_index": split_index,
                 "embargo_steps": embargo,
+                **embargo_claim_fields(),
                 "fold1_n_increments": int(fold1_idx.size),
                 "fold2_n_increments": int(fold2_idx.size),
             },
@@ -828,7 +829,7 @@ def estimate_crossfit_drift(
             "split_index": split_index,
             "embargo_steps": embargo,
             "n_blocks": 2,
-            "embargo_semantics": EMBARGO_SEMANTICS_INDEX_STEPS,
+            **embargo_claim_fields(),
             "fold1_n_increments": int(fold1_idx.size),
             "fold2_n_increments": int(fold2_idx.size),
             "fold1_source_idx": fold1_idx.astype(np.int32),
@@ -849,7 +850,7 @@ def estimate_crossfit_drift(
             "weight_mode": mode,
             "n_blocks": 2,
             "embargo_steps": embargo,
-            "embargo_semantics": EMBARGO_SEMANTICS_INDEX_STEPS,
+            **embargo_claim_fields(),
             **support_settings_fields(crossfit_support),
         },
         time_semantics="blocked_temporal_crossfit_conditional_increment_mean",
@@ -1014,7 +1015,7 @@ def estimate_lag_diagnostics(
             "transition_support_id_lag4": (fields[4].get("summary") or {}).get(
                 "transition_support_id"
             ),
-            "embargo_semantics": EMBARGO_SEMANTICS_INDEX_STEPS,
+            **embargo_claim_fields(),
         },
         settings={
             "neighborhood_k": int(neighborhood_k),

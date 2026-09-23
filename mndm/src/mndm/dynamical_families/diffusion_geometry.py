@@ -18,7 +18,6 @@ import numpy as np
 
 from .chart_drift import (
     A_SEMANTICS_RAW,
-    FORBIDDEN_SOURCE_REASONS,
     MODE_ALIGNMENT_ONLY,
     MODE_NOT_SUPPLIED,
     RATIO_SEMANTICS_C1,
@@ -26,8 +25,8 @@ from .chart_drift import (
     REASON_C2_CLOSED,
     REASON_NOT_SUPPLIED,
     RESIDUALIZATION_NONE,
-    SOURCE_NOT_SUPPLIED,
-    SOURCE_TRUTH_KNOWN,
+    resolve_chart_drift,
+    source_is_requested,
 )
 from .contracts import DIFFUSION_GEOMETRY_SCHEMA_VERSION, build_provenance, unavailable_result
 from .measurement_register import (
@@ -259,10 +258,13 @@ def estimate_local_diffusion_geometry(
     irregular time grids are refused rather than silently normalized.
     Without an independently supplied drift, ``A_bD`` and ``R_b_over_a``
     are ``not_testable`` (``independent_drift_not_supplied``), not silent
-    zeros.
+    zeros. Chart-drift family outputs are not that independent ``b``.
+    A drift vector without ``drift_source=truth_known_chart_b`` is not
+    auto-promoted.
 
     C1 (authorized for synthetic qualification): ``drift`` is an alignment
-    field only.  ``residualize_increments`` defaults to False so ``a_hat``
+    field only when ``drift_source`` is ``truth_known_chart_b``.
+    ``residualize_increments`` defaults to False so ``a_hat``
     stays raw increment covariance.  C2 residualization is **not
     authorized**: a True flag is ``invalid`` /
     ``c2_residualize_increments_not_authorized`` rather than a silent
@@ -287,18 +289,9 @@ def estimate_local_diffusion_geometry(
             coordinate_names=names,
         )
     minimum_dimension_support = max(int(min_neighborhood_samples), 3 * x.shape[1] + 1)
-    source_token = (
-        str(drift_source).strip()
-        if drift_source
-        else (SOURCE_TRUTH_KNOWN if drift is not None else SOURCE_NOT_SUPPLIED)
-    )
-    alignment_failure = None
-    if source_token in FORBIDDEN_SOURCE_REASONS:
-        drift = None
-        residualize_increments = False
-        alignment_failure = FORBIDDEN_SOURCE_REASONS[source_token]
     if residualize_increments:
-        # Build lag-1 increments first: C2 refuses a_hat residualization, not L0.
+        # C2 refuses a_hat residualization before any drift-source interpretation.
+        # Nested increment_covariance_level0 still writes.
         support = build_transition_support(
             x,
             t,
@@ -314,6 +307,15 @@ def estimate_local_diffusion_geometry(
             coordinate_names=names,
             **_support_increment_kwargs(support, x),
         )
+    resolved = resolve_chart_drift(
+        source=drift_source,
+        field=drift,
+        mode=MODE_ALIGNMENT_ONLY,
+        enabled=source_is_requested(drift_source),
+    )
+    alignment_failure = resolved.failure_reason
+    source_token = resolved.source
+    drift = resolved.field
     support = build_transition_support(
         x,
         t,
@@ -480,6 +482,7 @@ def estimate_local_diffusion_geometry(
             "R_b_over_a_computation_status": (
                 "computed" if drift_available else "not_testable"
             ),
+            "independent_b_for_A_bD": bool(drift_available),
             "drift_alignment_failure_reason": (
                 None if drift_available else (alignment_failure or REASON_NOT_SUPPLIED)
             ),

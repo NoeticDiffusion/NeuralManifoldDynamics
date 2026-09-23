@@ -113,12 +113,15 @@ dynamical_families:
   # finite_lag/crossfit/ito_candidate are refused. Nested
   # crossfit_local_chart_b is refused; using it as drift.source stays
   # resolver-closed (crossfit_not_authorized_before_m3) and is not an
-  # independent b for A_bD.
+  # independent b for A_bD. Chart-drift identities themselves are not a
+  # drift_source (chart_drift_as_independent_b). Nested C1
+  # diffusion.drift.enabled stays false.
   drift:
     enabled: true
     # SL-LEV-MES-003 identities. Pooled lag-1 source_idx shares
     # transition_support_id with diffusion when both compute. Cross-fit is a
     # variant subset with its own support_id; embargo_semantics=index_steps.
+    # raw_window_support_independence is stamped not_established (003 §7.1).
     estimator: local_conditional_increment_mean
     neighborhood: {k: 20}
     min_samples: 30
@@ -150,7 +153,7 @@ dynamical_families:
   # Not the production Jacobian, not expm(J_hat dt), not jacobian_metrics
   # abscissa, and not ito_drift_level3. v1 fits one recording-level map
   # with two chronological folds and an index embargo
-  # (embargo_semantics=index_steps). Identified iff the median of the two
+  # (embargo_semantics=index_steps; raw_window_support_independence=not_established). Identified iff the median of the two
   # blocked-holdout rel-MSE scores is strictly < 0.9 vs the mean-next-state
   # baseline (mndm.one_step_fit_fidelity.v1), distinct from the I-CARE
   # jacobian_metrics fit_fidelity_gate. neighborhood.k is logged and unused

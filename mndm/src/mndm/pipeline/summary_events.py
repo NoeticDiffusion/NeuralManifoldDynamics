@@ -561,21 +561,49 @@ def infer_stage_from_bids_events(
 
 
 def estimate_coverage_seconds(sub_frame: pd.DataFrame, dt_fallback: float) -> Tuple[float, str]:
-    """Estimate coverage from timestamps when available; else fallback to len*dt."""
+    """Estimate usable coverage from epoch intervals; else fallback to len*dt.
+
+    P0.7: when ``t_start``/``t_end`` exist, coverage is the union of those
+    intervals (overlaps merged). A hole in the middle is not counted as
+    usable duration. The previous ``max(t_end)-min(t_start)`` span is not used.
+    """
     if "t_start" in sub_frame.columns and "t_end" in sub_frame.columns:
         try:
             t_start = pd.to_numeric(sub_frame["t_start"], errors="coerce").to_numpy(dtype=float)
             t_end = pd.to_numeric(sub_frame["t_end"], errors="coerce").to_numpy(dtype=float)
-            valid = np.isfinite(t_start) & np.isfinite(t_end)
+            valid = np.isfinite(t_start) & np.isfinite(t_end) & (t_end > t_start)
             if np.any(valid):
-                starts = t_start[valid]
-                ends = t_end[valid]
-                span = float(np.nanmax(ends) - np.nanmin(starts))
-                if np.isfinite(span) and span > 0:
-                    return span, "timestamps_span"
+                duration = union_interval_seconds(t_start[valid], t_end[valid])
+                if np.isfinite(duration) and duration > 0:
+                    return float(duration), "timestamps_union"
         except Exception:
             pass
     return float(len(sub_frame) * float(dt_fallback)), "assumed_len_dt"
+
+
+def union_interval_seconds(starts: np.ndarray, ends: np.ndarray) -> float:
+    """Return the union duration of half-open-or-closed intervals [start, end]."""
+    starts = np.asarray(starts, dtype=float)
+    ends = np.asarray(ends, dtype=float)
+    if starts.size == 0:
+        return 0.0
+    order = np.argsort(starts, kind="mergesort")
+    starts = starts[order]
+    ends = ends[order]
+    total = 0.0
+    cur_s = float(starts[0])
+    cur_e = float(ends[0])
+    for s, e in zip(starts[1:], ends[1:]):
+        s_f = float(s)
+        e_f = float(e)
+        if s_f <= cur_e:
+            if e_f > cur_e:
+                cur_e = e_f
+            continue
+        total += max(0.0, cur_e - cur_s)
+        cur_s, cur_e = s_f, e_f
+    total += max(0.0, cur_e - cur_s)
+    return float(total)
 
 
 def map_events_to_labels(

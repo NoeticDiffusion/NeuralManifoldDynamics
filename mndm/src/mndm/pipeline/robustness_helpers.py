@@ -975,6 +975,11 @@ def apply_standard_jacobian_window_policy(
     diagnostics = dict(jacobian_result.diagnostics or {})
     if j_hat.ndim != 3 or j_hat.shape[0] == 0:
         diagnostics.setdefault("condition_number_windows", np.zeros((0,), dtype=np.float64))
+        empty_status = (
+            "not_testable"
+            if str(diagnostics.get("computation_status") or "") == "not_testable"
+            else "not_available"
+        )
         return JacobianResult(
             j_hat=j_hat,
             j_dot=np.asarray(jacobian_result.j_dot, dtype=np.float32),
@@ -982,7 +987,7 @@ def apply_standard_jacobian_window_policy(
             diagnostics=diagnostics,
         ), {
             "policy_version": STANDARD_GEOMETRY_POLICY_VERSION,
-            "status": "not_available",
+            "status": empty_status,
             "windows_raw": int(j_hat.shape[0]) if j_hat.ndim == 3 else 0,
             "windows_retained": int(j_hat.shape[0]) if j_hat.ndim == 3 else 0,
             "invalid_windows": 0,

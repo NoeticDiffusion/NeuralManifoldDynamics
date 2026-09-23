@@ -1,0 +1,56 @@
+# ds006036 — frequency-block sidecar on the dynamical-families grid.
+#
+# Imports the continuous-grid overlay, then turns photic stage_blocking,
+# event_locked, and block_native back on. The MNPS grid stays the common
+# EEG contract (window_sec 8.0, overlap 0.5, dt 4 s). These three sections
+# label and join that grid. They do not refit diffusion, drift, one-step,
+# amplification, or finite-time response inside each photic block.
+#
+# This pilot renames the base *_ms bin labels to *_sec. Alignment reads the
+# numeric bounds as seconds either way (event_alignment.BinSpec). The bounds
+# stay [-8, 0], [0, 8], [8, 16]. The base yaml is unchanged.
+#
+# event_locked is restricted to block_parameter 5/10/15/20 Hz. Block-native
+# still emits every inferred photic block so short-block dropout is visible.
+# Output goes to a separate processed_dir. The continuous
+# ds006036_dynamical_families export is not an input to this overlay.
+#
+# Eligibility / geometry pilot. Not a per-frequency replication and not
+# translation qualification.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds006036_dynamical_families.yaml"
+
+datasets:
+  - ds006036
+
+paths:
+  processed_dir: "K:/processed/ds006036_df_frequency_blocks"
+
+epoching:
+  datasets:
+    ds006036:
+      sampling:
+        stage_blocking:
+          enabled: true
+
+event_locked:
+  datasets:
+    ds006036:
+      enabled: true
+      profile: "ds006036_frequency_block_end_sec_v1"
+      bins:
+        __replace: true
+        in_block_tail_sec: [-8.0, 0.0]
+        post_block_early_sec: [0.0, 8.0]
+        post_block_late_sec: [8.0, 16.0]
+      event_source:
+        kind: "derived_stage_block_end"
+        block_parameters: [5, 10, 15, 20]
+
+block_native:
+  datasets:
+    ds006036:
+      enabled: true

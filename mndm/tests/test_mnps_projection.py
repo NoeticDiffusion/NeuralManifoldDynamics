@@ -166,6 +166,24 @@ def test_estimate_derivatives_segmented_handles_jumps():
     assert np.all(np.isfinite(x_dot))
 
 
+def test_estimate_derivatives_segmented_preserves_nan_rows():
+    from mndm.projection import estimate_derivatives_segmented
+
+    x = np.arange(16, dtype=np.float32).reshape(-1, 1)
+    x = np.repeat(x, 3, axis=1)
+    x[7] = np.nan
+    x_dot = estimate_derivatives_segmented(
+        x,
+        dt=1.0,
+        method="sav_gol",
+        max_jump=3.0,
+        min_seg=5,
+        savgol_window=5,
+        polyorder=2,
+    )
+    assert np.all(np.isnan(x_dot[7]))
+
+
 def test_knn_indices_shape():
     """Test knn indices shape."""
     from mndm.projection import build_knn_indices
@@ -383,9 +401,9 @@ def test_project_features_with_coverage_reuses_normalization_for_partial_nan(mon
     assert len(calls) == 1
     assert np.array_equal(x, expected_x, equal_nan=True)
     assert baselines == expected_baselines
-    # Preserve the existing normalization contract: non-finite source values
-    # are zero-filled before the coverage finite-mask is evaluated.
-    assert np.allclose(coverage[:, 0], [1.0, 1.0, 1.0], atol=1e-6)
+    # P0.1: non-finite source values stay missing. Axis m weights
+    # feat_a=0.25, feat_b=0.75 so coverage is the present-weight fraction.
+    assert np.allclose(coverage[:, 0], [1.0, 0.75, 0.25], atol=1e-6)
     assert np.all(np.isnan(coverage[:, 1:]))
 
 
@@ -549,6 +567,46 @@ def test_project_features_with_coverage_keeps_all_nan_column_missing():
     assert np.isnan(baselines["feat_a"]["abs_mad"])
     assert np.all(np.isnan(x[:, 0]))
     assert np.allclose(coverage[:, 0], 0.0)
+
+
+def test_normalize_used_columns_preserves_nonfinite_as_nan():
+    """P0.1: mixed finite/NaN columns must not be zero-filled after z-scoring."""
+    from mndm.projection import _normalize_used_columns
+
+    frame = pd.DataFrame({"feat": [1.0, np.nan, 3.0, np.inf]})
+    out, _ = _normalize_used_columns(frame, ["feat"], "z", {"feat": ["z"]})
+    assert bool(np.isnan(out.loc[1, "feat"]))
+    assert bool(np.isnan(out.loc[3, "feat"]))
+    assert np.isfinite(out.loc[0, "feat"])
+    assert np.isfinite(out.loc[2, "feat"])
+
+    all_inf, _ = _normalize_used_columns(
+        pd.DataFrame({"feat": [np.inf, -np.inf]}),
+        ["feat"],
+        "z",
+        {"feat": ["z"]},
+    )
+    assert bool(np.all(np.isnan(all_inf["feat"].to_numpy(dtype=np.float32))))
+
+
+def test_project_features_with_coverage_nan_row_is_insufficient_not_origin():
+    """A fully missing weighted row is NaN with coverage 0, not a zero coordinate."""
+    from mndm.projection import project_features_with_coverage
+
+    features_df = pd.DataFrame({"feat_a": [1.0, np.nan, 3.0]})
+    weights = {"m": {"feat_a": 1.0}, "d": {"feat_a": 1.0}, "e": {"feat_a": 1.0}}
+    x, coverage, _ = project_features_with_coverage(
+        features_df,
+        weights,
+        normalize="robust_z",
+        feature_standardization={"feat_a": ["robust_z", "clip"]},
+    )
+    assert np.isfinite(x[0]).all()
+    assert np.isfinite(x[2]).all()
+    assert np.all(np.isnan(x[1]))
+    assert np.allclose(coverage[0], 1.0)
+    assert np.allclose(coverage[2], 1.0)
+    assert np.allclose(coverage[1], 0.0)
 
 
 def test_build_feature_export_bundle_exports_all_numeric_features_with_usage_metadata():

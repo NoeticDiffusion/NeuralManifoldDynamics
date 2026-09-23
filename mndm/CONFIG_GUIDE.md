@@ -2,7 +2,7 @@
 
 A practical reference for neuroscientists adding a new EEG or fMRI dataset.
 
-Documented for **NeuralManifoldDynamics 3.0.1**. Canonical MNPS `[m,d,e]` / 9D
+Documented for **NeuralManifoldDynamics 3.0.2**. Canonical MNPS `[m,d,e]` / 9D
 and `J_hat` are unchanged from v2.6. Existing family schema IDs
 (`mndm.diffusion_geometry.v1`, `mndm.committor.v1`,
 `mndm.finite_amplitude_resilience.v1`) remain; v3 also adds
@@ -11,7 +11,7 @@ additive v3 surfaces (`dynamical_families`, validity certificates, inferential
 grain, support signatures, and opt-in Gate F \(W_Q\)) plus the existing
 local-dynamics and dataset overlay YAML.
 
-Release notes: [`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md).
+Release notes: [`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md).
 
 ## Local dynamics extension
 
@@ -132,6 +132,10 @@ Those scalars remain NaN arrays and are labelled
 `summary.A_bD_computation_status=not_testable` /
 `R_b_over_a_computation_status=not_testable` with
 `drift_alignment_failure_reason=independent_drift_not_supplied`.
+Chart-drift family outputs are not a `drift_source`
+(`chart_drift_as_independent_b`). A vector without
+`source=truth_known_chart_b` is not auto-promoted. C2 residualization
+stays `invalid`.
 Do not read NaN as "alignment is zero." Library C1
 (`alignment_only`) may consume a truth-known or later
 externally qualified chart-space \(b\) without changing `a_hat`.
@@ -238,7 +242,12 @@ recording-level identity `history_predictive_gain_level1` and nested
 \(H_{\mathrm{gain}}=\mathrm{MSE}(M_0)-\mathrm{MSE}(M_1)\) on the same
 lag-1 triples. Frozen affine \(M_0\) is \(x_t\to x_{t+1}\); frozen affine
 \(M_1\) is \((x_t,x_{t-1})\to x_{t+1}\). Two chronological folds with
-`embargo_steps=4` (`embargo_semantics=index_steps`). Nested L2 is
+`embargo_steps=4` (`embargo_semantics=index_steps`). Index embargo does not
+prove independence of overlapping analysis windows, lags, history triples, or
+filter support; ingest stamps `raw_window_support_independence=not_established`.
+YAML keys `raw_window_embargo`, `window_overlap_embargo`, `filter_embargo`,
+`embargo_covers_raw_window_overlap`, `raw_window_support_independence`, and
+`embargo_semantics_raw_windows` are refused. Nested L2 is
 identified only when M1 itself passes the frozen one-step OOS gate
 (`mndm.one_step_fit_fidelity.v1`, median fold rel-MSE strictly less than
 0.9). Positive \(H_{\mathrm{gain}}\) is not identification. The map is
@@ -421,6 +430,7 @@ not an NDT license.
 1. [How configs work](#1-how-configs-work)
 2. [Minimal working config (5 lines)](#2-minimal-working-config)
 3. [Section-by-section reference](#3-section-by-section-reference)
+   - [fMRI ingest contract](#fmri-ingest-contract)
 4. [Common recipes](#4-common-recipes)
 5. [Output anatomy](#5-output-anatomy)
 6. [Troubleshooting checklist](#6-troubleshooting-checklist)
@@ -1326,6 +1336,8 @@ regional_mnps:
     enabled: true      # adds block-Jacobian summaries per region (EEG only)
 ```
 
+Regional `/mnps_dot` uses the same realized step as global MNPS: `fmri_step_sec` when that column is present, otherwise the median difference of `t_start` (`dt_realized_sec`). It inherits `mnps.derivative` unless `regional_mnps.mnps.derivative` is set. Non-finite regional coordinates are not imputed; insufficient support drops the network (`valid=False`). Do not enable this path in common fMRI YAML.
+
 ---
 
 ### `event_locked` (optional — derived layer)
@@ -1492,6 +1504,94 @@ block_native:
         write_parquet: true
         write_csv: true
 ```
+
+---
+
+## fMRI ingest contract
+
+Current behavior as of 2026-09-22 (P0–P3). This is not a new measurement.
+Common fMRI YAML keeps `regional_mnps.enabled: false`. Stage-2 entropy
+columns stay opt-in; they are on only in the ds007216 audit overlay.
+
+### TR source
+
+Order: BIDS sidecar `RepetitionTime`, then NIfTI `zooms[3]`, then
+`preprocess.fallback_tr`. A sidecar key set to JSON `null` is not a TR
+(ds007216 lightweight-norm). A present non-null value that is not a
+positive finite number is `NOT_TESTABLE`. JSON and zooms that disagree by
+more than 1 ms fail closed. Do not guess 1.0 s. Serialized `tr_source` is
+`bids_json`, `nifti_zooms`, or `config_fallback`.
+
+### Atlas space
+
+`preprocess.fmri.atlas_path` is required. Same voxel shape is not the same
+space. Mismatched affine or orientation at that shape is `NOT_TESTABLE`
+unless both `resample_atlas_to_bold` and `assume_same_space` are true.
+A different spatial shape raises unless `resample_atlas_to_bold` is true;
+`assume_same_space` is not required for a shape mismatch. Resample uses
+nearest neighbour (order 0) so labels stay integers. Affine compare uses
+absolute tolerance `1e-3` mm.
+
+### Nuisance status
+
+`preprocess.fmri.nuisance_regression` is off unless an overlay sets
+`enabled: true`. Status is one of `applied`, `skipped_missing_file`,
+`skipped_no_columns`, `truncated_length`, `failed_clean`, `disabled`.
+Enabled regression fail-closes unless status is `applied`. Length mismatch
+does not truncate BOLD. Remaining confound NaNs are not filled with 0.
+
+### DVARS units
+
+`features.metrics.dvars_threshold` (common default 5.0) is calibrated for
+intensity-normalized BOLD (percent signal change / grand-mean scaling).
+Raw-intensity derivatives can sit an order of magnitude higher. Do not
+retune the threshold to rescue a dataset; disable `compute_dvars` on that
+overlay when the units do not match, and keep framewise displacement as
+the motion column.
+
+### `fs_out` versus realized dt
+
+`mnps.fs_out` is not the derivative time base. Common fMRI sets
+`fs_out: 0.5` so continuous plots sit above the native 15 s step
+(~0.067 Hz) without using an EEG-like 4 Hz grid. Realized `dt` is
+`fmri_step_sec` when that column is present, otherwise the median
+difference of feature `t_start`. Regional `/mnps_dot` stores that step as
+`dt_realized_sec` with `dt_source`. `dt_source=default_1` means the
+standalone fallback, not a measured TR.
+
+### Jacobian `limited`
+
+fMRI 3D and 9D local Jacobians are capability class `limited`
+(`support_signature`), not `yes`. A finite `/jacobian/J_hat` is a local
+linear fit on exported coordinates. It is not a biophysical Jacobian.
+Ingest does not deconvolve an HRF; absence of that step is a method
+limit, not a hidden correction.
+
+As of 2026-09-22, common fMRI sets `mnps.jacobian.require_determined_support`
+and `forbid_cross_gap`. A window is `not_testable` when the unique
+neighborhood has fewer samples than `dim * (dim + 1)`. Coverage
+`min_epochs: 5` is not that gate. `mnps_9d.jacobian.enabled` is false.
+3D stays enabled and `limited`. An even `mnps.super_window` (common value
+2) is realized as the next odd length; both the requested and realized
+values are serialized. Root attrs `dt_realized_sec` and `fs_out_role`
+record the derivative step and that `fs_out` is a configuration hint.
+Regional 9D stays `regional_mnps.stratified.enabled: false`. Regional
+Jacobian estimation is unchanged while `regional_mnps.enabled` is false.
+
+### Rejected aliases
+
+These feature columns copy another column. Do not put them in
+`mnps_projection` weights or treat them as entropy, regional variance, or
+band-limited power:
+
+| Column | Copies |
+| --- | --- |
+| `fmri_entropy_global` | `fmri_variance_global` |
+| `fmri_region_var_mean` | `fmri_variance_global` |
+| `fmri_lf_power` | `fmri_signal_power` |
+
+Map the source column. `fmri_spectral_entropy` (Stage-2, opt-in) is a
+different column.
 
 ---
 

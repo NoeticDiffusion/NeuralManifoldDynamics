@@ -9,8 +9,18 @@ from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from .regions import aggregate_group_timeseries, group_region_indices, stack_group_matrix
-from .regional_mnps import compute_all_regional_mnps, RegionalMNPSSummary
+from .regions import (
+    aggregate_group_timeseries,
+    complete_group_roi_indices,
+    group_region_indices,
+    select_complete_group_rois,
+    stack_group_matrix,
+)
+from .regional_mnps import (
+    compute_all_regional_mnps,
+    merge_regional_mnps_estimator_config,
+    RegionalMNPSSummary,
+)
 from ..features import fmri as fmri_features
 from .. import projection
 
@@ -209,28 +219,47 @@ def build_precomputed_network_trajectories(
         else None
     )
 
+    session_signals = {
+        "signals": {"fmri": np.asarray(regions_bold)},
+        "sfreq": float(regions_sfreq),
+        "channels": {"fmri": list(regions_names or [])},
+        "dataset_id": dataset_id,
+    }
+    try:
+        session_continuous = fmri_features.prepare_session_continuous(session_signals, config)
+    except Exception:
+        logger.exception("Session-level fMRI continuous preprocess failed; falling back per network")
+        session_continuous = None
+
     for network_label, indices in region_groups.items():
         if not indices:
             continue
-        idx = np.asarray(indices, dtype=int)
-        if idx.size == 0:
+        kept_idx = complete_group_roi_indices(regions_bold, indices)
+        if kept_idx.size < 1:
             continue
-        roi_slice = np.asarray(regions_bold[idx, :], dtype=np.float32)
-        if roi_slice.ndim != 2 or roi_slice.shape[1] < 2:
-            continue
-        roi_names_slice = None
-        if isinstance(regions_names, list) and regions_names:
-            roi_names_slice = [regions_names[i] for i in idx if 0 <= i < len(regions_names)]
 
         try:
-            net_features = fmri_features.compute_fmri_features(
-                {
-                    "signals": {"fmri": roi_slice},
+            net_kwargs: Dict[str, Any] = {}
+            if session_continuous is not None:
+                net_kwargs["session_continuous"] = session_continuous
+                net_kwargs["roi_indices"] = kept_idx
+                net_signals: Dict[str, Any] = dict(session_signals)
+            else:
+                roi_slice, roi_names_kept = select_complete_group_rois(
+                    regions_bold, indices, regions_names
+                )
+                if roi_slice is None or roi_slice.ndim != 2 or roi_slice.shape[1] < 2:
+                    continue
+                net_signals = {
+                    "signals": {"fmri": np.asarray(roi_slice, dtype=np.float32)},
                     "sfreq": float(regions_sfreq),
-                    "channels": {"fmri": roi_names_slice or []},
+                    "channels": {"fmri": list(roi_names_kept or [])},
                     "dataset_id": dataset_id,
-                },
+                }
+            net_features = fmri_features.compute_fmri_features(
+                net_signals,
                 config,
+                **net_kwargs,
             )
         except Exception:
             logger.exception("Failed to compute network-level fMRI features for %s", network_label)
@@ -299,6 +328,23 @@ def build_precomputed_network_trajectories(
     return network_mnps, network_stratified
 
 
+def infer_dt_realized_sec(sub_frame: Optional[pd.DataFrame]) -> Optional[float]:
+    """Infer the realized MNPS step from ``fmri_step_sec`` or ``t_start``."""
+    if sub_frame is None or len(sub_frame) == 0:
+        return None
+    if "fmri_step_sec" in sub_frame.columns:
+        step = pd.to_numeric(sub_frame["fmri_step_sec"], errors="coerce").dropna()
+        if len(step):
+            val = float(step.iloc[0])
+            if np.isfinite(val) and val > 0:
+                return val
+    if "t_start" in sub_frame.columns and len(sub_frame) > 1:
+        measured = float(pd.to_numeric(sub_frame["t_start"], errors="coerce").diff().dropna().median())
+        if np.isfinite(measured) and measured > 0:
+            return measured
+    return None
+
+
 def compute_regional_context(
     *,
     sub_frame: pd.DataFrame,
@@ -321,6 +367,9 @@ def compute_regional_context(
     resolve_mnps_3d_cfg: Callable[[Mapping[str, Any]], Dict[str, Any]],
     coerce_v1_mapping_to_v2_subcoords: Callable[[Mapping[str, Any], Mapping[str, Any]], Dict[str, Dict[str, float]]],
     align_v2_subcoords: Callable[[np.ndarray, List[str], List[str]], np.ndarray],
+    dt_realized_sec: Optional[float] = None,
+    parent_mnps_cfg: Optional[Mapping[str, Any]] = None,
+    derivative_cfg: Optional[Mapping[str, Any]] = None,
 ) -> Tuple[
     Dict[str, np.ndarray],
     Optional[np.ndarray],
@@ -406,11 +455,25 @@ def compute_regional_context(
             network_mnps.update(group_mnps)
             network_stratified.update(group_stratified)
 
+    dt_eff = dt_realized_sec
+    if dt_eff is None:
+        dt_eff = infer_dt_realized_sec(sub_frame)
+    parent = parent_mnps_cfg
+    if parent is None and isinstance(config, Mapping):
+        parent_candidate = config.get("mnps", {})
+        parent = parent_candidate if isinstance(parent_candidate, Mapping) else None
+    estimator_cfg = merge_regional_mnps_estimator_config(
+        regional_mnps_cfg,
+        parent_mnps_cfg=parent,
+        dt_realized_sec=dt_eff,
+        derivative_cfg=derivative_cfg,
+    )
+
     if network_mnps:
         regional_mnps_results = compute_all_regional_mnps(
             group_ts=group_ts,
             sfreq=regions_sfreq,
-            config=regional_mnps_cfg,
+            config=estimator_cfg,
             subject=subject,
             session=session,
             condition=condition,

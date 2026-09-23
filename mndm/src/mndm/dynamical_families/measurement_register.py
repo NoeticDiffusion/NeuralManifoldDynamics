@@ -265,6 +265,9 @@ LOGICAL_POSSIBLE_FUTURES_RECURRENCE = "/possible_futures/recurrence"
 LOGICAL_POSSIBLE_FUTURES_SPREAD = "/possible_futures/spread"
 LOGICAL_POSSIBLE_FUTURES_HYSTERESIS = "/possible_futures/hysteresis"
 
+EMBARGO_SEMANTICS_INDEX_STEPS = "index_steps"
+RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED = "not_established"
+
 QUALIFICATION_NOT_ASSESSED = "not_assessed"
 QUALIFICATION_ITO_NOT_QUALIFIED = "ito_not_qualified"
 QUALIFICATION_ONE_STEP_IDENTIFIED = "one_step_identified"
@@ -300,6 +303,10 @@ FORBIDDEN_DIFFUSION_CONFIG_KEYS = (
     "diffusion_condition_number_level1",
     "diffusion_directional_entropy_level1",
     "d_diff_as_diffusion_effective_dimension_level1",
+    "A_bD_from_chart_drift",
+    "pooled_as_independent_b",
+    "realized_velocity_as_drift_source",
+    "chart_drift_as_drift_source",
 )
 FORBIDDEN_DRIFT_CONFIG_KEYS = (
     "finite_lag",
@@ -436,6 +443,14 @@ FORBIDDEN_HYSTERESIS_CONFIG_KEYS = (
     "induction_recovery_path_asymmetry_level2",
     "induction_recovery_path_asymmetry_level1",
 )
+FORBIDDEN_EMBARGO_CLAIM_KEYS = (
+    "raw_window_embargo",
+    "window_overlap_embargo",
+    "filter_embargo",
+    "embargo_covers_raw_window_overlap",
+    "raw_window_support_independence",
+    "embargo_semantics_raw_windows",
+)
 
 
 def reject_forbidden_diffusion_config_keys(diffusion_cfg: Mapping[str, Any] | None) -> None:
@@ -449,6 +464,8 @@ def reject_forbidden_diffusion_config_keys(diffusion_cfg: Mapping[str, Any] | No
             f"{found} are refused; increment_covariance_level0 is a nested "
             "identity of the diffusion family, not a YAML toggle. "
             "ito_diffusion_tensor_level3 and ito_qualified are withheld. "
+            "A_bD_from_chart_drift and chart-drift-as-b aliases are refused; "
+            "ingest C1 leaves A_bD / R_b_over_a not_testable. "
             "No YAML alias is provided."
         )
 
@@ -705,6 +722,31 @@ def reject_forbidden_logical_root_keys(family_root: Mapping[str, Any] | None) ->
         )
 
 
+def reject_forbidden_embargo_claim_keys(family_cfg: Mapping[str, Any] | None) -> None:
+    """Refuse YAML that claims raw-window or filter independence.
+
+    ``embargo_semantics`` stays ``index_steps``. Ingest stamps
+    ``raw_window_support_independence=not_established``; overlapping analysis
+    windows, lags, history triples, and filter support are not covered.
+    """
+    if not isinstance(family_cfg, Mapping):
+        return
+    mappings: list[tuple[str, Mapping[str, Any]]] = [("dynamical_families", family_cfg)]
+    for name, nested in family_cfg.items():
+        if isinstance(nested, Mapping):
+            mappings.append((f"dynamical_families.{name}", nested))
+    for label, mapping in mappings:
+        found = [key for key in FORBIDDEN_EMBARGO_CLAIM_KEYS if key in mapping]
+        if found:
+            raise ValueError(
+                f"{label} keys {found} are refused; embargo_semantics is frozen "
+                "at index_steps. raw_window_support_independence is stamped "
+                "not_established; ingest does not prove independence of overlapping "
+                "analysis windows, lags, history triples, or filter support. "
+                "No YAML alias is provided."
+            )
+
+
 MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
     MEASUREMENT_ID_SMOOTHED_VELOCITY: {
         "measurement_id": MEASUREMENT_ID_SMOOTHED_VELOCITY,
@@ -741,6 +783,8 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "distance_metric_id": DISTANCE_EUCLIDEAN_CHART,
         "written_by_drift_family": True,
         "variants": (VARIANT_POOLED, VARIANT_BLOCKED_CROSSFIT, VARIANT_LAG_DIAGNOSTICS),
+        "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
     },
     MEASUREMENT_ID_INCREMENT_COVARIANCE: {
         "measurement_id": MEASUREMENT_ID_INCREMENT_COVARIANCE,
@@ -792,6 +836,8 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "written_by_one_step_family": True,
         "variant_id": VARIANT_DECLARED_LAG_STEPS_1,
         "declared_lag_steps": 1,
+        "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
     },
     MEASUREMENT_ID_AFFINE_MAP: {
         "measurement_id": MEASUREMENT_ID_AFFINE_MAP,
@@ -806,6 +852,8 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "written_by_one_step_family": True,
         "variant_id": VARIANT_DECLARED_LAG_STEPS_1,
         "declared_lag_steps": 1,
+        "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
     },
     MEASUREMENT_ID_AFFINE_MEAN_RATE: {
         "measurement_id": MEASUREMENT_ID_AFFINE_MEAN_RATE,
@@ -820,6 +868,8 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "written_by_one_step_family": True,
         "variant_id": VARIANT_DECLARED_LAG_STEPS_1,
         "declared_lag_steps": 1,
+        "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "distance_metric_id": DISTANCE_EUCLIDEAN_CHART,
     },
     MEASUREMENT_ID_OPERATOR_MAX_GAIN: {
@@ -947,6 +997,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "written_by_one_step_family": False,
         "declared_lag_steps": 1,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 4,
         "distance_metric_id": DISTANCE_EUCLIDEAN_CHART,
     },
@@ -966,6 +1017,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "written_by_one_step_family": False,
         "declared_lag_steps": 1,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 4,
         "distance_metric_id": DISTANCE_EUCLIDEAN_CHART,
     },
@@ -1070,6 +1122,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
     },
     ONE_STEP_LAG2_MEAN_RATE: {
@@ -1087,6 +1140,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
     },
     ONE_STEP_LAG2_INNOVATION: {
@@ -1107,6 +1161,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
     },
     MEASUREMENT_ID_ITERATED_ONE_STEP_MAP: {
@@ -1125,6 +1180,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_HORIZON_STEPS_2,
         "horizon_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
     },
     f"{MEASUREMENT_ID_SPECTRAL_ABSCISSA}/{VARIANT_DECLARED_LAG_2}": {
@@ -1142,6 +1198,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
     },
     f"{MEASUREMENT_ID_NUMERICAL_ABSCISSA}/{VARIANT_DECLARED_LAG_2}": {
@@ -1159,6 +1216,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
     },
     f"{MEASUREMENT_ID_DIVERGENCE}/{VARIANT_DECLARED_LAG_2}": {
@@ -1176,6 +1234,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
     },
     f"{MEASUREMENT_ID_GENERATOR_ROTATION}/{VARIANT_DECLARED_LAG_2}": {
@@ -1193,6 +1252,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
     },
     ONE_STEP_LAG2_MAX_GAIN: {
@@ -1213,6 +1273,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
         "distance_metric_id": DISTANCE_EUCLIDEAN_CHART,
     },
@@ -1232,6 +1293,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
         "distance_metric_id": DISTANCE_EUCLIDEAN_CHART,
     },
@@ -1251,6 +1313,7 @@ MEASUREMENT_REGISTER: dict[str, dict[str, Any]] = {
         "variant_id": VARIANT_DECLARED_LAG_STEPS_2,
         "declared_lag_steps": 2,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "min_embargo_steps": 2,
         "distance_metric_id": DISTANCE_EUCLIDEAN_CHART,
     },
@@ -1926,6 +1989,7 @@ SUPPORT_OBJECTS: dict[str, dict[str, Any]] = {
         "variant_subset_paths": (PHYSICAL_CROSSFIT_SOURCE_IDX,),
         "distance_metric_id": DISTANCE_EUCLIDEAN_CHART,
         "embargo_semantics": "index_steps",
+        "raw_window_support_independence": "not_established",
         "written_by_drift_family": True,
         "written_by_diffusion_family": True,
     },
@@ -2114,7 +2178,11 @@ COMPATIBILITY_ROWS: dict[str, dict[str, Any]] = {
         "estimand": ESTIMAND_ALIGNMENT_ABD,
         "measurement_id": MEASUREMENT_ID_CONDITIONAL_COVARIANCE,
         "relation": RELATION_ALIGNMENT,
-        "notes": "Ingest C1 leaves this not_testable. Not a drift_source license.",
+        "notes": (
+            "Ingest C1 leaves this not_testable until an independent b is "
+            "supplied. Chart-drift family outputs are not a drift_source. "
+            "NaN is not zero alignment."
+        ),
     },
     "R_b_over_a": {
         "historical_or_export_name": "R_b_over_a",
@@ -3335,6 +3403,7 @@ def stamp_register_fields(
         "declared_lag_steps",
         "horizon_steps",
         "embargo_semantics",
+        "raw_window_support_independence",
         "min_embargo_steps",
     ):
         if extra_key in entry:
@@ -3392,6 +3461,7 @@ def stamp_register_fields(
         "declared_lag_steps",
         "horizon_steps",
         "embargo_semantics",
+        "raw_window_support_independence",
         "min_embargo_steps",
     ):
         if extra_key in entry:

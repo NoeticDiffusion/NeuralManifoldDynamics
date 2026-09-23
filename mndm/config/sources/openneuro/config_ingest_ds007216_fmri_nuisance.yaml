@@ -11,7 +11,9 @@ modality: fmri
 #   1. preprocess.fmri.nuisance_regression: regress out the extended motion
 #      (trans/rot) + WM/CSF (mean + top-3 PCA) confounds produced by
 #      project/scripts/21_ds007216_fmri_confounds_extract.py, before the
-#      existing [0.01, 0.1] Hz bandpass (see mndm.preprocess._apply_fmri_nuisance_regression).
+#      existing [0.01, 0.1] Hz bandpass (see mndm.pipeline.nuisance).
+#      P0.5: enabled true is fail-closed — missing TSV, length mismatch,
+#      or remaining confound NaNs are NOT_TESTABLE, not a silent skip.
 #   2. regional_mnps (recommendation 4, Part B): 3D-only EEG-region x
 #      fMRI-Yeo-network comparison. 9D stratified layer stays OFF (confirmed
 #      near-singular/rank-deficient for this window regime in earlier

@@ -15,13 +15,24 @@ from typing import Any, Mapping
 
 import numpy as np
 
-from .measurement_register import DISTANCE_EUCLIDEAN_CHART
+from .measurement_register import (
+    DISTANCE_EUCLIDEAN_CHART,
+    EMBARGO_SEMANTICS_INDEX_STEPS,
+    RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED,
+)
 from .validity import increment_pairs_at_lag
 
-EMBARGO_SEMANTICS_INDEX_STEPS = "index_steps"
 REASON_IRREGULAR_DT = "materially_irregular_increment_timestep"
 REASON_NON_POSITIVE_DT = "non_positive_nominal_dt"
 _SUPPORT_HASH_PREFIX = b"mndm.transition_support.v1"
+
+
+def embargo_claim_fields() -> dict[str, str]:
+    """Frozen embargo claim: index steps only; raw-window independence is not established."""
+    return {
+        "embargo_semantics": EMBARGO_SEMANTICS_INDEX_STEPS,
+        "raw_window_support_independence": RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED,
+    }
 
 
 def compute_support_id(
@@ -62,6 +73,7 @@ class TransitionSupport:
     support_id: str
     embargo_semantics: str = EMBARGO_SEMANTICS_INDEX_STEPS
     failure_reason: str | None = None
+    raw_window_support_independence: str = RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED
 
     def subset(self, mask: np.ndarray) -> "TransitionSupport":
         """Return a variant subset (for example an index-embargoed cross-fit fold union)."""
@@ -114,6 +126,7 @@ def support_from_pairs(
             support_id=support_id,
             embargo_semantics=EMBARGO_SEMANTICS_INDEX_STEPS,
             failure_reason=None,
+            raw_window_support_independence=RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED,
         )
     nominal_dt = float(np.median(dt))
     if not np.isfinite(nominal_dt) or nominal_dt <= 0.0:
@@ -130,6 +143,7 @@ def support_from_pairs(
             support_id=support_id,
             embargo_semantics=EMBARGO_SEMANTICS_INDEX_STEPS,
             failure_reason=REASON_NON_POSITIVE_DT,
+            raw_window_support_independence=RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED,
         )
     relative_deviation = float(np.max(np.abs(dt - nominal_dt)) / nominal_dt)
     failure = None
@@ -148,6 +162,7 @@ def support_from_pairs(
         support_id=support_id,
         embargo_semantics=EMBARGO_SEMANTICS_INDEX_STEPS,
         failure_reason=failure,
+        raw_window_support_independence=RAW_WINDOW_SUPPORT_INDEPENDENCE_NOT_ESTABLISHED,
     )
 
 
@@ -188,7 +203,7 @@ def support_summary_fields(support: TransitionSupport) -> dict[str, Any]:
     return {
         "transition_support_id": support.support_id,
         "transition_support_lag": int(support.lag),
-        "embargo_semantics": support.embargo_semantics,
+        **embargo_claim_fields(),
         "distance_metric_id": support.distance_metric_id,
     }
 
@@ -196,7 +211,7 @@ def support_summary_fields(support: TransitionSupport) -> dict[str, Any]:
 def support_settings_fields(support: TransitionSupport) -> dict[str, Any]:
     return {
         "transition_support_id": support.support_id,
-        "embargo_semantics": support.embargo_semantics,
+        **embargo_claim_fields(),
         "distance_metric_id": support.distance_metric_id,
     }
 

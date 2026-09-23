@@ -1,4 +1,11 @@
-"""Spectral complexity metrics for fMRI."""
+"""Spectral complexity metrics for fMRI.
+
+Unused by the ingest feature path as of 2026-09-22. Session spectral
+entropy is computed in `fmri_epoch_metrics._compute_spectral_entropy`
+when `compute_spectral_entropy` is set. This module is not imported by
+`features.fmri` or `preprocess`. Do not delete in a measurement PR; a
+later cleanup can remove it after another grep.
+"""
 
 from __future__ import annotations
 

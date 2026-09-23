@@ -123,7 +123,7 @@ def compute_local_metrics(
         triu = fc[np.triu_indices_from(fc, k=1)]
         valid_triu = triu[np.isfinite(triu)]
         if compute_fc and valid_triu.size > 0:
-            metrics["fmri_FC_mean"] = float(np.nanmean(valid_triu))
+            metrics["fmri_FC_mean"] = fc_triu_mean(fc)
             metrics["fmri_FC_std"] = float(np.nanstd(valid_triu))
 
     # 4) Louvain modularity on non-negative FC adjacency.
@@ -147,7 +147,9 @@ def compute_local_metrics(
 
     # 5) dFC variance from internal subwindows (or FC-std proxy when insufficient windows).
     if compute_dfc_variance:
-        metrics["fmri_dFC_variance"] = _compute_dfc_variance(epoch_filtered, sfreq, min_timepoints_fc)
+        metrics["fmri_dFC_variance"] = _compute_dfc_variance(
+            epoch_filtered, sfreq, min_timepoints_fc, fc_epoch=fc
+        )
 
     # 6) Kuramoto order parameter from precomputed phase.
     if compute_kuramoto and epoch_phase is not None and epoch_phase.shape == epoch_filtered.shape:
@@ -222,6 +224,29 @@ def compute_local_metrics(
     return metrics
 
 
+def fc_triu_mean(fc: np.ndarray) -> float:
+    """Mean of the finite strict-upper-triangle of a correlation matrix."""
+    arr = np.asarray(fc, dtype=float)
+    if arr.ndim != 2 or arr.shape[0] != arr.shape[1] or arr.shape[0] < 2:
+        return float("nan")
+    triu = arr[np.triu_indices_from(arr, k=1)]
+    valid = triu[np.isfinite(triu)]
+    return float(np.nanmean(valid)) if valid.size else float("nan")
+
+
+def fc_mean_for_indices(fc: np.ndarray, indices: Sequence[int]) -> float:
+    """``fmri_FC_mean`` of a ROI subset as a slice of a session FC matrix."""
+    idx = np.asarray(indices, dtype=int)
+    if idx.size < 2:
+        return float("nan")
+    arr = np.asarray(fc, dtype=float)
+    if arr.ndim != 2 or arr.shape[0] != arr.shape[1]:
+        return float("nan")
+    if np.any(idx < 0) or np.any(idx >= arr.shape[0]):
+        return float("nan")
+    return fc_triu_mean(arr[np.ix_(idx, idx)])
+
+
 def _compute_epoch_dvars(epoch_raw: np.ndarray) -> float:
     """Compute mean epoch DVARS (RMS temporal derivative over ROIs)."""
     if epoch_raw.ndim != 2 or epoch_raw.shape[1] < 2:
@@ -234,8 +259,13 @@ def _compute_epoch_dvars(epoch_raw: np.ndarray) -> float:
     return float(np.mean(finite))
 
 
-def _compute_dfc_variance(epoch_filtered: np.ndarray, sfreq: float, min_timepoints_fc: int) -> float:
-    """Internal helper: compute dfc variance."""
+def _compute_dfc_variance(
+    epoch_filtered: np.ndarray,
+    sfreq: float,
+    min_timepoints_fc: int,
+    fc_epoch: np.ndarray | None = None,
+) -> float:
+    """dFC variance from inner subwindows; fallback reuses the epoch FC matrix."""
     n_time = int(epoch_filtered.shape[1])
     win_len = max(int(round(15.0 * sfreq)), min_timepoints_fc)
     step = max(int(round(5.0 * sfreq)), 1)
@@ -244,22 +274,26 @@ def _compute_dfc_variance(epoch_filtered: np.ndarray, sfreq: float, min_timepoin
     while start + win_len <= n_time:
         seg = epoch_filtered[:, start : start + win_len]
         if seg.shape[1] >= max(min_timepoints_fc, 2) and seg.shape[0] >= 2:
-            fc = np.corrcoef(seg)
-            triu = fc[np.triu_indices_from(fc, k=1)]
-            valid = triu[np.isfinite(triu)]
-            if valid.size:
-                fc_means.append(float(np.nanmean(valid)))
+            mean = fc_triu_mean(np.corrcoef(seg))
+            if np.isfinite(mean):
+                fc_means.append(mean)
         start += step
     if len(fc_means) >= 2:
         return float(np.nanvar(np.asarray(fc_means, dtype=float)))
 
     # Fallback proxy when not enough subwindows: dispersion of static FC edges.
-    if epoch_filtered.shape[1] >= max(min_timepoints_fc, 2) and epoch_filtered.shape[0] >= 2:
+    fc = fc_epoch
+    if fc is None and epoch_filtered.shape[1] >= max(min_timepoints_fc, 2) and epoch_filtered.shape[0] >= 2:
         fc = np.corrcoef(epoch_filtered)
-        triu = fc[np.triu_indices_from(fc, k=1)]
-        valid = triu[np.isfinite(triu)]
-        if valid.size:
-            return float(np.nanvar(valid))
+    if fc is None:
+        return float("nan")
+    arr = np.asarray(fc, dtype=float)
+    if arr.ndim != 2 or arr.shape[0] != arr.shape[1] or arr.shape[0] < 2:
+        return float("nan")
+    triu = arr[np.triu_indices_from(arr, k=1)]
+    valid = triu[np.isfinite(triu)]
+    if valid.size:
+        return float(np.nanvar(valid))
     return float("nan")
 
 
@@ -280,23 +314,41 @@ def _compute_slow4_slow5_ratio(epoch_filtered: np.ndarray, sfreq: float) -> floa
     return float(np.nanmean(finite)) if finite.size else float("nan")
 
 
-def _compute_ar1_mean(epoch_filtered: np.ndarray) -> float:
-    """Internal helper: compute ar1 mean."""
-    vals: list[float] = []
-    for i in range(epoch_filtered.shape[0]):
-        x = np.asarray(epoch_filtered[i], dtype=float)
-        if x.size < 3:
-            continue
-        x0 = x[:-1]
-        x1 = x[1:]
-        if np.nanstd(x0) <= 0 or np.nanstd(x1) <= 0:
-            continue
-        corr = np.corrcoef(x0, x1)[0, 1]
-        if np.isfinite(corr):
-            vals.append(float(corr))
-    if not vals:
+def _mean_lag_corr(epoch_filtered: np.ndarray, lag: int) -> float:
+    """Mean per-ROI lag-``lag`` Pearson correlation (AR1/AR2).
+
+    Same NaN policy as the historical per-ROI ``corrcoef`` loop: skip a row
+    when ``nanstd`` of either lag slice is ``<= 0``; correlation itself
+    matches ``np.corrcoef`` (ordinary mean, ddof=1).
+    """
+    arr = np.asarray(epoch_filtered, dtype=float)
+    if arr.ndim != 2 or lag < 1 or arr.shape[1] < lag + 2:
         return float("nan")
-    return float(np.nanmean(np.asarray(vals, dtype=float)))
+    x0 = arr[:, :-lag]
+    x1 = arr[:, lag:]
+    with np.errstate(invalid="ignore", divide="ignore"):
+        std0 = np.nanstd(x0, axis=1)
+        std1 = np.nanstd(x1, axis=1)
+    ok = (std0 > 0) & (std1 > 0)
+    n = int(x0.shape[1])
+    if n < 2:
+        return float("nan")
+    a = x0 - np.mean(x0, axis=1, keepdims=True)
+    b = x1 - np.mean(x1, axis=1, keepdims=True)
+    denom = float(n - 1)
+    with np.errstate(invalid="ignore", divide="ignore"):
+        cov = np.sum(a * b, axis=1) / denom
+        sa = np.sqrt(np.sum(a * a, axis=1) / denom)
+        sb = np.sqrt(np.sum(b * b, axis=1) / denom)
+        corr = cov / (sa * sb)
+    corr = np.where(ok, corr, np.nan)
+    finite = corr[np.isfinite(corr)]
+    return float(np.mean(finite)) if finite.size else float("nan")
+
+
+def _compute_ar1_mean(epoch_filtered: np.ndarray) -> float:
+    """Mean lag-1 autocorrelation across ROIs."""
+    return _mean_lag_corr(epoch_filtered, lag=1)
 
 
 def _infer_network_label(region_name: str) -> str:
@@ -441,63 +493,57 @@ def _compute_network_fc_metrics(fc: np.ndarray | None, roi_names: Sequence[str] 
         label = _infer_network_label(str(name))
         groups.setdefault(label, []).append(idx)
     group_names = [g for g, idxs in groups.items() if len(idxs) >= 2]
-    if len(group_names) < 2:
-        return out
+    if len(group_names) >= 2:
+        within_vals = [v for g in group_names if np.isfinite(v := _mean_intra_fc(fc, groups[g]))]
+        between_vals: list[float] = []
+        for i in range(len(group_names)):
+            for j in range(i + 1, len(group_names)):
+                sub = fc[np.ix_(groups[group_names[i]], groups[group_names[j]])]
+                valid = sub[np.isfinite(sub)]
+                if valid.size:
+                    between_vals.append(float(np.nanmean(valid)))
 
-    within_vals = [v for g in group_names if np.isfinite(v := _mean_intra_fc(fc, groups[g]))]
-    between_vals: list[float] = []
-    for i in range(len(group_names)):
-        for j in range(i + 1, len(group_names)):
-            sub = fc[np.ix_(groups[group_names[i]], groups[group_names[j]])]
-            valid = sub[np.isfinite(sub)]
-            if valid.size:
-                between_vals.append(float(np.nanmean(valid)))
+        within_mean = float(np.nanmean(within_vals)) if within_vals else float("nan")
+        between_mean = float(np.nanmean(between_vals)) if between_vals else float("nan")
+        out["fmri_within_network_fc"] = within_mean
+        out["fmri_between_network_fc"] = between_mean
+        if np.isfinite(within_mean) and np.isfinite(between_mean) and abs(within_mean) > 1e-9:
+            out["fmri_network_segregation_index"] = (within_mean - between_mean) / within_mean
 
-    within_mean = float(np.nanmean(within_vals)) if within_vals else float("nan")
-    between_mean = float(np.nanmean(between_vals)) if between_vals else float("nan")
-    out["fmri_within_network_fc"] = within_mean
-    out["fmri_between_network_fc"] = between_mean
-    if np.isfinite(within_mean) and np.isfinite(between_mean) and abs(within_mean) > 1e-9:
-        out["fmri_network_segregation_index"] = (within_mean - between_mean) / within_mean
-
-    idx_to_group = {idx: g for g, idxs in groups.items() for idx in idxs}
-    absfc = np.abs(np.nan_to_num(fc, nan=0.0))
-    np.fill_diagonal(absfc, 0.0)
-    n = fc.shape[0]
-    pc_vals: list[float] = []
-    for i in range(n):
-        total = float(np.sum(absfc[i, :]))
-        if total <= 1e-12:
-            continue
-        group_sums: Dict[str, float] = {}
-        for j in range(n):
-            if j == i:
-                continue
-            g = idx_to_group.get(j)
-            if g is None:
-                continue
-            group_sums[g] = group_sums.get(g, 0.0) + float(absfc[i, j])
-        frac_sq_sum = sum((s / total) ** 2 for s in group_sums.values())
-        pc_vals.append(1.0 - frac_sq_sum)
-    if pc_vals:
-        out["fmri_participation_coefficient"] = float(np.mean(pc_vals))
+    out["fmri_participation_coefficient"] = _participation_coefficient(fc, groups)
     return out
 
 
+def _participation_coefficient(fc: np.ndarray, groups: Mapping[str, Sequence[int]]) -> float:
+    """Guimera-Amaral PC on the named partition, including singleton networks."""
+    n = int(fc.shape[0])
+    idx_to_group = {int(idx): g for g, idxs in groups.items() for idx in idxs}
+    absfc = np.abs(np.nan_to_num(fc, nan=0.0))
+    np.fill_diagonal(absfc, 0.0)
+    node_groups = [idx_to_group.get(j) for j in range(n)]
+    uniq = sorted({g for g in node_groups if g is not None})
+    if not uniq:
+        return float("nan")
+    g_index = {g: k for k, g in enumerate(uniq)}
+    indicator = np.zeros((n, len(uniq)), dtype=float)
+    for j, g in enumerate(node_groups):
+        if g is not None:
+            indicator[j, g_index[g]] = 1.0
+    group_sums = absfc @ indicator
+    totals = absfc.sum(axis=1)
+    ok = totals > 1e-12
+    if not np.any(ok):
+        return float("nan")
+    with np.errstate(invalid="ignore", divide="ignore"):
+        frac = group_sums[ok] / totals[ok, None]
+    pc = 1.0 - np.sum(frac * frac, axis=1)
+    finite = pc[np.isfinite(pc)]
+    return float(np.mean(finite)) if finite.size else float("nan")
+
+
 def _compute_ar2_mean(epoch_filtered: np.ndarray) -> float:
-    """Internal helper: mean lag-2 autocorrelation across ROIs."""
-    vals: list[float] = []
-    for i in range(epoch_filtered.shape[0]):
-        x = np.asarray(epoch_filtered[i], dtype=float)
-        if x.size < 4:
-            continue
-        x0, x2 = x[:-2], x[2:]
-        if np.nanstd(x0) <= 0 or np.nanstd(x2) <= 0:
-            continue
-        corr = np.corrcoef(x0, x2)[0, 1]
-        if np.isfinite(corr):
-            vals.append(float(corr))
-    return float(np.mean(vals)) if vals else float("nan")
+    """Mean lag-2 autocorrelation across ROIs."""
+    return _mean_lag_corr(epoch_filtered, lag=2)
 
 
 def _compute_temporal_smoothness(epoch_filtered: np.ndarray) -> float:

@@ -13,7 +13,8 @@ preprocess:
   fmri:
     datasets:
       ds004796:
-        bandpass: [0.01, 0.1]
+        # P0.4: removed dataset bandpass [0.01, 0.1] (same as common). Session is
+        # filtered once in fmri_continuous.
         resample_atlas_to_bold: true
 
 features:

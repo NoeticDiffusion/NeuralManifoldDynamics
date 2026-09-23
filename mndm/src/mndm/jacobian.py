@@ -36,6 +36,8 @@ NEIGHBORHOOD_PROVENANCE_KEYS: Tuple[str, ...] = (
     "n_neighborhood_samples_median",
     "n_neighborhood_samples_min",
     "n_affine_parameters",
+    "super_window_requested",
+    "require_determined_support",
 )
 
 OOS_HOLDOUT_STRIDE = 4
@@ -222,6 +224,72 @@ def _affine_rel_mse(
     return float(mse_model / mse_baseline)
 
 
+def restrict_indices_to_segment(
+    indices: np.ndarray,
+    center: int,
+    segment_id: np.ndarray,
+) -> np.ndarray:
+    """Drop support indices that do not share ``center``'s time segment.
+
+    Chart kNN may point across a coverage gap. Those indices are not samples
+    of the local vector field on either side of the gap.
+    """
+    idx = np.asarray(indices, dtype=np.int32).ravel()
+    seg = np.asarray(segment_id)
+    if idx.size == 0:
+        return idx
+    center_i = int(center)
+    if center_i < 0 or center_i >= seg.shape[0]:
+        return np.zeros((0,), dtype=np.int32)
+    in_range = (idx >= 0) & (idx < seg.shape[0])
+    idx = idx[in_range]
+    if idx.size == 0:
+        return idx
+    return idx[seg[idx] == seg[center_i]]
+
+
+def jacobian_segment_ids(
+    n: int,
+    t_start: Optional[np.ndarray],
+    dt: float,
+    file_ids: Optional[np.ndarray] = None,
+    gap_tol: float = 0.25,
+) -> np.ndarray:
+    """Integer segment ids from file boundaries and ``Δt_start`` gaps.
+
+    The gap rule matches derivative segmentation: an interval larger than
+    ``dt * (1 + gap_tol)``, or a non-finite interval, starts a new segment.
+    """
+    from .projection import time_gap_slices
+
+    count = int(n)
+    ids = np.zeros((count,), dtype=np.int32)
+    if count <= 0:
+        return ids
+    if t_start is None:
+        slices = [slice(0, count)]
+    else:
+        slices = time_gap_slices(np.asarray(t_start, dtype=float), float(dt), tol=float(gap_tol))
+    files = None if file_ids is None else np.asarray(file_ids).reshape(-1)
+    seg = 0
+    for sl in slices:
+        if files is None or files.size != count:
+            ids[sl] = seg
+            seg += 1
+            continue
+        block = files[sl]
+        start = 0 if sl.start is None else int(sl.start)
+        run = 0
+        for i in range(1, int(block.shape[0])):
+            if block[i] != block[i - 1]:
+                ids[start + run : start + i] = seg
+                seg += 1
+                run = i
+        ids[start + run : start + int(block.shape[0])] = seg
+        seg += 1
+    return ids
+
+
 def _gather_support_indices(
     center: int,
     nn_idx: np.ndarray,
@@ -393,6 +461,9 @@ def estimate_local_jacobians(
     j_dot_dt: Optional[float] = None,
     knn_k: Optional[int] = None,
     support_mode: str = SUPPORT_MODE_KNN,
+    require_determined_support: bool = False,
+    segment_id: Optional[np.ndarray] = None,
+    forbid_cross_gap: bool = False,
 ) -> JacobianResult:
     """Estimate windowed Jacobians from MNPS trajectories.
 
@@ -404,6 +475,20 @@ def estimate_local_jacobians(
     ``support_mode="time_local"`` is experimental: the same affine fit, but
     only on a contiguous time window. It is for synthetic mixing tests and
     bounded replays. It does not change the default summarize estimator.
+
+    An even ``super_window`` is realized as the next odd length. Provenance
+    keeps both ``super_window_requested`` and the realized ``super_window``.
+
+    ``require_determined_support`` refuses a window unless the unique
+    neighborhood has at least ``dim * (dim + 1)`` samples, the affine
+    parameter count. Without that flag the ridge fit may still return a
+    finite ``J_hat`` and sets ``ridge_underdetermined``. Default remains
+    false so existing EEG neighborhoods are unchanged.
+
+    ``segment_id`` drops chart neighbors that sit in another time segment.
+    ``forbid_cross_gap`` with no ``segment_id`` is ``not_testable`` rather
+    than a silent return to the historical cross-gap neighborhood.
+    Omit both to keep that historical neighborhood.
     """
     if x.ndim != 2 or x_dot.ndim != 2:
         raise ValueError("estimate_local_jacobians expects 2D arrays for x and x_dot")
@@ -411,9 +496,8 @@ def estimate_local_jacobians(
         raise ValueError("x and x_dot must have the same shape")
 
     dim = x.shape[1]
-    super_window = max(1, int(super_window))
-    if super_window % 2 == 0:
-        super_window += 1
+    super_window_requested = max(1, int(super_window))
+    super_window = super_window_requested if super_window_requested % 2 else super_window_requested + 1
     support_mode = _normalize_support_mode(support_mode)
     effective_knn_k = (
         0 if support_mode == SUPPORT_MODE_TIME_LOCAL else infer_knn_k(nn_idx, knn_k)
@@ -426,7 +510,39 @@ def estimate_local_jacobians(
         dim=dim,
         support_mode=support_mode,
     )
+    neighborhood_cfg["super_window_requested"] = int(super_window_requested)
+    neighborhood_cfg["require_determined_support"] = bool(require_determined_support)
+    if require_determined_support:
+        neighborhood_cfg["min_samples"] = max(
+            int(neighborhood_cfg["min_samples"]),
+            int(neighborhood_cfg["n_affine_parameters"]),
+        )
     min_samples = int(neighborhood_cfg["min_samples"])
+    segment_arr = None
+    if segment_id is not None:
+        segment_arr = np.asarray(segment_id)
+        if segment_arr.shape[0] != x.shape[0]:
+            raise ValueError(
+                f"segment_id length {segment_arr.shape[0]} does not match trajectory length {x.shape[0]}"
+            )
+
+    if forbid_cross_gap and segment_arr is None:
+        return JacobianResult(
+            j_hat=np.zeros((0, dim, dim), dtype=np.float32),
+            j_dot=np.zeros((0, dim, dim), dtype=np.float32),
+            centers=np.zeros((0,), dtype=np.int32),
+            diagnostics={
+                "windows": 0,
+                "failed": 0,
+                **neighborhood_cfg,
+                **summarize_neighborhood_sample_counts([]),
+                **summarize_oos_rel_mse([], [], stride=OOS_HOLDOUT_STRIDE),
+                "computation_status": "not_testable",
+                "computation_status_reason": "gap_boundaries_unresolved",
+                "ridge_underdetermined": False,
+                "forbid_cross_gap": True,
+            },
+        )
 
     if x.size == 0 or x_dot.size == 0:
         return JacobianResult(
@@ -439,6 +555,9 @@ def estimate_local_jacobians(
                 **neighborhood_cfg,
                 **summarize_neighborhood_sample_counts([]),
                 **summarize_oos_rel_mse([], [], stride=OOS_HOLDOUT_STRIDE),
+                "computation_status": "not_testable",
+                "computation_status_reason": "empty_trajectory",
+                "ridge_underdetermined": False,
             },
         )
 
@@ -463,6 +582,8 @@ def estimate_local_jacobians(
         neighbour_idx = _gather_support_indices(
             center, nn_idx, super_window, x.shape[0], support_mode
         )
+        if segment_arr is not None:
+            neighbour_idx = restrict_indices_to_segment(neighbour_idx, int(center), segment_arr)
         if neighbour_idx.size < min_samples:
             failures += 1
             failed_centers.append(int(center))
@@ -522,6 +643,9 @@ def estimate_local_jacobians(
                 **neighborhood_cfg,
                 **summarize_neighborhood_sample_counts([]),
                 **summarize_oos_rel_mse([], [], stride=OOS_HOLDOUT_STRIDE),
+                "computation_status": "not_testable",
+                "computation_status_reason": "insufficient_neighborhood_support",
+                "ridge_underdetermined": bool(require_determined_support),
             },
         affine_reference=np.zeros((0, dim), dtype=np.float32),
         affine_intercept=np.zeros((0, dim), dtype=np.float32),
@@ -574,6 +698,13 @@ def estimate_local_jacobians(
             rel_mse_baseline_oos, n_holdout_samples, stride=OOS_HOLDOUT_STRIDE
         ),
     }
+    sample_summary = summarize_neighborhood_sample_counts(n_neighborhood_samples)
+    n_min = float(sample_summary["n_neighborhood_samples_min"])
+    n_params = int(neighborhood_cfg["n_affine_parameters"])
+    diagnostics["ridge_underdetermined"] = bool(np.isfinite(n_min) and n_min < n_params)
+    diagnostics["computation_status"] = "ok" if j_hat.shape[0] else "not_testable"
+    if diagnostics["computation_status"] != "ok":
+        diagnostics["computation_status_reason"] = "insufficient_neighborhood_support"
 
     return JacobianResult(
         j_hat=j_hat,

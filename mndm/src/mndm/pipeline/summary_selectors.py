@@ -8,6 +8,8 @@ from typing import Any, Callable, List, Mapping, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from .fmri_roi_cache import try_load_roi_ts
+
 
 def _match_bold_candidate(
     path_str: str,
@@ -139,6 +141,7 @@ def load_regional_fmri_signals(
     lookup_rel_paths_by_file_value: Callable[[str], List[str]],
     preprocess_fmri: Callable[[Path, Mapping[str, Any]], Any],
     logger: Any,
+    dataset_id: Optional[str] = None,
 ) -> Tuple[Optional[np.ndarray], Optional[List[str]], Optional[float]]:
     """Load regional fMRI signals for one subject/segment."""
     regions_bold = None
@@ -158,6 +161,7 @@ def load_regional_fmri_signals(
 
     bold_path = None
     fmri_rows_subject = None
+    cache_probe_path = None
     if index_df is not None and "path" in index_df.columns:
         try:
             subj_token_raw = str(sub_id)[4:] if str(sub_id).startswith("sub-") else str(sub_id)
@@ -179,9 +183,11 @@ def load_regional_fmri_signals(
                 continue
             try:
                 abs_candidate = Path(file_val)
-                if abs_candidate.is_absolute() and abs_candidate.exists():
-                    bold_path = abs_candidate
-                    break
+                if abs_candidate.is_absolute():
+                    cache_probe_path = abs_candidate
+                    if abs_candidate.exists():
+                        bold_path = abs_candidate
+                        break
             except Exception:
                 pass
 
@@ -247,18 +253,64 @@ def load_regional_fmri_signals(
         except Exception:
             pass
 
-    if bold_path is not None and bold_path.exists():
+    if bold_path is None and cache_probe_path is not None:
+        bold_path = cache_probe_path
+
+    if bold_path is not None:
+        ds_id = dataset_id
+        if ds_id is None:
+            for parent in bold_path.parents:
+                name = parent.name
+                if name.startswith("ds") and name[2:].isdigit():
+                    ds_id = name
+                    break
+        nifti_zooms = None
+        if bold_path.exists():
+            try:
+                import nibabel as nib  # type: ignore
+
+                nifti_zooms = nib.load(str(bold_path)).header.get_zooms()
+            except Exception:
+                nifti_zooms = None
+        expected_key = None
+        config_identity = None
         try:
-            fmri_pre = preprocess_fmri(bold_path, config)
-            fmri_signals = fmri_pre.signals.get("fmri")
-            fmri_ch_names = None
-            if isinstance(fmri_pre.channels, dict):
-                fmri_ch_names = fmri_pre.channels.get("fmri")
-            if fmri_signals is not None:
-                regions_bold = np.asarray(fmri_signals, dtype=np.float32)
-                regions_names = list(fmri_ch_names) if fmri_ch_names else None
-                regions_sfreq = float(fmri_pre.sfreq)
+            from ..preprocess import roi_ts_cache_lookup_args
+            from .fmri_roi_cache import build_roi_ts_cache_key
+
+            lookup = roi_ts_cache_lookup_args(bold_path, config, nifti_zooms=nifti_zooms)
+            if lookup is not None:
+                config_identity = lookup["identity"]
+                if bold_path.exists():
+                    expected_key = build_roi_ts_cache_key(**lookup["kwargs"])
         except Exception:
-            logger.exception("Failed to load regional fMRI signals for %s", dataset_label)
+            logger.debug("ROI-TS cache identity could not be resolved for %s", bold_path, exc_info=True)
+        cached = try_load_roi_ts(
+            bold_path=bold_path,
+            config=config,
+            dataset_id=ds_id,
+            expected_key=expected_key,
+            config_identity=config_identity,
+            require_bold_exists=False,
+        )
+        if cached is not None:
+            return (
+                np.asarray(cached["roi_ts"], dtype=np.float32),
+                list(cached["names"]) if cached.get("names") else None,
+                float(cached["sfreq"]),
+            )
+        if bold_path.exists():
+            try:
+                fmri_pre = preprocess_fmri(bold_path, config)
+                fmri_signals = fmri_pre.signals.get("fmri")
+                fmri_ch_names = None
+                if isinstance(fmri_pre.channels, dict):
+                    fmri_ch_names = fmri_pre.channels.get("fmri")
+                if fmri_signals is not None:
+                    regions_bold = np.asarray(fmri_signals, dtype=np.float32)
+                    regions_names = list(fmri_ch_names) if fmri_ch_names else None
+                    regions_sfreq = float(fmri_pre.sfreq)
+            except Exception:
+                logger.exception("Failed to load regional fMRI signals for %s", dataset_label)
 
     return regions_bold, regions_names, regions_sfreq

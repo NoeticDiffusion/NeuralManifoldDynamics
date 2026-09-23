@@ -234,11 +234,12 @@ def compute_feature_baseline_comparisons(
 def _filtered_x_and_files(
     x: np.ndarray,
     file_labels: Optional[Sequence[Any]],
-) -> tuple[np.ndarray, Optional[np.ndarray], float]:
+    t_start: Optional[np.ndarray] = None,
+) -> tuple[np.ndarray, Optional[np.ndarray], float, Optional[np.ndarray]]:
     """Internal helper: filtered x and files."""
     arr = np.asarray(x, dtype=np.float32)
     if arr.ndim != 2 or arr.shape[1] != 3:
-        return np.zeros((0, 3), dtype=np.float32), None, 0.0
+        return np.zeros((0, 3), dtype=np.float32), None, 0.0, None
     finite_mask = np.isfinite(arr).all(axis=1)
     filtered = arr[finite_mask]
     frac_kept = float(np.mean(finite_mask)) if finite_mask.size else 0.0
@@ -247,7 +248,12 @@ def _filtered_x_and_files(
         files_arr = np.asarray(file_labels)
         if files_arr.shape[0] == arr.shape[0]:
             files_out = files_arr[finite_mask]
-    return filtered, files_out, frac_kept
+    t_out = None
+    if t_start is not None:
+        t_arr = np.asarray(t_start, dtype=float)
+        if t_arr.shape[0] == arr.shape[0]:
+            t_out = t_arr[finite_mask]
+    return filtered, files_out, frac_kept, t_out
 
 
 def _compute_dot(
@@ -257,56 +263,25 @@ def _compute_dot(
     derivative_cfg: Mapping[str, Any],
     derivative_robust_cfg: Optional[Mapping[str, Any]],
     file_labels: Optional[Sequence[Any]],
+    t_start: Optional[np.ndarray] = None,
 ) -> np.ndarray:
-    """Internal helper: compute dot."""
+    """Internal helper: compute dot without smoothing across files or time holes."""
     robust_cfg = derivative_robust_cfg or {}
-    use_segmented = bool(robust_cfg.get("enabled", True))
-    method = str(derivative_cfg.get("method", "sav_gol"))
-    window = int(derivative_cfg.get("window", 7))
-    polyorder = int(derivative_cfg.get("polyorder", 3))
-    if file_labels is not None and len(file_labels) == len(x) and len(np.unique(file_labels)) > 1:
-        dot = np.zeros_like(x, dtype=np.float32)
-        file_arr = np.asarray(file_labels)
-        for value in np.unique(file_arr):
-            mask = file_arr == value
-            sub_x = x[mask]
-            if sub_x.size == 0:
-                continue
-            if use_segmented:
-                dot[mask] = projection.estimate_derivatives_segmented(
-                    sub_x,
-                    dt_sec,
-                    method=method,
-                    max_jump=float(robust_cfg.get("max_jump", 5.0)),
-                    min_seg=int(robust_cfg.get("min_seg", 9)),
-                    savgol_window=window,
-                    polyorder=polyorder,
-                )
-            else:
-                dot[mask] = projection.estimate_derivatives(
-                    sub_x,
-                    dt_sec,
-                    method=method,
-                    window=window,
-                    polyorder=polyorder,
-                )
-        return dot
-    if use_segmented:
-        return projection.estimate_derivatives_segmented(
-            x,
-            dt_sec,
-            method=method,
-            max_jump=float(robust_cfg.get("max_jump", 5.0)),
-            min_seg=int(robust_cfg.get("min_seg", 9)),
-            savgol_window=window,
-            polyorder=polyorder,
-        )
-    return projection.estimate_derivatives(
+    file_ids = None
+    if file_labels is not None and len(file_labels) == len(x):
+        file_ids = np.asarray(file_labels)
+    return projection.estimate_derivatives_with_time_gaps(
         x,
         dt_sec,
-        method=method,
-        window=window,
-        polyorder=polyorder,
+        t_start,
+        method=str(derivative_cfg.get("method", "sav_gol")),
+        window=int(derivative_cfg.get("window", 7)),
+        polyorder=int(derivative_cfg.get("polyorder", 3)),
+        file_ids=file_ids,
+        gap_tol=float(robust_cfg.get("gap_tol", projection.TIME_GAP_TOL)),
+        use_segmented=bool(robust_cfg.get("enabled", True)),
+        max_jump=float(robust_cfg.get("max_jump", 5.0)),
+        min_seg=int(robust_cfg.get("min_seg", 9)),
     )
 
 
@@ -336,6 +311,7 @@ def _summarize_surrogate(
     super_window: int,
     ridge_alpha: float,
     distance_weighted: bool,
+    t_start: Optional[np.ndarray] = None,
 ) -> Dict[str, Any]:
     """Internal helper: summarize surrogate."""
     x_dot = _compute_dot(
@@ -344,6 +320,7 @@ def _summarize_surrogate(
         derivative_cfg=derivative_cfg,
         derivative_robust_cfg=derivative_robust_cfg,
         file_labels=file_labels,
+        t_start=t_start,
     )
     nn_idx = projection.build_knn_indices(
         x,
@@ -445,6 +422,7 @@ def compute_null_sanity_tests(
     distance_weighted: bool,
     review_qc_cfg: Optional[Mapping[str, Any]] = None,
     config: Optional[Mapping[str, Any]] = None,
+    t_start: Optional[np.ndarray] = None,
 ) -> Optional[Dict[str, Any]]:
     """Run minimal surrogate/null tests on the exported MNPS trajectory."""
     cfg = review_qc_cfg or {}
@@ -452,7 +430,9 @@ def compute_null_sanity_tests(
     if not isinstance(null_cfg, Mapping) or not null_cfg.get("enabled", False):
         return None
 
-    x_finite, file_finite, frac_kept = _filtered_x_and_files(x, file_labels=file_labels)
+    x_finite, file_finite, frac_kept, t_finite = _filtered_x_and_files(
+        x, file_labels=file_labels, t_start=t_start
+    )
     if x_finite.shape[0] < max(12, int(super_window) + 2):
         return {
             "status": "skipped_insufficient_finite_rows",
@@ -479,6 +459,7 @@ def compute_null_sanity_tests(
         super_window=super_window,
         ridge_alpha=ridge_alpha,
         distance_weighted=distance_weighted,
+        t_start=t_finite,
     )
 
     shuffle_idx = rng.permutation(x_finite.shape[0])

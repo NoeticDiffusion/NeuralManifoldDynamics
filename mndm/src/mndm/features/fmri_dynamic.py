@@ -1,6 +1,9 @@
+"""Sliding-window connectivity metrics for fMRI.
+
+Unused by the ingest feature path as of 2026-09-22. Epoch dFC variance is
+`fmri_epoch_metrics._compute_dfc_variance`. This module is not imported
+by `features.fmri` or `preprocess`. Do not delete in a measurement PR.
 """
-fmri_dynamic.py
-Sliding-window connectivity metrics for fMRI."""
 
 from __future__ import annotations
 

@@ -62,6 +62,7 @@ preprocess:
     # The lightweight-norm script resamples BOLD directly onto this atlas's own
     # affine grid (not just "any 2mm MNI grid"), so no resample_atlas_to_bold
     # fallback should be needed here; leave it available as a safety net only.
+    # P0.6: same shape with a mismatched affine/orientation is NOT_TESTABLE.
     datasets:
       ds007216:
         resample_atlas_to_bold: false
@@ -97,13 +98,13 @@ features:
     # motion measure; disable the miscalibrated DVARS proxy here rather than
     # guess at a dataset-specific intensity-based threshold.
     compute_dvars: false
-    # NMD-fMRI-v2.5 Stage 2 (sciencelead/003.md + 0004.md): candidate feature
-    # families, opt-in only (see mndm.features.fmri_epoch_metrics /
-    # fmri.py docstrings). Enabled here so ds007216's features.parquet gets
-    # the new columns for the v25_feature_registry.csv audit. Purely
-    # additive -- no existing mapping/config depends on these columns yet,
-    # and Stage 2 explicitly defers any mapping search (0004.md: "please do
-    # not run mapping search yet").
+    # NMD-fMRI-v2.5 Stage 2 remains ON here for the v25 feature-registry audit.
+    # Opt-in in code; common fMRI YAML does not enable these columns.
+    # P3 one-run cost (sub-001 ses-001 run-001, 200 ROI, 39 epochs, 2026-09-22,
+    # two repeats on cached ROI-TS): default feature pass median 17.5 s;
+    # all Stage-2 flags together median 33.3 s (+15.8 s). Largest single add
+    # is sample entropy +8.8 s; permutation entropy +2.8 s. Flags stay on.
+    # Not a correctness change. See project/fmri_review/p3_stage2_cost_ds007216_repeat.json.
     compute_spectral_entropy: true
     compute_permutation_entropy_fmri: true
     compute_sample_entropy_fmri: true

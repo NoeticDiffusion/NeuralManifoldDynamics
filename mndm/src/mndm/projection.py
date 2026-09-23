@@ -511,6 +511,7 @@ def _normalize_used_columns(
                 "abs_mad": float('nan'),
                 "transformation_applied": "none"
             }
+            out[col] = np.full(col_data.shape, np.nan, dtype=np.float32)
             continue
             
         finite_vals = col_data[mask]
@@ -583,9 +584,11 @@ def _normalize_used_columns(
         baseline_info["transformation_applied"] = " -> ".join(applied_steps) if applied_steps else "none"
         baselines[col] = baseline_info
         
-        # Assign back
-        new_col_data = np.zeros_like(col_data)
-        new_col_data[mask] = transformed[mask]
+        # Preserve non-finite source values as NaN. Zero-filling here made
+        # DVARS-scrubbed / missing features look like valid origin points and
+        # inflated axis coverage (P0.1).
+        new_col_data = np.full(col_data.shape, np.nan, dtype=np.float32)
+        new_col_data[mask] = np.asarray(transformed[mask], dtype=np.float32)
         out[col] = new_col_data
         
     return out, baselines
@@ -643,8 +646,9 @@ def project_features(
         external_anchor=external_anchor,
         )
 
-    # Keep missing values as NaN here; per-axis aggregation below renormalizes
-    # by present weights (sum of abs(weights)) to avoid silent fillna(0)-bias.
+    # Missing values remain NaN through normalization; per-axis aggregation
+    # renormalizes by present weights (sum of abs(weights)) so coverage and
+    # coordinates do not treat scrubbed rows as zeros.
     X = features_df.loc[:, used_cols].to_numpy(dtype=np.float32, copy=True)
     X[~np.isfinite(X)] = np.nan
     W = np.zeros((len(used_cols), 3), dtype=np.float32)
@@ -1145,6 +1149,125 @@ def estimate_derivatives(x: np.ndarray, dt: float, method: str = "sav_gol", wind
     return np.asarray(deriv, dtype=np.float32)
 
 
+TIME_GAP_TOL = 0.25
+
+
+def time_gap_slices(
+    t_start: np.ndarray,
+    step: float,
+    *,
+    tol: float = TIME_GAP_TOL,
+) -> list[slice]:
+    """Split epoch indices where ``Δt_start > step * (1 + tol)``.
+
+    A non-finite step or a single sample yields one slice over the whole array.
+    Non-finite or non-positive intervals are treated as gaps.
+    """
+    t = np.asarray(t_start, dtype=float).reshape(-1)
+    n = int(t.size)
+    if n <= 0:
+        return []
+    if n == 1 or not np.isfinite(step) or float(step) <= 0:
+        return [slice(0, n)]
+    threshold = float(step) * (1.0 + float(tol))
+    breaks: list[int] = []
+    for i in range(1, n):
+        delta = t[i] - t[i - 1]
+        if (not np.isfinite(delta)) or delta <= 0.0 or delta > threshold:
+            breaks.append(i)
+    slices: list[slice] = []
+    start = 0
+    for brk in breaks:
+        if brk > start:
+            slices.append(slice(start, brk))
+        start = brk
+    if start < n:
+        slices.append(slice(start, n))
+    return slices
+
+
+def estimate_derivatives_with_time_gaps(
+    x: np.ndarray,
+    dt: float,
+    t_start: Optional[np.ndarray] = None,
+    *,
+    method: str = "sav_gol",
+    window: int = 7,
+    polyorder: int = 3,
+    file_ids: Optional[np.ndarray] = None,
+    gap_tol: float = TIME_GAP_TOL,
+    use_segmented: bool = True,
+    max_jump: float = 5.0,
+    min_seg: int = 9,
+    nan_gap_edges: bool = True,
+) -> np.ndarray:
+    """Estimate ``x_dot`` without smoothing across file or time-grid holes.
+
+    P0.7: split when ``Δt_start > dt * (1 + gap_tol)``. Samples immediately
+    adjacent to a time gap are set to NaN so a hole is not reported as a
+    velocity. Uncomputed samples stay NaN (not zero).
+    """
+    X = np.asarray(x, dtype=np.float32)
+    out = np.full_like(X, np.nan, dtype=np.float32)
+    if X.size == 0:
+        return out
+    if X.ndim != 2:
+        raise ValueError("estimate_derivatives_with_time_gaps expects a 2-D array")
+    n = int(X.shape[0])
+
+    if file_ids is None:
+        group_indices = [np.arange(n, dtype=int)]
+    else:
+        files = np.asarray(file_ids, dtype=object).reshape(-1)
+        if files.size != n:
+            raise ValueError("file_ids must match x along the time axis")
+        group_indices = [np.flatnonzero(files == f) for f in pd.unique(files)]
+
+    t_arr = None if t_start is None else np.asarray(t_start, dtype=float).reshape(-1)
+    if t_arr is not None and t_arr.size != n:
+        raise ValueError("t_start must match x along the time axis")
+
+    def _dot_block(block: np.ndarray) -> np.ndarray:
+        if use_segmented:
+            return estimate_derivatives_segmented(
+                block,
+                dt,
+                method=method,
+                max_jump=float(max_jump),
+                min_seg=int(min_seg),
+                savgol_window=int(window),
+                polyorder=int(polyorder),
+            )
+        return estimate_derivatives(
+            block,
+            dt,
+            method=method,
+            window=int(window),
+            polyorder=int(polyorder),
+        )
+
+    for idx in group_indices:
+        if idx.size == 0:
+            continue
+        if t_arr is None:
+            local_slices = [slice(0, int(idx.size))]
+        else:
+            local_slices = time_gap_slices(t_arr[idx], dt, tol=gap_tol)
+        n_local = len(local_slices)
+        for si, sl in enumerate(local_slices):
+            local_idx = idx[sl]
+            if local_idx.size == 0:
+                continue
+            block_dot = _dot_block(X[local_idx])
+            out[local_idx] = block_dot
+            if nan_gap_edges and n_local > 1:
+                if si > 0:
+                    out[local_idx[0]] = np.nan
+                if si < n_local - 1:
+                    out[local_idx[-1]] = np.nan
+    return out
+
+
 def estimate_derivatives_segmented(
     x: np.ndarray,
     dt: float,
@@ -1167,7 +1290,7 @@ def estimate_derivatives_segmented(
         raise ValueError("estimate_derivatives_segmented expects a 2-D array")
     T = X.shape[0]
     if T < 3:
-        return np.zeros_like(X, dtype=np.float32)
+        return np.full_like(X, np.nan, dtype=np.float32)
 
     finite_rows = np.isfinite(X).all(axis=1)
     out = np.full_like(X, np.nan, dtype=np.float32)
@@ -1213,7 +1336,6 @@ def estimate_derivatives_segmented(
                 sub_dot = estimate_derivatives(sub, dt, method="central")
             out[seg_idx[ss:ee]] = sub_dot
 
-    out[~np.isfinite(out)] = 0.0
     return out
 
 
@@ -1280,7 +1402,9 @@ def build_knn_indices(x: np.ndarray, k: int = 20, metric: str = "euclidean", whi
         return out
 
     tree = cKDTree(xx)
-    _, idx = tree.query(xx, k=k + 1, workers=-1)
+    # workers=1: summarize already uses ThreadPoolExecutor; SciPy default
+    # workers=-1 oversubscribes cores (P2.3).
+    _, idx = tree.query(xx, k=k + 1, workers=1)
     idx = np.asarray(idx, dtype=np.int64)
     cand = idx[:, 1 : k + 1].astype(np.int32, copy=False)
     # Fast path for the common case where query returns k non-self neighbours directly.

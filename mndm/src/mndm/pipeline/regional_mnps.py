@@ -29,6 +29,11 @@ class RegionalMNPSResult:
     n_timepoints: int = 0
     valid: bool = True
     drop_reason: Optional[str] = None
+    dt_realized_sec: Optional[float] = None
+    dt_source: Optional[str] = None
+    derivative_method: Optional[str] = None
+    derivative_window: Optional[int] = None
+    derivative_polyorder: Optional[int] = None
 
 
 @dataclass
@@ -45,21 +50,64 @@ class RegionalMNPSSummary:
 
 
 def _as_mnps_array(mnps_trajectory: np.ndarray) -> np.ndarray:
-    """Validate/normalize precomputed MNPS trajectory to [T,3]."""
+    """Validate/normalize precomputed MNPS trajectory to [T,3].
+
+    Non-finite values are preserved. Callers must not treat this array as
+    imputed support for derivatives or Jacobians.
+    """
     arr = np.asarray(mnps_trajectory, dtype=np.float32)
     if arr.ndim != 2 or arr.shape[1] < 3:
         raise ValueError("Expected precomputed MNPS trajectory with shape [T, >=3]")
-    out = arr[:, :3].copy()
-    # Fill sparse NaNs robustly before derivatives/Jacobian.
-    for col in range(out.shape[1]):
-        vals = out[:, col]
-        bad = ~np.isfinite(vals)
-        if bad.any():
-            finite = vals[~bad]
-            fill_val = float(np.nanmedian(finite)) if finite.size else 0.0
-            vals[bad] = fill_val
-            out[:, col] = vals
-    return out
+    return arr[:, :3].copy()
+
+
+def merge_regional_mnps_estimator_config(
+    regional_cfg: Mapping[str, Any],
+    *,
+    parent_mnps_cfg: Optional[Mapping[str, Any]] = None,
+    dt_realized_sec: Optional[float] = None,
+    derivative_cfg: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Copy regional config and fill realized ``dt`` plus derivative settings.
+
+    Explicit ``regional_mnps.mnps.derivative`` wins. Otherwise inherit
+    ``derivative_cfg`` (summarize context) or parent ``mnps.derivative``.
+    Realized ``dt`` from the recording time grid wins over config defaults.
+    """
+    merged: Dict[str, Any] = dict(regional_cfg) if isinstance(regional_cfg, Mapping) else {}
+    mnps_cfg = dict(merged.get("mnps", {}) or {}) if isinstance(merged.get("mnps", {}), Mapping) else {}
+    parent = parent_mnps_cfg if isinstance(parent_mnps_cfg, Mapping) else {}
+
+    if dt_realized_sec is not None:
+        dt_val = float(dt_realized_sec)
+        if np.isfinite(dt_val) and dt_val > 0:
+            mnps_cfg["time_step_sec"] = dt_val
+            mnps_cfg["dt_sec"] = dt_val
+            mnps_cfg["dt_source"] = "measured"
+    elif "time_step_sec" not in mnps_cfg and "dt_sec" not in mnps_cfg:
+        parent_dt = parent.get("time_step_sec", parent.get("dt_sec"))
+        if parent_dt is not None:
+            try:
+                dt_val = float(parent_dt)
+            except (TypeError, ValueError):
+                dt_val = float("nan")
+            if np.isfinite(dt_val) and dt_val > 0:
+                mnps_cfg["time_step_sec"] = dt_val
+                mnps_cfg["dt_sec"] = dt_val
+                mnps_cfg["dt_source"] = str(parent.get("dt_source") or "config")
+    elif "dt_source" not in mnps_cfg:
+        mnps_cfg["dt_source"] = "config"
+
+    if "derivative" not in mnps_cfg or not isinstance(mnps_cfg.get("derivative"), Mapping):
+        inherited = None
+        if isinstance(derivative_cfg, Mapping) and derivative_cfg:
+            inherited = dict(derivative_cfg)
+        elif isinstance(parent.get("derivative"), Mapping):
+            inherited = dict(parent.get("derivative") or {})
+        if inherited:
+            mnps_cfg["derivative"] = inherited
+    merged["mnps"] = mnps_cfg
+    return merged
 
 
 def compute_jacobian_metrics(j_hat: np.ndarray) -> Dict[str, float]:
@@ -391,53 +439,90 @@ def compute_regional_mnps_for_network(
         result.drop_reason = str(exc)
         return result
 
-    if mnps.shape[0] < min_length:
+    finite_rows = int(np.isfinite(mnps).all(axis=1).sum())
+    if mnps.shape[0] < min_length or finite_rows < min_length:
         result.valid = False
-        result.drop_reason = f"too few MNPS samples ({mnps.shape[0]} < {min_length})"
+        result.drop_reason = (
+            f"too few finite MNPS samples ({finite_rows} finite of "
+            f"{mnps.shape[0]} < {min_length})"
+        )
         logger.debug("Dropping %s: %s", network_label, result.drop_reason)
         return result
 
     mnps_cfg = config.get("mnps", {}) if isinstance(config, Mapping) else {}
-    dt = float(mnps_cfg.get("time_step_sec", mnps_cfg.get("dt_sec", 1.0)))
-    if not np.isfinite(dt) or dt <= 0:
+    dt_raw = mnps_cfg.get("time_step_sec", mnps_cfg.get("dt_sec"))
+    dt_source = str(mnps_cfg.get("dt_source") or "").strip() or None
+    if dt_raw is None:
         dt = 1.0
+        dt_source = "default_1"
+    else:
+        try:
+            dt = float(dt_raw)
+        except (TypeError, ValueError):
+            dt = float("nan")
+        if not np.isfinite(dt) or dt <= 0:
+            result.valid = False
+            result.drop_reason = f"invalid_dt_realized_sec ({dt_raw})"
+            return result
+        if not dt_source:
+            dt_source = "config"
 
     result.mnps = mnps
     result.n_timepoints = mnps.shape[0]
+    result.dt_realized_sec = float(dt)
+    result.dt_source = dt_source
 
-    deriv_cfg = mnps_cfg.get("derivative", {})
-    method = deriv_cfg.get("method", "sav_gol")
+    deriv_cfg = mnps_cfg.get("derivative", {}) if isinstance(mnps_cfg.get("derivative", {}), Mapping) else {}
+    method = str(deriv_cfg.get("method", "sav_gol"))
     window = int(deriv_cfg.get("window", 7))
     polyorder = int(deriv_cfg.get("polyorder", 3))
+    result.derivative_method = method
+    result.derivative_window = window
+    result.derivative_polyorder = polyorder
     result.mnps_dot = projection.estimate_derivatives(mnps, dt, method, window, polyorder)
 
     jac_cfg = config.get("jacobian", {}) if isinstance(config, Mapping) else {}
+    traj_finite = bool(np.isfinite(mnps).all())
     if jac_cfg.get("enabled", True):
-        knn_cfg = mnps_cfg.get("knn", {})
-        k = int(knn_cfg.get("k", 10))
-        metric = knn_cfg.get("metric", "euclidean")
+        if not traj_finite:
+            # Do not median/zero-fill before the Jacobian. Incomplete support
+            # is skipped, not imputed into a plausible local linear map.
+            result.jacobian = None
+            result.jacobian_diagnostics = {
+                "skipped": True,
+                "reason": "non_finite_mnps",
+            }
+            logger.debug(
+                "Skipping regional Jacobian for %s: non-finite MNPS (no imputation)",
+                network_label,
+            )
+        else:
+            knn_cfg = mnps_cfg.get("knn", {})
+            k = int(knn_cfg.get("k", 10))
+            metric = knn_cfg.get("metric", "euclidean")
 
-        nn_indices = projection.build_knn_indices(mnps, k=k, metric=metric, whiten=True)
+            nn_indices = projection.build_knn_indices(mnps, k=k, metric=metric, whiten=True)
 
-        super_window = int(jac_cfg.get("super_window", 3))
-        ridge_alpha = float(jac_cfg.get("ridge_alpha", 1.0))
-        dist_weighted = bool(jac_cfg.get("distance_weighted", True))
+            super_window = int(jac_cfg.get("super_window", 3))
+            ridge_alpha = float(jac_cfg.get("ridge_alpha", 1.0))
+            dist_weighted = bool(jac_cfg.get("distance_weighted", True))
 
-        jac_result = jacobian.estimate_local_jacobians(
-            mnps,
-            result.mnps_dot,
-            nn_indices,
-            super_window=super_window,
-            ridge_alpha=ridge_alpha,
-            distance_weighted=dist_weighted,
-            j_dot_dt=float(dt),
-            knn_k=k,
-        )
+            jac_result = jacobian.estimate_local_jacobians(
+                mnps,
+                result.mnps_dot,
+                nn_indices,
+                super_window=super_window,
+                ridge_alpha=ridge_alpha,
+                distance_weighted=dist_weighted,
+                j_dot_dt=float(dt),
+                knn_k=k,
+                require_determined_support=bool(jac_cfg.get("require_determined_support", False)),
+            )
 
-        result.jacobian = jac_result.j_hat
-        result.jacobian_diagnostics = jac_result.diagnostics
+            result.jacobian = jac_result.j_hat
+            result.jacobian_diagnostics = jac_result.diagnostics
 
-        result.metrics.update(compute_jacobian_metrics(jac_result.j_hat))
+            result.metrics.update(compute_jacobian_metrics(jac_result.j_hat))
 
     result.metrics.update(compute_mnps_metrics(mnps))
 

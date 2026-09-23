@@ -204,7 +204,8 @@ testable \(A_{bD}\) / \(R_{b/a}\) (`summary.A_bD_computation_status=not_testable
 may consume an externally qualified chart \(b\) without changing `a_hat`.
 The opt-in chart-drift family can serialize `realized_velocity_level0` and
 `conditional_mean_rate_level1` variants; those are not a `drift_source` for \(A_{bD}\)
-and are not identified Itô \(b\). The opt-in one-step family
+(`chart_drift_as_independent_b`) and are not identified Itô \(b\). A drift
+vector without `source=truth_known_chart_b` is not auto-promoted. The opt-in one-step family
 (`mndm.affine_one_step.v1`) writes a recording-level lag-1 affine map and,
 when that map is identified, Euclidean functionals of \(\Phi\) (max-gain,
 volume-gain, polar rotation) plus generator proxies from `logm(Φ)/Δt`; it does

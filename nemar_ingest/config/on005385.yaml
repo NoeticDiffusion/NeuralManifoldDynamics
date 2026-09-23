@@ -1,0 +1,15 @@
+# Full on005385 v1.0.0 release. The manifest is about 50 GB.
+# Files are written under received_dir/<dataset-id>.
+dataset:
+  id: on005385
+  version: v1.0.0
+paths:
+  received_dir: K:/ExternalReceivedDatasets/nemar
+download:
+  backend: manifest
+  retries: 3
+  verify_checksum: true
+  verify_size: true
+  continue_on_error: true
+# Empty selection keeps every manifest path.
+selection: {}

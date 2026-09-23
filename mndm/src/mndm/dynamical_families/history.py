@@ -39,6 +39,7 @@ from .one_step_operator import (
     _temporal_block_folds,
 )
 from .transition_support import (
+    embargo_claim_fields,
     build_transition_support,
     support_series_fields,
     support_settings_fields,
@@ -280,7 +281,7 @@ def estimate_history_predictive_gain(
         "ridge_alpha": float(ridge_alpha),
         "n_blocks": DEFAULT_N_BLOCKS,
         "embargo_steps": DEFAULT_EMBARGO_STEPS,
-        "embargo_semantics": "index_steps",
+        **embargo_claim_fields(),
         "min_triples": int(min_triples),
         "m0": "affine_x_t_to_x_t_plus_1",
         "m1": "affine_x_t_x_t_minus_1_to_x_t_plus_1",

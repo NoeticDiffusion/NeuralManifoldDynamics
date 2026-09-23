@@ -7,6 +7,14 @@
 # Expected write states:
 #   diffusion:   computed when estimator support holds
 #                (measurement_validity=not_assessed; no OD-TQ1 copy)
+#   drift:       computed 003 identities when support holds. Not Itô b,
+#                not /mnps_3d_dot, not A_bD.
+#   one_step:    computed recording-level affine map when blocked holdout
+#                beats the generic 0.9 mean-next-state gate; level-3
+#                generator proxies only if identified. declared_lags:
+#                [1, 2] writes direct lag-2 identities under declared_lag_2/.
+#                Not ito_drift_level3. Common overlay default is [1].
+#   amplification / history / turning: computed when support holds.
 #   destination: not_testable (no explicit first-hit A/B or reaction coordinate)
 #   resilience:  not_testable / no_perturbation_protocol
 #   jacobian metrics: computed when J_hat exists (measurement_validity=not_assessed)
@@ -16,7 +24,8 @@
 #                (discrete chart-space spread; not process noise)
 #   grain + certificate + /support_signature/v1: written on new files
 #
-# Do not copy OD-TQ1 hashes here.
+# Nested C1 diffusion.drift.enabled stays false. Do not copy OD-TQ1 hashes
+# or the I-CARE jacobian_metrics.fit_fidelity_gate here.
 version: 1.2
 modality: eeg
 
@@ -66,6 +75,25 @@ dynamical_families:
     max_gap_sec: null
     max_dt_relative_deviation: 0.05
     psd_floor: 1.0e-8
+
+  drift:
+    enabled: true
+
+  # Coverage opt-in: declared_lags [1, 2] writes direct lag-2 identities.
+  # Common overlay default is [1]. Threshold stays generic 0.9.
+  # Not ito_drift_level3.
+  one_step:
+    enabled: true
+    declared_lags: [1, 2]
+
+  amplification:
+    enabled: true
+
+  history:
+    enabled: true
+
+  turning:
+    enabled: true
 
   destination:
     enabled: true

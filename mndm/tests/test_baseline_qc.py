@@ -95,3 +95,78 @@ def test_compute_null_sanity_tests_returns_three_surrogates():
         assert "tau_summary" in summary
         assert summary["jacobian"]["windows"] >= 0
         assert name in out["comparisons_to_original"]
+
+
+def test_compute_null_sanity_tests_uses_t_start_gaps():
+    """Original Jacobian path must not treat a 60 s hole as one uniform grid."""
+    from mndm.pipeline.baseline_qc import _compute_dot
+
+    n = 10
+    step = 15.0
+    t_a = np.arange(n, dtype=float) * step
+    t_b = t_a[-1] + 45.0 + 60.0 + np.arange(n, dtype=float) * step
+    t_start = np.concatenate([t_a, t_b])
+    x = np.stack([t_start, t_start, t_start], axis=1).astype(np.float32)
+    x_dot = _compute_dot(
+        x,
+        dt_sec=step,
+        derivative_cfg={"method": "central", "window": 5, "polyorder": 2},
+        derivative_robust_cfg={"enabled": False},
+        file_labels=None,
+        t_start=t_start,
+    )
+    assert np.all(np.isnan(x_dot[n - 1]))
+    assert np.all(np.isnan(x_dot[n]))
+    interior = np.concatenate([np.arange(1, n - 1), np.arange(n + 1, 2 * n - 1)])
+    assert np.allclose(x_dot[interior, 0], 1.0, atol=0.05)
+
+
+def test_compute_null_sanity_tests_threads_filtered_t_start_only_on_original(monkeypatch):
+    """t_start must stay aligned after NaN-row drop and must not be reused on shuffled surrogates."""
+    from mndm.pipeline import baseline_qc
+
+    captured: list = []
+    real = baseline_qc._compute_dot
+
+    def _spy(x, *, dt_sec, derivative_cfg, derivative_robust_cfg, file_labels, t_start=None):
+        captured.append(None if t_start is None else np.asarray(t_start, dtype=float).copy())
+        return real(
+            x,
+            dt_sec=dt_sec,
+            derivative_cfg=derivative_cfg,
+            derivative_robust_cfg=derivative_robust_cfg,
+            file_labels=file_labels,
+            t_start=t_start,
+        )
+
+    monkeypatch.setattr(baseline_qc, "_compute_dot", _spy)
+
+    t = np.linspace(0.0, 8.0 * np.pi, 96, dtype=float)
+    x = np.stack([np.sin(t), np.cos(t), np.sin(0.4 * t + 0.2)], axis=1).astype(np.float32)
+    x[20] = np.nan
+    t_start = np.arange(96, dtype=float) * 2.0
+    file_labels = np.array(["file_a"] * 48 + ["file_b"] * 48, dtype=object)
+
+    out = baseline_qc.compute_null_sanity_tests(
+        x=x,
+        dt_sec=2.0,
+        derivative_cfg={"method": "central", "window": 5, "polyorder": 2},
+        derivative_robust_cfg={"enabled": True, "max_jump": 5.0, "min_seg": 9},
+        file_labels=file_labels,
+        knn_k=8,
+        knn_metric="euclidean",
+        whiten=True,
+        super_window=3,
+        ridge_alpha=1e-3,
+        distance_weighted=True,
+        review_qc_cfg={"null_sanity_tests": {"enabled": True, "seed": 7}},
+        t_start=t_start,
+    )
+
+    assert out is not None and out["status"] == "ok"
+    assert out["finite_rows_used"] == 95
+    assert len(captured) == 4
+    assert captured[0] is not None
+    assert captured[0].shape == (95,)
+    np.testing.assert_array_equal(captured[0], np.delete(t_start, 20))
+    assert all(ts is None for ts in captured[1:])

@@ -1,0 +1,19 @@
+# PhysioNet I-CARE 2.1 part1 0-12h — Type-C SL-010 replication extract.
+#
+# Same z^C contract as SL-005 / Type-C-1. New processed root so the 0284
+# extract is not overwritten. Features only. Do not summarize. Do not
+# inspect CPC or compute alpha.
+#
+# Subject freeze (CPC-blind lex-first excl. 0284 with >=10 hours 001-012):
+# 0286. Select with --subject 0286.
+version: 2.0
+modality: eeg
+
+imports:
+  - "./config_ingest_physionet_i-care_2_1_part1_0_12h_dynamical_families_type_c.yaml"
+
+datasets:
+  - physionet_icare_2_1
+
+paths:
+  processed_dir: "K:/processed/physionet_icare_2_1_part1_0_12h_dynamical_families_type_c_sl010_20260918"

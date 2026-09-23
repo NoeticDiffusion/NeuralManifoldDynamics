@@ -233,6 +233,7 @@ def test_blocked_crossfit_is_level1_variant_with_index_step_embargo() -> None:
     assert result["interpretation_level"] == 1
     assert result["variant_id"] == VARIANT_BLOCKED_CROSSFIT
     assert result["summary"]["embargo_semantics"] == "index_steps"
+    assert result["summary"]["raw_window_support_independence"] == "not_established"
     fold1 = set(np.asarray(result["summary"]["fold1_source_idx"]).tolist())
     fold2 = set(np.asarray(result["summary"]["fold2_source_idx"]).tolist())
     assert fold1.isdisjoint(fold2)
@@ -619,6 +620,10 @@ def test_registry_and_payload_write_new_nested_names(tmp_path: Path) -> None:
         assert bool(pooled["summary"]["lag1_support_ids_match"][()]) is True
         crossfit = handle[f"{root}/conditional_mean_rate_level1/blocked_crossfit"]
         assert crossfit["summary"]["embargo_semantics"][()].decode() == "index_steps"
+        assert (
+            crossfit["summary"]["raw_window_support_independence"][()].decode()
+            == "not_established"
+        )
         assert "series/source_idx" in crossfit
 
 

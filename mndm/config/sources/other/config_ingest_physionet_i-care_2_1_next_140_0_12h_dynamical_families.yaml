@@ -15,8 +15,8 @@
 #                [1, 2] writes direct lag-2 identities and lag-2
 #                generator proxies under declared_lag_2/; Phi_1 twice is
 #                iterated_one_step_horizon_map_level4 at the family root.
-#                Not ito_drift_level3. Common overlay stays default off
-#                with declared_lags: [1].
+#                Not ito_drift_level3. Common overlay defaults families on
+#                with declared_lags: [1]; this overlay sets [1, 2].
 #   destination: not_testable (no explicit first-hit A/B or reaction coordinate)
 #   resilience:  not_testable / no_perturbation_protocol
 #   jacobian metrics: computed when J_hat exists AND local-fit fidelity
@@ -112,14 +112,21 @@ dynamical_families:
   drift:
     enabled: true
 
-  # Opt-in for bounded coverage smoke (diary 412/419). Common overlay stays
-  # false and declared_lags: [1]. Threshold and estimator remain the generic
-  # mndm.one_step_fit_fidelity.v1 contract, not an I-CARE-tuned gate.
-  # declared_lags: [1, 2] is a coverage opt-in for direct lag-2 and lag-2
-  # generator proxies. Not ito_drift_level3.
+  # Coverage opt-in: declared_lags [1, 2] writes direct lag-2 identities.
+  # Common overlay default is [1]. Threshold stays generic 0.9.
+  # Not ito_drift_level3.
   one_step:
     enabled: true
     declared_lags: [1, 2]
+
+  amplification:
+    enabled: true
+
+  history:
+    enabled: true
+
+  turning:
+    enabled: true
 
   destination:
     enabled: true

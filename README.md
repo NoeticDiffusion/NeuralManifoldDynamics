@@ -2,18 +2,16 @@
 
 Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation for EEG and fMRI workflows.
 
-Current documented release line: **NeuralManifoldDynamics 3.0.1**.
+Current documented release line: **NeuralManifoldDynamics 3.0.2**.
 
-Version 3.0.1 keeps the frozen MNPS chart from v3.0.0 / 2.1: canonical
-`mnps_3d = [m,d,e]`, stratified `coords_9d`, Jacobian estimator `J_hat`, and the
-additive embodied/interoceptive layer (`anchor_state`, `anchor_quality`, and
-optional `anchor_coupling`). It adds locked level identities on the
-dynamical-families write surface, grain/status siblings, and default-on
-writable families in the dynamical-families overlay only. Biological inference,
-empirical C1-M3, observational FAR, and committor overlays remain downstream in
-`nmd-analysis`.
+Version 3.0.2 keeps the frozen MNPS chart from v3.0.0 / 2.1: canonical
+`mnps_3d = [m,d,e]`, stratified `coords_9d`, and the dynamical-family identities
+from v3.0.1. This patch tightens the common fMRI measurement contract (TR,
+atlas space, nuisance, gap-aware time, and an underdetermined-Jacobian gate)
+and adds `nemar_ingest` for public NEMAR BIDS downloads. Biological inference
+remains downstream in `nmd-analysis`.
 
-See `release_notes/RELEASE_NOTES_v3.0.1.md` and `CHANGELOG.md`.
+See `release_notes/RELEASE_NOTES_v3.0.2.md` and `CHANGELOG.md`.
 
 This root README is intentionally high-level. Package-specific usage, schema details, and command references live in each subproject.
 
@@ -35,6 +33,7 @@ The repository is organized around a shared pipeline:
 
 - `mndm`: Core MNPS pipeline. Handles `features`, `summarize`, `all`, `pack`, and structure validation. See `mndm/README.md`.
 - `openneuro_ingest`: OpenNeuro-facing download and ingest utilities. Use this when pulling public datasets before MNDM processing.
+- `nemar_ingest`: NEMAR BIDS download from the versioned anonymous data plane and `manifest.json`. See `nemar_ingest/README.md`.
 - `dandi_ingest`: DANDI-facing listing, manifest, download, and NWB probing utilities for DANDI archive assets.
 - `apollo_ingest`: Ingest helpers for Apollo-style sources used in this repo.
 - `vitaldb_ingest`: Ingest helpers for VitalDB-style sources used in this repo.
@@ -128,7 +127,7 @@ embodied/task-aware runs where:
 
 ## Where To Read Next
 
-- Release notes: `release_notes/RELEASE_NOTES_v3.0.1.md`
+- Release notes: `release_notes/RELEASE_NOTES_v3.0.2.md`
 - Changelog: `CHANGELOG.md`
 - MNDM usage and output contracts: `mndm/README.md`
 - MNDM generic config template: `mndm/config/config_template.yaml`
@@ -144,6 +143,7 @@ NeuralManifoldDynamics/
 ├── core/
 ├── mndm/
 ├── openneuro_ingest/
+├── nemar_ingest/
 ├── dandi_ingest/
 ├── apollo_ingest/
 ├── vitaldb_ingest/

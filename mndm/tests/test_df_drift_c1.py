@@ -6,6 +6,7 @@ from pathlib import Path
 import sys
 
 import numpy as np
+import pytest
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -14,15 +15,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "core" / "src"))
 from mndm.dynamical_families.chart_drift import (
     FORBIDDEN_SOURCE_REASONS,
     REASON_C2_CLOSED,
+    REASON_CHART_DRIFT_AS_B,
     REASON_CROSSFIT_BEFORE_M3,
     REASON_NOT_SUPPLIED,
     REASON_PROTOCOL_CLOSED,
+    SOURCE_CROSSFIT,
     resolve_chart_drift,
     resolve_ingest_chart_drift,
 )
 from mndm.dynamical_families.diffusion_geometry import estimate_local_diffusion_geometry
 from mndm.dynamical_families.measurement_register import (
+    FORBIDDEN_DIFFUSION_CONFIG_KEYS,
+    MEASUREMENT_ID_AFFINE_MEAN_RATE,
     MEASUREMENT_ID_CONDITIONAL_COVARIANCE,
+    MEASUREMENT_ID_CONDITIONAL_MEAN_RATE,
+    MEASUREMENT_ID_INCREMENT_COVARIANCE,
+    MEASUREMENT_ID_REALIZED_VELOCITY,
     QUALIFICATION_ITO_NOT_QUALIFIED,
 )
 from mndm.pipeline.dynamical_families_export import build_dynamical_families_export
@@ -78,7 +86,9 @@ def test_gate_c1_a_alignment_drift_leaves_a_hat_byte_identical_to_no_drift() -> 
         c1["qualification_status"],
     )
     assert none["summary"]["A_bD_computation_status"] == "not_testable"
+    assert none["summary"]["independent_b_for_A_bD"] is False
     assert c1["summary"]["A_bD_computation_status"] == "computed"
+    assert c1["summary"]["independent_b_for_A_bD"] is True
     assert c1["summary"]["a_semantics"] == "raw_increment_covariance"
     assert c1["summary"]["ratio_semantics"] == "chart_velocity_to_increment_spread"
     assert c1["provenance"]["settings"]["drift_mode"] == "alignment_only"
@@ -107,6 +117,22 @@ def test_residualize_increments_is_invalid_until_c2_authorized() -> None:
     assert "a_hat" not in with_field.get("series", {})
     assert with_field["measurement_id"] == MEASUREMENT_ID_CONDITIONAL_COVARIANCE
     assert MEASUREMENT_ID_CONDITIONAL_COVARIANCE not in with_field.get("series", {})
+    c2_increment = with_field[MEASUREMENT_ID_INCREMENT_COVARIANCE]
+    assert c2_increment["computation_status"] == "computed"
+    c2_tokens = (*FORBIDDEN_SOURCE_REASONS, SOURCE_CROSSFIT)
+    for token in c2_tokens:
+        forbidden_c2 = estimate_local_diffusion_geometry(
+            state,
+            time,
+            drift=np.ones_like(state),
+            residualize_increments=True,
+            drift_source=token,
+            **kwargs,
+        )
+        assert forbidden_c2["computation_status"] == "invalid"
+        assert forbidden_c2["failure_reason"] == REASON_C2_CLOSED
+        assert "a_hat" not in forbidden_c2.get("series", {})
+        assert forbidden_c2[MEASUREMENT_ID_INCREMENT_COVARIANCE]["computation_status"] == "computed"
 
 
 def test_forbidden_chart_drift_sources_do_not_return_a_field() -> None:
@@ -219,3 +245,137 @@ def test_common_family_yaml_keeps_drift_disabled() -> None:
     assert parsed["dynamical_families"]["drift"]["enabled"] is True
     assert parsed["dynamical_families"]["drift"]["weight_mode"] == "inverse_distance"
     assert parsed["dynamical_families"]["drift"]["min_neighborhood_samples"] == 10
+
+
+def test_vector_without_authorized_source_does_not_compute_a_bd() -> None:
+    state, time = _brownian_path()
+    n = state.shape[0]
+    kwargs = _estimator_kwargs(n)
+    none = estimate_local_diffusion_geometry(state, time, **kwargs)
+    unlabeled = estimate_local_diffusion_geometry(
+        state, time, drift=np.ones_like(state), **kwargs
+    )
+    assert unlabeled["computation_status"] == "computed"
+    assert np.array_equal(none["series"]["a_hat"], unlabeled["series"]["a_hat"], equal_nan=True)
+    assert unlabeled["summary"]["A_bD_computation_status"] == "not_testable"
+    assert unlabeled["summary"]["R_b_over_a_computation_status"] == "not_testable"
+    assert unlabeled["summary"]["independent_b_for_A_bD"] is False
+    assert unlabeled["summary"]["drift_alignment_failure_reason"] == REASON_NOT_SUPPLIED
+    assert np.all(np.isnan(unlabeled["series"]["A_bD"]))
+    assert np.all(np.isnan(unlabeled["series"]["R_b_over_a"]))
+
+
+def test_chart_drift_family_tokens_are_not_independent_b() -> None:
+    state, time = _brownian_path()
+    n = state.shape[0]
+    kwargs = _estimator_kwargs(n)
+    none = estimate_local_diffusion_geometry(state, time, **kwargs)
+    fake = np.ones_like(state)
+    for token in (
+        MEASUREMENT_ID_REALIZED_VELOCITY,
+        MEASUREMENT_ID_CONDITIONAL_MEAN_RATE,
+        "conditional_mean_rate_level1/pooled",
+        "pooled",
+        "blocked_crossfit",
+        "chart_drift",
+        "b_hat",
+        MEASUREMENT_ID_AFFINE_MEAN_RATE,
+        SOURCE_CROSSFIT,
+    ):
+        refused = estimate_local_diffusion_geometry(
+            state,
+            time,
+            drift=fake,
+            residualize_increments=False,
+            drift_source=token,
+            **kwargs,
+        )
+        assert refused["computation_status"] == "computed"
+        assert np.array_equal(none["series"]["a_hat"], refused["series"]["a_hat"], equal_nan=True)
+        assert refused["summary"]["A_bD_computation_status"] == "not_testable"
+        assert refused["summary"]["independent_b_for_A_bD"] is False
+        reason = refused["summary"]["drift_alignment_failure_reason"]
+        if token == SOURCE_CROSSFIT:
+            assert reason == REASON_CROSSFIT_BEFORE_M3
+        else:
+            assert reason == REASON_CHART_DRIFT_AS_B
+        assert np.all(np.isnan(refused["series"]["A_bD"]))
+        assert np.all(np.isnan(refused["series"]["R_b_over_a"]))
+
+
+def test_ingest_export_does_not_wire_chart_drift_into_a_bd() -> None:
+    rng = np.random.default_rng(23)
+    n, dt, sigma = 400, 0.01, 0.4
+    increments = rng.normal(scale=sigma * np.sqrt(dt), size=(n - 1, 3))
+    state = np.vstack([np.zeros((1, 3)), np.cumsum(increments, axis=0)])
+    time = np.arange(n, dtype=float) * dt
+    export = build_dynamical_families_export(
+        config={
+            "dynamical_families": {
+                "enabled": True,
+                "diffusion": {
+                    "enabled": True,
+                    "neighborhood": {"k": 20},
+                    "min_samples": 30,
+                    "min_neighborhood_samples": 10,
+                },
+                "drift": {
+                    "enabled": True,
+                    "neighborhood": {"k": 20},
+                    "min_samples": 30,
+                    "min_neighborhood_samples": 10,
+                    "realized_velocity_level0": {"enabled": True},
+                    "conditional_mean_rate_level1": {
+                        "pooled": {"enabled": True},
+                        "blocked_crossfit": {"enabled": False},
+                        "lag_diagnostics": {"enabled": False},
+                    },
+                },
+            }
+        },
+        state=state,
+        time=time,
+        stage=None,
+        segment_id=None,
+        coordinate_layer="coords_3d_subject_anchored",
+        coordinate_names=["m", "d", "e"],
+    )
+    diffusion = export["diffusion"]
+    drift = export["drift"]
+    assert diffusion["computation_status"] == "computed"
+    assert drift["summary"]["independent_drift_for_A_bD"] is False
+    assert diffusion["summary"]["A_bD_computation_status"] == "not_testable"
+    assert diffusion["summary"]["independent_b_for_A_bD"] is False
+    assert np.all(np.isnan(diffusion["series"]["A_bD"]))
+    pooled = drift[MEASUREMENT_ID_CONDITIONAL_MEAN_RATE]["pooled"]
+    assert pooled["computation_status"] == "computed"
+    assert "b_hat" in pooled["series"]
+
+
+def test_yaml_refuses_chart_drift_as_independent_b_claims() -> None:
+    state, time = _brownian_path(n=80)
+    kwargs = dict(
+        state=state,
+        time=time,
+        stage=None,
+        segment_id=np.zeros(time.size, dtype=np.int32),
+        coordinate_layer="coords_3d_subject_anchored",
+        coordinate_names=["m", "d"],
+    )
+    for key in (
+        "A_bD_from_chart_drift",
+        "pooled_as_independent_b",
+        "realized_velocity_as_drift_source",
+        "chart_drift_as_drift_source",
+    ):
+        assert key in FORBIDDEN_DIFFUSION_CONFIG_KEYS
+        with pytest.raises(ValueError, match=key):
+            build_dynamical_families_export(
+                config={
+                    "dynamical_families": {
+                        "enabled": True,
+                        "diffusion": {"enabled": True, key: True},
+                    }
+                },
+                **kwargs,
+            )

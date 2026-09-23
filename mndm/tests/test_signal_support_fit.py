@@ -21,6 +21,7 @@ def test_local_fit_hash_identifies_consumed_rows_and_values_unchanged():
     selected = np.array([1., 3., 7.], dtype=np.float32)
     np.testing.assert_array_equal(result.loc[[0, 2, 3], "feature"],
                                   (selected - selected.mean()) / (selected.std() + 1e-9))
+    assert bool(np.isnan(result.loc[1, "feature"]))
     changed_identity = frame.copy()
     changed_identity.loc[2, "file"] = "b.edf"
     _, other = _normalize_used_columns(changed_identity, ["feature"], "z", {"feature": ["z"]})

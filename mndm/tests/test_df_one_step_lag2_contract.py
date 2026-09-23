@@ -139,6 +139,7 @@ def test_lag2_register_paths_are_frozen_and_writable() -> None:
     assert lag2["not_composed_one_step"] is True
     assert lag2["min_embargo_steps"] == 2
     assert lag2["embargo_semantics"] == "index_steps"
+    assert lag2["raw_window_support_independence"] == "not_established"
     assert lag2["physical_path"] == (
         f"{PHYSICAL_ONE_STEP_LAG2_ROOT}/{MEASUREMENT_ID_AFFINE_MAP}"
     )
@@ -155,6 +156,7 @@ def test_lag2_register_paths_are_frozen_and_writable() -> None:
     assert rate["min_embargo_steps"] == 2
     assert innov["min_embargo_steps"] == 2
     assert innov["embargo_semantics"] == "index_steps"
+    assert innov["raw_window_support_independence"] == "not_established"
 
 
 def test_phi_one_squared_is_not_the_lag2_identity() -> None:
@@ -521,6 +523,7 @@ def test_embargo_shorter_than_lag2_is_invalid() -> None:
     assert lag2_map["failure_reason"] == REASON_EMBARGO
     assert int(lag2_map["summary"]["embargo_steps"]) == 1
     assert lag2_map["summary"]["embargo_semantics"] == "index_steps"
+    assert lag2_map["summary"]["raw_window_support_independence"] == "not_established"
     assert int(lag2_map["summary"]["min_embargo_steps"]) == 2
     assert int(lag2_map["summary"]["declared_lag_steps"]) == 2
     lag2_spectral = result[VARIANT_DECLARED_LAG_2][MEASUREMENT_ID_SPECTRAL_ABSCISSA]

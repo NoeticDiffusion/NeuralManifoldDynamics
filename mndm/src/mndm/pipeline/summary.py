@@ -77,6 +77,18 @@ from .state_labels import (
     summarize_within_run_manifest,
 )
 from .summary_qc import write_qc_files
+from .export_contract import (
+    classify_row_source,
+    resolve_export_contract_version,
+    row_has_eeg,
+    row_has_meg,
+    source_format_for_row_source,
+)
+from .tr_resolve import fmri_tr_attrs_from_frame
+from ..features.fmri_continuous import fmri_filter_attrs_from_frame
+from .nuisance import fmri_nuisance_attrs_from_frame
+from .spatial_align import require_fmri_atlas_space_attrs
+from .tr_resolve import resolve_fmri_tr
 from .summary_utils import (
     apply_fd_censoring,
     build_dir_suffix,
@@ -1042,6 +1054,26 @@ def _regional_result_to_h5_payload(
             "coordinate_contract": str(coordinate_contract),
         },
     }
+    dt_realized = getattr(result, "dt_realized_sec", None)
+    if dt_realized is not None:
+        try:
+            dt_float = float(dt_realized)
+        except (TypeError, ValueError):
+            dt_float = float("nan")
+        if np.isfinite(dt_float) and dt_float > 0:
+            payload["attrs"]["dt_realized_sec"] = dt_float
+    dt_source = getattr(result, "dt_source", None)
+    if dt_source:
+        payload["attrs"]["dt_source"] = str(dt_source)
+    deriv_method = getattr(result, "derivative_method", None)
+    if deriv_method is not None:
+        payload["attrs"]["derivative_method"] = str(deriv_method)
+    deriv_window = getattr(result, "derivative_window", None)
+    if deriv_window is not None:
+        payload["attrs"]["derivative_window"] = int(deriv_window)
+    deriv_poly = getattr(result, "derivative_polyorder", None)
+    if deriv_poly is not None:
+        payload["attrs"]["derivative_polyorder"] = int(deriv_poly)
     if coordinate_contract == "cohort_anchored" and isinstance(anchor_spec, Mapping):
         payload["attrs"].update(
             {
@@ -4085,6 +4117,76 @@ class DatasetSummaryRunner:
         return out
 
 
+def jacobian_support_kwargs(
+    sub_frame: pd.DataFrame,
+    n_rows: int,
+    dt: float,
+    jac_cfg: Mapping[str, Any] | None,
+    *,
+    inherit: Mapping[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """fMRI Jacobian gates. Absent keys stay off so EEG fits are unchanged.
+
+    ``forbid_cross_gap`` builds segment ids from ``t_start`` or file id when
+    those columns align with the trajectory. If the flag is on and the
+    boundaries cannot be built, ``segment_id`` stays ``None`` and the
+    estimator returns ``not_testable`` instead of fitting across an
+    unknown gap.
+    """
+    cfg = jac_cfg if isinstance(jac_cfg, Mapping) else {}
+    parent = inherit if isinstance(inherit, Mapping) else {}
+
+    def _flag(name: str) -> bool:
+        if name in cfg:
+            return bool(cfg.get(name))
+        return bool(parent.get(name, False))
+
+    require = _flag("require_determined_support")
+    forbid = _flag("forbid_cross_gap")
+    segment_id = None
+    has_time = "t_start" in getattr(sub_frame, "columns", ())
+    has_file = "file" in getattr(sub_frame, "columns", ())
+    aligned = int(n_rows) == len(sub_frame) and int(n_rows) > 0
+    if forbid and aligned and (has_time or has_file):
+        t_start = None
+        if has_time:
+            t_start = pd.to_numeric(sub_frame["t_start"], errors="coerce").to_numpy(dtype=float)
+        file_ids = sub_frame["file"].to_numpy() if has_file else None
+        segment_id = jacobian.jacobian_segment_ids(int(n_rows), t_start, float(dt), file_ids=file_ids)
+    return {
+        "require_determined_support": require,
+        "forbid_cross_gap": forbid,
+        "segment_id": segment_id,
+    }
+
+
+def epoch_fd_range_max(
+    fd: np.ndarray,
+    frame_t: np.ndarray,
+    t_start: np.ndarray,
+    t_end: np.ndarray,
+) -> np.ndarray:
+    """Max finite FD in ``[t_start, t_end)`` per epoch via ``searchsorted``.
+
+    Equivalent to the historical boolean mask ``(frame_t >= s) & (frame_t < e)``.
+    """
+    fd_arr = np.asarray(fd, dtype=float)
+    times = np.asarray(frame_t, dtype=float)
+    starts = np.asarray(t_start, dtype=float)
+    ends = np.asarray(t_end, dtype=float)
+    left = np.searchsorted(times, starts, side="left")
+    right = np.searchsorted(times, ends, side="left")
+    out = np.full((starts.size,), np.nan, dtype=float)
+    for i, (lo, hi, s, e) in enumerate(zip(left, right, starts, ends)):
+        if not (np.isfinite(s) and np.isfinite(e) and e > s):
+            continue
+        vals = fd_arr[int(lo) : int(hi)]
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            out[i] = float(np.max(vals))
+    return out
+
+
 class SubjectSummaryRunner:
     """Subject/session-level summarization."""
 
@@ -4936,55 +5038,26 @@ class SubjectSummaryRunner:
         
         # Explicitly prevent derivative estimation across file boundaries (time aliasing protection)
         def _compute_dot(features_array: np.ndarray) -> np.ndarray:
-            """Internal helper: compute dot."""
+            """Internal helper: compute dot without smoothing across files or time holes."""
             dot_cfg = ((config.get("mnps", {}) or {}).get("derivative_robust", {}) or {}) if isinstance(config, Mapping) else {}
             use_segmented = bool(dot_cfg.get("enabled", True))
-            dot_array = np.zeros_like(features_array)
-            if "file" in sub_frame.columns and sub_frame["file"].nunique() > 1:
-                logger.info("Computing derivatives per-file to avoid boundary crossing (%d files)", sub_frame["file"].nunique())
-                file_series = sub_frame["file"].to_numpy()
-                for f_val in np.unique(file_series):
-                    mask = (file_series == f_val)
-                    sub_array = features_array[mask]
-                    if len(sub_array) > 0:
-                        if use_segmented:
-                            dot_array[mask] = projection.estimate_derivatives_segmented(
-                                sub_array,
-                                dt,
-                                method=self.ctx.derivative_cfg["method"],
-                                max_jump=float(dot_cfg.get("max_jump", 5.0)),
-                                min_seg=int(dot_cfg.get("min_seg", 9)),
-                                savgol_window=int(self.ctx.derivative_cfg["window"]),
-                                polyorder=int(self.ctx.derivative_cfg["polyorder"]),
-                            )
-                        else:
-                            dot_array[mask] = projection.estimate_derivatives(
-                                sub_array,
-                                dt,
-                                method=self.ctx.derivative_cfg["method"],
-                                window=self.ctx.derivative_cfg["window"],
-                                polyorder=self.ctx.derivative_cfg["polyorder"],
-                            )
-            else:
-                if use_segmented:
-                    dot_array = projection.estimate_derivatives_segmented(
-                        features_array,
-                        dt,
-                        method=self.ctx.derivative_cfg["method"],
-                        max_jump=float(dot_cfg.get("max_jump", 5.0)),
-                        min_seg=int(dot_cfg.get("min_seg", 9)),
-                        savgol_window=int(self.ctx.derivative_cfg["window"]),
-                        polyorder=int(self.ctx.derivative_cfg["polyorder"]),
-                    )
-                else:
-                    dot_array = projection.estimate_derivatives(
-                        features_array,
-                        dt,
-                        method=self.ctx.derivative_cfg["method"],
-                        window=self.ctx.derivative_cfg["window"],
-                        polyorder=self.ctx.derivative_cfg["polyorder"],
-                    )
-            return dot_array
+            t_start_arr = None
+            if "t_start" in sub_frame.columns:
+                t_start_arr = pd.to_numeric(sub_frame["t_start"], errors="coerce").to_numpy(dtype=float)
+            file_ids = sub_frame["file"].to_numpy() if "file" in sub_frame.columns else None
+            return projection.estimate_derivatives_with_time_gaps(
+                features_array,
+                dt,
+                t_start_arr,
+                method=self.ctx.derivative_cfg["method"],
+                window=int(self.ctx.derivative_cfg["window"]),
+                polyorder=int(self.ctx.derivative_cfg["polyorder"]),
+                file_ids=file_ids,
+                gap_tol=float(dot_cfg.get("gap_tol", projection.TIME_GAP_TOL)),
+                use_segmented=use_segmented,
+                max_jump=float(dot_cfg.get("max_jump", 5.0)),
+                min_seg=int(dot_cfg.get("min_seg", 9)),
+            )
 
         x_dot = _compute_dot(x)
 
@@ -5003,6 +5076,7 @@ class SubjectSummaryRunner:
         )
         primary_jac_enabled = bool(primary_jac_cfg.get("enabled", True))
         jac_res = None
+        primary_support = jacobian_support_kwargs(sub_frame, int(x.shape[0]), float(dt), primary_jac_cfg)
         if primary_jac_enabled:
             jac_res = jacobian.estimate_local_jacobians(
                 x,
@@ -5013,6 +5087,7 @@ class SubjectSummaryRunner:
                 distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                 j_dot_dt=float(dt),
                 knn_k=mnps_cfg["knn_k"],
+                **primary_support,
             )
             jac_res, primary_geometry_jacobian = apply_standard_jacobian_window_policy(
                 jac_res,
@@ -5061,6 +5136,13 @@ class SubjectSummaryRunner:
                         distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                         j_dot_dt=float(dt),
                         knn_k=mnps_cfg["knn_k"],
+                        **jacobian_support_kwargs(
+                            sub_frame,
+                            int(coords_9d.shape[0]),
+                            float(dt),
+                            v2_jac_cfg if isinstance(v2_jac_cfg, Mapping) else {},
+                            inherit=primary_jac_cfg,
+                        ),
                     )
                     jac_res_v2, coords_9d_geometry_jacobian = apply_standard_jacobian_window_policy(
                         jac_res_v2,
@@ -5167,6 +5249,7 @@ class SubjectSummaryRunner:
                 distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
                 j_dot_dt=float(dt),
                 knn_k=mnps_cfg["knn_k"],
+                **jacobian_support_kwargs(sub_frame, int(arr.shape[0]), float(dt), primary_jac_cfg),
             )
             layer_jac, _ = apply_standard_jacobian_window_policy(
                 layer_jac,
@@ -5417,6 +5500,9 @@ class SubjectSummaryRunner:
             resolve_mnps_3d_cfg=_resolve_mnps_3d_cfg,
             coerce_v1_mapping_to_v2_subcoords=_coerce_v1_mapping_to_v2_subcoords,
             align_v2_subcoords=_align_v2_subcoords,
+            dt_realized_sec=float(dt),
+            parent_mnps_cfg=mnps_cfg if isinstance(mnps_cfg, Mapping) else {},
+            derivative_cfg=self.ctx.derivative_cfg if isinstance(self.ctx.derivative_cfg, Mapping) else {},
         )
         regional_mnps_results_cohort = None
         if external_anchor:
@@ -5441,6 +5527,9 @@ class SubjectSummaryRunner:
                 resolve_mnps_3d_cfg=_resolve_mnps_3d_cfg,
                 coerce_v1_mapping_to_v2_subcoords=_coerce_v1_mapping_to_v2_subcoords,
                 align_v2_subcoords=_align_v2_subcoords,
+                dt_realized_sec=float(dt),
+                parent_mnps_cfg=mnps_cfg if isinstance(mnps_cfg, Mapping) else {},
+                derivative_cfg=self.ctx.derivative_cfg if isinstance(self.ctx.derivative_cfg, Mapping) else {},
             )
         regional_mnps_results = (
             regional_mnps_results_cohort
@@ -5899,16 +5988,19 @@ class SubjectSummaryRunner:
                 derivative_robust_cfg=((config.get("mnps", {}) or {}).get("derivative_robust", {}) or {})
                 if isinstance(config, Mapping)
                 else {},
-                file_labels=file_labels,
-                knn_k=mnps_cfg["knn_k"],
-                knn_metric=mnps_cfg["knn_metric"],
-                whiten=bool(mnps_cfg.get("whiten", True)),
-                super_window=mnps_cfg["super_window"],
-                ridge_alpha=mnps_cfg["ridge_alpha"],
-                distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
-                review_qc_cfg=review_qc_cfg,
-                config=config,
-            )
+            file_labels=file_labels,
+            knn_k=mnps_cfg["knn_k"],
+            knn_metric=mnps_cfg["knn_metric"],
+            whiten=bool(mnps_cfg.get("whiten", True)),
+            super_window=mnps_cfg["super_window"],
+            ridge_alpha=mnps_cfg["ridge_alpha"],
+            distance_weighted=bool(config.get("mnps", {}).get("ridge", {}).get("distance_weighted", True)),
+            review_qc_cfg=review_qc_cfg,
+            config=config,
+            t_start=pd.to_numeric(sub_frame["t_start"], errors="coerce").to_numpy(dtype=float)
+            if "t_start" in sub_frame.columns
+            else None,
+        )
         except Exception:
             logger.exception("Failed to compute null_sanity_tests for %s", dataset_label)
 
@@ -6159,9 +6251,22 @@ class SubjectSummaryRunner:
                 "feature_combination": mapping_contract.get("feature_combination"),
                 "validation_pilot": dict(mapping_contract.get("validation_pilot", {}) or {}),
             }
+        _raw_files_for_contract = (
+            sub_frame["file"].fillna("").astype(str).to_numpy()
+            if "file" in sub_frame.columns and len(sub_frame) > 0
+            else np.array([], dtype=object)
+        )
+        _row_src_for_contract = np.array(
+            [classify_row_source(f) for f in _raw_files_for_contract],
+            dtype=object,
+        )
+        export_contract_version = resolve_export_contract_version(
+            config.get("modality") if isinstance(config, Mapping) else None,
+            _row_src_for_contract,
+        )
         provenance_export: Dict[str, Any] = {
             "contract": {
-                "export_contract_version": "mndm.eeg_h5_contract.v1",
+                "export_contract_version": export_contract_version,
                 "config_digest_sha256": _stable_hash_mapping(self.ctx.config if isinstance(self.ctx.config, Mapping) else {}),
                 "config_filename": getattr(getattr(self.dataset, "config_path", None), "name", None),
                 "run_manifest_ref": "../run_manifest.json",
@@ -6318,22 +6423,15 @@ class SubjectSummaryRunner:
         # The file column encodes which raw file each row was computed from.
         _row_source_cols: dict = {}
         if "file" in sub_frame.columns and len(sub_frame) > 0:
-            _raw_files = sub_frame["file"].fillna("").astype(str).to_numpy()
-            def _classify_source(fname: str) -> str:
-                fl = fname.lower()
-                if fl.endswith(".fif") or fl.endswith(".fif.gz"):
-                    return "fif_meeg"
-                if fl.endswith(".set") or fl.endswith(".fdt"):
-                    return "set_eeg"
-                return "unknown"
-            _row_src = np.array([_classify_source(f) for f in _raw_files], dtype=object)
-            _has_meg  = (_row_src == "fif_meeg").astype(np.int8)
-            _has_eeg  = np.ones(len(_raw_files), dtype=np.int8)
-            _has_mag  = _has_meg.copy()
+            _raw_files = _raw_files_for_contract
+            _row_src = _row_src_for_contract
+            _has_meg = np.array([row_has_meg(r) for r in _row_src], dtype=np.int8)
+            _has_eeg = np.array([row_has_eeg(r) for r in _row_src], dtype=np.int8)
+            _has_mag = _has_meg.copy()
             _has_grad = _has_meg.copy()
-            _src_fmt  = np.array(
-                ["neuromag_fif" if r == "fif_meeg" else "eeglab_set" if r == "set_eeg" else "unknown"
-                 for r in _row_src], dtype=object
+            _src_fmt = np.array(
+                [source_format_for_row_source(r) for r in _row_src],
+                dtype=object,
             )
             _row_source_cols = {
                 "row_source":    _row_src,
@@ -6430,6 +6528,16 @@ class SubjectSummaryRunner:
                 "subject_id": sub_id,
                 "session": ses_id,
                 "fs_out": mnps_cfg["fs_out"],
+                "fs_out_role": "configuration_hint",
+                "dt_realized_sec": float(dt) if np.isfinite(float(dt)) and float(dt) > 0 else None,
+                "super_window_requested": int(mnps_cfg["super_window"]),
+                "super_window_realized": (
+                    int(jac_res.diagnostics["super_window"])
+                    if jac_res is not None
+                    and isinstance(getattr(jac_res, "diagnostics", None), Mapping)
+                    and jac_res.diagnostics.get("super_window") is not None
+                    else None
+                ),
                 "window_sec": mnps_cfg["window_sec"],
                 "overlap": mnps_cfg["overlap"],
                 "stage_codebook": effective_stage_codebook,
@@ -6453,6 +6561,10 @@ class SubjectSummaryRunner:
                 "run": run_id,
                 "acq": acq_id,
                 "modality": str(config.get("modality", "")).strip().lower() if isinstance(config, Mapping) else None,
+                **(fmri_tr_attrs_from_frame(sub_frame) if modality == "fmri" else {}),
+                **(fmri_filter_attrs_from_frame(sub_frame) if modality == "fmri" else {}),
+                **(fmri_nuisance_attrs_from_frame(sub_frame) if modality == "fmri" else {}),
+                **(require_fmri_atlas_space_attrs(sub_frame) if modality == "fmri" else {}),
                 "coverage_rule_tag": coverage_tag,
                 "coverage_min_seconds_effective": min_seconds_eff,
                 "coverage_min_epochs_effective": min_epochs_eff,
@@ -6465,7 +6577,7 @@ class SubjectSummaryRunner:
                 "epochs_after_nan_mask": int(len(sub_frame)),
                 "epochs_after_geometry_policy": int(len(sub_frame)),
                 "mndm_version": _MNDM_VERSION,
-                "export_contract_version": "mndm.eeg_h5_contract.v1",
+                "export_contract_version": export_contract_version,
                 "primary_coordinate_layer": (
                     "coords_3d_cohort_anchored" if primary_coordinate_layer == "cohort_anchored" else "coords_3d_subject_anchored"
                 ),
@@ -7504,7 +7616,14 @@ class SubjectSummaryRunner:
             return sub_frame
 
         sfreq = np.nan
-        if "fmri_sfreq" in sub_frame.columns:
+        if "fmri_tr_sec" in sub_frame.columns:
+            try:
+                tr_sec = float(pd.to_numeric(sub_frame["fmri_tr_sec"], errors="coerce").dropna().iloc[0])
+                if np.isfinite(tr_sec) and tr_sec > 0:
+                    sfreq = 1.0 / tr_sec
+            except Exception:
+                sfreq = np.nan
+        if (not np.isfinite(sfreq) or sfreq <= 0) and "fmri_sfreq" in sub_frame.columns:
             try:
                 sfreq = float(pd.to_numeric(sub_frame["fmri_sfreq"], errors="coerce").dropna().iloc[0])
             except Exception:
@@ -7513,11 +7632,15 @@ class SubjectSummaryRunner:
             try:
                 import nibabel as nib  # type: ignore
 
+                from .tr_resolve import resolve_fmri_tr
+
                 bold_img = nib.load(str(bold_path))
-                zooms = bold_img.header.get_zooms()
-                tr = float(zooms[3]) if len(zooms) > 3 else np.nan
-                if np.isfinite(tr) and tr > 0:
-                    sfreq = 1.0 / tr
+                resolved = resolve_fmri_tr(
+                    bold_path,
+                    config=self.ctx.config if isinstance(getattr(self.ctx, "config", None), Mapping) else None,
+                    nifti_zooms=bold_img.header.get_zooms(),
+                )
+                sfreq = float(resolved.sfreq)
             except Exception:
                 sfreq = np.nan
         if not np.isfinite(sfreq) or sfreq <= 0:
@@ -7548,16 +7671,7 @@ class SubjectSummaryRunner:
             t_start = epoch_ids.astype(float) * float(step_sec)
             t_end = t_start + float(window_sec)
 
-        fd_epoch = np.full((len(out),), np.nan, dtype=float)
-        for i, (s, e) in enumerate(zip(t_start, t_end)):
-            if not (np.isfinite(s) and np.isfinite(e) and e > s):
-                continue
-            mask = (frame_t >= s) & (frame_t < e)
-            vals = fd[mask]
-            vals = vals[np.isfinite(vals)]
-            if vals.size == 0:
-                continue
-            fd_epoch[i] = float(np.nanmax(vals))
+        fd_epoch = epoch_fd_range_max(fd, frame_t, t_start, t_end)
 
         out["framewise_displacement"] = fd_epoch.astype(np.float32)
         logger.info(
@@ -7664,6 +7778,7 @@ class SubjectSummaryRunner:
             lookup_rel_paths_by_file_value=self.dataset._lookup_rel_paths_by_file_value,
             preprocess_fmri=preprocess.preprocess_fmri,
             logger=logger,
+            dataset_id=self.dataset.ds_id,
         )
 
     @staticmethod
@@ -7726,6 +7841,14 @@ class SubjectSummaryRunner:
     @staticmethod
     def _resolve_run_tr_seconds(sub_frame: pd.DataFrame) -> Optional[float]:
         """Best-effort TR resolution for within-run label sources using TR indices."""
+        if "fmri_tr_sec" in sub_frame.columns:
+            try:
+                tr = pd.to_numeric(sub_frame["fmri_tr_sec"], errors="coerce").to_numpy(dtype=float)
+                finite = tr[np.isfinite(tr) & (tr > 0)]
+                if finite.size:
+                    return float(finite[0])
+            except Exception:
+                pass
         if "fmri_sfreq" in sub_frame.columns:
             try:
                 sfreq = pd.to_numeric(sub_frame["fmri_sfreq"], errors="coerce").to_numpy(dtype=float)

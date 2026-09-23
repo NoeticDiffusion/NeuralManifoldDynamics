@@ -2,6 +2,29 @@
 
 ---
 
+## v3.0.2 — fMRI measurement contract and NEMAR download
+
+Patch on the v3.0.1 measurement contract. Package version `3.0.2`.
+Release notes: `release_notes/RELEASE_NOTES_v3.0.2.md`.
+
+Canonical `mnps_3d = [m, d, e]` and stratified `coords_9d` are unchanged.
+HDF5 `export_contract_version` for new fMRI files stays
+`mndm.fmri_h5_contract.v1`.
+
+- fMRI TR, atlas space, single session bandpass, nuisance status, gap-aware
+  derivatives, and regional `dt` fail closed instead of inventing a TR, a
+  second filter, or a matched space.
+- Common fMRI Jacobian: `require_determined_support` and `forbid_cross_gap`.
+  9D Jacobian is off. 3D stays `limited`. Even `super_window` is recorded as
+  requested and realized. `dt_realized_sec` and `fs_out_role` are serialized.
+  EEG Jacobian calls that omit the new flags are unchanged.
+- ROI-TS cache `mndm.roi_ts.v2`. Stage-2 entropy columns stay on the ds007216
+  audit overlay and off in common fMRI.
+- New package `nemar_ingest`: manifest download, checksums, and
+  `acquisition_receipt.json`. Pinned config `on005385` `v1.0.0`.
+- Known limit: the ds004796 regional-Jacobian overlay does not set the new
+  support flags.
+
 ## v3.0.1 — Level identities, withheld locks, overlay defaults
 
 Patch on the v3.0.0 measurement contract. Package version `3.0.1`.

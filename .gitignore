@@ -234,4 +234,6 @@ project/
 logs/
 results/
 .cursor/
+.cursor/rules
 .work
+data/nemar/*

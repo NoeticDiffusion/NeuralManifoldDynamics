@@ -54,7 +54,16 @@ class MNPSPayload:
         jacobian_9D: Optional ``[W2, K, K]`` stratified MNPS Jacobians (often ``K=9``).
         jacobian_9D_dot: Optional ``[W2, K, K]`` stratified Jacobian rates.
         jacobian_9D_centers: Optional ``[W2]`` stratified window centers.
-        attrs: Free-form metadata for HDF5 attrs / JSON headers.
+        attrs: Free-form metadata for HDF5 attrs / JSON headers. fMRI exports
+            may include ``tr_sec``, ``sfreq``, and ``tr_source``
+            (``bids_json`` | ``nifti_zooms`` | ``config_fallback``), and
+            ``filter_stage`` / ``filter_applied`` / ``filter_bandpass_{low,high}``
+            for the single canonical session bandpass, and ``nuisance_status``
+            (``applied`` | ``skipped_missing_file`` | ``skipped_no_columns`` |
+            ``truncated_length`` | ``failed_clean`` | ``disabled``), and
+            ``atlas_space_status`` (``matched`` | ``resampled``) with
+            ``atlas_ornt`` / ``bold_ornt`` / ``atlas_affine_match`` /
+            ``atlas_affine_atol_mm``.
     """
 
     time: np.ndarray
@@ -189,13 +198,13 @@ class MNPSPayload:
     block_window_table_columns: MutableMapping[str, Any] = field(default_factory=dict)
     # Per-row source provenance (replaces implicit stacked-half positional slicing).
     # Written under /row_source/. Standard columns:
-    #   row_source    str  "set_eeg" | "fif_meeg" | "unknown"
+    #   row_source    str  "set_eeg" | "fif_meeg" | "nifti_bold" | "unknown"
     #   has_meg       int8  1 if the source file contains MEG channels, else 0
     #   has_eeg       int8  1 if the source file contains EEG channels, else 0
     #   has_mag       int8  1 if MAG (magnetometer) channels are present, else 0
     #   has_grad      int8  1 if GRAD (gradiometer) channels are present, else 0
     #   raw_file      str   basename of the source file for each row
-    #   source_format str   "neuromag_fif" | "eeglab_set" | "unknown"
+    #   source_format str   "neuromag_fif" | "eeglab_set" | "nifti_bold" | "unknown"
     row_source_columns: MutableMapping[str, Any] = field(default_factory=dict)
 
     def as_dict(self) -> Dict[str, Any]:
