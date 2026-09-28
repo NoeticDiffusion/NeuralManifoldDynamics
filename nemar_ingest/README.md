@@ -12,7 +12,8 @@ Every finished manifest run writes an atomic `acquisition_receipt.json` below th
 dataset root. It records the explicit release, manifest URL and SHA-256 of the
 manifest response, plus the ordered selected file entries. With
 `continue_on_error` (the default), a per-file failure such as HTTP 500 is
-recorded under `failed_entries` and the loop continues. Files already verified
+recorded under `failed_entries` and the loop continues. Manifest fetch uses the
+same `retries` count, so a brief DNS failure is retried before the run stops. Files already verified
 on disk are skipped, so a rerun retries only the failed paths. The process
 exits non-zero when any file failed. A receipt from a
 different dataset release is rejected rather than allowing a new release to
@@ -39,7 +40,7 @@ Validation is fully bounded and synthetic:
 
 ```text
 python -m pytest nemar_ingest/tests -q
-16 passed
+17 passed
 ```
 
 No live NEMAR payload was transferred in this environment; run the pinned

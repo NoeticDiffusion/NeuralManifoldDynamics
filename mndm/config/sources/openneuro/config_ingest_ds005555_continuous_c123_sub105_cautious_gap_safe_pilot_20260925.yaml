@@ -1,0 +1,13 @@
+# Bounded follow-up pilot for sub-105 using the reviewed cautious gap-safe
+# measurement surface. Keep this recording in an isolated output root.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123_cautious_gap_safe_final.yaml"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/processed/ds005555_continuous_c123_sub105_cautious_gap_safe_sourceverified_20260925"
+  dataset_received_dirs:
+    ds005555: "K:/ExternalReceivedDatasets/openneuro/received/ds005555"

@@ -58,9 +58,20 @@ FEATURE_EXPORT_EXACT_EXCLUDED = {
     "eeg_entropy_backend",
     "eeg_entropy_reason",
     "eeg_entropy_degraded_mode",
+    "source_sfreq_hz",
+    "source_first_samp",
+    "preprocessed_sfreq_hz",
 }
 FEATURE_EXPORT_PREFIX_EXCLUDED = (
     "qc_ok_",
+    "source_sample_",
+    "nominal_source_",
+    "preprocessed_sample_",
+    "input_sample_",
+    "actual_sample_",
+    "technical_eeg_",
+    "coma_proxy_",
+    "eeg_conventional_",
 )
 REGIONAL_FEATURE_RE = re.compile(r"^(?P<base>.+)__g_(?P<group>[A-Za-z0-9_]+)$")
 
@@ -458,6 +469,7 @@ def _normalize_used_columns(
     pipeline_map: Optional[Mapping[str, Sequence[str]]] = None,
     clip_thresh: float = 6.0,
     external_anchor: Optional[Mapping[str, Any]] = None,
+    require_external_anchor: bool = False,
 ) -> tuple[pd.DataFrame, dict]:
     """Normalize selected columns in a DataFrame copy.
     
@@ -538,6 +550,8 @@ def _normalize_used_columns(
             elif step_str in ("robust_z", "robust"):
                 t_finite = transformed[mask]
                 anchor_center, anchor_scale, anchor_id, anchor_hash = _external_center_scale(str(col))
+                if require_external_anchor and (anchor_center is None or anchor_scale is None):
+                    raise ValueError(f"fold-safe projection has no valid fitted robust-z anchor for feature {col!r}")
                 if anchor_center is not None and anchor_scale is not None:
                     t_median = anchor_center
                     t_mad = anchor_scale
@@ -559,6 +573,8 @@ def _normalize_used_columns(
             elif step_str == "z":
                 t_finite = transformed[mask]
                 anchor_center, anchor_scale, anchor_id, anchor_hash = _external_center_scale(str(col))
+                if require_external_anchor and (anchor_center is None or anchor_scale is None):
+                    raise ValueError(f"fold-safe projection has no valid fitted z anchor for feature {col!r}")
                 if anchor_center is not None and anchor_scale is not None:
                     mu = anchor_center
                     sigma = anchor_scale
@@ -601,6 +617,7 @@ def project_features(
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
     clip_threshold: float = 6.0,
     external_anchor: Optional[Mapping[str, Any]] = None,
+    require_external_anchor: bool = False,
 ) -> tuple[np.ndarray, dict[str, dict]]:
     """Return MNPS coordinates ``x=[m,d,e]`` and per-column baseline metadata.
 
@@ -644,6 +661,7 @@ def project_features(
             pipeline_map=feature_standardization,
         clip_thresh=clip_threshold,
         external_anchor=external_anchor,
+        require_external_anchor=require_external_anchor,
         )
 
     # Missing values remain NaN through normalization; per-axis aggregation
@@ -685,6 +703,7 @@ def project_features_with_coverage(
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
     clip_threshold: float = 6.0,
     external_anchor: Optional[Mapping[str, Any]] = None,
+    require_external_anchor: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, dict[str, dict]]:
     """Project direct MNPS coordinates and return per-epoch axis coverage.
 
@@ -701,6 +720,7 @@ def project_features_with_coverage(
             feature_standardization=feature_standardization,
             clip_threshold=clip_threshold,
             external_anchor=external_anchor,
+            require_external_anchor=require_external_anchor,
         )
         coverage = np.full_like(x, np.nan, dtype=np.float32)
         return x, coverage, baselines
@@ -721,6 +741,7 @@ def project_features_with_coverage(
             feature_standardization=feature_standardization,
             clip_threshold=clip_threshold,
             external_anchor=external_anchor,
+            require_external_anchor=require_external_anchor,
         )
         coverage = np.full_like(x, np.nan, dtype=np.float32)
         return x, coverage, baselines
@@ -733,6 +754,7 @@ def project_features_with_coverage(
             pipeline_map=feature_standardization,
             clip_thresh=clip_threshold,
             external_anchor=external_anchor,
+            require_external_anchor=require_external_anchor,
         )
     else:
         features_df_norm = features_df
@@ -784,6 +806,7 @@ def project_features_v2(
     feature_standardization: Optional[Mapping[str, Sequence[str]]] = None,
     clip_threshold: float = 6.0,
     external_anchor: Optional[Mapping[str, Any]] = None,
+    require_external_anchor: bool = False,
 ) -> tuple[np.ndarray, list[str], dict[str, dict]]:
     """Return MNPS v2 subcoordinates, their names, and feature baselines.
 
@@ -822,6 +845,7 @@ def project_features_v2(
             pipeline_map=feature_standardization,
             clip_thresh=clip_threshold,
             external_anchor=external_anchor,
+            require_external_anchor=require_external_anchor,
         )
 
     X = features_df.loc[:, used_cols].to_numpy(dtype=np.float32, copy=True)

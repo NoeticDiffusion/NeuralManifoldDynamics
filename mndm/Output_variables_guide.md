@@ -178,7 +178,7 @@ list above is illustrative rather than exhaustive:
 - **`*_hash_saved`** (`x_hash_saved`, `x_hash_jacobian_input`, `x_hash_knn_input`, `jacobian_hash_saved`, `jacobian_dot_hash_saved`, `jacobian_9d_hash_saved`, `jacobian_9d_dot_hash_saved`, `coords_9d_hash_saved`, `coords_9d_hash_jacobian_input`, `coords_9d_hash_knn_input`, `nn_indices_hash_saved`, `features_raw_hash_saved`, `features_robust_z_hash_saved`, `feature_export_names_hash`): content-hash provenance per exported surface, for deterministic-replay checks.
 - **`feature_export_scope`**, **`feature_metadata_fields`**, **`features_raw_column_count`**, **`features_robust_z_column_count`**: feature-table export scope/shape provenance.
 - **`coords_9d_{allow_all_non_finite_columns,allow_duplicate_columns,allow_duplicate_constant_columns,degraded_mode,duplicate_count,duplicate_constant_count,all_non_finite_count}`**, **`e_e_{backend,construct,degraded_mode,metric}`**: 9D-construction policy flags and per-axis fallback provenance (`e_e` is the entropy-energy subcoordinate).
-- **`normalize_mode`**, **`export_contract_version`**: export-contract identifiers. fMRI recordings written after P0.2 use `mndm.fmri_h5_contract.v1`. EEG/MEG use `mndm.eeg_h5_contract.v1`. Older fMRI files can still carry `mndm.eeg_h5_contract.v1` because that string was the only contract name at the time. The historical name does not mean the recording is EEG; check `modality` and the source class (`nifti_bold`). Do not reinterpret an old fMRI file as an EEG contract solely from that attr.
+- **`normalize_mode`**, **`export_contract_version`**: export-contract identifiers. fMRI recordings written by 3.0.2 use `mndm.fmri_h5_contract.v2`. EEG/MEG stay `mndm.eeg_h5_contract.v1`. Files from 3.0.0–3.0.1 fMRI runs can carry `mndm.fmri_h5_contract.v1`. Still older fMRI files can carry `mndm.eeg_h5_contract.v1` because that string was once the only contract name. Neither historical string means the recording is EEG; check `modality` and the source class (`nifti_bold`). `v2` means the writer knows the fMRI Jacobian support gate. It does not prove a dataset overlay left that gate enabled.
 - **`tr_sec`**, **`sfreq`**, **`tr_source`**: fMRI repetition-time provenance when present. `tr_source` is one of `bids_json`, `nifti_zooms`, `config_fallback`. JSON vs NIfTI mismatch above 1 ms is not serialized; ingest fails closed (`NOT_TESTABLE`). EEG exports omit these attrs.
 - **`filter_stage`**, **`filter_applied`**, **`filter_bandpass_low`**, **`filter_bandpass_high`**: fMRI session-bandpass provenance when present. Canonical stage is `fmri_continuous` (once, before epoching). `preprocess_fmri` does not apply a second filter. EEG exports omit these attrs.
 - **`nuisance_status`**: fMRI nuisance-regression provenance when present. One of `applied`, `skipped_missing_file`, `skipped_no_columns`, `truncated_length`, `failed_clean`, `disabled`. If `preprocess.fmri.nuisance_regression.enabled` is true, ingest fail-closes unless status is `applied`. Length mismatch is not silently truncated; remaining confound NaNs are not zero-filled. EEG exports omit this attr.
@@ -226,7 +226,7 @@ These are **analysis-agnostic descriptive blocks** embedded in the manifest JSON
   - `speed_mean`, `speed_median`, `mv_median`, `emmi_e_over_m_median`, `mv_over_speed_median`
 
 - **`conventional_eeg`** *(object; EEG only, optional)*: config-driven conventional qEEG comparator summaries.
-  - `schema_version = "mndm.conventional_eeg.v1"`
+  - `schema_version = "mndm.conventional_eeg.v2"`
   - `packs`: enabled comparator packs, currently including `tier1`, `complexity`, `connectivity`, and `coma`
   - `artifact_qc` *(added 2026-09-11)*: `{status, reason}` where `status` is
     `confirmed_applied` (an artifact-reduction method, e.g. ICA/EOG
@@ -265,6 +265,8 @@ These are **analysis-agnostic descriptive blocks** embedded in the manifest JSON
     - explicit availability metadata for non-EEG biomarkers
     - `mode = "eeg_only_proxy"` when only EEG-derived proxies are present
     - `markers.ssep|nse|gcs|s100b.status = "unavailable"` until external clinical data are ingested
+  - `row_level_status` *(object; v2)*: epoch-aligned technical and coma-proxy status rows keyed by available file/recording/epoch/time identifiers. Technical validity is separate from physiological proxy values; flatline/rail flags do not automatically erase them. Clipping is `not_assessed` without verified ADC rails. The coma suppression and RMS amplitude values are withheld (`NaN`) unless amplitude units and preprocessing reference are verified; all coma outputs remain algorithmic proxies, not ACNS labels. Gap-aware suppression/burst calculations preserve finite segments and report gap counts.
+  - `row_level_status.measure_definitions`: definitions and configured threshold parameters for technical QC, suppression ratio, and RMS amplitude. Check per-row `coma_proxy_*_status` and reason fields before using a value.
   - granularity note:
     - `relative`, `ratio`, `peak`, `complexity`, and `coma` are epoch-aligned comparator surfaces
     - `connectivity` is currently a recording-level summary surface broadcast across epochs in the feature table
@@ -1152,4 +1154,33 @@ Missingness: regional MNPS is **not** median- or zero-filled before derivatives/
 - `time` is `float64`; most other numeric arrays are `float32` for disk/IO.
 - `labels/*` is `int8`; `events/*` is `int64` or `float64`; `nn/indices` is `int32`.
 - `/features_raw/metadata/robust_z_valid` (and the equivalent field on `/features_robust_z/metadata/*`, `/features_projection_z/metadata/*`) is written as **`int32`**, not `int8`, in current exports.
+
+### Native fNIRS HDF5 (`mndm.fnirs_native_h5_contract.v1`)
+
+`mndm fnirs-export` writes one source SNIRF recording's G3 window-feature table
+to native HDF5. The root declares `modality=fnirs`, `has_fnirs=1`, EEG/MEG and
+simultaneous flags `0`, `capability_status=native_only`, and
+`mnps_qualified=0`. `/row_source` identifies every window as `snirf_fnirs` with
+`source_format=snirf`. `/fnirs/windows` stores nominal and actual SNIRF bounds,
+support, segment/window status, reasons and tri-state QC. `/fnirs/channels`
+stores HbO/HbR means and standard deviations in molar `M`, plus per-channel
+support and counts on `[window, channel]` axes. `/fnirs/provenance` stores the
+source SHA-256, channel map and preprocessing history. Rejected windows retain
+NaN statistics and explicit reasons. A rejected window with no clock support
+keeps paired NaN actual bounds and has zero duration, support and sample counts.
+Unknown QC is `qc_ok_fnirs=-1`; every row
+remains unqualified and no generic `/time`, `/mnps_3d` or `/coords_9d` datasets
+are written. See `mndm/src/mndm/reporting/schema_docs.md` for the full tree.
+
+### fNIRS G5 sensor-sector pilot (`mndm.fnirs_sensor_sector.v0.1`)
+
+`mndm fnirs-region-export` writes separate descriptive CSV/JSON artifacts from
+one G3 feature table and its matching BIDS geometry sidecars. Four CapTrak
+scalp sectors are derived from source-detector midpoints; the labels are not
+anatomical or cortical regions. Pairs shorter than 10 mm are excluded, and a
+regional value requires full support from every expected channel. HbO/HbR
+remain separate in `M`; rows preserve source, window, actual-time/support,
+coverage, unknown QC, `not_assessed` validity/qualification, and
+`no_biological_claim`. The sensitivity table records per-pair leave-one-out
+changes. This pilot does not change the G4 HDF5 contract or enable MNPS.
 

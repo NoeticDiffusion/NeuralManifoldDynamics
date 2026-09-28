@@ -26,6 +26,8 @@ saccade kinematics a dedicated eye-tracker would be required.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
+from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
@@ -33,6 +35,8 @@ import pandas as pd
 from scipy import signal
 
 from . import epoch_selection
+from .temporal_support import apply_to_finite_segments, finite_slices
+from ..signal_support_provenance import build_signal_support_provenance, finish_operation, start_operation
 
 logger = logging.getLogger(__name__)
 
@@ -103,16 +107,31 @@ def _bandpass(
     hi: float,
     order: int = 3,
 ) -> np.ndarray:
+    filtered, _, _ = _bandpass_with_info(data, sfreq, lo, hi, order)
+    return filtered
+
+
+def _bandpass_with_info(
+    data: np.ndarray,
+    sfreq: float,
+    lo: float,
+    hi: float,
+    order: int = 3,
+) -> tuple[np.ndarray, list[slice], list[slice]]:
     nyq = sfreq * 0.5
     hi_safe = min(hi, nyq * 0.99)
     lo_safe = max(0.01, lo)
-    if hi_safe <= lo_safe:
-        return data - np.median(data)
-    try:
+
+    def _demean(segment: np.ndarray) -> np.ndarray:
+        return segment - np.median(segment)
+
+    def _filter(segment: np.ndarray) -> np.ndarray:
+        if hi_safe <= lo_safe:
+            return _demean(segment)
         b, a = signal.butter(order, [lo_safe / nyq, hi_safe / nyq], btype="bandpass")
-        return signal.filtfilt(b, a, data)
-    except Exception:
-        return data - np.median(data)
+        return signal.filtfilt(b, a, segment)
+
+    return apply_to_finite_segments(data, _filter, fallback=_demean)
 
 
 def _detect_blinks(
@@ -126,23 +145,33 @@ def _detect_blinks(
     mad_mult: float,
     prominence_mult: float,
     refractory_s: float,
+    filtered_data: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return (peak_indices, prominences) on the full recording."""
-    filtered = _bandpass(
-        veog_1d, sfreq, filter_low_hz, filter_high_hz, filter_order
+    filtered = (
+        np.asarray(filtered_data, dtype=float)
+        if filtered_data is not None
+        else _bandpass(veog_1d, sfreq, filter_low_hz, filter_high_hz, filter_order)
     )
-    centered = filtered - np.median(filtered)
-    abs_sig = np.abs(centered)
-    mad = float(np.median(np.abs(centered))) + 1e-8
-    std = float(np.std(filtered))
-    thr = max(std_mult * std, mad_mult * mad)
     min_dist = max(1, int(round(refractory_s * sfreq)))
-    prominence = max(1e-8, prominence_mult * mad)
-    peaks, props = signal.find_peaks(
-        abs_sig, height=thr, distance=min_dist, prominence=prominence
-    )
-    prominences = props.get("prominences", np.zeros(len(peaks)))
-    return np.asarray(peaks, dtype=int), np.asarray(prominences, dtype=float)
+    peak_parts: list[np.ndarray] = []
+    prominence_parts: list[np.ndarray] = []
+    for run in finite_slices(filtered):
+        segment = filtered[run]
+        centered = segment - np.median(segment)
+        abs_sig = np.abs(centered)
+        mad = float(np.median(np.abs(centered))) + 1e-8
+        std = float(np.std(segment))
+        thr = max(std_mult * std, mad_mult * mad)
+        prominence = max(1e-8, prominence_mult * mad)
+        peaks, props = signal.find_peaks(
+            abs_sig, height=thr, distance=min_dist, prominence=prominence
+        )
+        peak_parts.append(peaks.astype(int) + int(run.start or 0))
+        prominence_parts.append(np.asarray(props.get("prominences", np.zeros(len(peaks))), dtype=float))
+    if not peak_parts:
+        return np.asarray([], dtype=int), np.asarray([], dtype=float)
+    return np.concatenate(peak_parts), np.concatenate(prominence_parts)
 
 
 def _detect_saccades(
@@ -153,20 +182,32 @@ def _detect_saccades(
     filter_high_hz: float,
     std_mult: float,
     refractory_s: float,
+    filtered_data: Optional[np.ndarray] = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Rapid-deflection proxy detector for HEOG saccades.
 
     Works on *velocity* (first derivative) of the HEOG signal.
     Returns (peak_indices, amplitudes_abs).
     """
-    filtered = _bandpass(heog_1d, sfreq, filter_low_hz, filter_high_hz)
-    velocity = np.diff(filtered, prepend=filtered[0]) * sfreq
-    abs_vel = np.abs(velocity)
-    thr = float(std_mult * np.std(abs_vel))
+    filtered = (
+        np.asarray(filtered_data, dtype=float)
+        if filtered_data is not None
+        else _bandpass(heog_1d, sfreq, filter_low_hz, filter_high_hz)
+    )
     min_dist = max(1, int(round(refractory_s * sfreq)))
-    peaks, props = signal.find_peaks(abs_vel, height=thr, distance=min_dist)
-    amplitudes = abs_vel[peaks] if len(peaks) > 0 else np.array([], dtype=float)
-    return np.asarray(peaks, dtype=int), amplitudes
+    peak_parts: list[np.ndarray] = []
+    amplitude_parts: list[np.ndarray] = []
+    for run in finite_slices(filtered):
+        segment = filtered[run]
+        velocity = np.diff(segment, prepend=segment[0]) * sfreq
+        abs_vel = np.abs(velocity)
+        thr = float(std_mult * np.std(abs_vel))
+        peaks, _ = signal.find_peaks(abs_vel, height=thr, distance=min_dist)
+        peak_parts.append(peaks.astype(int) + int(run.start or 0))
+        amplitude_parts.append(abs_vel[peaks])
+    if not peak_parts:
+        return np.asarray([], dtype=int), np.asarray([], dtype=float)
+    return np.concatenate(peak_parts), np.concatenate(amplitude_parts)
 
 
 def _blink_duration_ms(
@@ -174,11 +215,15 @@ def _blink_duration_ms(
     peak_idx: int,
     sfreq: float,
     halfwidth_s: float,
+    *,
+    segment_start: int = 0,
+    segment_stop: Optional[int] = None,
 ) -> float:
     """Estimate blink duration as the half-amplitude width around a peak."""
     hw = max(1, int(halfwidth_s * sfreq))
-    lo = max(0, peak_idx - hw)
-    hi = min(len(signal_arr) - 1, peak_idx + hw)
+    stop = len(signal_arr) if segment_stop is None else min(len(signal_arr), int(segment_stop))
+    lo = max(int(segment_start), peak_idx - hw)
+    hi = min(stop - 1, peak_idx + hw)
     window = signal_arr[lo : hi + 1]
     if len(window) == 0:
         return float("nan")
@@ -252,12 +297,60 @@ def compute_eog_features(
     # for HEOG (saccade proxy); VEOG used for blink detection.
     # -------------------------------------------------------------------
     n_chans = eog_arr.shape[0]
+    if not np.isfinite(eog_arr).any():
+        return pd.DataFrame()
     veog_ch = eog_arr[0]
     heog_ch = eog_arr[1] if n_chans > 1 else None
+
+    inherited = signals.get("meta", {}).get("signal_support_provenance") if isinstance(signals.get("meta", {}), Mapping) else None
+    provenance = deepcopy(inherited) if isinstance(inherited, Mapping) else build_signal_support_provenance(
+        Path(str(raw_file_path)) if raw_file_path else Path("<unknown-eog-source>"),
+        input_sfreq=sfreq,
+        target_sfreq=sfreq,
+        source_datatype="eog",
+    )
+
+    def _filter_channel(
+        channel: np.ndarray,
+        *,
+        operation_name: str,
+        low_hz: float,
+        high_hz: float,
+        order: int,
+    ) -> np.ndarray:
+        operation = start_operation(
+            provenance,
+            operation_name,
+            input_sfreq=sfreq,
+            parameters={"low_hz": low_hz, "high_hz": high_hz, "order": order},
+            actual_kwargs={
+                "method": "scipy.signal.filtfilt",
+                "finite_segment_policy": "filter_each_contiguous_finite_run_independently",
+            },
+        )
+        filtered, runs, fallback_runs = _bandpass_with_info(
+            channel, sfreq, low_hz, high_hz, order
+        )
+        operation["actual_kwargs"]["finite_segment_count"] = len(runs)
+        operation["actual_kwargs"]["fallback_segment_count"] = len(fallback_runs)
+        finish_operation(
+            operation,
+            status="fallback" if fallback_runs else "applied",
+            output_sfreq=sfreq,
+            fallback="demeaned_finite_segments" if fallback_runs else None,
+        )
+        return filtered
 
     # -------------------------------------------------------------------
     # Run-level blink detection on VEOG
     # -------------------------------------------------------------------
+    veog_filt = _filter_channel(
+        veog_ch,
+        operation_name="eog_veog_bandpass_filtfilt",
+        low_hz=float(ecfg["filter_low_hz"]),
+        high_hz=float(ecfg["filter_high_hz"]),
+        order=int(ecfg["filter_order"]),
+    )
     blink_peaks, blink_prominences = _detect_blinks(
         veog_ch,
         sfreq,
@@ -268,16 +361,14 @@ def compute_eog_features(
         mad_mult=float(ecfg["mad_mult"]),
         prominence_mult=float(ecfg["prominence_mult"]),
         refractory_s=float(ecfg["refractory_s"]),
+        filtered_data=veog_filt,
     )
 
     # Pre-compute blink amplitudes from filtered VEOG for amplitude stats
-    veog_filt = _bandpass(
-        veog_ch, sfreq,
-        float(ecfg["filter_low_hz"]), float(ecfg["filter_high_hz"]),
-        int(ecfg["filter_order"]),
-    )
-    veog_centered = veog_filt - np.median(veog_filt)
-    veog_abs = np.abs(veog_centered)
+    veog_abs = np.full(veog_filt.shape, np.nan, dtype=float)
+    for run in finite_slices(veog_filt):
+        segment = veog_filt[run]
+        veog_abs[run] = np.abs(segment - np.median(segment))
 
     # Blink durations (run-level, indexed for fast per-epoch lookup)
     halfwidth_s = float(ecfg["blink_halfwidth_s"])
@@ -288,6 +379,13 @@ def compute_eog_features(
     sacc_peaks: np.ndarray = np.array([], dtype=int)
     sacc_amplitudes: np.ndarray = np.array([], dtype=float)
     if heog_ch is not None:
+        heog_filt = _filter_channel(
+            heog_ch,
+            operation_name="eog_heog_bandpass_filtfilt",
+            low_hz=float(ecfg["saccade_filter_low_hz"]),
+            high_hz=float(ecfg["saccade_filter_high_hz"]),
+            order=int(ecfg["filter_order"]),
+        )
         sacc_peaks, sacc_amplitudes = _detect_saccades(
             heog_ch,
             sfreq,
@@ -295,14 +393,26 @@ def compute_eog_features(
             filter_high_hz=float(ecfg["saccade_filter_high_hz"]),
             std_mult=float(ecfg["saccade_std_mult"]),
             refractory_s=float(ecfg["saccade_refractory_s"]),
+            filtered_data=heog_filt,
         )
 
     # Artifact saturation detection (run-level, per channel).
     # Operate on the DC-removed signal so that Biosemi/BDF DC offsets do not
     # dominate max_abs and cause every sample to be flagged.
-    eog_centered_full = eog_arr - np.median(eog_arr, axis=1, keepdims=True)
-    max_abs = float(np.max(np.abs(eog_centered_full))) + 1e-8
-    sat_threshold = float(ecfg["artifact_sat_frac"]) * max_abs
+    saturation_mask = np.zeros(eog_arr.shape, dtype=bool)
+    if np.isfinite(eog_arr).all():
+        centered_full = eog_arr - np.median(eog_arr, axis=1, keepdims=True)
+        max_abs = float(np.max(np.abs(centered_full))) + 1e-8
+        sat_threshold = float(ecfg["artifact_sat_frac"]) * max_abs
+        saturation_mask = np.abs(centered_full) > sat_threshold
+    else:
+        for channel_idx in range(n_chans):
+            for run in finite_slices(eog_arr[channel_idx]):
+                segment = eog_arr[channel_idx, run]
+                centered_segment = segment - np.median(segment)
+                segment_max = float(np.max(np.abs(centered_segment))) + 1e-8
+                threshold = float(ecfg["artifact_sat_frac"]) * segment_max
+                saturation_mask[channel_idx, run] = np.abs(centered_segment) > threshold
 
     records: List[Dict[str, Any]] = []
 
@@ -314,6 +424,8 @@ def compute_eog_features(
         end_idx = start_idx + epoch_length_samples
         if end_idx > n_samples:
             break
+        if not np.isfinite(eog_arr[:, start_idx:end_idx]).all():
+            continue
 
         # --- blinks in this epoch ---
         lo = int(np.searchsorted(blink_peaks, start_idx, side="left"))
@@ -326,10 +438,25 @@ def compute_eog_features(
         blink_dur: float = float("nan")
         if n_blinks > 0:
             blink_amp = float(np.mean(veog_abs[epoch_blink_peaks]))
-            durations = [
-                _blink_duration_ms(veog_abs, int(p), sfreq, halfwidth_s)
-                for p in epoch_blink_peaks
-            ]
+            durations = []
+            veog_runs = finite_slices(veog_abs)
+            for peak in epoch_blink_peaks:
+                run = next(
+                    (item for item in veog_runs if int(item.start or 0) <= int(peak) < int(item.stop)),
+                    None,
+                )
+                if run is None:
+                    continue
+                durations.append(
+                    _blink_duration_ms(
+                        veog_abs,
+                        int(peak),
+                        sfreq,
+                        halfwidth_s,
+                        segment_start=int(run.start or 0),
+                        segment_stop=int(run.stop),
+                    )
+                )
             finite_durs = [d for d in durations if np.isfinite(d)]
             blink_dur = float(np.mean(finite_durs)) if finite_durs else float("nan")
 
@@ -343,8 +470,7 @@ def compute_eog_features(
             saccade_amp = float(np.mean(sacc_amplitudes[slo:shi]))
 
         # --- artifact fraction ---
-        epoch_data = eog_centered_full[:, start_idx:end_idx]
-        artifact_frac = float(np.mean(np.any(np.abs(epoch_data) > sat_threshold, axis=0)))
+        artifact_frac = float(np.mean(np.any(saturation_mask[:, start_idx:end_idx], axis=0)))
 
         # --- eye stability index ---
         # High blink + saccade rate → lower stability.
@@ -378,6 +504,7 @@ def compute_eog_features(
         return pd.DataFrame()
 
     df = pd.DataFrame(records)
+    df.attrs["signal_support_provenance"] = provenance
     logger.info(
         "EOG v0.1: computed %d epochs; qc_ok fraction=%.2f",
         len(df),

@@ -43,6 +43,30 @@ from .prerequisite_check import format_prerequisite_report, report_to_json, run_
 
 logger = logging.getLogger(__name__)
 
+_FNIRS_FILE_INDEX_REQUIRED_COLUMNS = {
+    "datatype",
+    "nirs_json_sidecars",
+    "nirs_json_sidecar_ambiguous",
+    "nirs_channels_tsv",
+    "nirs_channels_tsv_ambiguous",
+    "nirs_events_tsv",
+    "nirs_events_tsv_ambiguous",
+    "nirs_optodes_tsv",
+    "nirs_optodes_tsv_ambiguous",
+    "nirs_coordsystem_sidecars",
+    "nirs_coordsystem_sidecar_ambiguous",
+}
+
+
+def _cached_index_needs_fnirs_refresh(index_df: pd.DataFrame, dataset_root: Path) -> bool:
+    """Whether a cached index predates fNIRS dispatch fields for this BIDS root."""
+    has_bids_nirs = any(
+        candidate.is_dir()
+        for pattern in ("sub-*/nirs", "sub-*/ses-*/nirs")
+        for candidate in dataset_root.glob(pattern)
+    )
+    return has_bids_nirs and not _FNIRS_FILE_INDEX_REQUIRED_COLUMNS.issubset(index_df.columns)
+
 
 class _SummarizeContextWithConfigPath:
     """Proxy context carrying the source config path for run provenance."""
@@ -393,7 +417,11 @@ def cmd_features(
             ds_root = bids_index.resolve_dataset_root(config, received_dir, ds_id)
 
             io_policy = resolve_feature_io_policy(config, ds_path)
-            leftover_temps = list(ds_path.glob("features_*.csv")) + list(ds_path.glob("features_*.parquet"))
+            leftover_temps = (
+                list(ds_path.glob("features_*.csv"))
+                + list(ds_path.glob("features_*.csv.schema.json"))
+                + list(ds_path.glob("features_*.parquet"))
+            )
             if leftover_temps:
                 logger.info("Found %s leftover temp files, cleaning up", len(leftover_temps))
                 for temp_file in leftover_temps:
@@ -428,6 +456,14 @@ def cmd_features(
                 except Exception as e:
                     logger.warning("Failed to read file_index.csv for %s: %s", ds_id, e)
                     continue
+                if ds_root.exists() and _cached_index_needs_fnirs_refresh(index_df, ds_root):
+                    logger.info(
+                        "Cached file_index.csv for %s predates fNIRS sidecar fields; rebuilding",
+                        ds_id,
+                    )
+                    index_df = _build_index(ds_id, ds_path)
+                    if index_df is None:
+                        continue
             index_df, parse_filled = bids_index.enrich_index_with_filename_parse(
                 index_df,
                 config=config,
@@ -598,6 +634,7 @@ def cmd_features(
                                 "rel": rel,
                                 "size": file_size,
                                 "sub_id": sub_id,
+                                "index_record": row.to_dict(),
                             }
                         )
 
@@ -809,7 +846,14 @@ def cmd_features(
                             )
                         )
                     else:
-                        results_list.append(process_single_file(Path(task_item["path"]), cfg))
+                        results_list.append(
+                            process_single_file(
+                                Path(task_item["path"]),
+                                cfg,
+                                index_record=task_item.get("index_record"),
+                                dataset_root=ds_root,
+                            )
+                        )
                 return results_list
 
             try:
@@ -919,6 +963,12 @@ def cmd_summarize(
 ) -> int:
     """Project features to MNPS tensors and write HDF5/JSON outputs."""
     try:
+        if str(config.get("modality", "")).strip().lower() == "fnirs":
+            logger.error(
+                "The MNPS summarize path is unsupported for modality=fnirs; "
+                "use the dedicated native fnirs-export command."
+            )
+            return 1
         if bool(config.get("summarize_forbidden")):
             logger.error(
                 "summarize_forbidden is set; this overlay is a features-only Type-C extract "

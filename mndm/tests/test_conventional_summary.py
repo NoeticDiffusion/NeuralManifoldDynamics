@@ -58,3 +58,65 @@ def test_conventional_eeg_summary_stamps_confirmed_when_method_ran():
     assert result["artifact_qc"]["status"] == "confirmed_applied"
     # The extension itself is never withheld by this flag.
     assert result["column_count"] == 2
+
+
+def test_conventional_eeg_export_keeps_row_level_technical_and_proxy_status():
+    frame = pd.DataFrame({
+        "file": ["recording.hea"], "epoch_id": [7], "t_start": [4.0], "t_end": [12.0],
+        "eeg_conventional_coma_suppression_ratio": [np.nan],
+        "eeg_conventional_coma_amplitude_rms": [np.nan],
+        "technical_eeg_status": ["valid"],
+        "technical_eeg_reason": [None],
+        "technical_eeg_clipping_status": ["not_assessed"],
+        "technical_eeg_clipping_reason": ["verified_adc_rails_unavailable"],
+        "coma_proxy_suppression_status": ["not_testable"],
+        "coma_proxy_suppression_reason": ["amplitude_unit_unverified"],
+        "coma_proxy_unit_status": ["unknown"],
+        "coma_proxy_amplitude_unit": ["unknown"],
+        "coma_proxy_reference_status": ["unknown"],
+        "coma_proxy_reference_mode": ["unknown"],
+        "coma_proxy_amplitude_status": ["not_testable"],
+        "coma_proxy_amplitude_reason": ["amplitude_unit_unverified;amplitude_reference_unverified"],
+    })
+    result = compute_conventional_eeg_summary(
+        sub_frame=frame,
+        config={"conventional_eeg": {"enabled": True, "packs": ["coma"]}},
+        dataset_id="physionet_icare_2_1",
+    )
+    assert result["schema_version"] == "mndm.conventional_eeg.v2"
+    row = result["row_level_status"]["rows"][0]
+    assert row["epoch_id"] == 7
+    assert row["technical_eeg_status"] == "valid"
+    assert row["technical_eeg_clipping_status"] == "not_assessed"
+    assert row["coma_proxy_suppression_status"] == "not_testable"
+    assert row["coma_proxy_suppression_reason"] == "amplitude_unit_unverified"
+    definition = result["row_level_status"]["measure_definitions"]["coma_suppression_ratio"]
+    assert definition["parameters"]["amplitude_floor"] == 0.01
+    assert "not an ACNS adjudication" in definition["clinical_status"]
+    assert result["row_level_status"]["measure_definitions"]["coma_amplitude_rms"]["status_field"] == "coma_proxy_amplitude_status"
+
+
+def test_coma_summary_excludes_technically_suspect_windows_but_preserves_row_values():
+    frame = pd.DataFrame({
+        "file": ["valid.hea", "flatline.hea"],
+        "epoch_id": [1, 2],
+        "t_start": [0.0, 4.0],
+        "t_end": [8.0, 12.0],
+        "eeg_conventional_coma_suppression_ratio": [0.2, 1.0],
+        "technical_eeg_status": ["valid", "suspect"],
+        "technical_eeg_channel_status": ["computed", "computed"],
+        "technical_eeg_reason": [None, "all_eeg_channels_exactly_flatlined"],
+        "coma_proxy_suppression_status": ["computed", "computed"],
+    })
+    result = compute_conventional_eeg_summary(
+        sub_frame=frame,
+        config={"conventional_eeg": {"enabled": True, "packs": ["coma"]}},
+        dataset_id="physionet_icare_2_1",
+    )
+    suppression = result["families"]["coma"]["suppression_ratio"]
+    assert suppression["mean"] == 0.2
+    assert result["families"]["coma"]["technical_eligibility"]["included_row_count"] == 1
+    assert result["families"]["coma"]["technical_eligibility"]["excluded_row_count"] == 1
+    exported_rows = result["row_level_status"]["rows"]
+    assert exported_rows[1]["eeg_conventional_coma_suppression_ratio"] == 1.0
+    assert exported_rows[1]["technical_eeg_status"] == "suspect"

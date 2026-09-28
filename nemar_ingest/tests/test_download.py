@@ -51,7 +51,7 @@ class _FakeClient:
         self.entries = entries
         self.manifest_calls = 0
 
-    def get_manifest_with_digest(self, dataset_id: str, version: str):
+    def get_manifest_with_digest(self, dataset_id: str, version: str, *, retries: int = 3):
         self.manifest_calls += 1
         return "https://data.nemar.org/on005385/v1.0.0/manifest.json", self.entries, "a" * 64
 

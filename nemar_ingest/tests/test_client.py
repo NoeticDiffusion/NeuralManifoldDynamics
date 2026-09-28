@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import io
 from pathlib import Path
+from urllib.error import URLError
 
 import pytest
 
@@ -108,4 +109,21 @@ def test_parse_manifest_accepts_nemar_bytes_url_shape() -> None:
     )
     assert entries[0].path == "sub-01/eeg/sub-01_task-rest_eeg.set"
     assert entries[0].size == 4
+
+
+def test_manifest_fetch_retries_a_transient_dns_failure(monkeypatch) -> None:
+    body = b'[{"path":"participants.tsv","size":4}]'
+    calls = {"n": 0}
+
+    def opener(request, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise URLError("getaddrinfo failed")
+        return io.BytesIO(body)
+
+    monkeypatch.setattr("nemar_ingest.client.time.sleep", lambda _seconds: None)
+    client = NemarClient(opener=opener)
+    _url, entries, _digest = client.get_manifest_with_digest("on005385", "v1.0.0", retries=2)
+    assert calls["n"] == 2
+    assert entries[0].path == "participants.tsv"
 

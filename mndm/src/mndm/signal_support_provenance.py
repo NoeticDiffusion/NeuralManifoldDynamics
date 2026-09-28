@@ -12,6 +12,7 @@ import hashlib
 import importlib.metadata
 import inspect
 import math
+import numbers
 from pathlib import Path
 from typing import Any, Mapping, MutableMapping, Optional
 
@@ -155,6 +156,210 @@ def actual_crop_bounds(
         "actual_tmin_sec": original_first_time_sec + (actual_first_samp - original_first_samp) / sfreq_hz,
         "actual_tmax_sec": original_first_time_sec + (last_exclusive - original_first_samp) / sfreq_hz,
     }
+
+
+def map_preprocessed_window_to_source_samples(
+    start_sample: int,
+    end_sample_exclusive: int,
+    *,
+    preprocessed_sfreq_hz: float,
+    provenance: Mapping[str, Any],
+    allow_source_grid: bool = True,
+    refusal_reason: str = "source_clock_mapping_not_supported",
+) -> dict[str, Any]:
+    """Map actual preprocessed-array bounds onto the original raw sample grid.
+
+    Nominal bounds are always mapped when source clocks permit. A conservative
+    effective contributor interval is added only when the explicit causal FIR
+    pilot records every applied temporal dependency and the clocks agree.
+    """
+    unknown = {
+        "source_sample_mapping_status": "unknown",
+        "source_sample_mapping_reason": "source_clock_or_epoch_indices_unavailable",
+        "nominal_source_sample_start": None,
+        "nominal_source_sample_end_exclusive": None,
+        "nominal_source_time_start_sec": None,
+        "nominal_source_time_end_sec": None,
+        "preprocessed_sample_start": None,
+        "preprocessed_sample_end_exclusive": None,
+        "actual_sample_contributors_status": "unknown",
+        "actual_sample_contributors_reason": "operation_dependency_map_not_recorded",
+        "actual_source_sample_start": None,
+        "actual_source_sample_end_exclusive": None,
+        "actual_source_time_start_sec": None,
+        "actual_source_time_end_sec": None,
+    }
+    if not isinstance(start_sample, numbers.Integral) or not isinstance(end_sample_exclusive, numbers.Integral):
+        return {**unknown, "source_sample_mapping_reason": "epoch_sample_bounds_not_integer"}
+    start_sample = int(start_sample)
+    end_sample_exclusive = int(end_sample_exclusive)
+    if start_sample < 0 or end_sample_exclusive <= start_sample:
+        return {**unknown, "source_sample_mapping_reason": "epoch_sample_bounds_invalid"}
+    try:
+        input_sfreq = float(preprocessed_sfreq_hz)
+    except (TypeError, ValueError, OverflowError):
+        input_sfreq = math.nan
+    with_indices = {
+        **unknown,
+        "preprocessed_sample_start": start_sample,
+        "preprocessed_sample_end_exclusive": end_sample_exclusive,
+        "preprocessed_sfreq_hz": input_sfreq if math.isfinite(input_sfreq) else None,
+    }
+    if not allow_source_grid:
+        return {**with_indices, "source_sample_mapping_reason": str(refusal_reason)}
+    try:
+        processed_hz = input_sfreq
+        source_clock = provenance.get("raw_clock_before_crop", {})
+        processed_clock = provenance.get("raw_clock_after_crop", {})
+        source_hz = float(source_clock["sfreq_hz"])
+        source_first_time = float(source_clock.get("first_time_sec", 0.0))
+        source_first_samp = int(source_clock.get("first_samp", 0))
+        source_n_times = int(source_clock["n_times"])
+        processed_first_time = float(processed_clock["first_time_sec"])
+        processed_n_times = int(processed_clock["n_times"])
+        if (
+            not all(math.isfinite(v) and v > 0 for v in (processed_hz, source_hz))
+            or not all(math.isfinite(v) for v in (source_first_time, processed_first_time))
+        ):
+            raise ValueError("sample clock contains a non-finite or non-positive value")
+        if end_sample_exclusive > processed_n_times:
+            raise ValueError("epoch bounds exceed the preprocessed array")
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        return {**with_indices, "source_sample_mapping_reason": f"source_clock_invalid:{type(exc).__name__}"}
+
+    # Epoch indices are produced by EEG extraction from the actual array. Use
+    # the post-preprocessing first-sample clock, then map those times to the
+    # original source grid. Do not reconstruct the start from t_start/t_end.
+    absolute_time_start = processed_first_time + start_sample / processed_hz
+    absolute_time_end = processed_first_time + end_sample_exclusive / processed_hz
+    time_start = absolute_time_start - source_first_time
+    time_end = absolute_time_end - source_first_time
+    source_start_float = time_start * source_hz
+    source_end_float = time_end * source_hz
+    eps = max(1e-8, 1e-7 * source_hz)
+    if (
+        source_start_float < -eps
+        or source_end_float > source_n_times + eps
+        or source_end_float <= source_start_float
+    ):
+        return {
+            **unknown,
+            "source_sample_mapping_reason": "epoch_clock_bounds_outside_original_source",
+            "preprocessed_sample_start": start_sample,
+            "preprocessed_sample_end_exclusive": end_sample_exclusive,
+            "preprocessed_sfreq_hz": processed_hz,
+        }
+
+    # Select source-grid timestamps in the half-open nominal interval. Values
+    # within floating-point noise of an integer boundary are snapped first.
+    start_pos = min(source_n_times, max(0, int(math.ceil(source_start_float - eps))))
+    end_pos = min(source_n_times, max(0, int(math.ceil(source_end_float - eps))))
+    if end_pos <= start_pos:
+        return {
+            **unknown,
+            "source_sample_mapping_reason": "mapped_source_interval_empty",
+            "preprocessed_sample_start": start_sample,
+            "preprocessed_sample_end_exclusive": end_sample_exclusive,
+            "preprocessed_sfreq_hz": processed_hz,
+        }
+    mapped = {
+        "source_sample_mapping_status": "nominal_bounds_mapped",
+        "source_sample_mapping_reason": "preprocessed_epoch_indices_mapped_to_original_clock",
+        "nominal_source_sample_start": int(start_pos),
+        "nominal_source_sample_end_exclusive": int(end_pos),
+        "nominal_source_sample_absolute_start": int(source_first_samp + start_pos),
+        "nominal_source_sample_absolute_end_exclusive": int(source_first_samp + end_pos),
+        "source_first_samp": int(source_first_samp),
+        "source_sfreq_hz": float(source_hz),
+        "nominal_source_time_start_sec": float(time_start),
+        "nominal_source_time_end_sec": float(time_end),
+        "preprocessed_sample_start": int(start_sample),
+        "preprocessed_sample_end_exclusive": int(end_sample_exclusive),
+        "preprocessed_sfreq_hz": float(processed_hz),
+        "actual_sample_contributors_status": "unknown",
+        "actual_sample_contributors_reason": "filter_or_resampler_dependency_map_not_recorded",
+        "actual_source_sample_start": None,
+        "actual_source_sample_end_exclusive": None,
+        "actual_source_time_start_sec": None,
+        "actual_source_time_end_sec": None,
+    }
+
+    # A finite causal bound is emitted only by the explicit WFDB pilot path.
+    # Compute the union of all original samples that can contribute through
+    # the EEG FIR followed by the causal polyphase FIR; exact zero taps may
+    # make this interval conservative but never too small.
+    support = provenance.get("effective_time_support", {})
+    if not isinstance(support, Mapping) or support.get("status") != "finite_causal":
+        return mapped
+    resampler = support.get("resampler", {})
+    eeg_filter = support.get("eeg_bandpass", {})
+    try:
+        up = int(resampler["up"])
+        down = int(resampler["down"])
+        resampler_taps = int(resampler["tap_count"])
+        filter_taps = int(eeg_filter["tap_count"])
+        recorded_source_hz = float(resampler["source_sfreq_hz"])
+        coefficient_hashes = (
+            str(resampler["coefficient_sha256"]),
+            str(eeg_filter["coefficient_sha256"]),
+        )
+        if min(up, down, resampler_taps, filter_taps) < 1:
+            raise ValueError("nonpositive dependency parameters")
+        if (
+            resampler.get("method") != "scipy.signal.upfirdn_causal_fir"
+            or resampler.get("phase") != "causal_uncompensated"
+            or eeg_filter.get("method") != "mne.filter.filter_data_fir"
+            or eeg_filter.get("phase") != "minimum"
+            or eeg_filter.get("pad") != "constant"
+        ):
+            raise ValueError("recorded temporal methods are not the supported causal FIR pair")
+        if any(len(value) != 64 or any(char not in "0123456789abcdefABCDEF" for char in value) for value in coefficient_hashes):
+            raise ValueError("causal FIR coefficient identity is missing or invalid")
+        if int(resampler.get("output_sample_count", -1)) != processed_n_times:
+            raise ValueError("recorded resampler sample count disagrees with processed clock")
+        if source_first_samp != 0 or int(processed_clock.get("first_samp", 0)) != 0:
+            raise ValueError("causal support mapper currently requires a zero-origin WFDB array")
+        if abs(source_hz * up / down - processed_hz) > max(1e-9, processed_hz * 1e-10):
+            raise ValueError("recorded rational resampling ratio disagrees with sample clocks")
+        if abs(recorded_source_hz - source_hz) > max(1e-9, source_hz * 1e-10):
+            raise ValueError("recorded resampler source rate disagrees with source clock")
+        if abs(processed_first_time - source_first_time) > max(1e-9, 1e-9 / source_hz):
+            raise ValueError("causal support mapper does not support cropped or shifted clocks")
+        temporal_ops = [
+            op for op in provenance.get("operations", [])
+            if isinstance(op, Mapping) and op.get("class", "temporal") == "temporal" and op.get("status") == "applied"
+        ]
+        if any(
+            op.get("name") not in {"resample", "eeg_bandpass"}
+            or op.get("temporal_support_status") != "finite_causal"
+            for op in temporal_ops
+        ):
+            raise ValueError("an applied temporal operation lacks a finite causal dependency record")
+        if [op.get("name") for op in temporal_ops] != ["resample", "eeg_bandpass"]:
+            raise ValueError("causal resampling must precede the EEG bandpass operation")
+
+        first_resampled = max(0, start_sample - (filter_taps - 1))
+        last_resampled = end_sample_exclusive - 1
+        low_numerator = first_resampled * down - (resampler_taps - 1)
+        source_low = -((-low_numerator) // up)  # integer ceil division
+        source_high = (last_resampled * down) // up
+        source_low = min(source_n_times, max(0, source_low))
+        source_high = min(source_n_times - 1, max(-1, source_high))
+        if source_high < source_low:
+            raise ValueError("computed finite source dependency interval is empty")
+        actual_end = source_high + 1
+        mapped.update({
+            "source_sample_mapping_reason": "preprocessed_epoch_clock_mapped; finite causal contributors separately bounded",
+            "actual_sample_contributors_status": "finite_causal_conservative_bound",
+            "actual_sample_contributors_reason": "contiguous superset from recorded causal FIR tap lengths and rational upfirdn dependency; clipped at source boundaries",
+            "actual_source_sample_start": int(source_low),
+            "actual_source_sample_end_exclusive": int(actual_end),
+            "actual_source_time_start_sec": float(source_low / source_hz),
+            "actual_source_time_end_sec": float(actual_end / source_hz),
+        })
+    except (KeyError, TypeError, ValueError, OverflowError, ZeroDivisionError) as exc:
+        mapped["actual_sample_contributors_reason"] = f"finite_causal_support_unavailable:{type(exc).__name__}"
+    return mapped
 
 
 def quality_interval(

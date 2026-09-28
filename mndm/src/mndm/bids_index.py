@@ -1,4 +1,4 @@
-"""BIDS index builder for EEG, MEG, and fMRI datasets.
+"""BIDS index builder for EEG, MEG, fMRI, and supported auxiliary datasets.
 
 Walks a downloaded dataset root and builds a tabular file index (subject,
 session, task, run, modality, paths to sidecars such as ``*_eeg.json``,
@@ -332,7 +332,7 @@ def _parse_bids_entities_from_stem(stem: str) -> Dict[str, Optional[str]]:
 def _infer_bids_datatype(rel_path: Path) -> Optional[str]:
     """Infer the BIDS datatype folder from a relative path."""
     lowered = [str(part).strip().lower() for part in rel_path.parts]
-    for name in ("eeg", "meg", "ecg", "pupil", "beh", "func"):
+    for name in ("eeg", "meg", "ecg", "nirs", "pupil", "beh", "func"):
         if name in lowered:
             return "fmri" if name == "func" else name
     return None
@@ -589,6 +589,281 @@ def build_file_index(
                     "fmri_events_tsv": None,
                 }
             )
+
+    # ------------------------------------------------------------------
+    # BIDS fNIRS recordings. Only the validated continuous-wave SNIRF route
+    # (`*_nirs.snirf` in a `nirs/` datatype directory) is indexed here.
+    # `modality` is the internal handler name; `datatype` remains the BIDS
+    # directory name. Keep NIRS sidecars explicit while also filling the
+    # shared signal/channels/events columns used by existing index consumers.
+    # ------------------------------------------------------------------
+    for snirf_file in root.rglob("*.snirf"):
+        try:
+            rel_path = snirf_file.relative_to(root)
+        except ValueError:
+            continue
+
+        if _should_skip_relpath(rel_path):
+            continue
+        parts = rel_path.parts
+        if "derivatives" in parts:
+            continue
+        if not snirf_file.stem.lower().endswith("_nirs"):
+            continue
+
+        datatype = _infer_bids_datatype(rel_path)
+        if datatype != "nirs":
+            # A `_nirs.snirf` filename outside the BIDS nirs datatype is not
+            # the validated BIDS route supported by this index branch.
+            continue
+
+        entities = _parse_bids_entities_from_stem(snirf_file.stem)
+        subject = entities["subject"] or _infer_non_bids_subject(parts, snirf_file.stem)
+        session = entities["session"]
+        task = entities["task"]
+        run = entities["run"]
+        acq = entities["acq"]
+
+        # Resolve NIRS sidecars by their own BIDS entity rules. Channels and
+        # events require subject+task; optodes omit task/run; coordsystem may
+        # include task but must omit run. JSON sidecars follow BIDS inheritance
+        # while retaining each suffix's required entities. Sidecars may also
+        # live in ancestor directories, so exact-stem lookups alone are insufficient.
+        sidecar_specs = {
+            "nirs": (
+                ".json",
+                {"subject", "task"},
+                {"subject", "session", "task", "acq", "run"},
+            ),
+            "channels": (
+                ".tsv",
+                {"subject", "task"},
+                {"subject", "session", "task", "acq", "run"},
+            ),
+            "events": (
+                ".tsv",
+                {"subject", "task"},
+                {"subject", "session", "task", "acq", "run"},
+            ),
+            "optodes": (".tsv", {"subject"}, {"subject", "session", "acq"}),
+            "coordsystem": (".json", {"subject"}, {"subject", "session", "task", "acq"}),
+        }
+
+        def _collect_nirs_sidecar_candidates(
+            suffix: str,
+        ) -> List[tuple[int, int, str, Path]]:
+            extension, required_entities, allowed_entities = sidecar_specs[suffix]
+            suffix_and_extension = f"_{suffix}{extension}"
+            data_entities = {
+                key: entities.get(key)
+                for key in allowed_entities
+                if entities.get(key) is not None
+            }
+            candidates: List[tuple[int, int, str, Path]] = []
+
+            directory = snirf_file.parent
+            while True:
+                sidecar_files = list(directory.glob(f"*{suffix_and_extension}"))
+
+                for candidate in sidecar_files:
+                    if not candidate.is_file():
+                        continue
+                    try:
+                        candidate_rel = candidate.relative_to(root)
+                        directory_depth = len(candidate.parent.relative_to(root).parts)
+                    except ValueError:
+                        continue
+                    if _should_skip_relpath(candidate_rel) or "derivatives" in candidate_rel.parts:
+                        continue
+
+                    stem = candidate.name[: -len(suffix_and_extension)]
+                    candidate_tokens = stem.split("_") if stem else []
+                    candidate_entities = _parse_bids_entities_from_stem(stem)
+                    present_entities = {
+                        key: value
+                        for key, value in candidate_entities.items()
+                        if value is not None
+                    }
+                    # Ignore filenames with unrecognized entity tokens, and
+                    # reject sidecar entity sets that are invalid for this
+                    # NIRS suffix (for example task/run on optodes).
+                    token_entity_names = {
+                        "sub": "subject",
+                        "ses": "session",
+                        "task": "task",
+                        "acq": "acq",
+                        "run": "run",
+                    }
+                    token_prefixes = [
+                        token.split("-", 1)[0] if "-" in token else None
+                        for token in candidate_tokens
+                    ]
+                    if any(prefix not in token_entity_names for prefix in token_prefixes):
+                        continue
+                    token_keys = {token_entity_names[prefix] for prefix in token_prefixes}
+                    if token_keys - allowed_entities:
+                        continue
+                    if not required_entities.issubset(present_entities):
+                        continue
+                    if not set(present_entities).issubset(allowed_entities):
+                        continue
+                    if any(
+                        data_entities.get(key) != value
+                        for key, value in present_entities.items()
+                    ):
+                        continue
+
+                    # Entity-scoped metadata must remain inside the matching
+                    # participant/session directory as required by BIDS.
+                    parent_parts = candidate_rel.parent.parts
+                    if (
+                        candidate_entities["subject"]
+                        and f"sub-{candidate_entities['subject']}" not in parent_parts
+                    ):
+                        continue
+                    if (
+                        candidate_entities["session"]
+                        and f"ses-{candidate_entities['session']}" not in parent_parts
+                    ):
+                        continue
+
+                    candidates.append(
+                        (directory_depth, len(present_entities), candidate.name, candidate)
+                    )
+
+                if directory == root:
+                    break
+                try:
+                    directory.relative_to(root)
+                except ValueError:
+                    break
+                parent = directory.parent
+                if parent == directory:
+                    break
+                directory = parent
+
+            return candidates
+
+        def _resolve_nirs_tsv_sidecar(
+            suffix: str,
+        ) -> tuple[Optional[Path], List[Path], bool]:
+            candidates = _collect_nirs_sidecar_candidates(suffix)
+            candidates.sort(key=lambda item: (item[0], item[2]))
+            candidate_paths = [item[3] for item in candidates]
+            by_directory: Dict[Path, List[Path]] = {}
+            for path in candidate_paths:
+                by_directory.setdefault(path.parent, []).append(path)
+            ambiguous = any(len(paths_at_level) > 1 for paths_at_level in by_directory.values())
+            if ambiguous:
+                # A BIDS level may contain at most one applicable simple TSV
+                # sidecar. Do not select one when the applicable set is invalid.
+                return None, candidate_paths, True
+            # For simple metadata, the lowest/deepest applicable sidecar wins.
+            return (candidate_paths[-1] if candidate_paths else None), candidate_paths, False
+
+        nirs_json_candidates = _collect_nirs_sidecar_candidates("nirs")
+        nirs_json_candidates.sort(key=lambda item: (item[0], item[2]))
+        nirs_json_sidecars = [item[3] for item in nirs_json_candidates]
+        json_candidates_by_directory: Dict[Path, List[Path]] = {}
+        for sidecar in nirs_json_sidecars:
+            json_candidates_by_directory.setdefault(sidecar.parent, []).append(sidecar)
+        nirs_json_sidecar_ambiguous = any(
+            len(paths_at_level) > 1 for paths_at_level in json_candidates_by_directory.values()
+        )
+        # Keep the compatibility field as a physical path to the deepest
+        # applicable sidecar. The full ancestor-to-descendant chain above is
+        # available to readers that need BIDS JSON merge semantics.
+        nirs_json = nirs_json_sidecars[-1] if nirs_json_sidecars else None
+        nirs_channels_tsv, nirs_channels_tsv_candidates, nirs_channels_tsv_ambiguous = (
+            _resolve_nirs_tsv_sidecar("channels")
+        )
+        nirs_events_tsv, nirs_events_tsv_candidates, nirs_events_tsv_ambiguous = (
+            _resolve_nirs_tsv_sidecar("events")
+        )
+        nirs_optodes_tsv, nirs_optodes_tsv_candidates, nirs_optodes_tsv_ambiguous = (
+            _resolve_nirs_tsv_sidecar("optodes")
+        )
+
+        nirs_coordsystem_candidates = _collect_nirs_sidecar_candidates("coordsystem")
+        nirs_coordsystem_candidates.sort(key=lambda item: (item[0], item[2]))
+        nirs_coordsystem_sidecars = [item[3] for item in nirs_coordsystem_candidates]
+        coordsystem_candidates_by_directory: Dict[Path, List[Path]] = {}
+        for sidecar in nirs_coordsystem_sidecars:
+            coordsystem_candidates_by_directory.setdefault(sidecar.parent, []).append(sidecar)
+        nirs_coordsystem_sidecar_ambiguous = any(
+            len(paths_at_level) > 1
+            for paths_at_level in coordsystem_candidates_by_directory.values()
+        )
+        # Coordinates are JSON metadata too: preserve the full inheritance
+        # chain while keeping the deepest physical path in the legacy field.
+        nirs_coordsystem_json = (
+            nirs_coordsystem_sidecars[-1] if nirs_coordsystem_sidecars else None
+        )
+
+        try:
+            size = snirf_file.stat().st_size
+            md5_hash = _maybe_compute_md5(snirf_file, size_bytes=size, max_bytes=md5_max_bytes)
+        except Exception as e:
+            logger.warning("Could not stat %s: %s", snirf_file, e)
+            size = 0
+            md5_hash = None
+
+        nirs_json_rel = str(nirs_json.relative_to(root)) if nirs_json else None
+        nirs_json_sidecars_rel = [str(path.relative_to(root)) for path in nirs_json_sidecars]
+        channels_rel = str(nirs_channels_tsv.relative_to(root)) if nirs_channels_tsv else None
+        events_rel = str(nirs_events_tsv.relative_to(root)) if nirs_events_tsv else None
+        channels_candidates_rel = [
+            str(path.relative_to(root)) for path in nirs_channels_tsv_candidates
+        ]
+        events_candidates_rel = [str(path.relative_to(root)) for path in nirs_events_tsv_candidates]
+        optodes_candidates_rel = [
+            str(path.relative_to(root)) for path in nirs_optodes_tsv_candidates
+        ]
+        coordsystem_sidecars_rel = [
+            str(path.relative_to(root)) for path in nirs_coordsystem_sidecars
+        ]
+        records.append(
+            {
+                "path": str(rel_path),
+                "subject": subject,
+                "session": session,
+                "task": task,
+                "run": run,
+                "acq": acq,
+                "modality": "fnirs",
+                "datatype": "nirs",
+                "source_format": "snirf",
+                "bundle_key": _build_bundle_key(subject, session, task, run, acq),
+                "md5": md5_hash,
+                "size": size,
+                "signal_json": nirs_json_rel,
+                "eeg_json": None,
+                "meg_json": None,
+                "channels_tsv": channels_rel,
+                "events_tsv": events_rel,
+                "fmri_json": None,
+                "fmri_events_tsv": None,
+                "nirs_json": nirs_json_rel,
+                "nirs_json_sidecars": nirs_json_sidecars_rel,
+                "nirs_json_sidecar_ambiguous": nirs_json_sidecar_ambiguous,
+                "nirs_channels_tsv": channels_rel,
+                "nirs_channels_tsv_candidates": channels_candidates_rel,
+                "nirs_channels_tsv_ambiguous": nirs_channels_tsv_ambiguous,
+                "nirs_events_tsv": events_rel,
+                "nirs_events_tsv_candidates": events_candidates_rel,
+                "nirs_events_tsv_ambiguous": nirs_events_tsv_ambiguous,
+                "nirs_optodes_tsv": (
+                    str(nirs_optodes_tsv.relative_to(root)) if nirs_optodes_tsv else None
+                ),
+                "nirs_optodes_tsv_candidates": optodes_candidates_rel,
+                "nirs_optodes_tsv_ambiguous": nirs_optodes_tsv_ambiguous,
+                "nirs_coordsystem_json": (
+                    str(nirs_coordsystem_json.relative_to(root)) if nirs_coordsystem_json else None
+                ),
+                "nirs_coordsystem_sidecars": coordsystem_sidecars_rel,
+                "nirs_coordsystem_sidecar_ambiguous": nirs_coordsystem_sidecar_ambiguous,
+            }
+        )
 
     # ------------------------------------------------------------------
     # CTF MEG recordings. CTF stores each recording as a directory ending
@@ -922,6 +1197,22 @@ def build_file_index(
         "events_tsv",
         "fmri_json",
         "fmri_events_tsv",
+        "source_format",
+        "nirs_json",
+        "nirs_json_sidecars",
+        "nirs_json_sidecar_ambiguous",
+        "nirs_channels_tsv",
+        "nirs_channels_tsv_candidates",
+        "nirs_channels_tsv_ambiguous",
+        "nirs_events_tsv",
+        "nirs_events_tsv_candidates",
+        "nirs_events_tsv_ambiguous",
+        "nirs_optodes_tsv",
+        "nirs_optodes_tsv_candidates",
+        "nirs_optodes_tsv_ambiguous",
+        "nirs_coordsystem_json",
+        "nirs_coordsystem_sidecars",
+        "nirs_coordsystem_sidecar_ambiguous",
         "nwb_acquisitions",
         "nwb_processing_modules",
         "nwb_intervals",

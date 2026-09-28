@@ -98,6 +98,10 @@ def compute_conventional_eeg_summary(
         return None
 
     packs = _normalize_packs(conventional_cfg)
+    coma_cfg = conventional_cfg.get("coma", {})
+    coma_cfg = coma_cfg if isinstance(coma_cfg, Mapping) else {}
+    suppression_cfg = coma_cfg.get("suppression", {})
+    suppression_cfg = suppression_cfg if isinstance(suppression_cfg, Mapping) else {}
 
     export_cfg = conventional_cfg.get("export", {})
     if isinstance(export_cfg, Mapping) and not bool(export_cfg.get("summaries", True)):
@@ -130,6 +134,30 @@ def compute_conventional_eeg_summary(
                 for _, col_name in ordered_items
             ]
         )
+        technical_eligibility: Optional[Dict[str, Any]] = None
+        if family_name == "coma":
+            eligible = np.ones(len(sub_frame), dtype=bool)
+            exclusion_reasons = []
+            if "technical_eeg_status" in sub_frame.columns:
+                technical_valid = sub_frame["technical_eeg_status"].astype(str).str.lower().eq("valid").to_numpy()
+                eligible &= technical_valid
+                exclusion_reasons.append("technical_eeg_status_must_be_valid")
+            else:
+                exclusion_reasons.append("technical_eeg_status_unavailable; historical values retained")
+            if "technical_eeg_channel_status" in sub_frame.columns:
+                channel_supported = sub_frame["technical_eeg_channel_status"].astype(str).str.lower().eq("computed").to_numpy()
+                eligible &= channel_supported
+                exclusion_reasons.append("technical_eeg_channel_status_must_be_computed")
+            values[~eligible, :] = np.nan
+            technical_eligibility = {
+                "status": "applied" if any(
+                    col in sub_frame.columns
+                    for col in ("technical_eeg_status", "technical_eeg_channel_status")
+                ) else "not_available",
+                "included_row_count": int(np.sum(eligible)),
+                "excluded_row_count": int(np.sum(~eligible)),
+                "criteria": exclusion_reasons,
+            }
         descriptives = _distributional_descriptives(values, feature_names)
         family_payload[family_name] = {
             feature_name: {
@@ -138,15 +166,90 @@ def compute_conventional_eeg_summary(
             }
             for feature_name, stats in descriptives.items()
         }
+        if technical_eligibility is not None:
+            family_payload[family_name]["technical_eligibility"] = technical_eligibility
 
     payload = {
-        "schema_version": "mndm.conventional_eeg.v1",
+        "schema_version": "mndm.conventional_eeg.v2",
         "packs": sorted(packs),
         "column_count": int(len(conventional_cols)),
         "columns": sorted(conventional_cols),
         "families": family_payload,
         "artifact_qc": _artifact_qc_status_payload(artifact_qc_applied),
     }
+    row_status_cols = [
+        "technical_eeg_status", "technical_eeg_reason",
+        "technical_eeg_channel_status", "technical_eeg_channel_reason",
+        "technical_eeg_channel_count", "technical_eeg_finite_fraction",
+        "technical_eeg_gap_count", "technical_eeg_flatline_channel_count",
+        "technical_eeg_clipping_status", "technical_eeg_clipping_reason",
+        "technical_eeg_adc_rail_fraction", "coma_proxy_suppression_status",
+        "coma_proxy_suppression_reason", "coma_proxy_unit_status",
+        "coma_proxy_amplitude_unit", "coma_proxy_reference_status",
+        "coma_proxy_reference_mode", "coma_proxy_amplitude_status",
+        "coma_proxy_amplitude_reason", "coma_proxy_valid_sample_fraction",
+        "coma_proxy_gap_count", "coma_proxy_segment_count",
+        "coma_proxy_threshold_value",
+    ]
+    available_status_cols = [col for col in row_status_cols if col in sub_frame.columns]
+    row_measure_cols = [col for col in conventional_cols if col.startswith("eeg_conventional_coma_")]
+    row_level_cols = available_status_cols + [col for col in row_measure_cols if col not in available_status_cols]
+    if row_level_cols:
+        identity_cols = [col for col in ("file", "recording_id", "epoch_id", "t_start", "t_end") if col in sub_frame.columns]
+        status_rows = []
+        for row_index, (_, row) in enumerate(sub_frame.iterrows()):
+            item: Dict[str, Any] = {"row_index": int(row_index)}
+            for col in identity_cols + row_level_cols:
+                value = row.get(col)
+                if isinstance(value, np.generic):
+                    value = value.item()
+                try:
+                    missing_value = value is None or bool(pd.isna(value))
+                except (TypeError, ValueError):
+                    missing_value = value is None
+                if missing_value:
+                    value = None
+                item[col] = value
+            status_rows.append(item)
+        payload["row_level_status"] = {
+            "status": "computed" if available_status_cols else "not_assessed",
+            "reason": None if available_status_cols else "technical_status_columns_unavailable",
+            "columns": row_level_cols,
+            "rows": status_rows,
+            "physiological_proxy_scope": "algorithmic_threshold_proxy; not an ACNS adjudication",
+            "measure_definitions": {
+                "technical_eeg": {
+                    "finite_fraction": "fraction of channel-samples that are finite within the nominal EEG window",
+                    "gap_count": "count of contiguous sample intervals where at least one EEG channel is non-finite",
+                    "flatline": "per-channel exact zero range among finite samples; reported as suspect and never used to erase the physiological proxy",
+                    "clipping": "fraction of finite samples at or beyond verified ADC minimum/maximum rails; not assessed when ADC rails are unavailable",
+                },
+                "coma_suppression_ratio": {
+                    "definition": "fraction of finite smoothed absolute-amplitude samples at or below max(amplitude_floor, relative_to_rms * epoch_rms)",
+                    "gap_policy": "smooth each contiguous finite segment independently; burst transitions are counted only within segments",
+                    "parameters": {
+                        "amplitude_floor": suppression_cfg.get("amplitude_floor", 0.01) if isinstance(suppression_cfg, Mapping) else 0.01,
+                        "relative_to_rms": suppression_cfg.get("relative_to_rms", 0.20) if isinstance(suppression_cfg, Mapping) else 0.20,
+                        "envelope_smoothing_sec": suppression_cfg.get("envelope_smoothing_sec", 0.25) if isinstance(suppression_cfg, Mapping) else 0.25,
+                    },
+                    "amplitude_unit_source": "preprocessing EEG unit/scaling provenance; numeric suppression and burst proxies are withheld when unverified",
+                    "clinical_status": "algorithmic proxy only; not an ACNS adjudication",
+                },
+                "coma_amplitude_rms": {
+                    "definition": "root mean square amplitude of the global median EEG montage over finite samples in the nominal window",
+                    "status_field": "coma_proxy_amplitude_status",
+                    "required_provenance": ["verified physical amplitude unit", "verified preprocessing reference mode"],
+                    "unit_field": "coma_proxy_amplitude_unit",
+                },
+            },
+        }
+    else:
+        payload["row_level_status"] = {
+            "status": "not_assessed",
+            "reason": "row_level_technical_and_proxy_status_columns_unavailable",
+            "columns": [],
+            "rows": [],
+        }
     if "coma" in packs:
         payload["clinical_markers"] = _coma_clinical_markers_payload(dataset_id)
     return payload

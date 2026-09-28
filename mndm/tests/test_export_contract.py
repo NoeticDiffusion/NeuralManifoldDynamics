@@ -9,6 +9,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "src"))
 
 from mndm.pipeline.export_contract import (
     EEG_H5_CONTRACT_VERSION,
+    FNIRS_H5_CONTRACT_VERSION,
     FMRI_H5_CONTRACT_VERSION,
     classify_row_source,
     resolve_export_contract_version,
@@ -21,6 +22,7 @@ from mndm.pipeline.export_contract import (
 def test_classify_row_source_nifti_and_eeg_suffixes():
     assert classify_row_source("sub-001_task-rest_bold.nii.gz") == "nifti_bold"
     assert classify_row_source("sub-001_task-rest_bold.nii") == "nifti_bold"
+    assert classify_row_source("sub-001_task-task_nirs.snirf") == "snirf_fnirs"
     assert classify_row_source("sub-001_task-rest_eeg.set") == "set_eeg"
     assert classify_row_source("sub-001_task-rest_eeg.fdt") == "set_eeg"
     assert classify_row_source("sub-001_task-rest_meg.fif") == "fif_meeg"
@@ -31,12 +33,24 @@ def test_classify_row_source_nifti_and_eeg_suffixes():
 
 def test_nifti_row_source_has_no_eeg_flag():
     assert row_has_eeg("nifti_bold") is False
+    assert row_has_eeg("snirf_fnirs") is False
     assert row_has_meg("nifti_bold") is False
     assert row_has_eeg("set_eeg") is True
     assert row_has_eeg("fif_meeg") is True
     assert row_has_meg("fif_meeg") is True
     assert row_has_eeg("unknown") is True
     assert source_format_for_row_source("nifti_bold") == "nifti_bold"
+    assert source_format_for_row_source("snirf_fnirs") == "snirf"
+
+
+def test_fmri_h5_contract_v2_stays_distinct_from_eeg_v1():
+    """Lock the 3.0.2 stamp. EEG must not move when the fMRI name changes."""
+    assert FMRI_H5_CONTRACT_VERSION == "mndm.fmri_h5_contract.v2"
+    assert EEG_H5_CONTRACT_VERSION == "mndm.eeg_h5_contract.v1"
+    assert resolve_export_contract_version("fmri") == "mndm.fmri_h5_contract.v2"
+    assert resolve_export_contract_version("eeg") == "mndm.eeg_h5_contract.v1"
+    assert resolve_export_contract_version("meg") == "mndm.eeg_h5_contract.v1"
+    assert resolve_export_contract_version("fmri") != resolve_export_contract_version("eeg")
 
 
 def test_export_contract_version_fmri_from_modality_or_nifti_rows():
@@ -57,3 +71,12 @@ def test_export_contract_version_fmri_from_modality_or_nifti_rows():
         resolve_export_contract_version("fmri", ["nifti_bold", "set_eeg"])
         == FMRI_H5_CONTRACT_VERSION
     )
+
+
+def test_fnirs_contract_is_native_and_distinct_from_legacy_modalities():
+    assert FNIRS_H5_CONTRACT_VERSION == "mndm.fnirs_native_h5_contract.v1"
+    assert resolve_export_contract_version("fnirs") == FNIRS_H5_CONTRACT_VERSION
+    assert resolve_export_contract_version(None, ["snirf_fnirs"]) == FNIRS_H5_CONTRACT_VERSION
+    assert resolve_export_contract_version("eeg") == EEG_H5_CONTRACT_VERSION
+    assert resolve_export_contract_version("fmri") == FMRI_H5_CONTRACT_VERSION
+    assert resolve_export_contract_version(None, ["snirf_fnirs", "nifti_bold"]) == EEG_H5_CONTRACT_VERSION

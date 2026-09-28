@@ -311,8 +311,20 @@ def test_preprocess_wfdb_forwards_resample_jobs_and_records_timing(
         units=["uV", "uV"],
         fs=200.0,
         record_name="synthetic",
+        file_name=["synthetic.mat", "synthetic.mat"],
     )
-    monkeypatch.setattr(preprocess, "wfdb", SimpleNamespace(rdrecord=lambda _: record))
+    header = SimpleNamespace(
+        file_name=["synthetic.mat"],
+        fs=200.0,
+        sig_len=int(times.size),
+        base_date=None,
+        base_time=None,
+    )
+    monkeypatch.setattr(
+        preprocess,
+        "wfdb",
+        SimpleNamespace(rdrecord=lambda _: record, rdheader=lambda _: header),
+    )
 
     calls: list[int | str] = []
     original_resample = mne.io.BaseRaw.resample
@@ -324,6 +336,14 @@ def test_preprocess_wfdb_forwards_resample_jobs_and_records_timing(
     monkeypatch.setattr(mne.io.BaseRaw, "resample", spy_resample)
     hea_path = tmp_path / "dsWFDB" / "synthetic.hea"
     hea_path.parent.mkdir()
+    hea_path.write_text(
+        "synthetic 2 200 2000\n"
+        "synthetic.mat 16 1 0 0 0 0 C3\n"
+        "synthetic.mat 16 1 0 0 0 0 C4\n"
+        "#Start time: 00:00:00\n#End time: 00:00:09\n",
+        encoding="utf-8",
+    )
+    (hea_path.parent / "synthetic.mat").write_bytes(b"wfdb-payload")
 
     def run(n_jobs: int | None):
         resample_cfg = {} if n_jobs is None else {"n_jobs": n_jobs}
@@ -352,3 +372,214 @@ def test_preprocess_wfdb_forwards_resample_jobs_and_records_timing(
     assert np.array_equal(default_result.signals["eeg"], parallel_result.signals["eeg"])
     assert default_result.channels == parallel_result.channels
     assert default_result.sfreq == parallel_result.sfreq == 100.0
+    assert default_result.meta["eeg_amplitude_unit_status"] == "verified"
+    assert default_result.meta["eeg_amplitude_unit"] == "microvolt"
+    assert default_result.meta["eeg_reference_status"] == "verified"
+    assert default_result.meta["eeg_reference_mode"] == "average"
+    from mndm.signal_support_provenance import map_preprocessed_window_to_source_samples
+
+    support = parallel_result.meta["signal_support_provenance"]
+    assert support["raw_clock_before_crop"]["n_times"] == int(times.size)
+    assert support["raw_clock_after_crop"]["n_times"] == int(times.size / 2)
+    assert support["source"]["hash_stable"] is True
+    assert support["source"]["associated_signal_files_status"] == "verified"
+    assert support["source"]["associated_signal_files"][0]["hash_stable"] is True
+    assert support["recording_time_reference"]["status"] == "ok"
+    mapped = map_preprocessed_window_to_source_samples(
+        0,
+        800,
+        preprocessed_sfreq_hz=float(parallel_result.sfreq),
+        provenance=support,
+    )
+    assert mapped["source_sample_mapping_status"] == "nominal_bounds_mapped"
+    assert mapped["nominal_source_sample_start"] == 0
+    assert mapped["nominal_source_sample_end_exclusive"] == 1600
+    assert mapped["nominal_source_time_start_sec"] == 0.0
+    assert mapped["nominal_source_time_end_sec"] == 8.0
+    assert mapped["actual_sample_contributors_status"] == "unknown"
+
+    # WFDB MultiRecord input is read as a concatenated Record by rdrecord's
+    # default path. Without a segment-by-segment map, the resulting array
+    # indices must not be represented as one source-file sample interval.
+    multi_header = SimpleNamespace(
+        seg_name=["segment_1", "segment_2"],
+        fs=200.0,
+        sig_len=int(times.size),
+        base_date=None,
+        base_time=None,
+    )
+    monkeypatch.setattr(
+        preprocess,
+        "wfdb",
+        SimpleNamespace(rdrecord=lambda _: record, rdheader=lambda _: multi_header),
+    )
+    multi_result = run(1)
+    assert multi_result.meta["signal_support_provenance"]["source_sample_grid_supported"] is False
+    assert (
+        multi_result.meta["signal_support_provenance"]["source_sample_grid_reason"]
+        == "wfdb_multirecord_segment_mapping_not_supported"
+    )
+    from mndm.features.eeg import compute_eeg_features
+
+    multi_features = compute_eeg_features(
+        {
+            "signals": multi_result.signals,
+            "sfreq": multi_result.sfreq,
+            "channels": multi_result.channels,
+            "dataset_id": "dsWFDB",
+            "file_path": str(hea_path),
+            "meta": multi_result.meta,
+        },
+        {"epoching": {"length_s": 8.0, "step_s": 4.0}},
+    )
+    assert multi_features["source_sample_mapping_status"].tolist() == ["unknown"]
+    assert multi_features["source_sample_mapping_reason"].tolist() == [
+        "wfdb_multirecord_segment_mapping_not_supported"
+    ]
+
+
+def test_wfdb_causal_finite_pilot_records_and_maps_support(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
+    """The explicit WFDB pilot path is causal and exports bounded source support."""
+    mne = pytest.importorskip("mne")
+    import mndm.preprocess as preprocess
+    from mndm.signal_support_provenance import map_preprocessed_window_to_source_samples
+
+    sfreq = 200.0
+    times = np.arange(0, 30.0, 1.0 / sfreq)
+    signal = np.column_stack([
+        np.sin(2 * np.pi * 8.0 * times),
+        np.sin(2 * np.pi * 12.0 * times),
+    ])
+    record = SimpleNamespace(
+        p_signal=signal,
+        sig_name=["C3", "C4"],
+        units=["uV", "uV"],
+        fs=sfreq,
+        record_name="causal_synthetic",
+        file_name=["causal_synthetic.mat"],
+    )
+    header = SimpleNamespace(
+        file_name=["causal_synthetic.mat"],
+        fs=sfreq,
+        sig_len=int(times.size),
+        n_sig=2,
+        base_date=None,
+        base_time=None,
+    )
+    monkeypatch.setattr(
+        preprocess,
+        "wfdb",
+        SimpleNamespace(rdrecord=lambda _: record, rdheader=lambda _: header),
+    )
+    hea_path = tmp_path / "dsWFDB" / "causal_synthetic.hea"
+    hea_path.parent.mkdir()
+    hea_path.write_text(
+        f"causal_synthetic 2 200 {times.size}\n"
+        "causal_synthetic.mat 16 1 0 0 0 0 C3\n"
+        "causal_synthetic.mat 16 1 0 0 0 0 C4\n"
+        "#Start time: 00:00:00\n#End time: 00:00:29\n",
+        encoding="utf-8",
+    )
+    (hea_path.parent / "causal_synthetic.mat").write_bytes(b"causal-wfdb-payload")
+
+    pilot_config = {
+        "datasets": ["dsWFDB"],
+        "preprocess": {
+            "temporal_support_mode": "causal_finite",
+            "sfreq": 100.0,
+            "sfreq_candidates": [100.0],
+            "resample": {"method": "causal_polyphase"},
+            "notch_hz": None,
+            "eeg_bandpass": [0.5, 40.0],
+            "eeg_bandpass_phase": "minimum",
+            "reref": "average",
+        },
+    }
+    result = preprocess.preprocess_wfdb(hea_path, pilot_config)
+
+    support = result.meta["signal_support_provenance"]
+    assert result.sfreq == 100.0
+    assert result.signals["eeg"].shape == (2, 3000)
+    assert support["effective_time_support"]["status"] == "finite_causal"
+    assert support["effective_time_support"]["resampler"]["tap_count"] == 41
+    assert support["effective_time_support"]["eeg_bandpass"]["phase"] == "minimum"
+    mapped = map_preprocessed_window_to_source_samples(
+        800,
+        1600,
+        preprocessed_sfreq_hz=result.sfreq,
+        provenance=support,
+    )
+    assert mapped["actual_sample_contributors_status"] == "finite_causal_conservative_bound"
+    assert mapped["actual_source_sample_start"] < mapped["nominal_source_sample_start"]
+    assert mapped["actual_source_sample_end_exclusive"] <= mapped["nominal_source_sample_end_exclusive"]
+    assert 0 <= mapped["actual_source_sample_start"] < mapped["actual_source_sample_end_exclusive"] <= times.size
+    bad_support = dict(support)
+    bad_support["effective_time_support"] = dict(support["effective_time_support"])
+    bad_support["effective_time_support"]["eeg_bandpass"] = {
+        **support["effective_time_support"]["eeg_bandpass"],
+        "phase": "zero",
+    }
+    rejected = map_preprocessed_window_to_source_samples(
+        800, 1600, preprocessed_sfreq_hz=result.sfreq, provenance=bad_support
+    )
+    assert rejected["actual_sample_contributors_status"] == "unknown"
+    assert rejected["actual_sample_contributors_reason"] == "finite_causal_support_unavailable:ValueError"
+    reordered_support = dict(support)
+    reordered_support["operations"] = list(reversed(support["operations"]))
+    reordered = map_preprocessed_window_to_source_samples(
+        800, 1600, preprocessed_sfreq_hz=result.sfreq, provenance=reordered_support
+    )
+    assert reordered["actual_sample_contributors_status"] == "unknown"
+    assert reordered["actual_sample_contributors_reason"] == "finite_causal_support_unavailable:ValueError"
+    import pandas as pd
+    from mndm.pipeline.signal_support_export import build_signal_support_export
+
+    ledger = build_signal_support_export(
+        pd.DataFrame([{"file": hea_path.name, "t_start": 8.0, "t_end": 16.0, **mapped}]),
+        [support],
+    )
+    assert ledger["temporal_support_status"] == "finite_causal_conservative_bound"
+    assert ledger["per_epoch_input_extent"][0]["actual_source_sample_start"] == mapped["actual_source_sample_start"]
+
+    mismatched_header = SimpleNamespace(
+        file_name=["causal_synthetic.mat"], fs=sfreq, sig_len=int(times.size) - 1,
+        n_sig=2, base_date=None, base_time=None,
+    )
+    monkeypatch.setattr(
+        preprocess,
+        "wfdb",
+        SimpleNamespace(rdrecord=lambda _: record, rdheader=lambda _: mismatched_header),
+    )
+    with pytest.raises(ValueError, match="header grid that differs from the loaded record array"):
+        preprocess.preprocess_wfdb(hea_path, pilot_config)
+
+    # Perturbing future raw input cannot alter earlier causal resampler outputs.
+    probe_data = np.zeros((1, 2000), dtype=float)
+    changed_data = probe_data.copy()
+    changed_data[0, 800] = 1.0
+    info = mne.create_info(["C3"], sfreq=sfreq, ch_types=["eeg"])
+    base_raw, _ = preprocess._causal_polyphase_resample(mne.io.RawArray(probe_data, info, verbose=False), 100.0)
+    changed_raw, _ = preprocess._causal_polyphase_resample(mne.io.RawArray(changed_data, info, verbose=False), 100.0)
+    assert np.allclose(base_raw.get_data()[:, :400], changed_raw.get_data()[:, :400], atol=1e-13)
+
+    # The exact MNE filter settings recorded by the pilot are also one-sided.
+    filter_base = mne.filter.filter_data(
+        probe_data[0], 100.0, 0.5, 40.0, method="fir", phase="minimum", pad="constant", verbose=False
+    )
+    filter_changed = np.zeros(2000, dtype=float)
+    filter_changed[1200] = 1.0
+    filter_changed = mne.filter.filter_data(
+        filter_changed, 100.0, 0.5, 40.0, method="fir", phase="minimum", pad="constant", verbose=False
+    )
+    assert np.allclose(filter_base[:1200], filter_changed[:1200], atol=1e-12)
+
+    gap_data = probe_data.copy()
+    gap_data[0, 700] = np.nan
+    with pytest.raises(ValueError, match="finite, nonempty continuous array"):
+        preprocess._causal_polyphase_resample(mne.io.RawArray(gap_data, info, verbose=False), 100.0)
+    annotated_raw = mne.io.RawArray(probe_data, info, verbose=False)
+    annotated_raw.set_annotations(mne.Annotations(onset=[3.0], duration=[0.1], description=["BAD boundary"]))
+    with pytest.raises(ValueError, match="annotated boundaries"):
+        preprocess._causal_polyphase_resample(annotated_raw, 100.0)

@@ -467,4 +467,55 @@ These products make phase and endogenous event-strength variables available for
 downstream qz(t)/bqg and hazard analyses; they do not themselves test or
 validate those models.
 
+## Native fNIRS window-feature HDF5
+
+The standalone `fnirs-export` command writes one SNIRF recording under schema
+`mndm.fnirs_native_h5_contract.v1`. It stores the existing G3 window table as
+native HbO/HbR features; it does not serialize the original continuous signal
+or create MNPS coordinates.
+
+- Root flags: `modality=fnirs`, `has_fnirs=1`, `has_eeg=has_meg=is_simultaneous=0`,
+  `capability_status=native_only`, `mnps_qualified=0`, and validity/qualification
+  `not_assessed`.
+- `/row_source/*`: per-window `snirf_fnirs` source, `snirf` format, raw file
+  identity and modality flags (`mndm.row_source.v2`).
+- `/fnirs/windows/*`: int64 IDs/counts; float64 nominal/actual/run-relative
+  bounds and support; UTF-8 computation, status and rejection fields; int8 QC
+  (`-1` unknown, `0` fail, `1` pass); uint8 `is_qualified=0`.
+- `/fnirs/channels/*`: UTF-8 channel, chromophore and unit axes; float64 means,
+  standard deviations and support; int64 sample/timestamp counts; UTF-8
+  per-channel rejection reasons. Matrices use `[window, channel]` ordering and
+  molar `M` units.
+- `/fnirs/provenance/*`: scalar source SHA-256, channel-map JSON and
+  preprocessing-provenance JSON.
+
+The native validator checks required paths, dimensions, dtypes, time/support
+bounds, channel-map alignment, source identity and QC codes. Clock-rejected
+statistics remain NaN. A rejected zero-support window may have paired NaN actual
+bounds; its support, coverage duration and counts must be zero. Window counts
+are nonnegative, except `segment_id=-1` as the unavailable sentinel. Unknown QC
+cannot pass the optional QC gate and no row
+is qualified by export. Generic `/time`, `/mnps_3d` and `/coords_9d` paths are
+forbidden in this contract.
+
+## fNIRS G5 geometric scalp-sector pilot
+
+The standalone `fnirs-region-export` command writes four pilot artifacts, not
+an MNPS/HDF5 surface: `regional_features.csv`, `channel_region_map.json`,
+`channel_loss_sensitivity.csv`, and `g5_manifest.json`. Contract
+`mndm.fnirs_sensor_sector.v0.1` accepts only CapTrak coordinates in metres with
+documented LPA/RPA/nasion orientation. It classifies long-channel midpoints by
+the signs of x and y into left/right anterior/posterior **scalp sectors**;
+pairs under 10 mm are excluded. Names do not imply cortical or anatomical
+regions.
+
+Regional HbO and HbR values are separate unweighted means of channel-window
+means in molar `M`. A value is present only when every expected channel is
+finite, has no G3 rejection reason, and meets the G3 support threshold within
+its declared floating-point tolerance. Output records window/source/time
+lineage, channel coverage, QC, validity, qualification, and claim status. QC,
+measurement validity and qualification remain `not_assessed`; `is_qualified`
+is always zero. The sensitivity CSV reports leave-one-source/detector-pair-out
+changes; it is not a filter or tuning result.
+
 

@@ -2,6 +2,7 @@
 
 from pathlib import Path
 import sys
+import json
 import warnings
 
 import numpy as np
@@ -55,6 +56,114 @@ def test_compute_eeg_features_shape():
     assert "eeg_hjorth_complexity" in out.columns
     assert "eeg_highfreq_power_30_45" in out.columns
     assert "eeg_hjorth_activity" not in out.columns
+
+
+def test_eeg_rows_keep_actual_epoch_indices_and_map_nominal_source_samples():
+    from mndm.features.eeg import compute_eeg_features
+
+    rng = np.random.default_rng(7)
+    signals = {
+        "signals": {"eeg": rng.normal(size=(2, 200))},
+        "sfreq": 10.0,
+        "meta": {
+            "signal_support_provenance": {
+                "raw_clock_before_crop": {
+                    "sfreq_hz": 100.0,
+                    "first_time_sec": 0.0,
+                    "first_samp": 0,
+                    "n_times": 3_000,
+                },
+                "raw_clock_after_crop": {
+                    "sfreq_hz": 10.0,
+                    "first_time_sec": 10.0,
+                    "first_samp": 100,
+                    "n_times": 200,
+                },
+            }
+        },
+    }
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 4.0},
+        "features": {"eeg_bands": {"alpha": [1.0, 4.0]}, "eeg_psd": {"method": "welch"}},
+    }
+    out = compute_eeg_features(signals, config)
+    assert out["preprocessed_sample_start"].tolist() == [0, 40, 80, 120]
+    assert out["preprocessed_sample_end_exclusive"].tolist() == [80, 120, 160, 200]
+    assert out["nominal_source_sample_start"].tolist() == [1000, 1400, 1800, 2200]
+    assert out["nominal_source_sample_end_exclusive"].tolist() == [1800, 2200, 2600, 3000]
+    assert set(out["source_sample_mapping_status"]) == {"nominal_bounds_mapped"}
+    assert set(out["actual_sample_contributors_status"]) == {"unknown"}
+    assert set(out["input_sample_finite_status"]) == {"all_finite"}
+
+
+def test_flattened_eeglab_epochs_do_not_claim_a_continuous_source_map():
+    from mndm.features.eeg import compute_eeg_features
+
+    signals = {
+        "signals": {"eeg": np.random.default_rng(9).normal(size=(2, 80))},
+        "sfreq": 10.0,
+        "meta": {
+            "eeglab_import": {"source": "eeglab_epoched_concat", "n_epochs": 1, "epoch_samples": 80},
+            "signal_support_provenance": {
+                "raw_clock_before_crop": {"sfreq_hz": 10.0, "first_time_sec": 0.0, "first_samp": 0, "n_times": 80},
+                "raw_clock_after_crop": {"sfreq_hz": 10.0, "first_time_sec": 0.0, "first_samp": 0, "n_times": 80},
+            },
+        },
+    }
+    out = compute_eeg_features(
+        signals,
+        {"epoching": {"length_s": 8.0, "step_s": 4.0}, "features": {"eeg_bands": {"alpha": [1.0, 4.0]}, "eeg_psd": {"method": "welch"}}},
+    )
+    assert len(out) == 1
+    assert out.loc[0, "source_sample_mapping_status"] == "unknown"
+    assert out.loc[0, "source_sample_mapping_reason"] == "flattened_eeglab_epochs_have_no_continuous_source_sample_map"
+    assert out.loc[0, "preprocessed_sample_start"] == 0
+    assert out.loc[0, "preprocessed_sample_end_exclusive"] == 80
+
+
+def test_eeg_epoch_exports_gap_spans_and_separate_technical_status(monkeypatch):
+    from mndm.features import eeg as eeg_mod
+
+    freqs = np.arange(0.0, 6.0, dtype=float)
+
+    def _fake_psd(data, **kwargs):
+        arr = np.asarray(data)
+        return np.ones((arr.shape[0], arr.shape[1], freqs.size), dtype=float), freqs
+
+    monkeypatch.setattr(eeg_mod, "_run_welch_psd_batched", _fake_psd)
+    data = np.tile(np.arange(80, dtype=float), (2, 1))
+    data[:, 30:32] = np.nan
+    signals = {
+        "signals": {"eeg": data},
+        "sfreq": 10.0,
+        "channels": {"eeg": ["C3", "C4"]},
+        "meta": {
+            "eeg_amplitude_unit": "microvolt",
+            "eeg_amplitude_unit_status": "verified",
+            "eeg_reference_mode": "average",
+            "eeg_reference_status": "verified",
+            "signal_support_provenance": {
+                "raw_clock_before_crop": {"sfreq_hz": 10.0, "first_time_sec": 0.0, "first_samp": 0, "n_times": 80},
+                "raw_clock_after_crop": {"sfreq_hz": 10.0, "first_time_sec": 0.0, "first_samp": 0, "n_times": 80},
+            },
+        },
+    }
+    config = {
+        "epoching": {"length_s": 8.0, "step_s": 8.0},
+        "features": {"eeg_bands": {"alpha": [1.0, 4.0]}, "eeg_psd": {"method": "welch"}},
+        "conventional_eeg": {"enabled": True, "packs": ["coma"], "coma": {"suppression_ratio": True}},
+    }
+    out = eeg_mod.compute_eeg_features(signals, config)
+    row = out.iloc[0]
+    assert row["technical_eeg_status"] == "invalid"
+    assert row["technical_eeg_reason"] == "non_finite_input_samples"
+    assert row["technical_eeg_gap_count"] == 1
+    assert row["input_sample_gap_count"] == 1
+    gap_span = json.loads(row["input_sample_gap_spans"])[0]
+    assert gap_span["preprocessed_sample_start"] == 30
+    assert gap_span["preprocessed_sample_end_exclusive"] == 32
+    assert gap_span["nominal_source_sample_start"] == 30
+    assert row["coma_proxy_suppression_status"] == "computed_segmented_with_gaps"
 
 
 def test_hjorth_activity_is_opt_in():
@@ -799,7 +908,14 @@ def test_compute_eeg_features_conventional_coma_outputs(monkeypatch):
     t = np.arange(n_samples, dtype=float) / float(sfreq)
     amp = np.where((np.floor(t / 2.0) % 2.0) == 0.0, 0.02, 1.0)
     eeg_data = (rng.normal(size=(n_channels, n_samples)) * amp[np.newaxis, :]).astype(np.float32)
-    signals = {"signals": {"eeg": eeg_data}, "sfreq": sfreq}
+    signals = {
+        "signals": {"eeg": eeg_data},
+        "sfreq": sfreq,
+        "meta": {
+            "eeg_amplitude_unit": "microvolt", "eeg_amplitude_unit_status": "verified",
+            "eeg_reference_mode": "average", "eeg_reference_status": "verified",
+        },
+    }
     config = {
         "epoching": {"length_s": 4.0, "step_s": 2.0},
         "features": {
@@ -895,4 +1011,76 @@ def test_compute_eeg_features_conventional_coma_reactivity_can_be_disabled(monke
     out = eeg_mod.compute_eeg_features(signals, config)
     assert "eeg_conventional_coma_suppression_ratio" in out.columns
     assert "eeg_conventional_coma_reactivity_proxy" not in out.columns
+
+
+def test_coma_proxy_preserves_gap_segments_and_refuses_unverified_amplitude_units():
+    from mndm.features.eeg import _compute_conventional_coma_features
+
+    cfg = {"enabled": True, "packs": ["coma"], "coma": {
+        "suppression": {"amplitude_floor": 0.5, "relative_to_rms": 0.0, "envelope_smoothing_sec": 0.0},
+        "suppression_ratio": True, "continuity_proxy": True, "burst_suppression_proxy": True,
+    }}
+    epoch = np.array([0.0, 0.0, 10.0, 10.0, np.nan, 0.0, 0.0, 10.0, 10.0])
+    computed = _compute_conventional_coma_features(
+        epoch_signal=epoch, sfreq=1.0, bandpowers={}, conventional_cfg=cfg,
+        amplitude_unit="microvolt", amplitude_unit_status="verified",
+        reference_mode="average", reference_status="verified",
+    )
+    assert computed["eeg_conventional_coma_suppression_ratio"] == 0.5
+    assert np.isclose(computed["eeg_conventional_coma_burst_suppression_proxy"], 1.0 / 3.0)
+    assert computed["coma_proxy_suppression_status"] == "computed_segmented_with_gaps"
+    assert computed["coma_proxy_gap_count"] == 1
+    assert computed["coma_proxy_segment_count"] == 2
+    assert computed["coma_proxy_valid_sample_fraction"] == 8.0 / 9.0
+    assert computed["coma_proxy_amplitude_status"] == "computed"
+    assert np.isclose(computed["eeg_conventional_coma_amplitude_rms"], np.sqrt(50.0))
+
+    unverified = _compute_conventional_coma_features(
+        epoch_signal=np.nan_to_num(epoch, nan=0.0), sfreq=1.0, bandpowers={}, conventional_cfg=cfg,
+        amplitude_unit=None, amplitude_unit_status="unknown",
+        reference_mode=None, reference_status="unknown",
+    )
+    assert unverified["coma_proxy_suppression_status"] == "not_testable"
+    assert unverified["coma_proxy_suppression_reason"] == "amplitude_unit_unverified;amplitude_reference_unverified"
+    assert np.isnan(unverified["eeg_conventional_coma_suppression_ratio"])
+    assert np.isnan(unverified["eeg_conventional_coma_amplitude_rms"])
+
+
+def test_technical_eeg_qc_separates_flatline_from_known_adc_rail_hits():
+    from mndm.features.eeg import _compute_technical_eeg_qc
+
+    flatline = _compute_technical_eeg_qc(
+        eeg_window=np.zeros((2, 20)), payload_meta={}, channel_names=["C3", "C4"]
+    )
+    assert flatline["technical_eeg_status"] == "suspect"
+    assert flatline["technical_eeg_reason"] == "all_eeg_channels_exactly_flatlined"
+    assert flatline["technical_eeg_flatline_channel_count"] == 2
+    assert flatline["technical_eeg_clipping_status"] == "not_assessed"
+
+    partial_flatline = _compute_technical_eeg_qc(
+        eeg_window=np.vstack([np.zeros(20), np.arange(20, dtype=float)]),
+        payload_meta={},
+        channel_names=["C3", "C4"],
+    )
+    assert partial_flatline["technical_eeg_status"] == "suspect"
+    assert partial_flatline["technical_eeg_reason"] == "one_or_more_eeg_channels_exactly_flatlined"
+    assert partial_flatline["technical_eeg_flatline_channel_count"] == 1
+    assert partial_flatline["technical_eeg_channel_status"] == "computed"
+
+    railed = np.tile(np.array([-5.0, -5.0, 0.0, 5.0, 5.0]), (2, 1))
+    clipped = _compute_technical_eeg_qc(
+        eeg_window=railed,
+        payload_meta={"eeg_adc_rails": {"status": "verified", "min": -5.0, "max": 5.0}},
+        channel_names=["C3", "C4"],
+    )
+    assert clipped["technical_eeg_status"] == "suspect"
+    assert clipped["technical_eeg_reason"] == "verified_adc_rail_hits_observed"
+    assert clipped["technical_eeg_clipping_status"] == "computed"
+    assert clipped["technical_eeg_adc_rail_fraction"] == 0.8
+
+    missing_channel_metadata = _compute_technical_eeg_qc(
+        eeg_window=np.ones((1, 20)), payload_meta={}, channel_names=None
+    )
+    assert missing_channel_metadata["technical_eeg_channel_status"] == "not_assessed"
+    assert missing_channel_metadata["technical_eeg_channel_reason"] == "eeg_channel_identity_unavailable"
 

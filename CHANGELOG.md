@@ -8,8 +8,8 @@ Patch on the v3.0.1 measurement contract. Package version `3.0.2`.
 Release notes: `release_notes/RELEASE_NOTES_v3.0.2.md`.
 
 Canonical `mnps_3d = [m, d, e]` and stratified `coords_9d` are unchanged.
-HDF5 `export_contract_version` for new fMRI files stays
-`mndm.fmri_h5_contract.v1`.
+New fMRI files use `export_contract_version` `mndm.fmri_h5_contract.v2`.
+EEG/MEG stay `mndm.eeg_h5_contract.v1`.
 
 - fMRI TR, atlas space, single session bandpass, nuisance status, gap-aware
   derivatives, and regional `dt` fail closed instead of inventing a TR, a

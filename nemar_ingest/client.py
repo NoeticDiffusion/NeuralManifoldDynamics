@@ -17,6 +17,7 @@ import logging
 import os
 import re
 import tempfile
+import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
@@ -211,24 +212,31 @@ class NemarClient:
         payload, _ = self._get_json_with_digest(url)
         return payload
 
-    def _get_json_with_digest(self, url: str) -> tuple[Any, str]:
-        try:
-            response = self._opener(Request(url, headers={"Accept": "application/json", "User-Agent": "NeuralManifoldDynamics/nemar-ingest"}), timeout=self.timeout)
-            with response:
-                raw = response.read()
-            return json.loads(raw), hashlib.sha256(raw).hexdigest()
-        except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
-            raise NemarError(f"nemar_manifest_fetch_failed:{url}:{exc}") from exc
+    def _get_json_with_digest(self, url: str, *, retries: int = 3) -> tuple[Any, str]:
+        last_error: Exception | None = None
+        attempts = max(1, int(retries))
+        for attempt in range(attempts):
+            try:
+                response = self._opener(Request(url, headers={"Accept": "application/json", "User-Agent": "NeuralManifoldDynamics/nemar-ingest"}), timeout=self.timeout)
+                with response:
+                    raw = response.read()
+                return json.loads(raw), hashlib.sha256(raw).hexdigest()
+            except (HTTPError, URLError, TimeoutError, OSError, json.JSONDecodeError) as exc:
+                last_error = exc
+                logger.warning("NEMAR manifest fetch attempt %s/%s failed for %s: %s", attempt + 1, attempts, url, exc)
+                if attempt + 1 < attempts:
+                    time.sleep(min(2 ** attempt, 8))
+        raise NemarError(f"nemar_manifest_fetch_failed:{url}:{last_error}") from last_error
 
     def get_manifest(self, dataset_id: str, version: str = "latest") -> tuple[str, tuple[ManifestEntry, ...]]:
         url, entries, _ = self.get_manifest_with_digest(dataset_id, version)
         return url, entries
 
     def get_manifest_with_digest(
-        self, dataset_id: str, version: str = "latest"
+        self, dataset_id: str, version: str = "latest", *, retries: int = 3
     ) -> tuple[str, tuple[ManifestEntry, ...], str]:
         url = self.manifest_url(dataset_id, version)
-        payload, digest = self._get_json_with_digest(url)
+        payload, digest = self._get_json_with_digest(url, retries=retries)
         return url, parse_manifest(payload, base_url=f"{self.data_base_url}/{dataset_id}/{version}"), digest
 
     def download_entry(

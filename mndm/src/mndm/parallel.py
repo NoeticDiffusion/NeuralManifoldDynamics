@@ -221,7 +221,36 @@ def _read_feature_table(path: Path) -> pd.DataFrame:
     suffix = path.suffix.lower()
     if suffix == ".parquet":
         return pd.read_parquet(path)
-    return pd.read_csv(path)
+    frame = pd.read_csv(path)
+    schema_path = path.with_name(path.name + ".schema.json")
+    if schema_path.exists():
+        with schema_path.open("r", encoding="utf-8") as stream:
+            schema = json.load(stream)
+        if not isinstance(schema, Mapping) or schema.get("schema") != "mndm.fnirs_csv_schema.v0.1":
+            raise ValueError(f"Unrecognized feature CSV schema sidecar: {schema_path}")
+        dtypes = schema.get("dtypes")
+        if not isinstance(dtypes, Mapping) or list(dtypes) != frame.columns.tolist():
+            raise ValueError(f"Feature CSV schema columns do not match {path}.")
+        try:
+            frame = frame.astype({str(name): str(dtype) for name, dtype in dtypes.items()})
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Feature CSV values do not match schema {schema_path}.") from exc
+    return frame
+
+
+def _write_feature_csv(frame: pd.DataFrame, path: Path) -> None:
+    """Write CSV and preserve native fNIRS dtypes in a validated sidecar."""
+    frame.to_csv(path, index=False)
+    schema_path = path.with_name(path.name + ".schema.json")
+    if "qc_ok_fnirs" not in frame.columns:
+        schema_path.unlink(missing_ok=True)
+        return
+    schema = {
+        "schema": "mndm.fnirs_csv_schema.v0.1",
+        "dtypes": {str(column): str(dtype) for column, dtype in frame.dtypes.items()},
+    }
+    with schema_path.open("w", encoding="utf-8") as stream:
+        json.dump(schema, stream, indent=2)
 
 
 def _merge_feature_frames(feature_dfs: list[pd.DataFrame]) -> pd.DataFrame:
@@ -235,6 +264,29 @@ def _merge_feature_frames(feature_dfs: list[pd.DataFrame]) -> pd.DataFrame:
     dfs = [df for df in feature_dfs if isinstance(df, pd.DataFrame) and not df.empty]
     if not dfs:
         return pd.DataFrame()
+
+    modality_prefixes = {
+        "eeg_", "meg_", "eog_", "emg_", "ecg_", "resp_", "eda_", "fmri_",
+        "ephys_", "ppg_", "pupil_", "cardioresp_", "fnirs_",
+    }
+    frame_modalities: list[set[str]] = []
+    for frame in dfs:
+        names = {str(column) for column in frame.columns}
+        detected = {prefix[:-1] for prefix in modality_prefixes if any(name.startswith(prefix) for name in names)}
+        if "qc_ok_fnirs" in names:
+            detected.add("fnirs")
+        frame_modalities.append(detected)
+    has_fnirs = any("fnirs" in detected for detected in frame_modalities)
+    n_fnirs_frames = sum("fnirs" in detected for detected in frame_modalities)
+    has_other_modality = any(detected - {"fnirs"} for detected in frame_modalities)
+    if n_fnirs_frames > 1:
+        raise ValueError(
+            "Multiple fNIRS feature frames may have independent source clocks and cannot be aligned by local epoch_id."
+        )
+    if has_fnirs and has_other_modality:
+        raise ValueError(
+            "fNIRS feature windows use an independent native clock and cannot be joined to another modality by epoch_id."
+        )
 
     has_epoch = any("epoch_id" in df.columns for df in dfs)
     if has_epoch:
@@ -273,7 +325,7 @@ def _merge_feature_frames(feature_dfs: list[pd.DataFrame]) -> pd.DataFrame:
 
     # Cross-modality resolver for embodiment axis:
     # prefer explicit autonomic/pupil signals before falling back to legacy EOG/EEG proxies.
-    if len(merged) > 0:
+    if len(merged) > 0 and not has_fnirs:
         try:
             merged = _drop_staged_resolver_columns(merged)
             proxy = np.full(len(merged), np.nan, dtype=np.float64)
@@ -306,7 +358,7 @@ def _merge_feature_frames(feature_dfs: list[pd.DataFrame]) -> pd.DataFrame:
 
 def _get_modality_handlers() -> Dict[str, Any]:
     """Resolve feature handlers lazily so optional modalities can be added safely."""
-    from .features import ecg, eda, eeg, emg, eog, ephys, fmri, meg, resp
+    from .features import ecg, eda, eeg, emg, eog, ephys, fmri, fnirs, meg, resp
 
     handlers: Dict[str, Any] = {
         "eeg": eeg.compute_eeg_features,
@@ -317,6 +369,7 @@ def _get_modality_handlers() -> Dict[str, Any]:
         "resp": resp.compute_resp_features,
         "eda": eda.compute_eda_features,
         "fmri": fmri.compute_fmri_features,
+        "fnirs": fnirs.compute_fnirs_features,
         "ephys": ephys.compute_ephys_features,
     }
     try:
@@ -384,6 +437,14 @@ def _compute_features_from_preprocessed(
     feature_stage_times: Dict[str, float] = {}
     mod_handlers = _get_modality_handlers()
     available_modalities = set(preprocessed.signals.keys())
+    quality_policy = (preprocessed.meta or {}).get("quality_interval_policy", {})
+    quality_mask_active = (
+        isinstance(quality_policy, Mapping)
+        and bool(quality_policy.get("enabled"))
+        and bool(quality_policy.get("mask_bad_annotations"))
+    )
+    gap_safe_feature_handlers = {"eeg", "eog", "emg", "ppg"}
+    withheld_modalities: list[dict[str, str]] = []
     # Multi-modal handlers that synthesise features from two or more raw channels.
     # Keyed by handler name; value is the set of ALL required modalities.
     # An empty set means the handler always runs and decides internally based on config.
@@ -394,6 +455,11 @@ def _compute_features_from_preprocessed(
         # something to anchor to (all three target datasets have EEG).
         "phase_anchor": {"eeg"},
     }
+    _QUALITY_HANDLER_INPUTS: Dict[str, set] = {
+        # phase_anchor optionally uses all three streams, even though it can
+        # still emit partial rows when ECG or respiration is absent.
+        "phase_anchor": {"eeg", "ecg", "resp"},
+    }
     for mod_name, mod_func in mod_handlers.items():
         required = _MULTIMODAL_REQUIRED.get(mod_name)
         if required is not None:
@@ -403,6 +469,30 @@ def _compute_features_from_preprocessed(
         else:
             if mod_name not in available_modalities:
                 continue
+        required_inputs = _QUALITY_HANDLER_INPUTS.get(
+            mod_name, _MULTIMODAL_REQUIRED.get(mod_name, {mod_name})
+        )
+        has_masked_support = any(
+            isinstance(preprocessed.signals.get(input_name), np.ndarray)
+            and not np.isfinite(preprocessed.signals[input_name]).all()
+            for input_name in required_inputs
+            if input_name in preprocessed.signals
+        )
+        if quality_mask_active and has_masked_support and mod_name not in gap_safe_feature_handlers:
+            withheld_modalities.append(
+                {
+                    "modality": str(mod_name),
+                    "reason": "feature_extractor_not_gap_safe",
+                }
+            )
+            feature_stage_times[f"feature_{mod_name}"] = 0.0
+            logger.warning(
+                "Withholding %s features for %s because selected BAD intervals are not "
+                "handled by a gap-safe extractor",
+                mod_name,
+                preprocessed.meta.get("file"),
+            )
+            continue
         t_mod0 = time.perf_counter()
         mod_features = mod_func(sig_payload, config)
         feature_stage_times[f"feature_{mod_name}"] = float(time.perf_counter() - t_mod0)
@@ -413,6 +503,45 @@ def _compute_features_from_preprocessed(
         return None, feature_stage_times
     t_merge0 = time.perf_counter()
     merged = _merge_feature_frames(feature_dfs)
+    if (
+        quality_mask_active
+        and "eeg" in available_modalities
+    ):
+        eeg_frames = [
+            frame
+            for modality, frame in zip(produced_modalities, feature_dfs)
+            if modality == "eeg"
+        ]
+        valid_eeg_ids: set[int] = set()
+        status = "applied"
+        if eeg_frames and "epoch_id" in eeg_frames[0].columns:
+            values = pd.to_numeric(eeg_frames[0]["epoch_id"], errors="coerce").dropna()
+            valid_eeg_ids = {int(value) for value in values.tolist()}
+        else:
+            # Without an EEG-valid epoch index, auxiliary rows cannot be
+            # aligned safely to the quality policy. Fail closed for this file.
+            status = "not_testable_missing_eeg_epoch_id"
+        rows_before = int(len(merged))
+        if "epoch_id" in merged.columns:
+            before_ids = pd.to_numeric(merged["epoch_id"], errors="coerce")
+            before_id_set = {int(value) for value in before_ids.dropna().tolist()}
+            excluded_ids = sorted(before_id_set - valid_eeg_ids)
+            merged = merged.loc[before_ids.isin(valid_eeg_ids)].copy().reset_index(drop=True)
+        else:
+            excluded_ids = []
+            merged = merged.iloc[0:0].copy()
+            status = "not_testable_missing_merged_epoch_id"
+        quality_epoch_intersection = {
+            "status": status,
+            "required_modality": "eeg",
+            "rows_before": rows_before,
+            "rows_after": int(len(merged)),
+            "valid_eeg_epoch_count": int(len(valid_eeg_ids)),
+            "excluded_epoch_ids": excluded_ids,
+            "withheld_modalities": withheld_modalities,
+            "reason": "masked_quality_support_must_not_be_reintroduced_by_outer_modality_join",
+        }
+        merged.attrs["quality_interval_epoch_intersection"] = quality_epoch_intersection
     support_records = [
         frame.attrs.get("signal_support_provenance")
         for frame in feature_dfs
@@ -431,6 +560,9 @@ def _compute_features_from_preprocessed(
                     operations.append(operation)
                     seen.add(identifier)
         canonical["operations"] = operations
+        quality_epoch_intersection = getattr(merged, "attrs", {}).get("quality_interval_epoch_intersection")
+        if isinstance(quality_epoch_intersection, Mapping):
+            canonical["quality_interval_epoch_intersection"] = dict(quality_epoch_intersection)
         # These extractors use start_idx / sfreq and end_idx / sfreq against
         # the supplied cropped arrays. Other modalities remain unqualified.
         if set(produced_modalities).issubset({"eeg", "eog", "emg", "ppg"}):
@@ -441,7 +573,20 @@ def _compute_features_from_preprocessed(
                 "bounds_convention": "half_open_nominal_input_window",
                 "effective_filter_support": "unknown",
             }
+        fnirs_feature_provenance = next(
+            (
+                frame.attrs.get("fnirs_feature_provenance")
+                for frame in feature_dfs
+                if isinstance(getattr(frame, "attrs", None), Mapping)
+                and isinstance(frame.attrs.get("fnirs_feature_provenance"), Mapping)
+            ),
+            None,
+        )
+        if fnirs_feature_provenance is not None:
+            canonical["fnirs_feature_provenance"] = dict(fnirs_feature_provenance)
         merged.attrs["signal_support_provenance"] = canonical
+        if fnirs_feature_provenance is not None:
+            merged.attrs["fnirs_feature_provenance"] = dict(fnirs_feature_provenance)
     feature_stage_times["merge_modalities"] = float(time.perf_counter() - t_merge0)
     return merged, feature_stage_times
 
@@ -509,7 +654,13 @@ def _stable_seed_token(file_path: Path, config: Dict[str, Any]) -> str:
     return file_path.name.lower()
 
 
-def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult:
+def process_single_file(
+    file_path: Path,
+    config: Dict[str, Any],
+    *,
+    index_record: Optional[Mapping[str, Any]] = None,
+    dataset_root: Optional[Path] = None,
+) -> WorkerResult:
     """Process a single file and return a :class:`WorkerResult`.
 
     Intended for worker processes: pins BLAS threads and returns features or an
@@ -591,7 +742,12 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
         t0 = time.perf_counter()
         from . import preprocess
 
-        preprocessed = preprocess.preprocess_file(file_path, config)
+        preprocessed = preprocess.preprocess_file(
+            file_path,
+            config,
+            index_record=index_record,
+            dataset_root=dataset_root,
+        )
         _track_rss()
         t1 = time.perf_counter()
         stage_times["preprocess"] = float(t1 - t0)
@@ -620,6 +776,12 @@ def process_single_file(file_path: Path, config: Dict[str, Any]) -> WorkerResult
             feature_support = getattr(merged, "attrs", {}).get("signal_support_provenance")
             if feature_support:
                 merged_meta["signal_support_provenance"] = feature_support
+            quality_epoch_intersection = getattr(merged, "attrs", {}).get("quality_interval_epoch_intersection")
+            if isinstance(quality_epoch_intersection, Mapping):
+                merged_meta["quality_interval_epoch_intersection"] = dict(quality_epoch_intersection)
+            fnirs_feature_provenance = getattr(merged, "attrs", {}).get("fnirs_feature_provenance")
+            if fnirs_feature_provenance:
+                merged_meta["fnirs_feature_provenance"] = fnirs_feature_provenance
             merged["file"] = str(file_path.name)
             total = float(time.perf_counter() - t0)
             stage_times["worker_total"] = total
@@ -711,6 +873,17 @@ def process_file_bundle(bundle_records: list[Dict[str, Any]], dataset_root: Path
         skipped_modalities: list[str] = []
         preprocess_meta: Dict[str, Any] = {}
         t0 = time.perf_counter()
+        _fnirs_modalities = {"fnirs", "eeg", "meg", "fmri", "ephys", "ecg", "eog", "emg", "resp", "eda", "ppg", "pupil"}
+        declared_modalities = {
+            str(row.get("modality", "") or "").strip().lower()
+            for row in bundle_records
+        }
+        fnirs_bundle_is_mixed = "fnirs" in declared_modalities and bool((declared_modalities & _fnirs_modalities) - {"fnirs"})
+        fnirs_source_count = sum(
+            str(row.get("modality", "") or "").strip().lower() == "fnirs"
+            for row in bundle_records
+        )
+        fnirs_bundle_has_multiple_sources = fnirs_source_count > 1
 
         for row in bundle_records:
             rel = str(row.get("path", "") or "")
@@ -731,9 +904,37 @@ def process_file_bundle(bundle_records: list[Dict[str, Any]], dataset_root: Path
                 continue
 
             t_pre0 = time.perf_counter()
-            preprocessed = preprocess.preprocess_file(path, config)
+            try:
+                preprocessed = preprocess.preprocess_file(
+                    path,
+                    config,
+                    index_record=row,
+                    dataset_root=dataset_root,
+                )
+            except Exception as exc:
+                if modality != "fnirs" and not suffixes.endswith(".snirf"):
+                    raise
+                stage_times["preprocess_fnirs"] = float(time.perf_counter() - t_pre0)
+                skipped_modalities.append(f"fnirs:preprocess_failed:{type(exc).__name__}")
+                if isinstance(exc, preprocess.FnirsMetadataRejected):
+                    preprocess_meta["fnirs_metadata_report"] = exc.report
+                else:
+                    preprocess_meta["fnirs_preprocess_error"] = str(exc)
+                continue
             stage_times[f"preprocess_{modality or path.suffix.lower().lstrip('.')}"] = float(time.perf_counter() - t_pre0)
             _track_rss()
+
+            if modality == "fnirs":
+                # Preserve successful preprocessing provenance until the native
+                # fNIRS feature contract and timebase have their own CSV rows.
+                preprocess_meta.setdefault("fnirs_preprocessing", preprocessed.meta)
+                preprocess_meta.setdefault("fnirs_preprocessing_by_file", {})[rel] = preprocessed.meta
+                if fnirs_bundle_has_multiple_sources:
+                    skipped_modalities.append("fnirs:multiple_sources_bundle_unsupported")
+                    continue
+                if fnirs_bundle_is_mixed:
+                    skipped_modalities.append("fnirs:bundle_timebase_unsupported")
+                    continue
 
             per_file_df, feature_stage_times = _compute_features_from_preprocessed(
                 preprocessed,
@@ -746,6 +947,10 @@ def process_file_bundle(bundle_records: list[Dict[str, Any]], dataset_root: Path
             if per_file_df is None or per_file_df.empty:
                 skipped_modalities.append(f"{modality}:no_features")
                 continue
+            if modality == "fnirs":
+                feature_provenance = getattr(per_file_df, "attrs", {}).get("fnirs_feature_provenance")
+                if feature_provenance:
+                    preprocess_meta["fnirs_feature_provenance"] = feature_provenance
             merged_bundle_frames.append(per_file_df)
             bundle_modalities.append(modality)
             preprocess_meta[f"{modality}_source_file"] = str(path)
@@ -785,6 +990,7 @@ def process_file_bundle(bundle_records: list[Dict[str, Any]], dataset_root: Path
             features_df=None,
             meta=_attach_memory_meta(
                 {
+                    **preprocess_meta,
                     "bundle_key": bundle_key,
                     "bundle_modalities": bundle_modalities,
                     "skipped_modalities": skipped_modalities,
@@ -848,7 +1054,7 @@ def write_temp_features_csv(
 
     if write_csv:
         temp_csv = base.with_suffix(".csv")
-        features_df.to_csv(temp_csv, index=False)
+        _write_feature_csv(features_df, temp_csv)
         logger.debug("Wrote temp features CSV: %s", temp_csv)
     if write_parquet:
         temp_parquet = base.with_suffix(".parquet")
@@ -1026,6 +1232,12 @@ def merge_temp_features(
             temp_file.unlink()
         except Exception as e:
             logger.warning("Failed to delete %s: %s", temp_file, e)
+        if temp_file.suffix.lower() == ".csv":
+            schema_path = temp_file.with_name(temp_file.name + ".schema.json")
+            try:
+                schema_path.unlink(missing_ok=True)
+            except Exception as e:
+                logger.warning("Failed to delete %s: %s", schema_path, e)
 
     # Optional ordering for readability
     if "file" in merged.columns and "epoch_id" in merged.columns:
@@ -1047,8 +1259,13 @@ def write_merged_features(
     write_parquet = bool((io_policy or {}).get("write_parquet", False))
     if write_csv:
         csv_path = ds_path / "features.csv"
-        merged_df.to_csv(csv_path, index=False)
+        _write_feature_csv(merged_df, csv_path)
+        if "qc_ok_fnirs" not in merged_df.columns:
+            csv_path.with_name(csv_path.name + ".schema.json").unlink(missing_ok=True)
         out_paths["csv"] = csv_path
+        schema_path = csv_path.with_name(csv_path.name + ".schema.json")
+        if schema_path.exists():
+            out_paths["csv_schema"] = schema_path
     if write_parquet:
         parquet_path = ds_path / "features.parquet"
         try:

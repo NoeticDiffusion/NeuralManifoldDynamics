@@ -253,7 +253,8 @@ def download_dataset(
     _guard_existing_receipt(root, dataset, version)
 
     active_client = client or NemarClient(data_base_url=str(download_cfg.get("data_base_url", "https://data.nemar.org")))
-    manifest_url, entries, manifest_digest = active_client.get_manifest_with_digest(dataset, version)
+    retries = max(1, int(download_cfg.get("retries", 3)))
+    manifest_url, entries, manifest_digest = active_client.get_manifest_with_digest(dataset, version, retries=retries)
     selected = select_manifest_entries(entries, selection)
 
     if backend in {"cli", "auto"}:
@@ -271,7 +272,6 @@ def download_dataset(
 
     if backend not in {"manifest", "auto"}:
         raise ValueError(f"unsupported_nemar_backend:{backend}")
-    retries = max(1, int(download_cfg.get("retries", 3)))
     verify_checksum = bool(download_cfg.get("verify_checksum", True))
     verify_size = bool(download_cfg.get("verify_size", True))
     continue_on_error = bool(download_cfg.get("continue_on_error", True))

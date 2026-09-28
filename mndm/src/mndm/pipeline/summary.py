@@ -99,6 +99,22 @@ from .summary_utils import (
 from .time_reference import build_time_reference_for_run
 from .phase_continuous_export import build_phase2_extensions_for_run
 from .conventional_summary import compute_conventional_eeg_summary
+from .fold_safe import (
+    FoldSelection,
+    FoldSplit,
+    FoldSplitError,
+    build_apply_provenance,
+    build_training_replay_provenance,
+    fit_fold_anchor_artifact,
+    implementation_sha256,
+    load_fold_split,
+    load_signal_support_ledger,
+    select_fold_rows,
+    transform_config_sha256,
+    validate_fold_anchor_artifact,
+    validate_fold_signal_support,
+    verify_source_file_hashes,
+)
 from .baseline_qc import (
     compute_feature_baseline_comparisons,
     compute_null_sanity_tests,
@@ -1657,6 +1673,12 @@ class DatasetSummaryRunner:
             "method": None,
             "scope": None,
         }
+        self._fold_split: Optional[FoldSplit] = None
+        self._fold_selection: Optional[FoldSelection] = None
+        self._fold_role: Optional[str] = None
+        self._fold_anchor_artifact: Optional[dict[str, Any]] = None
+        self._fold_verified_source_hashes: Dict[str, str] = {}
+        self._fold_signal_support_validation: Optional[dict[str, Any]] = None
 
     @staticmethod
     def _normalize_subject(value: Optional[str]) -> Optional[str]:
@@ -1813,6 +1835,274 @@ class DatasetSummaryRunner:
                 resolved = _deep_merge_dict(resolved, ds_cfg)
         resolved.pop("datasets", None)
         return resolved
+
+    def _fold_transform_config(self) -> Dict[str, Any]:
+        """Resolve settings that affect the chart transform, excluding fit/apply routing."""
+        proj_cfg = self.config.get("mnps_projection", {}) if isinstance(self.config, Mapping) else {}
+        proj_cfg = proj_cfg if isinstance(proj_cfg, Mapping) else {}
+        resolved_config = copy.deepcopy(dict(self.config)) if isinstance(self.config, Mapping) else {}
+        # Data and output roots differ between deployment environments and do
+        # not define the transform. Role-specific routing and anchor paths also
+        # differ by design, while all measurement and feature-generation
+        # settings must remain identical between fit and apply.
+        resolved_config.pop("paths", None)
+        resolved_projection = resolved_config.get("mnps_projection", {})
+        if isinstance(resolved_projection, dict):
+            for key in ("fold_safe", "anchor", "anchor_auto_fit"):
+                resolved_projection.pop(key, None)
+        v2_cfg = self.config.get("mnps_9d", {}) if isinstance(self.config, Mapping) else {}
+        v2_enabled, v2_version, selected_v2, subcoords = _resolve_mnps_9d_runtime_config(
+            v2_cfg if isinstance(v2_cfg, Mapping) else {}, self.ds_id
+        )
+        return {
+            "normalization": self._resolve_normalization_cfg(),
+            "normalize_mode": getattr(getattr(self, "ctx", None), "normalize_override", None),
+            "feature_standardization": proj_cfg.get("feature_standardization", {}),
+            "clip_threshold": float(proj_cfg.get("clip_threshold", 6.0)),
+            "mnps_3d": _resolve_mnps_3d_cfg(self.config if isinstance(self.config, Mapping) else {}),
+            "mnps_3d_weights": getattr(getattr(self, "ctx", None), "weights", {}),
+            "mnps_9d": {
+                "enabled": bool(v2_enabled),
+                "definition_version": str(v2_version),
+                "resolved_config": selected_v2,
+                "resolved_subcoords": subcoords,
+            },
+            "resolved_ingest_config": resolved_config,
+        }
+
+    def _fold_transform_implementation_hash(self) -> str:
+        """Bind artifacts to the code implementing feature transform and charts."""
+        from . import fold_safe as fold_safe_module
+
+        return implementation_sha256(
+            [Path(__file__), Path(anchors.__file__), Path(projection.__file__), Path(fold_safe_module.__file__)]
+        )
+
+    def _verify_fold_source_hashes(self, selection: FoldSelection, split: FoldSplit) -> Dict[str, str]:
+        """Resolve selected recordings through file_index and verify their raw bytes."""
+        recordings = sorted({str(item["recording_id"]) for item in selection.row_records})
+        subjects_by_recording: Dict[str, set[str]] = {}
+        for item in selection.row_records:
+            subjects_by_recording.setdefault(str(item["recording_id"]), set()).add(str(item["subject_id"]))
+        ambiguous_subjects = sorted(name for name, subjects in subjects_by_recording.items() if len(subjects) != 1)
+        if ambiguous_subjects:
+            raise FoldSplitError(
+                "one raw recording identity is assigned to multiple subjects: " + ", ".join(ambiguous_subjects)
+            )
+        expected = {name: split.payload["source_file_sha256"][name] for name in recordings}
+        if self.index_df is None or not self._index_paths_by_basename:
+            raise FoldSplitError("fold-safe raw source verification requires the current file_index")
+        dataset_root = Path(self._dataset_root()).resolve()
+        paths: Dict[str, Path] = {}
+        for name in recordings:
+            candidates = self._lookup_rel_paths_by_file_value(name)
+            if len(candidates) != 1:
+                raise FoldSplitError(
+                    f"raw source {name!r} resolves to {len(candidates)} file_index paths; expected exactly one"
+                )
+            candidate = (dataset_root / Path(candidates[0])).resolve()
+            try:
+                candidate.relative_to(dataset_root)
+            except ValueError as exc:
+                raise FoldSplitError(f"file_index path escapes the received dataset root for {name}") from exc
+            indexed_rows = self.index_df.loc[self.index_df["path"].astype(str) == str(candidates[0])]
+            if len(indexed_rows) != 1:
+                raise FoldSplitError(f"raw source {name!r} does not resolve to exactly one file_index row")
+            if "subject" not in indexed_rows.columns:
+                raise FoldSplitError(f"raw source {name!r} file_index has no subject identity")
+            indexed_subject = indexed_rows.iloc[0].get("subject")
+            if indexed_subject is None or pd.isna(indexed_subject) or not str(indexed_subject).strip():
+                raise FoldSplitError(f"raw source {name!r} file_index subject is missing")
+            normalized_subject = self._normalize_subject(str(indexed_subject))
+            selected_subject = next(iter(subjects_by_recording[name]))
+            if normalized_subject != selected_subject:
+                raise FoldSplitError(
+                    f"raw source {name!r} file_index subject does not match selected feature rows"
+                )
+            paths[name] = candidate
+        return verify_source_file_hashes(expected, paths)
+
+    def _fold_safe_config(self) -> Dict[str, Any]:
+        """Return the optional explicit split-fit/apply configuration."""
+        proj_cfg = self.config.get("mnps_projection", {}) if isinstance(self.config, Mapping) else {}
+        raw = proj_cfg.get("fold_safe", {}) if isinstance(proj_cfg, Mapping) else {}
+        return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def _fold_projection_feature_columns(self) -> list[str]:
+        """Resolve only features that feed the configured 3D or 9D chart."""
+        columns: set[str] = set()
+        weights = getattr(getattr(self, "ctx", None), "weights", {})
+        if isinstance(weights, Mapping):
+            for axis_weights in weights.values():
+                if not isinstance(axis_weights, Mapping):
+                    continue
+                for name, weight in axis_weights.items():
+                    try:
+                        if abs(float(weight)) > 0:
+                            columns.add(str(name))
+                    except (TypeError, ValueError):
+                        continue
+        v2_cfg = self.config.get("mnps_9d", {}) if isinstance(self.config, Mapping) else {}
+        if isinstance(v2_cfg, Mapping):
+            v2_enabled, _, _, v2_subcoords = _resolve_mnps_9d_runtime_config(v2_cfg, self.ds_id)
+            if v2_enabled:
+                for subcoord_weights in v2_subcoords.values():
+                    if not isinstance(subcoord_weights, Mapping):
+                        continue
+                    for name, weight in subcoord_weights.items():
+                        try:
+                            if abs(float(weight)) > 0:
+                                columns.add(str(name))
+                        except (TypeError, ValueError):
+                            continue
+        return sorted(columns)
+
+    def _apply_fold_safe_partition(self, features_df: pd.DataFrame) -> pd.DataFrame:
+        """Restrict this summarize pass to one manifest partition, if enabled."""
+        fold_cfg = self._fold_safe_config()
+        if not bool(fold_cfg.get("enabled", False)):
+            return features_df
+        manifest_raw = str(fold_cfg.get("manifest", "")).strip()
+        role = str(fold_cfg.get("role", "")).strip().lower()
+        if not manifest_raw:
+            raise FoldSplitError("mnps_projection.fold_safe.manifest is required")
+        if role not in {"training", "apply"}:
+            raise FoldSplitError("mnps_projection.fold_safe.role must be 'training' or 'apply'")
+        manifest_path = Path(manifest_raw).expanduser()
+        if not manifest_path.is_absolute() and self.config_path is not None:
+            manifest_path = self.config_path.parent / manifest_path
+        split = load_fold_split(manifest_path)
+        self._fold_split = split
+        self._fold_role = role
+        ledger_raw = str(fold_cfg.get("signal_support_ledger", "")).strip()
+        if not ledger_raw:
+            raise FoldSplitError("mnps_projection.fold_safe.signal_support_ledger is required")
+        ledger_path = Path(ledger_raw).expanduser()
+        if not ledger_path.is_absolute():
+            ledger_path = manifest_path.parent / ledger_path
+        support_ledger = load_signal_support_ledger(
+            ledger_path,
+            expected_sha256=str(split.payload.get("signal_support_ledger_sha256", "")),
+        )
+        training_selection = select_fold_rows(features_df, split, "training")
+        apply_selection = select_fold_rows(features_df, split, "apply")
+        self._fold_signal_support_validation = validate_fold_signal_support(
+            training_selection,
+            apply_selection,
+            split,
+            support_ledger,
+        )
+        selection = training_selection if role == "training" else apply_selection
+        self._fold_selection = selection
+        verified_source_hashes = self._verify_fold_source_hashes(selection, split)
+
+        proj_cfg = self.config.get("mnps_projection", {}) if isinstance(self.config, Mapping) else {}
+        proj_cfg = proj_cfg if isinstance(proj_cfg, Mapping) else {}
+        export_cfg = proj_cfg.get("export_contracts", {})
+        export_cfg = export_cfg if isinstance(export_cfg, Mapping) else {}
+        if bool(export_cfg.get("subject_anchored", True)) or not bool(export_cfg.get("cohort_anchored", False)):
+            raise FoldSplitError(
+                "fold-safe charts require export_contracts.subject_anchored=false and "
+                "export_contracts.cohort_anchored=true so every exported row uses the frozen fit artifact"
+            )
+        normalize_mode = getattr(getattr(self, "ctx", None), "normalize_override", None)
+        if not normalize_mode:
+            raise FoldSplitError("fold-safe external anchor requires an enabled feature normalization mode")
+        feature_columns = self._fold_projection_feature_columns()
+        if not feature_columns:
+            raise FoldSplitError("fold-safe chart has no configured weighted features")
+        standardization = proj_cfg.get("feature_standardization", {})
+        for name in feature_columns:
+            steps = projection._resolve_feature_pipeline(name, standardization if isinstance(standardization, Mapping) else None)
+            if not any(str(step).strip().lower() in {"robust_z", "robust"} for step in steps):
+                raise FoldSplitError(
+                    f"fold-safe chart feature {name!r} has no fitted robust-z step to receive the saved anchor"
+                )
+
+        anchor_cfg = proj_cfg.get("anchor", {})
+        anchor_cfg = anchor_cfg if isinstance(anchor_cfg, Mapping) else {}
+        if role == "training":
+            if not self._anchor_auto_fit_enabled():
+                raise FoldSplitError("training role requires mnps_projection.anchor_auto_fit.enabled=true")
+            if bool(anchor_cfg.get("enabled", False)):
+                raise FoldSplitError("training role must fit its anchor and cannot load a pre-existing anchor")
+        else:
+            if self._anchor_auto_fit_enabled():
+                raise FoldSplitError("apply role must use the saved fit artifact; anchor_auto_fit must be disabled")
+            if not bool(anchor_cfg.get("enabled", False)):
+                raise FoldSplitError("apply role requires mnps_projection.anchor.enabled=true")
+            anchor_path = _resolve_anchor_path(anchor_cfg.get("path"), config=self.config)
+            if anchor_path is None or not anchor_path.is_file():
+                raise FoldSplitError(f"apply anchor artifact is missing: {anchor_path}")
+            try:
+                artifact = anchors.load_anchor_file(anchor_path)
+            except Exception as exc:
+                raise FoldSplitError(f"could not read apply anchor artifact: {anchor_path}") from exc
+            fit_record = validate_fold_anchor_artifact(artifact, split)
+            current_config_hash = transform_config_sha256(self._fold_transform_config())
+            if fit_record.get("config_sha256") != current_config_hash:
+                raise FoldSplitError("apply transform configuration differs from the fitted artifact")
+            current_implementation_hash = self._fold_transform_implementation_hash()
+            if fit_record.get("implementation_sha256") != current_implementation_hash:
+                raise FoldSplitError("apply transform implementation differs from the fitted artifact")
+            if str(fit_record.get("code_version", "")) != str(_MNDM_VERSION):
+                raise FoldSplitError("apply MNDM code version differs from the fitted artifact")
+            artifact_spec = artifact.get("spec", {}) if isinstance(artifact, Mapping) else {}
+            expected_method = str(anchor_cfg.get("scale_method", "iqr")).strip().lower()
+            expected_min_subjects = int(anchor_cfg.get("min_subjects", 1) or 1)
+            if str(artifact_spec.get("scale_method", "")).strip().lower() != expected_method:
+                raise FoldSplitError("apply anchor scale_method differs from the fitted artifact")
+            if int(artifact_spec.get("min_subjects", 0) or 0) != expected_min_subjects:
+                raise FoldSplitError("apply anchor min_subjects differs from the fitted artifact")
+            usable_mapping = anchors.anchor_mapping(
+                artifact,
+                scale_method=expected_method,
+                min_subjects=expected_min_subjects,
+            )
+            missing_anchor_features = sorted(set(feature_columns) - set(usable_mapping))
+            if missing_anchor_features:
+                raise FoldSplitError(
+                    "saved anchor has no valid fitted parameters for chart feature(s): "
+                    + ", ".join(missing_anchor_features)
+                )
+            self._fold_anchor_artifact = artifact
+
+        self._fold_split = split
+        self._fold_selection = selection
+        self._fold_role = role
+        self._fold_verified_source_hashes = verified_source_hashes
+        logger.info(
+            "Fold-safe summarize %s selected %d rows for split %s (%s)",
+            role,
+            len(selection.row_records),
+            split.payload["split_id"],
+            split.sha256,
+        )
+        return selection.frame
+
+    def _fold_chart_provenance(self, sub_frame: pd.DataFrame) -> Optional[dict[str, Any]]:
+        """Return row-specific transform provenance for one output chart."""
+        if self._fold_split is None or self._fold_selection is None or self._fold_anchor_artifact is None:
+            return None
+        role = self._fold_role or "apply"
+        # Filtering helpers may reset DataFrame indices. Re-derive stable row
+        # identities from the declared clocks and source IDs instead of using
+        # transient pandas indices to join provenance to chart rows.
+        selection = select_fold_rows(sub_frame, self._fold_split, role)
+        original_row_ids = set(self._fold_selection.row_ids)
+        if len(selection.row_records) != len(sub_frame) or not set(selection.row_ids).issubset(original_row_ids):
+            raise FoldSplitError("output chart rows do not match the active fold partition identities")
+        if selection.role == "training":
+            provenance = build_training_replay_provenance(self._fold_anchor_artifact, self._fold_split, selection)
+        else:
+            provenance = build_apply_provenance(
+                self._fold_anchor_artifact,
+                self._fold_split,
+                selection,
+                verified_source_file_sha256=self._fold_verified_source_hashes,
+            )
+        provenance["signal_support_validation"] = self._fold_signal_support_validation
+        return provenance
 
     @staticmethod
     def _normalization_key_candidates(raw_key: str) -> List[str]:
@@ -2324,6 +2614,21 @@ class DatasetSummaryRunner:
                 "status": "pending" if bool(validation_cfg.get("enabled", False)) and enabled else "disabled",
             },
         }
+        if self._fold_split is not None and enabled:
+            reason = (
+                "not_testable: enabled post-feature normalization has no saved fit/apply artifact "
+                "in fold-safe summarize; refusing to fit on this partition"
+            )
+            self._normalization_report.update(
+                {
+                    "status": "not_testable",
+                    "fit_status": "not_testable",
+                    "apply_status": "not_testable",
+                    "reason": reason,
+                    "split_manifest_sha256": self._fold_split.sha256,
+                }
+            )
+            raise FoldSplitError(reason)
         if not enabled:
             return features_df
         if method != "combat":
@@ -2766,7 +3071,26 @@ class DatasetSummaryRunner:
             return
 
         features_df = self._apply_qc_filters(features_df)
-        features_df = self._apply_feature_normalization(features_df)
+        try:
+            features_df = self._apply_fold_safe_partition(features_df)
+        except FoldSplitError as exc:
+            if bool(self._fold_safe_config().get("enabled", False)):
+                try:
+                    refusal_path = self._persist_fold_refusal_report(ds_path, reason=str(exc))
+                    logger.warning("Fold-safe partition refused; wrote %s", refusal_path)
+                except Exception:
+                    logger.exception("Failed to persist fold-safe refusal report for %s", self.ds_id)
+            raise
+        try:
+            features_df = self._apply_feature_normalization(features_df)
+        except FoldSplitError as exc:
+            if self._normalization_report.get("status") == "not_testable":
+                try:
+                    refusal_path = self._persist_fold_refusal_report(ds_path, reason=str(exc))
+                    logger.warning("Fold-safe transform refused; wrote %s", refusal_path)
+                except Exception:
+                    logger.exception("Failed to persist fold-safe refusal report for %s", self.ds_id)
+            raise
 
         try:
             grouping_items = self._build_groupings(features_df)
@@ -2796,7 +3120,19 @@ class DatasetSummaryRunner:
         }
         run_fatal_error: Optional[Exception] = None
         try:
-            self._prepare_one_shot_anchor(features_df, mnps_dir)
+            try:
+                self._prepare_one_shot_anchor(features_df, mnps_dir)
+            except Exception as exc:
+                if self._fold_split is not None:
+                    try:
+                        refusal_path = self._persist_fold_refusal_report(
+                            ds_path,
+                            reason=f"fit-stage refusal ({type(exc).__name__}): {exc}",
+                        )
+                        logger.warning("Fold-safe anchor fit refused; wrote %s", refusal_path)
+                    except Exception:
+                        logger.exception("Failed to persist fold-safe fit refusal for %s", self.ds_id)
+                raise
             self._write_features_snapshot(mnps_dir, features_df)
             if grouping_items:
                 max_workers = min(max(1, self.n_jobs), len(grouping_items), multiprocessing.cpu_count())
@@ -2878,22 +3214,7 @@ class DatasetSummaryRunner:
 
             # Write a run-level manifest for quick inspection (humans + LLMs).
             try:
-                signal_support_records: list[Dict[str, Any]] = []
                 qc_dir = ds_path / "qc_artifacts"
-                if qc_dir.exists():
-                    for sidecar in sorted(qc_dir.glob("*.json")):
-                        try:
-                            sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
-                        except Exception:
-                            continue
-                        support = sidecar_data.get("signal_support_provenance") if isinstance(sidecar_data, Mapping) else None
-                        if isinstance(support, Mapping):
-                            source_identity = support.get("source", {})
-                            raw_name = Path(str(source_identity.get("path", ""))).name if isinstance(source_identity, Mapping) else ""
-                            valid, reason = validate_support_record(support, raw_name)
-                            if sidecar.name != f"{Path(raw_name).stem}_qc_artifacts.json":
-                                valid, reason = False, "support_sidecar_identity_mismatch"
-                            signal_support_records.append({**dict(support), "raw_file": raw_name, "validation_status": "valid" if valid else "unknown", "validation_reason": reason})
                 write_run_manifest(
                     mnps_dir=mnps_dir,
                     config=self.config,
@@ -2919,12 +3240,7 @@ class DatasetSummaryRunner:
                         "run_errors": run_errors_info,
                         "skipped_recordings": skipped_recordings_info,
                         "fatal_error": fatal_error_summary,
-                        "signal_support_provenance": {
-                            "schema": "mndm.signal_support_provenance.v1",
-                            "status": "recorded" if signal_support_records and all(r.get("validation_status") == "valid" for r in signal_support_records) else "unknown",
-                            "temporal_support_status": "unknown",
-                            "records": signal_support_records,
-                        },
+                        "signal_support_provenance": self._collect_run_signal_support_provenance(qc_dir),
                     },
                 )
             except Exception:
@@ -3311,6 +3627,33 @@ class DatasetSummaryRunner:
             logger.exception("Failed to write normalization_report.json for %s (%s)", self.ds_id, out_path)
         return summary
 
+    def _persist_fold_refusal_report(self, ds_path: Path, *, reason: Optional[str] = None) -> Path:
+        """Persist a machine-readable record when a fold transform is refused."""
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")
+        mnps_dir = ds_path / f"neuralmanifolddynamics_{self.ds_id}_fold_refusal_{ts}"
+        mnps_dir.mkdir(parents=True, exist_ok=False)
+        fold_cfg = self._fold_safe_config()
+        role = self._fold_role or str(fold_cfg.get("role", "")).strip().lower() or None
+        refusal_reason = str(reason or self._normalization_report.get("reason", "fold transform refused"))
+        payload = {
+            "schema": "mndm.fold_safe_refusal.v1",
+            "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "dataset_id": self.ds_id,
+            "run_dir": str(mnps_dir),
+            "split_id": self._fold_split.payload.get("split_id") if self._fold_split is not None else None,
+            "split_manifest_sha256": self._fold_split.sha256 if self._fold_split is not None else None,
+            "role": role,
+            "fit_status": "not_testable",
+            "apply_status": "not_testable",
+            "refusal_reason": refusal_reason,
+            "reason": refusal_reason,
+        }
+        out_path = mnps_dir / "fold_safe_refusal.json"
+        json_writer.write_json_summary(payload, out_path)
+        normalization_report = self._write_normalization_report_file(mnps_dir)
+        self._normalization_report["report_file"] = dict(normalization_report)
+        return out_path
+
     def write_regional_csv_outputs_threadsafe(
         self,
         *,
@@ -3459,12 +3802,21 @@ class DatasetSummaryRunner:
         auto_cfg = self._anchor_auto_fit_config()
         scale_method = str(auto_cfg.get("scale_method", "iqr") or "iqr").strip().lower()
         min_subjects = int(auto_cfg.get("min_subjects", 3) or 3)
-        anchor_id = str(auto_cfg.get("anchor_id") or f"{self.ds_id}_all_subjects_{scale_method}_v2_1").strip()
-        anchor_source = str(auto_cfg.get("anchor_source") or "all_subjects_features_table").strip()
-        cohort_filter = str(auto_cfg.get("cohort_filter") or "all usable rows after summarize QC filters").strip()
+        default_anchor_id = (
+            f"{self.ds_id}_fold_{self._fold_split.payload['split_id']}_{scale_method}_v1"
+            if self._fold_split is not None
+            else f"{self.ds_id}_all_subjects_{scale_method}_v2_1"
+        )
+        anchor_id = str(auto_cfg.get("anchor_id") or default_anchor_id).strip()
+        if self._fold_split is not None:
+            anchor_source = "mndm.fold_split.training_ranges_only"
+            cohort_filter = f"split_id={self._fold_split.payload['split_id']}; training_ranges after configured QC filters"
+        else:
+            anchor_source = str(auto_cfg.get("anchor_source") or "all_subjects_features_table").strip()
+            cohort_filter = str(auto_cfg.get("cohort_filter") or "all usable rows after summarize QC filters").strip()
         anchors_dir = mnps_dir / "anchors"
         existing_anchor_path = anchors_dir / f"{anchor_id}.json"
-        if self.resume_run_dir is not None and existing_anchor_path.is_file():
+        if self.resume_run_dir is not None and existing_anchor_path.is_file() and self._fold_split is None:
             logger.info("Resume: reusing existing cohort anchor %s", existing_anchor_path)
             anchor_cfg = dict(existing_anchor_cfg) if isinstance(existing_anchor_cfg, Mapping) else {}
             anchor_cfg.update(
@@ -3481,18 +3833,53 @@ class DatasetSummaryRunner:
         subject_ids = self._anchor_subject_ids(features_df)
         group_by_subject = self._anchor_group_by_subject(features_df, subject_ids)
 
-        anchor_artifact = anchors.fit_feature_anchors_from_features_df(
-            features_df,
-            anchor_id=anchor_id,
-            anchor_source=anchor_source,
-            cohort_filter=cohort_filter,
-            feature_standardization=proj_cfg.get("feature_standardization") if isinstance(proj_cfg, Mapping) else None,
-            min_subjects=min_subjects,
-            scale_method=scale_method,
-            subject_ids=subject_ids,
-            file_ids=file_ids,
-            group_by_subject=group_by_subject,
-        )
+        if self._fold_split is not None and self._fold_selection is not None:
+            fold_feature_columns = self._fold_projection_feature_columns()
+            if not fold_feature_columns:
+                raise FoldSplitError("fold-safe anchor fit has no feature columns used by the configured MNPS maps")
+            anchor_artifact = fit_fold_anchor_artifact(
+                self._fold_selection,
+                self._fold_split,
+                anchor_id=anchor_id,
+                anchor_source=anchor_source,
+                cohort_filter=cohort_filter,
+                feature_standardization=proj_cfg.get("feature_standardization") if isinstance(proj_cfg, Mapping) else None,
+                min_subjects=min_subjects,
+                scale_method=scale_method,
+                transform_config={
+                    **self._fold_transform_config(),
+                },
+                code_version=_MNDM_VERSION,
+                implementation_hash=self._fold_transform_implementation_hash(),
+                verified_source_file_sha256=self._fold_verified_source_hashes,
+                feature_columns=fold_feature_columns,
+                signal_support_validation=self._fold_signal_support_validation,
+            )
+            usable_mapping = anchors.anchor_mapping(
+                anchor_artifact,
+                scale_method=scale_method,
+                min_subjects=min_subjects,
+            )
+            missing_anchor_features = sorted(set(fold_feature_columns) - set(usable_mapping))
+            if missing_anchor_features:
+                raise FoldSplitError(
+                    "training partition has no valid anchor parameters for chart feature(s): "
+                    + ", ".join(missing_anchor_features)
+                )
+            self._fold_anchor_artifact = anchor_artifact
+        else:
+            anchor_artifact = anchors.fit_feature_anchors_from_features_df(
+                features_df,
+                anchor_id=anchor_id,
+                anchor_source=anchor_source,
+                cohort_filter=cohort_filter,
+                feature_standardization=proj_cfg.get("feature_standardization") if isinstance(proj_cfg, Mapping) else None,
+                min_subjects=min_subjects,
+                scale_method=scale_method,
+                subject_ids=subject_ids,
+                file_ids=file_ids,
+                group_by_subject=group_by_subject,
+            )
         anchors_dir = mnps_dir / "anchors"
         anchor_path = anchors.save_anchor_file(anchor_artifact, anchors_dir / f"{anchor_id}.json")
         anchor_cfg = dict(existing_anchor_cfg) if isinstance(existing_anchor_cfg, Mapping) else {}
@@ -3565,6 +3952,64 @@ class DatasetSummaryRunner:
                 self._index_paths_by_basename.setdefault(b, []).append(p)
         except Exception:
             self._index_paths_by_basename = {}
+
+    def _collect_run_signal_support_provenance(self, qc_dir: Path) -> Dict[str, Any]:
+        """Collect QC sidecars and fail closed when file_index basenames collide."""
+        records: list[Dict[str, Any]] = []
+        if qc_dir.exists():
+            for sidecar in sorted(qc_dir.glob("*.json")):
+                try:
+                    sidecar_data = json.loads(sidecar.read_text(encoding="utf-8"))
+                except Exception:
+                    continue
+                support = sidecar_data.get("signal_support_provenance") if isinstance(sidecar_data, Mapping) else None
+                if not isinstance(support, Mapping):
+                    continue
+                source_identity = support.get("source", {})
+                raw_name = Path(str(source_identity.get("path", ""))).name if isinstance(source_identity, Mapping) else ""
+                valid, reason = validate_support_record(support, raw_name)
+                if sidecar.name != f"{Path(raw_name).stem}_qc_artifacts.json":
+                    valid, reason = False, "support_sidecar_identity_mismatch"
+                records.append({
+                    **dict(support),
+                    "raw_file": raw_name,
+                    "validation_status": "valid" if valid else "unknown",
+                    "validation_reason": reason,
+                })
+
+        duplicate_paths = {
+            name: sorted(str(path) for path in paths)
+            for name, paths in getattr(self, "_index_paths_by_basename", {}).items()
+            if len(paths) > 1
+        }
+        for raw_name, paths in sorted(duplicate_paths.items()):
+            matching_records = [record for record in records if record.get("raw_file") == raw_name]
+            if matching_records:
+                for record in matching_records:
+                    record.update({
+                        "validation_status": "unknown",
+                        "validation_reason": "duplicate_raw_basename_in_file_index",
+                        "ambiguous_source_paths": paths,
+                    })
+            else:
+                records.append({
+                    "raw_file": raw_name,
+                    "validation_status": "unknown",
+                    "validation_reason": "duplicate_raw_basename_in_file_index",
+                    "ambiguous_source_paths": paths,
+                })
+
+        payload: Dict[str, Any] = {
+            "schema": "mndm.signal_support_provenance.v1",
+            "status": "recorded" if records and not duplicate_paths and all(
+                record.get("validation_status") == "valid" for record in records
+            ) else "unknown",
+            "temporal_support_status": "unknown",
+            "records": records,
+        }
+        if duplicate_paths:
+            payload["duplicate_raw_basenames"] = sorted(duplicate_paths)
+        return payload
 
     def _lookup_rel_paths_by_file_value(self, file_value: str) -> List[str]:
         """Return candidate relative paths for a `features.csv` file value."""
@@ -4205,6 +4650,17 @@ class SubjectSummaryRunner:
         self.index_df = index_df
         self._confounds_path_cache: Dict[str, Optional[Path]] = {}
 
+    def _resolve_projection_anchor_artifact(self, anchor_path: Path) -> Mapping[str, Any]:
+        """Reuse the exact fold artifact already verified by the dataset runner."""
+        split = getattr(self.dataset, "_fold_split", None)
+        if split is not None:
+            artifact = getattr(self.dataset, "_fold_anchor_artifact", None)
+            if not isinstance(artifact, Mapping):
+                raise FoldSplitError("fold-safe projection has no in-memory verified anchor artifact")
+            validate_fold_anchor_artifact(artifact, split)
+            return artifact
+        return anchors.load_anchor_file(anchor_path)
+
     def _dataset_root(self) -> Path:
         """Resolve effective dataset root, honoring per-dataset overrides."""
         return bids_index.resolve_dataset_root(self.ctx.config, self.ctx.received_dir, self.dataset.ds_id)
@@ -4221,6 +4677,16 @@ class SubjectSummaryRunner:
         if "file" not in sub_frame.columns:
             return {"schema": "mndm.signal_support_provenance.v1", "status": "unknown", "records": records}
         for file_name in sorted({Path(str(v)).name for v in sub_frame["file"].dropna()}):
+            lookup = getattr(self, "_lookup_rel_paths_by_file_value", None)
+            indexed_paths = lookup(file_name) if callable(lookup) else []
+            if len(indexed_paths) > 1:
+                records.append({
+                    "raw_file": file_name,
+                    "status": "unknown",
+                    "reason": "duplicate_raw_basename_in_file_index",
+                    "ambiguous_source_paths": sorted(str(path) for path in indexed_paths),
+                })
+                continue
             sidecar = qc_dir / f"{Path(file_name).stem}_qc_artifacts.json"
             if not sidecar.exists():
                 records.append({"raw_file": file_name, "status": "unknown", "reason": "missing_qc_sidecar"})
@@ -4271,6 +4737,10 @@ class SubjectSummaryRunner:
         found_any = False
         all_applied = True
         for file_name in file_names:
+            lookup = getattr(self, "_lookup_rel_paths_by_file_value", None)
+            indexed_paths = lookup(file_name) if callable(lookup) else []
+            if len(indexed_paths) > 1:
+                all_applied = False
             sidecar = qc_dir / f"{Path(file_name).stem}_qc_artifacts.json"
             if not sidecar.exists():
                 # No sidecar for this file at all: no evidence either way
@@ -4562,7 +5032,7 @@ class SubjectSummaryRunner:
             anchor_path = _resolve_anchor_path(anchor_cfg.get("path"), config=config) if isinstance(anchor_cfg, Mapping) else None
             if anchor_path is None or not anchor_path.exists():
                 raise FileNotFoundError(f"mnps_projection.anchor.enabled=true but anchor path is missing: {anchor_path}")
-            anchor_artifact = anchors.load_anchor_file(anchor_path)
+            anchor_artifact = self._resolve_projection_anchor_artifact(anchor_path)
             external_anchor = anchors.anchor_mapping(
                 anchor_artifact,
                 scale_method=str(anchor_cfg.get("scale_method", "iqr")) if isinstance(anchor_cfg, Mapping) else "iqr",
@@ -4739,6 +5209,7 @@ class SubjectSummaryRunner:
                 feature_standardization=feature_standardization,
                 clip_threshold=clip_threshold,
                 external_anchor=external_anchor,
+                require_external_anchor=self.dataset._fold_split is not None,
             )
             x_anchor = x_direct_anchor
             x_anchor_coverage = x_direct_anchor_coverage
@@ -4751,6 +5222,7 @@ class SubjectSummaryRunner:
                     feature_standardization=feature_standardization,
                     clip_threshold=clip_threshold,
                     external_anchor=external_anchor,
+                    require_external_anchor=self.dataset._fold_split is not None,
                 )
                 feature_baselines_anchor.update(feature_baselines_anchor_v2)
                 if coords_9d_anchor.size and coords_9d_anchor_names:
@@ -6992,6 +7464,9 @@ class SubjectSummaryRunner:
                 "jacobian_9d_dot_hash_saved": jacobian_9d_dot_hash_saved,
             },
         }
+        fold_safe_provenance = self.dataset._fold_chart_provenance(sub_frame)
+        if fold_safe_provenance is not None:
+            manifest_extra["fold_safe_transform"] = fold_safe_provenance
         if mapping_provenance:
             manifest_extra["provenance"]["mapping"] = mapping_provenance
         manifest_extra["feature_exports"] = {

@@ -1,0 +1,14 @@
+# Full-cohort execution of the frozen cautious gap-safe measurement surface.
+# Only source and output paths are overridden; measurement settings are
+# inherited unchanged from the reviewed final bounded-pilot configuration.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123_cautious_gap_safe_final.yaml"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/processed/ds005555_continuous_c123_cautious_gap_safe_full_cohort_20260927"
+  dataset_received_dirs:
+    ds005555: "K:/ExternalReceivedDatasets/openneuro/received/ds005555"

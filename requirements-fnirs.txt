@@ -1,0 +1,7 @@
+-r requirements.txt
+
+# Optional runtime stack for the gated fNIRS CW/OD preprocessing path.
+# These versions were exercised together on Python 3.12.
+mne-nirs==0.7.3
+h5io==0.2.5
+seaborn==0.13.2

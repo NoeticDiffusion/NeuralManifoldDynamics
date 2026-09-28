@@ -1196,6 +1196,27 @@ mnps_projection:
 emitted only when an anchor source is active (`mnps_projection.anchor.path`,
 `mnps_projection.anchor_auto_fit.enabled: true`, or CLI `--fit-anchor`).
 
+#### Fold-safe fit/apply pilot
+
+Fold-safe external-anchor runs require an explicit chronological split and a
+signal-support ledger whose byte-level SHA256 is stored in that split as
+`signal_support_ledger_sha256`. Configure the ledger alongside the manifest:
+
+```yaml
+mnps_projection:
+  fold_safe:
+    enabled: true
+    manifest: "project/pilot/fold_split.json"
+    signal_support_ledger: "project/pilot/signal_support_ledger.json"
+    role: "training"  # run fit first; apply uses the saved anchor and role=apply
+```
+
+The runner binds selected feature rows to verified finite-causal ledger rows
+and refuses train/apply partitions whose conservative source-sample intervals
+overlap. This certifies feature-row signal support only; analysis-owned history,
+horizon and temporal-purge requirements must still be declared and checked
+separately. Missing hashes, rows, or support bounds fail closed.
+
 #### Strict robust-z export guardrail
 
 `/features_robust_z` is the un-clipped feature surface consumed by embodied
@@ -1577,6 +1598,8 @@ values are serialized. Root attrs `dt_realized_sec` and `fs_out_role`
 record the derivative step and that `fs_out` is a configuration hint.
 Regional 9D stays `regional_mnps.stratified.enabled: false`. Regional
 Jacobian estimation is unchanged while `regional_mnps.enabled` is false.
+New fMRI HDF5 files stamp `export_contract_version` as
+`mndm.fmri_h5_contract.v2`. EEG/MEG stay `mndm.eeg_h5_contract.v1`.
 
 ### Rejected aliases
 
@@ -1986,3 +2009,43 @@ v1/v2 run roots. `matched_control` remains a geometry control and must not be
 used as the hazard-model risk set. Missing cardiac or respiratory phase in the
 new N3/REM sidecars is represented by NaN plus validity/QC flags, never a
 zero-phase sentinel.
+
+## Native fNIRS HDF5 export (G4)
+
+The fNIRS path writes native HbO/HbR window features and does not use the MNPS
+`summarize` command. After `features` has produced a single-recording CSV or
+Parquet table, export it with:
+
+```text
+python -m mndm.cli fnirs-export --features-table <features.csv> --out <recording.h5>
+```
+
+The output uses `mndm.fnirs_native_h5_contract.v1`, retains SNIRF window timing,
+support, rejected-window reasons and preprocessing provenance, and marks
+measurement validity and qualification as `not_assessed`. Unknown QC stays
+unknown. `--require-qc-pass` fails unless every exported window has an explicit
+QC pass. Native fNIRS HDF5 is not an MNPS coordinate file and must not be sent
+through `summarize`/`resummarize` or a mixed EEG/fNIRS join.
+
+### Descriptive scalp-sector pilot (G5)
+
+The standalone `fnirs-region-export` command accepts one G3 feature table and
+its matching BIDS `channels.tsv`, `optodes.tsv`, and `coordsystem.json`. It
+creates a frozen 3D CapTrak map to four geometric scalp sectors and separate
+HbO/HbR window means. It excludes source-detector pairs shorter than 10 mm and
+requires full expected-channel coverage for each regional value. These labels
+are not cortical/anatomical regions; QC, measurement validity, and qualification
+remain `not_assessed`.
+
+```bash
+python -m mndm.cli fnirs-region-export \
+  --features-table <features.csv> \
+  --channels-tsv <channels.tsv> \
+  --optodes-tsv <optodes.tsv> \
+  --coordsystem-json <coordsystem.json> \
+  --out-dir <new-g5-output-directory>
+```
+
+The command writes `regional_features.csv`, `channel_region_map.json`,
+`channel_loss_sensitivity.csv`, and `g5_manifest.json`. It does not alter the
+G4 native HDF5 schema or open the MNPS summary path.

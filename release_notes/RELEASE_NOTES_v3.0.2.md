@@ -7,11 +7,13 @@ underdetermined local Jacobian instead of writing a finite ridge matrix.
 
 Package version: `mndm.__version__ = "3.0.2"`.
 
-HDF5 `export_contract_version` for new fMRI files remains
-`mndm.fmri_h5_contract.v1`. EEG/MEG remain `mndm.eeg_h5_contract.v1`.
-Older fMRI files can still carry the historical EEG contract name; read
-`modality` and the source class (`nifti_bold`) before treating that string
-as an EEG recording.
+New fMRI files use HDF5 `export_contract_version`
+`mndm.fmri_h5_contract.v2`. EEG/MEG remain `mndm.eeg_h5_contract.v1`.
+`v2` means the file was written by the 3.0.2 fMRI writer. It does not prove
+that a dataset overlay left `require_determined_support` on. Files from
+earlier 3.0 fMRI runs can still say `mndm.fmri_h5_contract.v1`. Still older
+fMRI files can carry the historical EEG contract name; read `modality` and
+the source class (`nifti_bold`) before treating that string as EEG.
 
 ## Highlights
 
@@ -133,9 +135,9 @@ as an EEG recording.
   `forbid_cross_gap` keeps the previous Jacobian neighborhood.
 - Datasets that import `config_ingest_common_fmri.yaml` (including ds007216
   and ds004796 for the global MNPS path) will refuse underdetermined 3D
-  Jacobians and will not write a 9D `J_hat`. Compare those files by
-  `mndm_version`, not by assuming `mndm.fmri_h5_contract.v1` means the
-  pre-3.0.2 Jacobian.
+  Jacobians and will not write a 9D `J_hat`. New fMRI HDF5 files carry
+  `mndm.fmri_h5_contract.v2`. `mndm.fmri_h5_contract.v1` is a pre-3.0.2
+  fMRI write. EEG files stay on `mndm.eeg_h5_contract.v1`.
 - `fs_out: 0.5` on common fMRI is still a plotting hint. Read
   `dt_realized_sec`.
 - Map projection weights to `fmri_variance_global` and `fmri_signal_power`,

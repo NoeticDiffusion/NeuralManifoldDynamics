@@ -1,0 +1,19 @@
+# Follow-up cautious branch. A detected all-channel raw flatline is also marked
+# unavailable, because it extends beyond the source code-8 label in sub-99.
+# The raw flatline remains a distinct QC record in provenance.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123_safe_gap.yaml"
+
+paths:
+  processed_dir: "K:/processed/ds005555_continuous_c123_cautious_qc_20260925"
+
+preprocess:
+  quality_interval_policy:
+    datasets:
+      ds005555:
+        source_kinds:
+          - source_stage_hum_code_8
+          - raw_joint_eeg_flatline

@@ -165,6 +165,26 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     p_pack.add_argument("--run-dir", type=Path, default=None, help="Path to a specific run directory. If omitted, pack the latest summarized run under processed/<dataset>/.")
     p_pack.add_argument("--overwrite", action="store_true", help="Overwrite packed.h5 if it exists")
 
+    p_fnirs_export = sub.add_parser(
+        "fnirs-export",
+        help="Export one native fNIRS window-feature table to contract-versioned HDF5",
+    )
+    p_fnirs_export.add_argument("--features-table", type=Path, required=True, help="G3 fNIRS features CSV or Parquet")
+    p_fnirs_export.add_argument("--out", type=Path, required=True, help="New native fNIRS HDF5 output path")
+    p_fnirs_export.add_argument("--require-qc-pass", action="store_true", help="Require an explicit QC pass for every window")
+    p_fnirs_export.add_argument("--overwrite", action="store_true", help="Overwrite an existing output file")
+
+    p_fnirs_regions = sub.add_parser(
+        "fnirs-region-export",
+        help="Export one fNIRS table as descriptive CapTrak scalp-sector pilot series",
+    )
+    p_fnirs_regions.add_argument("--features-table", type=Path, required=True, help="G3 fNIRS features CSV or Parquet")
+    p_fnirs_regions.add_argument("--channels-tsv", type=Path, required=True, help="Matching BIDS channels.tsv")
+    p_fnirs_regions.add_argument("--optodes-tsv", type=Path, required=True, help="Matching BIDS optodes.tsv")
+    p_fnirs_regions.add_argument("--coordsystem-json", type=Path, required=True, help="Matching BIDS coordsystem.json")
+    p_fnirs_regions.add_argument("--out-dir", type=Path, required=True, help="New directory for G5 CSV/JSON artifacts")
+    p_fnirs_regions.add_argument("--overwrite", action="store_true", help="Replace the named G5 artifacts in --out-dir")
+
     p_anchor_fit = sub.add_parser("anchors-fit", help="Fit MNDM 2.1 feature anchors from /features_raw H5 surfaces")
     p_anchor_fit.add_argument("--h5-root", type=Path, required=True, help="H5 file, run directory, processed root, or dataset directory")
     p_anchor_fit.add_argument("--out", type=Path, required=True, help="Output anchor JSON path")
@@ -241,7 +261,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     # Load config for pipeline commands. Anchor post-processing commands either
     # infer per-dataset configs internally or accept their own optional config.
-    if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity"}:
+    if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "fnirs-export", "fnirs-region-export"}:
         config = {}
     else:
         config = config_loader.load_config(args.config)
@@ -253,15 +273,24 @@ def main(argv: Sequence[str] | None = None) -> int:
         or verbose_logs_enabled(config if isinstance(config, dict) else None)
     )
 
+    if str(config.get("modality", "")).strip().lower() == "fnirs" and args.command in {
+        "summarize", "resummarize", "all"
+    }:
+        logger.error(
+            "The MNPS summarize path is unsupported for modality=fnirs. "
+            "Use the dedicated native fnirs-export command."
+        )
+        return 1
+
     # Get dataset IDs
-    if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity"}:
+    if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "fnirs-export", "fnirs-region-export"}:
         dataset_ids = []
     elif args.dataset:
         dataset_ids = args.dataset
     else:
         dataset_ids = datasets.list_datasets(config, include_pca_results=args.include_pca_results)
     
-    if not dataset_ids and args.command not in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "meg-transform-replay"}:
+    if not dataset_ids and args.command not in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "meg-transform-replay", "fnirs-export", "fnirs-region-export"}:
         logger.error("No datasets specified")
         return 1
     
@@ -271,7 +300,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         n_jobs = min(multiprocessing.cpu_count(), 6)
 
     # Execute command
-    if args.command == "features":
+    if args.command == "fnirs-export":
+        from .pipeline.fnirs_native_export import export_fnirs_feature_table
+        try:
+            output = export_fnirs_feature_table(
+                args.features_table,
+                args.out,
+                require_qc_pass=bool(args.require_qc_pass),
+                overwrite=bool(args.overwrite),
+            )
+        except Exception as exc:
+            logger.error("Native fNIRS export failed: %s", exc)
+            return 1
+        logger.info("Wrote native fNIRS HDF5: %s", output)
+        return 0
+    elif args.command == "fnirs-region-export":
+        from .pipeline.fnirs_regional import export_fnirs_scalp_sector_pilot
+        try:
+            manifest = export_fnirs_scalp_sector_pilot(
+                args.features_table,
+                args.channels_tsv,
+                args.optodes_tsv,
+                args.coordsystem_json,
+                args.out_dir,
+                overwrite=bool(args.overwrite),
+            )
+        except Exception as exc:
+            logger.error("fNIRS scalp-sector pilot export failed: %s", exc)
+            return 1
+        logger.info(
+            "Wrote descriptive fNIRS scalp-sector pilot: %d complete rows to %s",
+            manifest["counts"]["complete_regional_rows"],
+            args.out_dir,
+        )
+        return 0
+    elif args.command == "features":
         from . import orchestrate
         return orchestrate.cmd_features(
             config, dataset_ids, args.out_dir, args.data_dir,

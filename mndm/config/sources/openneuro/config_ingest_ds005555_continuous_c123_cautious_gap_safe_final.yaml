@@ -1,0 +1,9 @@
+# Final bounded pilot overlay after the boundary-support review fixes.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123_cautious_gap_safe.yaml"
+
+paths:
+  processed_dir: "K:/processed/ds005555_continuous_c123_cautious_gap_safe_final_20260925"

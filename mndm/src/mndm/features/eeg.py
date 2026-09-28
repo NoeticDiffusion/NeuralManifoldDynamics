@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 import logging
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import warnings
@@ -27,6 +28,7 @@ from . import eeg_sync
 from core.metrics import graph as graph_metrics
 from .. import nwb_intervals
 from ..reproducibility import resolve_component_seed
+from ..signal_support_provenance import map_preprocessed_window_to_source_samples
 
 try:
     from mne.time_frequency import psd_array_multitaper
@@ -383,8 +385,105 @@ def _moving_average_1d(values: np.ndarray, window: int) -> np.ndarray:
     w = max(1, int(window))
     if w <= 1:
         return arr.copy()
-    kernel = np.ones(w, dtype=float) / float(w)
-    return np.convolve(arr, kernel, mode="same")
+    w = min(w, int(arr.size))
+    kernel = np.ones(w, dtype=float)
+    sums = np.convolve(arr, kernel, mode="same")
+    counts = np.convolve(np.ones(arr.size, dtype=float), kernel, mode="same")
+    return sums / np.maximum(counts, 1.0)
+
+
+def _true_runs(mask: np.ndarray) -> list[tuple[int, int]]:
+    """Return half-open intervals for contiguous True values."""
+    values = np.asarray(mask, dtype=bool).reshape(-1)
+    if not values.size or not values.any():
+        return []
+    edges = np.diff(np.r_[False, values, False].astype(np.int8))
+    return list(zip(np.flatnonzero(edges == 1).tolist(), np.flatnonzero(edges == -1).tolist()))
+
+
+def _compute_technical_eeg_qc(
+    *,
+    eeg_window: np.ndarray,
+    payload_meta: Mapping[str, Any],
+    channel_names: Any,
+) -> Dict[str, Any]:
+    """Describe signal-level technical flags without masking EEG physiology."""
+    data = np.asarray(eeg_window, dtype=float)
+    if data.ndim != 2:
+        data = np.empty((0, 0), dtype=float)
+    n_channels, n_samples = data.shape
+    finite = np.isfinite(data)
+    finite_fraction = float(finite.mean()) if finite.size else np.nan
+    sample_valid = finite.all(axis=0) if n_channels else np.zeros(n_samples, dtype=bool)
+    gap_runs = _true_runs(~sample_valid)
+    flatline_count = 0
+    for channel in data:
+        channel_finite = channel[np.isfinite(channel)]
+        if channel_finite.size > 1 and float(np.max(channel_finite)) == float(np.min(channel_finite)):
+            flatline_count += 1
+
+    names = channel_names if isinstance(channel_names, (list, tuple)) else None
+    if n_channels == 0:
+        channel_status, channel_reason = "unsupported", "no_eeg_channels"
+    elif names is None:
+        channel_status, channel_reason = "not_assessed", "eeg_channel_identity_unavailable"
+    elif len(names) != n_channels:
+        channel_status, channel_reason = "unsupported", "eeg_channel_metadata_count_mismatch"
+    else:
+        channel_status, channel_reason = "computed", None
+
+    reasons = []
+    if n_channels == 0 or n_samples == 0:
+        technical_status = "not_assessed"
+        reasons.append("empty_eeg_window")
+    else:
+        technical_status = "valid"
+        if finite_fraction < 1.0:
+            technical_status = "invalid"
+            reasons.append("non_finite_input_samples")
+        if flatline_count > 0:
+            if technical_status == "valid":
+                technical_status = "suspect"
+            reasons.append(
+                "all_eeg_channels_exactly_flatlined"
+                if flatline_count == n_channels
+                else "one_or_more_eeg_channels_exactly_flatlined"
+            )
+        if channel_status == "unsupported":
+            technical_status = "invalid"
+            reasons.append(channel_reason)
+
+    rails = payload_meta.get("eeg_adc_rails", {}) if isinstance(payload_meta, Mapping) else {}
+    clip_status, clip_reason, clip_fraction = "not_assessed", "verified_adc_rails_unavailable", np.nan
+    if isinstance(rails, Mapping) and rails.get("status") == "verified":
+        try:
+            rail_min = float(rails["min"])
+            rail_max = float(rails["max"])
+            if math.isfinite(rail_min) and math.isfinite(rail_max) and rail_max > rail_min and finite.any():
+                clip_fraction = float(np.mean((data[finite] <= rail_min) | (data[finite] >= rail_max)))
+                clip_status, clip_reason = "computed", None
+                if clip_fraction > 0:
+                    if technical_status == "valid":
+                        technical_status = "suspect"
+                    reasons.append("verified_adc_rail_hits_observed")
+            else:
+                clip_status, clip_reason = "not_assessed", "verified_adc_rails_invalid_or_no_finite_samples"
+        except (KeyError, TypeError, ValueError, OverflowError):
+            clip_status, clip_reason = "not_assessed", "verified_adc_rails_invalid_or_no_finite_samples"
+
+    return {
+        "technical_eeg_status": technical_status,
+        "technical_eeg_reason": ";".join(dict.fromkeys(reasons)) if reasons else None,
+        "technical_eeg_channel_status": channel_status,
+        "technical_eeg_channel_reason": channel_reason,
+        "technical_eeg_channel_count": int(n_channels),
+        "technical_eeg_finite_fraction": finite_fraction,
+        "technical_eeg_gap_count": int(len(gap_runs)),
+        "technical_eeg_flatline_channel_count": int(flatline_count),
+        "technical_eeg_clipping_status": clip_status,
+        "technical_eeg_clipping_reason": clip_reason,
+        "technical_eeg_adc_rail_fraction": clip_fraction,
+    }
 
 
 def _compute_conventional_coma_features(
@@ -393,6 +492,10 @@ def _compute_conventional_coma_features(
     sfreq: float,
     bandpowers: Mapping[str, float],
     conventional_cfg: Mapping[str, Any],
+    amplitude_unit: Optional[str] = None,
+    amplitude_unit_status: str = "unknown",
+    reference_mode: Optional[str] = None,
+    reference_status: str = "unknown",
 ) -> Dict[str, Any]:
     """Compute ICU/coma-oriented proxy features from a single EEG epoch."""
     export_cfg = conventional_cfg.get("export", {}) if isinstance(conventional_cfg, Mapping) else {}
@@ -428,21 +531,59 @@ def _compute_conventional_coma_features(
 
     arr = np.asarray(epoch_signal, dtype=float)
     finite = np.isfinite(arr)
+    finite_runs = _true_runs(finite)
+    gap_runs = _true_runs(~finite)
+    finite_fraction = float(finite.mean()) if finite.size else 0.0
     if not np.any(finite):
         return {
             "eeg_conventional_coma_suppression_ratio": np.nan,
             "eeg_conventional_coma_continuity_proxy": np.nan,
             "eeg_conventional_coma_burst_suppression_proxy": np.nan,
             "eeg_conventional_coma_alpha_delta_ratio": np.nan,
+            "eeg_conventional_coma_amplitude_rms": np.nan,
+            "coma_proxy_suppression_status": "not_assessed",
+            "coma_proxy_suppression_reason": "no_finite_input_samples",
+            "coma_proxy_amplitude_status": "not_assessed",
+            "coma_proxy_amplitude_reason": "no_finite_input_samples",
+            "coma_proxy_unit_status": str(amplitude_unit_status or "unknown"),
+            "coma_proxy_amplitude_unit": amplitude_unit or "unknown",
+            "coma_proxy_reference_status": str(reference_status or "unknown"),
+            "coma_proxy_reference_mode": reference_mode or "unknown",
+            "coma_proxy_valid_sample_fraction": finite_fraction,
+            "coma_proxy_gap_count": int(len(gap_runs)),
+            "coma_proxy_segment_count": 0,
+            "coma_proxy_threshold_value": np.nan,
         }
 
     x = arr[finite]
     rms = float(np.sqrt(np.mean(np.square(x)))) if x.size else np.nan
     threshold = max(float(amplitude_floor), float(relative_to_rms) * float(rms)) if np.isfinite(rms) else float(amplitude_floor)
-
-    envelope = _moving_average_1d(np.abs(x), smooth_window)
-    suppression_mask = envelope <= threshold
-    suppression_ratio = float(np.mean(suppression_mask)) if suppression_mask.size else np.nan
+    suppressed_count = 0
+    transition_count = 0
+    adjacency_count = 0
+    for start, end in finite_runs:
+        envelope = _moving_average_1d(np.abs(arr[start:end]), smooth_window)
+        segment_mask = envelope <= threshold
+        suppressed_count += int(segment_mask.sum())
+        if segment_mask.size > 1:
+            transition_count += int(np.count_nonzero(segment_mask[1:] != segment_mask[:-1]))
+            adjacency_count += int(segment_mask.size - 1)
+    suppression_ratio = float(suppressed_count / x.size) if x.size else np.nan
+    unit_verified = str(amplitude_unit_status).strip().lower() == "verified" and bool(amplitude_unit)
+    reference_verified = str(reference_status).strip().lower() == "verified" and bool(reference_mode)
+    amplitude_qualified = unit_verified and reference_verified
+    proxy_status = "computed" if not gap_runs else "computed_segmented_with_gaps"
+    proxy_reason_parts = []
+    if not unit_verified:
+        proxy_reason_parts.append("amplitude_unit_unverified")
+    if not reference_verified:
+        proxy_reason_parts.append("amplitude_reference_unverified")
+    proxy_reason = ";".join(proxy_reason_parts) if proxy_reason_parts else None
+    if not amplitude_qualified:
+        # The absolute floor has physical units. Without a verified scale the
+        # thresholded outputs are not interpretable, so retain statuses and
+        # coverage but do not export a numeric physiological proxy.
+        suppression_ratio = np.nan
 
     out: Dict[str, Any] = {}
     if bool(coma_cfg.get("suppression_ratio", True)):
@@ -452,10 +593,10 @@ def _compute_conventional_coma_features(
             1.0 - suppression_ratio if np.isfinite(suppression_ratio) else np.nan
         )
     if bool(coma_cfg.get("burst_suppression_proxy", True)):
-        if suppression_mask.size <= 1 or not np.isfinite(suppression_ratio):
+        if adjacency_count <= 0 or not np.isfinite(suppression_ratio):
             burst_proxy = np.nan
         else:
-            transitions = float(np.mean(suppression_mask[1:] != suppression_mask[:-1]))
+            transitions = float(transition_count / adjacency_count)
             mix = float(4.0 * suppression_ratio * (1.0 - suppression_ratio))
             burst_proxy = float(np.clip(mix * transitions, 0.0, 1.0))
         out["eeg_conventional_coma_burst_suppression_proxy"] = burst_proxy
@@ -464,6 +605,21 @@ def _compute_conventional_coma_features(
             float(bandpowers.get("alpha", np.nan)),
             float(bandpowers.get("delta", np.nan)),
         )
+    out["eeg_conventional_coma_amplitude_rms"] = rms if amplitude_qualified else np.nan
+    out.update({
+        "coma_proxy_suppression_status": proxy_status if amplitude_qualified else "not_testable",
+        "coma_proxy_suppression_reason": proxy_reason,
+        "coma_proxy_unit_status": str(amplitude_unit_status or "unknown"),
+        "coma_proxy_amplitude_unit": amplitude_unit or "unknown",
+        "coma_proxy_reference_status": str(reference_status or "unknown"),
+        "coma_proxy_reference_mode": reference_mode or "unknown",
+        "coma_proxy_valid_sample_fraction": finite_fraction,
+        "coma_proxy_gap_count": int(len(gap_runs)),
+        "coma_proxy_segment_count": int(len(finite_runs)),
+        "coma_proxy_threshold_value": float(threshold) if amplitude_qualified else np.nan,
+        "coma_proxy_amplitude_status": "computed" if amplitude_qualified else "not_testable",
+        "coma_proxy_amplitude_reason": proxy_reason,
+    })
     return out
 
 
@@ -1096,12 +1252,22 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     if not meta_all:
         return pd.DataFrame()
 
-    # BDF BAD_ annotations are represented as NaNs in the preprocessing
-    # payload. Reject whole windows touching them instead of concatenating
-    # clean samples around an artifact gap into a synthetic epoch.
+    # Explicitly masked BAD_ annotations (including opt-in source quality
+    # intervals) are represented as NaNs in the preprocessing payload. Reject
+    # whole windows touching them rather than constructing epochs across gaps.
     bdf_meta = payload_meta.get("bdf_adapter", {}) if isinstance(payload_meta, Mapping) else {}
     bad_segments_meta = bdf_meta.get("bad_segments", {}) if isinstance(bdf_meta, Mapping) else {}
-    if isinstance(bad_segments_meta, Mapping) and bad_segments_meta.get("enabled") and bad_segments_meta.get("available"):
+    quality_policy_meta = payload_meta.get("quality_interval_policy", {}) if isinstance(payload_meta, Mapping) else {}
+    reject_masked_annotation_windows = bool(
+        isinstance(bad_segments_meta, Mapping)
+        and bad_segments_meta.get("enabled")
+        and bad_segments_meta.get("available")
+    ) or bool(
+        isinstance(quality_policy_meta, Mapping)
+        and quality_policy_meta.get("enabled")
+        and quality_policy_meta.get("mask_bad_annotations")
+    )
+    if reject_masked_annotation_windows:
         valid_samples = np.isfinite(eeg_data).all(axis=0)
         invalid_prefix = np.concatenate(([0], np.cumsum((~valid_samples).astype(np.int64))))
         original_count = len(meta_all)
@@ -1113,7 +1279,7 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         dropped = original_count - len(meta_all)
         if dropped:
             logger.info(
-                "Rejected %d/%d EEG epochs touching BDF BAD_ segments for %s",
+                "Rejected %d/%d EEG epochs touching masked BAD_ intervals for %s",
                 dropped,
                 original_count,
                 Path(str(raw_file_path)).name if raw_file_path else "recording",
@@ -1428,12 +1594,93 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
 
     records: List[Dict[str, Any]] = []
     ratios = features_cfg.get("ratios", {})
+    channels_map = signals.get("channels", {}) if isinstance(signals, Mapping) else {}
+    eeg_channel_names = channels_map.get("eeg") if isinstance(channels_map, Mapping) else None
+    amplitude_unit = payload_meta.get("eeg_amplitude_unit") if isinstance(payload_meta, Mapping) else None
+    amplitude_unit_status = (
+        str(payload_meta.get("eeg_amplitude_unit_status", "unknown"))
+        if isinstance(payload_meta, Mapping)
+        else "unknown"
+    )
+    reference_mode = payload_meta.get("eeg_reference_mode") if isinstance(payload_meta, Mapping) else None
+    reference_status = (
+        str(payload_meta.get("eeg_reference_status", "unknown"))
+        if isinstance(payload_meta, Mapping)
+        else "unknown"
+    )
 
     for i, (epoch_id, start_idx, end_idx) in enumerate(meta):
+        support_provenance = payload_meta.get("signal_support_provenance", {}) if isinstance(payload_meta, Mapping) else {}
+        eeglab_import = payload_meta.get("eeglab_import", {}) if isinstance(payload_meta, Mapping) else {}
+        is_flattened_eeglab_epochs = (
+            isinstance(eeglab_import, Mapping)
+            and str(eeglab_import.get("source", "")).strip().lower() == "eeglab_epoched_concat"
+        )
+        source_grid_supported = not (
+            isinstance(support_provenance, Mapping)
+            and support_provenance.get("source_sample_grid_supported") is False
+        )
+        source_mapping_reason = (
+            str(support_provenance.get("source_sample_grid_reason") or "source_clock_mapping_not_supported")
+            if isinstance(support_provenance, Mapping)
+            else "source_clock_mapping_not_supported"
+        )
+        allow_source_grid = not is_flattened_eeglab_epochs and source_grid_supported
+        refusal_reason = (
+            "flattened_eeglab_epochs_have_no_continuous_source_sample_map"
+            if is_flattened_eeglab_epochs
+            else source_mapping_reason
+        )
+        source_sample_map = map_preprocessed_window_to_source_samples(
+            int(start_idx),
+            int(end_idx),
+            preprocessed_sfreq_hz=float(sfreq),
+            provenance=support_provenance if isinstance(support_provenance, Mapping) else {},
+            allow_source_grid=allow_source_grid,
+            refusal_reason=refusal_reason,
+        )
+        input_window = np.asarray(eeg_data[:, start_idx:end_idx])
+        finite_fraction = float(np.isfinite(input_window).mean()) if input_window.size else np.nan
+        input_finite_status = "all_finite" if finite_fraction == 1.0 else "contains_nonfinite" if np.isfinite(finite_fraction) else "not_assessed"
+        technical_qc = _compute_technical_eeg_qc(
+            eeg_window=input_window,
+            payload_meta=payload_meta if isinstance(payload_meta, Mapping) else {},
+            channel_names=eeg_channel_names,
+        )
+        sample_valid = np.isfinite(input_window).all(axis=0) if input_window.shape[0] else np.zeros(input_window.shape[1], dtype=bool)
+        gap_spans = []
+        for gap_start, gap_end in _true_runs(~sample_valid):
+            gap_source = map_preprocessed_window_to_source_samples(
+                int(start_idx + gap_start),
+                int(start_idx + gap_end),
+                preprocessed_sfreq_hz=float(sfreq),
+                provenance=support_provenance if isinstance(support_provenance, Mapping) else {},
+                allow_source_grid=allow_source_grid,
+                refusal_reason=refusal_reason,
+            )
+            gap_spans.append({
+                "preprocessed_sample_start": int(start_idx + gap_start),
+                "preprocessed_sample_end_exclusive": int(start_idx + gap_end),
+                "source_sample_mapping_status": gap_source.get("source_sample_mapping_status", "unknown"),
+                "source_sample_mapping_reason": gap_source.get("source_sample_mapping_reason"),
+                "nominal_source_sample_start": gap_source.get("nominal_source_sample_start"),
+                "nominal_source_sample_end_exclusive": gap_source.get("nominal_source_sample_end_exclusive"),
+                "nominal_source_time_start_sec": gap_source.get("nominal_source_time_start_sec"),
+                "nominal_source_time_end_sec": gap_source.get("nominal_source_time_end_sec"),
+            })
         features_dict: Dict[str, Any] = {
             "epoch_id": epoch_id,
             "t_start": start_idx / sfreq,
             "t_end": end_idx / sfreq,
+            **source_sample_map,
+            "input_sample_finite_status": input_finite_status,
+            "input_sample_finite_fraction": finite_fraction,
+            "input_sample_gap_count": int(len(gap_spans)),
+            "input_sample_gap_spans": json.dumps(gap_spans, separators=(",", ":")),
+            "input_sample_invalid_reason": None if input_finite_status == "all_finite" else (
+                "non_finite_samples_in_nominal_epoch" if input_finite_status == "contains_nonfinite" else "finite_sample_check_unavailable"
+            ),
+            **technical_qc,
         }
         if stage_by_epoch_id:
             features_dict["stage"] = int(stage_by_epoch_id.get(int(epoch_id), -1))
@@ -1525,6 +1772,10 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                 sfreq=float(sfreq),
                 bandpowers=global_bandpowers,
                 conventional_cfg=conventional_cfg,
+                amplitude_unit=str(amplitude_unit) if amplitude_unit else None,
+                amplitude_unit_status=amplitude_unit_status,
+                reference_mode=str(reference_mode) if reference_mode else None,
+                reference_status=reference_status,
             )
         )
         if conventional_features:

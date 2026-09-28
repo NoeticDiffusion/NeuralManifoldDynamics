@@ -107,6 +107,8 @@ def compute_emg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
             break
         
         epoch_data = emg_arr[:, start_idx:end_idx]
+        if not np.isfinite(epoch_data).all():
+            continue
         # Remove per-channel baseline offset before RMS aggregation.
         epoch_data = epoch_data - np.median(epoch_data, axis=1, keepdims=True)
         

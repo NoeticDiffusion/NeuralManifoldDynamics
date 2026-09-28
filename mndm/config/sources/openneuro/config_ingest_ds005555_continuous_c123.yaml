@@ -1,0 +1,69 @@
+# ds005555 — continuous measurement-surface export for the C1/C2/C3 handover.
+#
+# This is an independent output branch. All eligible 30 s windows are retained
+# in recording order; sleep-stage labels remain annotations and never select
+# windows. The config exports the ordinary EEG feature and MNPS surfaces for
+# downstream temporal-support and leakage audits. It does not run C1/C2/C3.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555.yaml"
+
+datasets:
+  - ds005555
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro"
+  processed_dir: "K:/processed/ds005555_continuous_c123_20260924"
+  dataset_received_dirs:
+    ds005555: "K:/ExternalReceivedDatasets/openneuro/ds005555"
+
+# Match the dataset's measurement grid. Keep the stage source columns declared
+# for annotation alignment, while disabling their use in epoch selection.
+epoching:
+  datasets:
+    ds005555:
+      profile: "continuous_c123_measurement_surface_v1"
+      length_s: 30.0
+      step_s: 30.0
+      sampling:
+        enabled: false
+        method: null
+        stage_columns: ["stage_hum", "stage_ai", "stage"]
+        onset_column: "onset"
+        duration_column: "duration"
+        target_minutes: null
+        block_minutes: null
+        seed: null
+
+# Avoid the generic 8 s / 50% overlap fallback: the exported EEG windows are
+# 30 s long and step by 30 s. This keeps the recorded time-base metadata aligned
+# with the actual feature grid.
+mnps:
+  window_sec: 30.0
+  overlap: 0.0
+
+# The handover needs the global 3D/9D surfaces, not regional or block-Jacobian
+# products. Raw and standardized feature surfaces, coverage, QC and provenance
+# remain inherited from the standard ds005555 EEG configuration.
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  enabled: true
+  block_jacobians:
+    enabled: false
+
+# Dynamic FC is not part of the C1/C2/C3 handover measurement surface.
+ndt_ingest:
+  modalities:
+    eeg:
+      datasets:
+        ds005555:
+          dynamic_fc:
+            enabled: false

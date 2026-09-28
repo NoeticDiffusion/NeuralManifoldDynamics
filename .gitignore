@@ -237,3 +237,4 @@ results/
 .cursor/rules
 .work
 data/nemar/*
+tmp/pycache/

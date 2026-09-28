@@ -1,0 +1,14 @@
+# Final conservative overlay: in addition to raw/source gap exclusion, keep
+# local Jacobian neighborhoods within their time-contiguous segment.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123_cautious_qc.yaml"
+
+paths:
+  processed_dir: "K:/processed/ds005555_continuous_c123_cautious_gap_isolated_20260925"
+
+mnps:
+  jacobian:
+    forbid_cross_gap: true

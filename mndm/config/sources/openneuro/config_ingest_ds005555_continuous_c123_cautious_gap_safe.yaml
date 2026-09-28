@@ -1,0 +1,10 @@
+# Gap-safe follow-up overlay. Quality masks are applied to every modality;
+# only feature extractors with segment-aware gap handling run on masked data.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123_cautious_gap_isolated.yaml"
+
+paths:
+  processed_dir: "K:/processed/ds005555_continuous_c123_cautious_gap_safe_20260925"

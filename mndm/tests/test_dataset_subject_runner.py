@@ -68,6 +68,46 @@ def test_dataset_runner_subject_filter(dummy_ctx):
     assert filtered["file"].iloc[0].startswith("sub-001")
 
 
+def test_run_signal_support_manifest_fails_closed_on_duplicate_file_index_basenames(tmp_path):
+    qc_dir = tmp_path / "qc_artifacts"
+    qc_dir.mkdir()
+    source_path = tmp_path / "source" / "same.edf"
+    source_path.parent.mkdir()
+    source_path.write_bytes(b"recording")
+    source_hash = "a" * 64
+    support = {
+        "schema": "mndm.signal_support_provenance.v1",
+        "source": {
+            "path": str(source_path),
+            "exists": True,
+            "sha256": source_hash,
+            "sha256_after": source_hash,
+            "hash_stable": True,
+        },
+    }
+    (qc_dir / "same_qc_artifacts.json").write_text(
+        json.dumps({"signal_support_provenance": support}), encoding="utf-8"
+    )
+
+    runner = DatasetSummaryRunner.__new__(DatasetSummaryRunner)
+    runner._index_paths_by_basename = {"same.edf": ["sub-001/eeg/same.edf"]}
+    unique_result = runner._collect_run_signal_support_provenance(qc_dir)
+    assert unique_result["status"] == "recorded"
+
+    runner._index_paths_by_basename = {
+        "same.edf": ["sub-001/eeg/same.edf", "sub-002/eeg/same.edf"]
+    }
+    duplicate_result = runner._collect_run_signal_support_provenance(qc_dir)
+    assert duplicate_result["status"] == "unknown"
+    assert duplicate_result["duplicate_raw_basenames"] == ["same.edf"]
+    assert duplicate_result["records"][0]["validation_status"] == "unknown"
+    assert duplicate_result["records"][0]["validation_reason"] == "duplicate_raw_basename_in_file_index"
+    assert duplicate_result["records"][0]["ambiguous_source_paths"] == [
+        "sub-001/eeg/same.edf",
+        "sub-002/eeg/same.edf",
+    ]
+
+
 def test_dataset_runner_subject_filter_accepts_variable_bids_padding(dummy_ctx):
     """Numeric subject filters should match BIDS labels with different padding."""
     runner = DatasetSummaryRunner(dummy_ctx, "ds001", "01", "subject")
@@ -919,7 +959,7 @@ def test_subject_runner_exports_meg_mapping_provenance(dummy_ctx, monkeypatch, t
     monkeypatch.setattr(summary_mod, "extract_mapped_metadata", lambda *_args, **_kwargs: {"group": None, "condition": "meeg", "task": "facerecognition"})
     monkeypatch.setattr(summary_mod, "build_dataset_label", lambda **_kwargs: "ds003645:sub-002:meeg_facerecognition")
     monkeypatch.setattr(summary_mod.projection, "project_features_with_coverage", lambda *args, **kwargs: (x, np.ones_like(x, dtype=np.float32), {}))
-    monkeypatch.setattr(summary_mod.projection, "build_feature_export_bundle", lambda *args, **kwargs: {"raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "raw_names": [], "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "robust_z_names": [], "metadata": {}})
+    monkeypatch.setattr(summary_mod.projection, "build_feature_export_bundle", lambda *args, **kwargs: {"raw_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "raw_names": [], "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "robust_z_names": [], "projection_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32), "projection_z_names": [], "metadata": {}})
     monkeypatch.setattr(summary_mod, "extract_stage_array", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(subject_runner, "_infer_stage_from_bids_events", lambda *_args, **_kwargs: (None, None, None, None))
     monkeypatch.setattr(summary_mod, "extract_embodied_array", lambda *_args, **_kwargs: None)
@@ -1077,6 +1117,8 @@ def test_subject_runner_exports_time_reference_extension(dummy_ctx, monkeypatch,
             "raw_names": [],
             "robust_z_values": np.zeros((len(frame), 0), dtype=np.float32),
             "robust_z_names": [],
+            "projection_z_values": np.zeros((len(frame), 0), dtype=np.float32),
+            "projection_z_names": [],
             "metadata": {},
         },
     )
@@ -1209,6 +1251,8 @@ def test_subject_runner_exports_conventional_eeg_summary(dummy_ctx, monkeypatch,
             "raw_names": [],
             "robust_z_values": np.zeros((len(frame), 0), dtype=np.float32),
             "robust_z_names": [],
+            "projection_z_values": np.zeros((len(frame), 0), dtype=np.float32),
+            "projection_z_names": [],
             "metadata": {},
         },
     )
@@ -1251,7 +1295,7 @@ def test_subject_runner_exports_conventional_eeg_summary(dummy_ctx, monkeypatch,
     payload = captures["payload"]
     manifest = captures["manifest"]
     assert "conventional_eeg" in payload.extensions
-    assert payload.extensions["conventional_eeg"]["schema_version"] == "mndm.conventional_eeg.v1"
+    assert payload.extensions["conventional_eeg"]["schema_version"] == "mndm.conventional_eeg.v2"
     assert "relative" in payload.extensions["conventional_eeg"]["families"]
     assert "ratio" in payload.extensions["conventional_eeg"]["families"]
     assert "peak" in payload.extensions["conventional_eeg"]["families"]
@@ -1337,6 +1381,8 @@ def test_subject_runner_exports_conventional_eeg_complexity_summary(dummy_ctx, m
             "raw_names": [],
             "robust_z_values": np.zeros((len(frame), 0), dtype=np.float32),
             "robust_z_names": [],
+            "projection_z_values": np.zeros((len(frame), 0), dtype=np.float32),
+            "projection_z_names": [],
             "metadata": {},
         },
     )
@@ -1379,7 +1425,7 @@ def test_subject_runner_exports_conventional_eeg_complexity_summary(dummy_ctx, m
     payload = captures["payload"]
     manifest = captures["manifest"]
     assert "conventional_eeg" in payload.extensions
-    assert payload.extensions["conventional_eeg"]["schema_version"] == "mndm.conventional_eeg.v1"
+    assert payload.extensions["conventional_eeg"]["schema_version"] == "mndm.conventional_eeg.v2"
     assert payload.extensions["conventional_eeg"]["packs"] == ["complexity"]
     assert "complexity" in payload.extensions["conventional_eeg"]["families"]
     assert "conventional_eeg" in manifest
@@ -1467,6 +1513,8 @@ def test_subject_runner_exports_conventional_eeg_connectivity_summary(dummy_ctx,
             "raw_names": [],
             "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
             "robust_z_names": [],
+            "projection_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "projection_z_names": [],
             "metadata": {},
         },
     )
@@ -1598,6 +1646,8 @@ def test_subject_runner_exports_conventional_eeg_coma_summary(dummy_ctx, monkeyp
             "raw_names": [],
             "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
             "robust_z_names": [],
+            "projection_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "projection_z_names": [],
             "metadata": {},
         },
     )
@@ -1640,7 +1690,7 @@ def test_subject_runner_exports_conventional_eeg_coma_summary(dummy_ctx, monkeyp
     payload = captures["payload"]
     manifest = captures["manifest"]
     assert "conventional_eeg" in payload.extensions
-    assert payload.extensions["conventional_eeg"]["schema_version"] == "mndm.conventional_eeg.v1"
+    assert payload.extensions["conventional_eeg"]["schema_version"] == "mndm.conventional_eeg.v2"
     assert payload.extensions["conventional_eeg"]["packs"] == ["coma"]
     assert "coma" in payload.extensions["conventional_eeg"]["families"]
     clinical_markers = payload.extensions["conventional_eeg"]["clinical_markers"]["markers"]
@@ -1801,6 +1851,8 @@ def test_subject_runner_exports_dual_anchor_jacobian_and_regional_layers(dummy_c
             "raw_names": [],
             "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
             "robust_z_names": [],
+            "projection_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "projection_z_names": [],
             "metadata": {},
         },
     )
@@ -1938,6 +1990,8 @@ def test_subject_runner_exports_mnps_mnj_sanity_to_manifest_and_qc(dummy_ctx, mo
             "raw_names": [],
             "robust_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
             "robust_z_names": [],
+            "projection_z_values": np.zeros((len(sub_frame), 0), dtype=np.float32),
+            "projection_z_names": [],
             "metadata": {},
         },
     )
@@ -2061,6 +2115,8 @@ def test_subject_runner_drops_standard_invalid_geometry_before_knn(dummy_ctx, mo
             "raw_names": [],
             "robust_z_values": np.zeros((len(frame), 0), dtype=np.float32),
             "robust_z_names": [],
+            "projection_z_values": np.zeros((len(frame), 0), dtype=np.float32),
+            "projection_z_names": [],
             "metadata": {},
         },
     )

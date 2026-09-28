@@ -1,0 +1,40 @@
+# Conservative gap-aware branch of the continuous measurement-surface export.
+# Selected source quality intervals are excluded from temporal support, while
+# the raw all-scalp-EEG flatline audit is recorded independently as QC.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123.yaml"
+
+paths:
+  processed_dir: "K:/processed/ds005555_continuous_c123_safe_gap_20260925"
+
+preprocess:
+  quality_interval_policy:
+    datasets:
+      ds005555:
+        enabled: true
+        source_kinds:
+          - source_stage_hum_code_8
+        annotation_description: BAD_acq_skip
+        mask_bad_annotations: true
+        segment_resampling: true
+  raw_flatline_qc:
+    datasets:
+      ds005555:
+        enabled: true
+        min_duration_sec: 1.0
+
+mnps:
+  stage_codebook:
+    W: 0
+    Wake: 0
+    N1: 1
+    N2: 2
+    N3: 3
+    REM: 4
+    R: 4
+    L: -1
+    PSG_disconnection: 8
+    Artifact_or_missing: -2

@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import logging
 import hashlib
+import ast
 from dataclasses import dataclass
+from fractions import Fraction
 from functools import lru_cache
 import os
 from pathlib import Path
@@ -41,7 +43,7 @@ from .signal_support_provenance import (
     callable_signature,
     file_sha256,
     finish_operation,
-    actual_crop_bounds,
+    map_preprocessed_window_to_source_samples,
     refresh_source_hash,
     quality_interval,
     original_raw_annotation_start,
@@ -670,6 +672,205 @@ class PreprocessedSignals:
     meta: Dict[str, Any]
 
 
+class FnirsMetadataRejected(ValueError):
+    """Raised when fNIRS metadata fails the structural or v0 input contract."""
+
+    def __init__(self, report: Any):
+        self.report = report.to_dict()
+        super().__init__(f"fNIRS metadata rejected: {self.report}")
+
+
+def _fnirs_index_value(record: Mapping[str, Any], key: str) -> Any:
+    """Read one required fNIRS index value, treating CSV nulls as absent."""
+    if key not in record:
+        raise ValueError(f"fNIRS index record is missing required field {key!r}.")
+    value = record[key]
+    if value is None or (isinstance(value, float) and np.isnan(value)):
+        return None
+    if isinstance(value, str) and value.strip().lower() in {"", "nan", "none", "<na>"}:
+        return None
+    return value
+
+
+def _fnirs_index_bool(record: Mapping[str, Any], key: str) -> bool:
+    value = _fnirs_index_value(record, key)
+    if isinstance(value, bool):
+        return value
+    if value in (0, 1):
+        return bool(value)
+    token = str(value).strip().lower()
+    if token in {"true", "1"}:
+        return True
+    if token in {"false", "0"}:
+        return False
+    raise ValueError(f"fNIRS index field {key!r} is missing or not a boolean.")
+
+
+def _fnirs_index_path(root: Path, value: Any, field: str) -> Optional[Path]:
+    if value is None:
+        return None
+    path = (root / str(value)).resolve()
+    try:
+        path.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"fNIRS index path {field!r} escapes the dataset root.") from exc
+    return path
+
+
+def _fnirs_index_path_chain(root: Path, record: Mapping[str, Any], field: str) -> list[Path]:
+    """Decode an ordered sidecar chain from an in-memory or CSV index record."""
+    value = _fnirs_index_value(record, field)
+    if isinstance(value, str):
+        try:
+            value = ast.literal_eval(value)
+        except (SyntaxError, ValueError) as exc:
+            raise ValueError(f"fNIRS index field {field!r} is not a serialized path list.") from exc
+    if not isinstance(value, (list, tuple)) or not all(isinstance(item, str) for item in value):
+        raise ValueError(f"fNIRS index field {field!r} must be an ordered list of paths.")
+    paths = [_fnirs_index_path(root, item, field) for item in value]
+    if not paths or any(path is None for path in paths):
+        raise ValueError(f"fNIRS index field {field!r} is empty or incomplete.")
+    return [path for path in paths if path is not None]
+
+
+def _validate_fnirs_indexed_recording(
+    file_path: Path,
+    index_record: Optional[Mapping[str, Any]],
+    dataset_root: Optional[Path],
+) -> Any:
+    """Validate one indexed SNIRF using the complete resolved sidecar contract."""
+    if index_record is None or dataset_root is None:
+        raise ValueError(
+            "SNIRF input requires its BIDS index record and dataset root; "
+            "metadata cannot be inferred safely from the signal path alone."
+        )
+    from .fnirs_metadata import validate_fnirs_recording
+
+    root = Path(dataset_root).resolve()
+    source_path = Path(file_path).resolve()
+    try:
+        source_path.relative_to(root)
+    except ValueError as exc:
+        raise ValueError("fNIRS source file escapes the dataset root.") from exc
+    json_chain = _fnirs_index_path_chain(root, index_record, "nirs_json_sidecars")
+    coordsystem_chain = _fnirs_index_path_chain(root, index_record, "nirs_coordsystem_sidecars")
+    sidecar_fields = {
+        "channels_tsv": "nirs_channels_tsv",
+        "optodes_tsv": "nirs_optodes_tsv",
+        "events_tsv": "nirs_events_tsv",
+    }
+    sidecars = {
+        field: _fnirs_index_path(root, _fnirs_index_value(index_record, key), key)
+        for field, key in sidecar_fields.items()
+    }
+    ambiguity_fields = {
+        "nirs_json_ambiguous": "nirs_json_sidecar_ambiguous",
+        "channels_tsv_ambiguous": "nirs_channels_tsv_ambiguous",
+        "events_tsv_ambiguous": "nirs_events_tsv_ambiguous",
+        "optodes_tsv_ambiguous": "nirs_optodes_tsv_ambiguous",
+        "coordsystem_json_ambiguous": "nirs_coordsystem_sidecar_ambiguous",
+    }
+    ambiguity = {name: _fnirs_index_bool(index_record, key) for name, key in ambiguity_fields.items()}
+    report = validate_fnirs_recording(
+        file_path,
+        nirs_json=json_chain,
+        channels_tsv=sidecars["channels_tsv"],
+        optodes_tsv=sidecars["optodes_tsv"],
+        coordsystem_json=coordsystem_chain,
+        events_tsv=sidecars["events_tsv"],
+        **ambiguity,
+    )
+    if not report.admissible:
+        raise FnirsMetadataRejected(report)
+    return report
+
+
+def _preprocess_fnirs_file(
+    file_path: Path,
+    *,
+    index_record: Optional[Mapping[str, Any]],
+    dataset_root: Optional[Path],
+) -> PreprocessedSignals:
+    """Run the gated fNIRS metadata and optical path without EEG processing."""
+    from . import preprocess_fnirs
+
+    started = time.perf_counter()
+    report = _validate_fnirs_indexed_recording(file_path, index_record, dataset_root)
+    if mne is None:
+        raise preprocess_fnirs.FnirsPreprocessingError(
+            "preprocessing_dependency_unavailable",
+            "MNE 1.6.1 is required to load the validated SNIRF recording.",
+        )
+    t_load = time.perf_counter()
+    try:
+        raw = mne.io.read_raw_snirf(file_path, preload=True, verbose=False)
+    except Exception as exc:
+        raise preprocess_fnirs.FnirsPreprocessingError(
+            "snirf_load_failed",
+            f"Could not load the validated SNIRF file with MNE ({type(exc).__name__}).",
+        ) from exc
+    load_seconds = float(time.perf_counter() - t_load)
+    t_transform = time.perf_counter()
+    result = preprocess_fnirs.preprocess_fnirs(
+        raw,
+        validation=report,
+        input_classification=str(report.classification),
+        source_path=file_path,
+    )
+    transform_seconds = float(time.perf_counter() - t_transform)
+    hb_raw = result.raw_haemoglobin
+    channel_names = list(hb_raw.ch_names)
+    channel_types = list(hb_raw.get_channel_types())
+    signal = hb_raw.get_data()
+    if signal.ndim != 2 or signal.shape != (len(channel_names), int(hb_raw.n_times)):
+        raise preprocess_fnirs.FnirsPreprocessingError(
+            "haemoglobin_output_shape_invalid",
+            "MNE Hb output must retain channel-by-sample shape.",
+        )
+    meta: Dict[str, Any] = {
+        "file": str(file_path),
+        "source_format": "SNIRF",
+        "modality": "fnirs",
+        "fnirs": {
+            "input_classification": report.classification,
+            "output_state": "haemoglobin",
+            "channel_names": channel_names,
+            "channel_types": channel_types,
+            "channel_units": result.provenance["haemoglobin_units"],
+            "wavelengths_nm": list(report.summary.get("wavelengths_nm", [])),
+            "metadata_validation": report.to_dict(),
+            "diagnostics": dict(result.diagnostics),
+            "preprocessing_provenance": dict(result.provenance),
+            "scalp_coupling_index": dict(result.scalp_coupling_index),
+            "computation_status": result.computation_status,
+            "measurement_validity": result.measurement_validity,
+            "claim_status": result.claim_status,
+        },
+        "signal_support_provenance": {
+            "schema": "mndm.fnirs_signal_support.v1",
+            "sampling_frequency_hz": float(hb_raw.info["sfreq"]),
+            "sample_count": int(hb_raw.n_times),
+            "time_start_s": report.summary["time_start_s"],
+            "time_end_s": report.summary["time_end_s"],
+            "median_sample_interval_s": report.summary["median_sample_interval_s"],
+            "time_gap_sample_indices": list(report.summary.get("time_gap_sample_indices", [])),
+            "resampling": "none",
+            "filtering": "none",
+        },
+        "timings": {
+            "load_snirf": load_seconds,
+            "optical_preprocessing": transform_seconds,
+            "total": float(time.perf_counter() - started),
+        },
+    }
+    return PreprocessedSignals(
+        signals={"fnirs": signal},
+        sfreq=float(hb_raw.info["sfreq"]),
+        channels={"fnirs": channel_names},
+        meta=meta,
+    )
+
+
 def _infer_path_datatype(file_path: Path) -> Optional[str]:
     """Infer a coarse BIDS datatype from path segments."""
     lowered = [str(part).strip().lower() for part in file_path.parts]
@@ -890,6 +1091,276 @@ def _resolve_eeg_csd_config(config: Mapping[str, Any], dataset_id: Optional[str]
         if isinstance(ds_cfg, Mapping):
             merged.update(ds_cfg)
     return merged
+
+
+def _resolve_quality_interval_policy(
+    config: Mapping[str, Any], dataset_id: Optional[str]
+) -> Dict[str, Any]:
+    """Resolve opt-in handling for selected source quality intervals."""
+    preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
+    policy_cfg = preprocess_cfg.get("quality_interval_policy", {}) if isinstance(preprocess_cfg, Mapping) else {}
+    if not isinstance(policy_cfg, Mapping):
+        return {"enabled": False}
+    merged: Dict[str, Any] = {key: policy_cfg[key] for key in policy_cfg if key != "datasets"}
+    ds_overrides = policy_cfg.get("datasets", {})
+    if dataset_id and isinstance(ds_overrides, Mapping):
+        ds_cfg = ds_overrides.get(dataset_id)
+        if isinstance(ds_cfg, Mapping):
+            merged.update(ds_cfg)
+    return merged
+
+
+def _resolve_raw_flatline_qc(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
+    """Resolve the optional raw, pre-filter joint EEG flatline audit."""
+    preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
+    qc_cfg = preprocess_cfg.get("raw_flatline_qc", {}) if isinstance(preprocess_cfg, Mapping) else {}
+    if not isinstance(qc_cfg, Mapping):
+        return {"enabled": False}
+    merged: Dict[str, Any] = {key: qc_cfg[key] for key in qc_cfg if key != "datasets"}
+    ds_overrides = qc_cfg.get("datasets", {})
+    if dataset_id and isinstance(ds_overrides, Mapping):
+        ds_cfg = ds_overrides.get(dataset_id)
+        if isinstance(ds_cfg, Mapping):
+            merged.update(ds_cfg)
+    return merged
+
+
+def _filter_skip_by_annotation(raw: Any, policy_record: Mapping[str, Any]) -> Optional[tuple[str, ...]]:
+    """Return MNE skip prefixes for every BAD annotation under an opt-in policy."""
+    if not bool(policy_record.get("enabled", False)):
+        return None
+    descriptions = getattr(getattr(raw, "annotations", None), "description", [])
+    skip = ["edge", "bad_acq_skip"]
+    seen = {value.casefold() for value in skip}
+    for description in descriptions:
+        text = str(description)
+        if text.upper().startswith("BAD") and text.casefold() not in seen:
+            skip.append(text)
+            seen.add(text.casefold())
+    return tuple(skip)
+
+
+def _has_bad_raw_annotations(raw: Any) -> bool:
+    """Whether the Raw contains any BAD_* annotation a fallback must not cross."""
+    descriptions = getattr(getattr(raw, "annotations", None), "description", [])
+    return any(str(description).upper().startswith("BAD") for description in descriptions)
+
+
+def _apply_quality_interval_annotations(
+    raw: Any,
+    intervals: Sequence[Mapping[str, Any]],
+    policy: Mapping[str, Any],
+    *,
+    source_origin_time_sec: Optional[float] = None,
+) -> Dict[str, Any]:
+    """Attach selected source intervals as MNE BAD annotations, without masking data.
+
+    ``source_origin_time_sec`` maps original-file-relative intervals to the
+    annotation clock when this is called after a Raw has been cropped.
+    """
+    if not bool(policy.get("enabled", False)):
+        return {"enabled": False, "status": "disabled", "annotations_added": 0}
+    raw_kinds = policy.get("source_kinds", [])
+    if isinstance(raw_kinds, str):
+        raw_kinds = [raw_kinds]
+    source_kinds = {str(value) for value in raw_kinds or []}
+    description = str(policy.get("annotation_description", "BAD_acq_skip")).strip()
+    if not source_kinds or not description.upper().startswith("BAD_"):
+        raise ValueError(
+            "preprocess.quality_interval_policy requires source_kinds and a BAD_* annotation_description"
+        )
+
+    selected: list[tuple[float, float]] = []
+    for interval in intervals:
+        if str(interval.get("source_kind", "")) not in source_kinds:
+            continue
+        if str(interval.get("clock", "original_raw_seconds")) != "original_raw_seconds":
+            raise ValueError("quality interval annotation requires original_raw_seconds clock")
+        start = float(interval["start_sec"])
+        end = float(interval["end_sec"])
+        if not np.isfinite([start, end]).all() or end < start:
+            raise ValueError("quality interval has invalid source bounds")
+        if end > start:
+            selected.append((start, end))
+
+    selected.sort()
+    merged: list[list[float]] = []
+    for start, end in selected:
+        if merged and start <= merged[-1][1] + 1e-9:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+
+    sfreq = float(raw.info["sfreq"])
+    duration = float(raw.n_times / sfreq) if sfreq > 0 else 0.0
+    first_time = float(getattr(raw, "first_time", 0.0) or 0.0)
+    source_origin = first_time if source_origin_time_sec is None else float(source_origin_time_sec)
+    if not np.isfinite([sfreq, duration, first_time, source_origin]).all() or sfreq <= 0:
+        raise ValueError("quality interval annotation requires finite raw clock values and positive sfreq")
+    current_source_start = first_time - source_origin
+    current_source_end = current_source_start + duration
+    added = 0
+    for start, end in merged:
+        clipped_start = max(current_source_start, start)
+        clipped_end = min(current_source_end, end)
+        if clipped_end <= clipped_start:
+            continue
+        # Map the original-file-relative source clock onto MNE's Raw annotation
+        # clock, preserving a possible first_samp offset and prior crop.
+        raw.annotations.append(
+            float(clipped_start + source_origin),
+            float(clipped_end - clipped_start),
+            description,
+        )
+        added += 1
+    if added:
+        raw.annotations._sort()
+    return {
+        "enabled": True,
+        "status": "applied" if added else "no_selected_intervals",
+        "source_kinds": sorted(source_kinds),
+        "annotation_description": description,
+        "selected_source_interval_count": int(len(selected)),
+        "annotations_added": int(added),
+        "mask_bad_annotations": bool(policy.get("mask_bad_annotations", True)),
+        "segment_resampling": bool(policy.get("segment_resampling", False)),
+    }
+
+
+def _joint_flatline_quality_intervals(
+    data: np.ndarray,
+    *,
+    sfreq: float,
+    first_time_sec: float,
+    channel_names: Sequence[str],
+    min_duration_sec: float = 1.0,
+    raw_file: Optional[str] = None,
+) -> list[Dict[str, Any]]:
+    """Find intervals where every selected raw EEG channel is exactly unchanged."""
+    values = np.asarray(data)
+    if values.ndim != 2 or values.shape[0] == 0 or values.shape[1] < 2:
+        return []
+    rate = float(sfreq)
+    if not np.isfinite(rate) or rate <= 0:
+        return []
+    minimum_duration = float(min_duration_sec)
+    if not np.isfinite(minimum_duration) or minimum_duration < 0:
+        raise ValueError("min_duration_sec must be finite and nonnegative")
+    adjacent_finite = np.isfinite(values[:, :-1]).all(axis=0) & np.isfinite(values[:, 1:]).all(axis=0)
+    unchanged = adjacent_finite & np.all(values[:, :-1] == values[:, 1:], axis=0)
+    edges = np.diff(np.r_[False, unchanged, False].astype(np.int8))
+    starts = np.flatnonzero(edges == 1)
+    stops = np.flatnonzero(edges == -1)
+    min_samples = max(1, int(np.ceil(minimum_duration * rate)))
+    results: list[Dict[str, Any]] = []
+    for start_diff, stop_diff in zip(starts.tolist(), stops.tolist()):
+        sample_start = int(start_diff)
+        sample_end = int(stop_diff + 1)
+        if sample_end - sample_start < min_samples:
+            continue
+        start_sec = float(first_time_sec) + sample_start / rate
+        duration_sec = (sample_end - sample_start) / rate
+        results.append(
+            quality_interval(
+                source_kind="raw_joint_eeg_flatline",
+                start_sec=start_sec,
+                duration_sec=duration_sec,
+                raw_file=raw_file,
+                raw_sample_start=sample_start,
+                raw_sample_end_exclusive=sample_end,
+                sfreq_hz=rate,
+                channel_names=[str(name) for name in channel_names],
+                detection="exact_all_channels_adjacent_sample_equality",
+                min_duration_sec=minimum_duration,
+                signal_stage="raw_before_temporal_preprocessing",
+            )
+        )
+    return results
+
+
+def _split_raw_at_bad_annotation_boundaries(
+    raw: Any,
+    *,
+    target_sfreq: float,
+    annotation_description: str = "BAD_acq_skip",
+) -> tuple[Any, Dict[str, Any]]:
+    """Split an MNE Raw at selected BAD annotation edges before FFT resampling.
+
+    MNE Raw.resample resamples each underlying Raw segment independently, but
+    does not split at annotations. This helper creates those segment boundaries
+    so samples on opposite sides of a declared gap cannot mix during resampling.
+    To preserve the downstream time grid, each boundary must align to the target
+    sample grid; otherwise the opt-in operation fails closed.
+    """
+    sfreq = float(raw.info["sfreq"])
+    target = float(target_sfreq)
+    n_samples = int(raw.n_times)
+    report: Dict[str, Any] = {
+        "enabled": True,
+        "status": "no_matching_intervals",
+        "segment_count_before": int(len(getattr(raw, "_raw_lengths", [n_samples]))),
+        "segment_count_after": int(len(getattr(raw, "_raw_lengths", [n_samples]))),
+        "boundary_samples": [],
+    }
+    if not np.isfinite(sfreq) or sfreq <= 0 or not np.isfinite(target) or target <= 0:
+        raise ValueError("segment-aware resampling requires positive finite sampling frequencies")
+    if abs(sfreq - target) <= max(1e-12, target * 1e-12):
+        report["status"] = "skipped_target_rate_matches_input"
+        return raw, report
+
+    first_time = float(getattr(raw, "first_time", 0.0) or 0.0)
+    cuts = {0, n_samples}
+    matched = 0
+    for onset, duration, description in zip(
+        raw.annotations.onset, raw.annotations.duration, raw.annotations.description
+    ):
+        if str(description).casefold() != annotation_description.casefold():
+            continue
+        local_start = float(onset) - first_time
+        local_end = local_start + float(duration)
+        start_idx = int(np.clip(np.rint(local_start * sfreq), 0, n_samples))
+        end_idx = int(np.clip(np.rint(local_end * sfreq), 0, n_samples))
+        if end_idx <= start_idx:
+            continue
+        for sample_idx in (start_idx, end_idx):
+            target_position = (sample_idx / sfreq) * target
+            if abs(target_position - round(target_position)) > 1e-7:
+                raise ValueError(
+                    "BAD annotation boundary does not align to the target sample grid; "
+                    "refusing continuous FFT resampling across a time-shifting segment boundary"
+                )
+            if 0 < sample_idx < n_samples:
+                cuts.add(sample_idx)
+        matched += 1
+
+    if len(cuts) <= 2 or matched == 0:
+        return raw, report
+
+    ordered_cuts = sorted(cuts)
+    pieces = [
+        raw.copy().crop(
+            tmin=float(raw.times[start_idx]),
+            tmax=float(raw.times[end_idx - 1]),
+            include_tmax=True,
+            verbose="ERROR",
+        )
+        for start_idx, end_idx in zip(ordered_cuts[:-1], ordered_cuts[1:])
+        if end_idx > start_idx
+    ]
+    segmented = mne.concatenate_raws(pieces, preload=True, verbose="ERROR")
+    if int(segmented.n_times) != n_samples:
+        raise RuntimeError(
+            f"segment-aware resampling changed the input sample count ({n_samples} -> {segmented.n_times})"
+        )
+    report.update(
+        {
+            "status": "segmented",
+            "segment_count_after": int(len(getattr(segmented, "_raw_lengths", pieces))),
+            "boundary_samples": [int(value) for value in ordered_cuts[1:-1]],
+            "matching_annotation_count": int(matched),
+        }
+    )
+    return segmented, report
 
 
 def _resolve_nwb_config(config: Mapping[str, Any], dataset_id: Optional[str]) -> Dict[str, Any]:
@@ -1744,6 +2215,94 @@ def _wfdb_unit_to_microvolt_factor(unit: Any, *, scale_to_microvolts: bool) -> f
     return 1.0
 
 
+def _causal_polyphase_resample(raw: Any, target_sfreq: float) -> tuple[Any, dict[str, Any]]:
+    """Resample one continuous RawArray with a finite, causal FIR dependency.
+
+    Unlike ``resample_poly``'s centered default, this deliberately retains the
+    polyphase filter delay. It is intended for bounded opt-in pilots only.
+    """
+    from scipy.signal import firwin, upfirdn
+
+    source_sfreq = float(raw.info["sfreq"])
+    target_sfreq = float(target_sfreq)
+    if not np.isfinite(source_sfreq) or not np.isfinite(target_sfreq) or min(source_sfreq, target_sfreq) <= 0:
+        raise ValueError("causal polyphase resampling requires positive finite sample rates")
+    if len(getattr(raw, "annotations", [])):
+        raise ValueError("causal polyphase resampling refuses annotated boundaries")
+    data = np.asarray(raw.get_data(), dtype=np.float64)
+    if data.ndim != 2 or data.size == 0 or not np.isfinite(data).all():
+        raise ValueError("causal polyphase resampling requires a finite, nonempty continuous array")
+
+    ratio = Fraction(target_sfreq / source_sfreq).limit_denominator(100_000)
+    up, down = int(ratio.numerator), int(ratio.denominator)
+    realized_sfreq = source_sfreq * up / down
+    if abs(realized_sfreq - target_sfreq) > max(1e-10, abs(target_sfreq) * 1e-12):
+        raise ValueError("requested sample-rate ratio cannot be represented safely as a rational polyphase ratio")
+
+    if up == down:
+        resampled = data
+        taps = np.array([1.0], dtype=np.float64)
+    else:
+        max_rate = max(up, down)
+        half_len = 10 * max_rate
+        taps = firwin(2 * half_len + 1, 1.0 / max_rate, window=("kaiser", 5.0)).astype(np.float64)
+        taps *= up
+        resampled = upfirdn(taps, data, up=up, down=down, axis=-1)
+        output_count = (data.shape[-1] * up + down - 1) // down
+        resampled = np.asarray(resampled[..., :output_count], dtype=np.float64)
+
+    channel_types = list(raw.get_channel_types())
+    info = mne.create_info(ch_names=list(raw.ch_names), sfreq=target_sfreq, ch_types=channel_types)
+    info["bads"] = list(raw.info.get("bads", []))
+    result = mne.io.RawArray(resampled, info, first_samp=int(getattr(raw, "first_samp", 0)), verbose=False)
+    coefficient_hash = hashlib.sha256(np.asarray(taps, dtype="<f8").tobytes()).hexdigest()
+    description = {
+        "method": "scipy.signal.upfirdn_causal_fir",
+        "up": up,
+        "down": down,
+        "tap_count": int(taps.size),
+        "coefficient_sha256": coefficient_hash,
+        "group_delay_input_samples": float((taps.size - 1) / (2 * up)),
+        "group_delay_seconds": float((taps.size - 1) / (2 * up * source_sfreq)),
+        "source_sfreq_hz": source_sfreq,
+        "output_sfreq_hz": target_sfreq,
+        "output_sample_count": int(resampled.shape[-1]),
+        "phase": "causal_uncompensated",
+        "boundary_extension": "zero_before_record_start; no future samples",
+    }
+    return result, description
+
+
+def _minimum_phase_eeg_filter_spec(raw: Any, picks: Sequence[int], bandpass: Sequence[float]) -> dict[str, Any]:
+    """Describe the exact MNE FIR used by the opt-in causal WFDB pilot."""
+    if mne is None:
+        raise RuntimeError("MNE is required for the causal EEG filter")
+    data = raw.get_data(picks=list(picks))
+    taps = mne.filter.create_filter(
+        data=data,
+        sfreq=float(raw.info["sfreq"]),
+        l_freq=float(bandpass[0]),
+        h_freq=float(bandpass[1]),
+        method="fir",
+        phase="minimum",
+        fir_design="firwin",
+        fir_window="hamming",
+        filter_length="auto",
+        verbose=False,
+    )
+    taps = np.asarray(taps, dtype=np.float64)
+    return {
+        "method": "mne.filter.filter_data_fir",
+        "phase": "minimum",
+        "pad": "constant",
+        "tap_count": int(taps.size),
+        "coefficient_sha256": hashlib.sha256(np.asarray(taps, dtype="<f8").tobytes()).hexdigest(),
+        "bandpass_hz": [float(bandpass[0]), float(bandpass[1])],
+        "sfreq_hz": float(raw.info["sfreq"]),
+        "support_interpretation": "output k depends on input [max(0,k-tap_count+1),k]",
+    }
+
+
 def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
     """Preprocess PhysioNet/WFDB recordings from .hea/.mat pairs."""
     if mne is None:
@@ -1758,6 +2317,101 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     if not isinstance(wfdb_cfg, Mapping):
         wfdb_cfg = {}
     preprocess_timings: Dict[str, float] = {}
+
+    # WFDB's signal matrix is stored in a companion file (typically .mat or
+    # .dat), while the .hea file carries the channel and clock metadata. Hash
+    # the header and the referenced signal payload before reading samples so
+    # the later QC sidecar can identify the exact source pair.
+    signal_support_provenance = build_signal_support_provenance(
+        Path(file_path), source_datatype="eeg"
+    )
+    support_source = signal_support_provenance.get("source", {})
+    header_file_names: list[str] = []
+    is_multirecord = False
+    source_sample_grid_supported = False
+    source_sample_grid_reason = "wfdb_header_unverified"
+    rdheader = getattr(wfdb, "rdheader", None)
+    if callable(rdheader):
+        try:
+            header = rdheader(str(file_path.with_suffix("")))
+            segment_names = getattr(header, "seg_name", None)
+            is_multirecord = segment_names is not None
+            if is_multirecord:
+                source_sample_grid_reason = "wfdb_multirecord_segment_mapping_not_supported"
+            else:
+                raw_header_file_names = getattr(header, "file_name", []) or []
+                if isinstance(raw_header_file_names, str):
+                    raw_header_file_names = [raw_header_file_names]
+                header_file_names = list(dict.fromkeys(str(name) for name in raw_header_file_names if str(name).strip()))
+                source_sample_grid_reason = "wfdb_signal_payload_identity_unavailable"
+            signal_support_provenance["wfdb_header_clock"] = {
+                "base_date": str(getattr(header, "base_date", "") or "") or None,
+                "base_time": str(getattr(header, "base_time", "") or "") or None,
+                "recording_start_sample": 0,
+                "sample_rate_hz": float(getattr(header, "fs", 0.0) or 0.0),
+                "sample_count": int(getattr(header, "sig_len", 0) or 0),
+                "channel_count": int(getattr(header, "n_sig", 0) or 0),
+                "parser": "wfdb.rdheader",
+            }
+            from .pipeline.time_reference import parse_wfdb_header_clocks
+
+            signal_support_provenance["recording_time_reference"] = parse_wfdb_header_clocks(Path(file_path))
+        except Exception as exc:
+            # rdrecord remains the authoritative load path. Preserve a clear
+            # provenance gap if the preliminary header read is unavailable.
+            signal_support_provenance["wfdb_header_clock"] = {
+                "status": "unavailable",
+                "reason": f"header_read_failed:{type(exc).__name__}",
+                "parser": "wfdb.rdheader",
+            }
+            source_sample_grid_reason = "wfdb_header_unverified"
+            signal_support_provenance["recording_time_reference"] = {
+                "status": "unavailable",
+                "reason": f"header_time_parse_failed:{type(exc).__name__}",
+            }
+
+    payload_files: list[dict[str, Any]] = []
+    source_parent = Path(file_path).resolve().parent
+    for name in header_file_names:
+        candidate = (source_parent / name).resolve()
+        try:
+            candidate.relative_to(source_parent)
+        except ValueError:
+            payload_files.append({
+                "path": str(candidate),
+                "exists": False,
+                "hash_status": "refused_path_outside_header_directory",
+            })
+            continue
+        identity: dict[str, Any] = {"path": str(candidate), "exists": candidate.is_file()}
+        if candidate.is_file():
+            try:
+                stat = candidate.stat()
+                identity.update({
+                    "size_bytes": int(stat.st_size),
+                    "sha256": file_sha256(candidate),
+                    "hash_status": "captured_before_read",
+                })
+            except Exception as exc:
+                identity.update({"hash_status": "failed", "hash_error": str(exc)})
+        else:
+            identity["hash_status"] = "missing"
+        payload_files.append(identity)
+    if (
+        not is_multirecord
+        and payload_files
+        and all(
+            item.get("exists") is True
+            and item.get("hash_status") == "captured_before_read"
+            and bool(item.get("sha256"))
+            for item in payload_files
+        )
+    ):
+        source_sample_grid_supported = True
+        source_sample_grid_reason = "single_record_source_payload_hashed_before_read"
+    signal_support_provenance["source_sample_grid_supported"] = source_sample_grid_supported
+    signal_support_provenance["source_sample_grid_reason"] = source_sample_grid_reason
+    support_source["associated_signal_files"] = payload_files
 
     record_stem = str(file_path.with_suffix(""))
     try:
@@ -1786,11 +2440,72 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
 
     info = mne.create_info(ch_names=sig_names, sfreq=fs, ch_types=ch_types)
     raw = mne.io.RawArray(data.T, info, verbose=False)
+    temporal_mode = str(preprocess_cfg.get("temporal_support_mode", "default")).strip().lower()
+    causal_finite_mode = temporal_mode == "causal_finite"
+    if temporal_mode not in {"default", "causal_finite"}:
+        raise ValueError(f"unsupported WFDB temporal_support_mode: {temporal_mode}")
+    if causal_finite_mode:
+        header_clock = signal_support_provenance.get("wfdb_header_clock", {})
+        try:
+            header_sfreq = float(header_clock["sample_rate_hz"])
+            header_sample_count = int(header_clock["sample_count"])
+            header_channel_count = int(header_clock["channel_count"])
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("causal_finite WFDB mode requires a complete parsed header clock") from exc
+        if (
+            not np.isfinite(header_sfreq)
+            or abs(header_sfreq - fs) > max(1e-9, fs * 1e-12)
+            or header_sample_count != int(data.shape[0])
+            or header_channel_count != int(data.shape[1])
+        ):
+            raise ValueError("causal_finite WFDB mode refuses a header grid that differs from the loaded record array")
+
+    original_first_samp = int(getattr(raw, "first_samp", 0))
+    original_first_time_sec = float(getattr(raw, "first_time", 0.0) or 0.0)
+    signal_support_provenance["input_sfreq_hz"] = float(fs)
+    signal_support_provenance["raw_clock_before_crop"] = {
+        "sfreq_hz": float(fs),
+        "first_time_sec": original_first_time_sec,
+        "first_samp": original_first_samp,
+        "n_times": int(data.shape[0]),
+        "duration_sec": float(data.shape[0] / fs),
+    }
+
 
     # Optional dataset-specific channel typing overrides.
     _apply_channel_typing(raw, dataset_id, config)
 
     crop_cfg = _resolve_crop_config(config, dataset_id)
+    if causal_finite_mode:
+        resample_cfg_for_mode = preprocess_cfg.get("resample", {})
+        resample_method = (
+            str(resample_cfg_for_mode.get("method", "")).strip().lower()
+            if isinstance(resample_cfg_for_mode, Mapping)
+            else ""
+        )
+        if not source_sample_grid_supported or is_multirecord:
+            raise ValueError("causal_finite WFDB mode requires a verified single-record source sample grid")
+        if crop_cfg:
+            raise ValueError("causal_finite WFDB mode currently refuses configured crops")
+        if len(getattr(raw, "annotations", [])):
+            raise ValueError("causal_finite WFDB mode refuses annotated boundaries")
+        if resample_method != "causal_polyphase":
+            raise ValueError("causal_finite WFDB mode requires resample.method=causal_polyphase")
+        if str(preprocess_cfg.get("eeg_bandpass_phase", "")).strip().lower() != "minimum":
+            raise ValueError("causal_finite WFDB mode requires eeg_bandpass_phase=minimum")
+        if preprocess_cfg.get("notch_hz") is not None:
+            raise ValueError("causal_finite WFDB mode currently requires notch_hz=null")
+        configured_bandpass = preprocess_cfg.get("eeg_bandpass", [1, 45])
+        if not (isinstance(configured_bandpass, (list, tuple)) and len(configured_bandpass) == 2):
+            raise ValueError("causal_finite WFDB mode requires a two-edge EEG bandpass")
+    crop_record: Dict[str, Any] = {
+        "requested": None,
+        "applied": False,
+        "actual_tmin_sec": original_first_time_sec,
+        "actual_tmax_sec": original_first_time_sec + float(raw.n_times) / float(raw.info["sfreq"]),
+        "actual_tmin_from_source_start_sec": 0.0,
+        "reason": "not_configured",
+    }
     if crop_cfg:
         # NWB data were sliced before materialisation, so crop relative to the
         # in-memory segment rather than applying start_sec twice.
@@ -1798,15 +2513,40 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         tmax_val = crop_cfg.get("stop_sec", None)
         start_val = float(crop_cfg.get("start_sec", 0) or 0.0)
         tmax = float(tmax_val) - start_val if tmax_val is not None else None
+        crop_record["requested"] = {"tmin_sec": start_val, "tmax_sec": float(tmax_val) if tmax_val is not None else None}
+        crop_record["reason"] = "configured"
+        crop_operation = start_operation(
+            signal_support_provenance,
+            "crop",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters=dict(crop_record["requested"]),
+            actual_kwargs={"tmin": max(tmin, 0.0), "tmax": tmax},
+        )
         try:
             raw.crop(tmin=max(tmin, 0.0), tmax=tmax)
+            crop_record.update({
+                "applied": True,
+                "actual_first_samp": int(getattr(raw, "first_samp", 0)),
+                "actual_last_samp_exclusive": int(getattr(raw, "first_samp", 0)) + int(raw.n_times),
+                "actual_tmin_sec": float(getattr(raw, "first_time", 0.0) or 0.0),
+                "actual_tmax_sec": float(getattr(raw, "first_time", 0.0) or 0.0) + float(raw.n_times) / float(raw.info["sfreq"]),
+                "actual_tmin_from_source_start_sec": float(getattr(raw, "first_time", 0.0) or 0.0) - original_first_time_sec,
+                "actual_sfreq_hz": float(raw.info["sfreq"]),
+                "actual_bounds_clock": "post_crop_raw_sample_grid",
+            })
+            finish_operation(crop_operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
         except Exception as exc:
+            crop_record.update({"applied": False, "reason": "failed", "error": str(exc)})
+            finish_operation(crop_operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
             logger.warning("WFDB crop failed for %s (%s); continuing without crop", file_path.name, exc)
+    signal_support_provenance["crop"] = crop_record
 
     target_sfreq, sfreq_policy = _resolve_target_sfreq(
         original_sfreq=float(fs),
         preprocess_cfg=preprocess_cfg if isinstance(preprocess_cfg, Mapping) else {},
     )
+    signal_support_provenance["target_sfreq_hz"] = float(target_sfreq)
+    signal_support_provenance["sampling_policy"] = sfreq_policy
     resample_cfg = preprocess_cfg.get("resample", {}) if isinstance(preprocess_cfg, Mapping) else {}
     resample_n_jobs = resample_cfg.get("n_jobs", 1) if isinstance(resample_cfg, Mapping) else 1
     if isinstance(resample_n_jobs, str) and resample_n_jobs.strip().lower() == "auto":
@@ -1817,14 +2557,74 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         except Exception:
             n_jobs_resample = 1
     t_resample0 = time.perf_counter()
-    if raw.info["sfreq"] != target_sfreq:
-        raw.resample(target_sfreq, n_jobs=n_jobs_resample, verbose=False)
+    causal_resampler_spec: Optional[dict[str, Any]] = None
+    if causal_finite_mode:
+        operation = start_operation(
+            signal_support_provenance,
+            "resample",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"target_sfreq_hz": float(target_sfreq), "mode": "causal_finite"},
+            actual_kwargs={"method": "scipy.signal.upfirdn", "phase": "causal_uncompensated"},
+        )
+        try:
+            raw, causal_resampler_spec = _causal_polyphase_resample(raw, target_sfreq)
+            operation["support"] = causal_resampler_spec
+            operation["temporal_support_status"] = "finite_causal"
+            operation["support_reason"] = "bounded FIR dependency with no future source samples"
+            finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+        except Exception as exc:
+            finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
+            raise
+    elif raw.info["sfreq"] != target_sfreq:
+        operation = start_operation(
+            signal_support_provenance,
+            "resample",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"target_sfreq_hz": float(target_sfreq)},
+            actual_kwargs={"target_sfreq": target_sfreq, "n_jobs": n_jobs_resample, "verbose": False},
+        )
+        operation["actual_kwargs"]["call_signature"] = callable_signature(raw.resample)
+        try:
+            raw.resample(target_sfreq, n_jobs=n_jobs_resample, verbose=False)
+            finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+        except Exception as exc:
+            finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
+            raise
+    else:
+        operation = start_operation(
+            signal_support_provenance,
+            "resample",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"target_sfreq_hz": float(target_sfreq)},
+            actual_kwargs={"skipped": True, "reason": "already_at_target_sfreq"},
+        )
+        finish_operation(operation, status="skipped", output_sfreq=float(raw.info["sfreq"]))
     preprocess_timings["resample"] = float(time.perf_counter() - t_resample0)
 
     notch_hz = preprocess_cfg.get("notch_hz", None) if isinstance(preprocess_cfg, Mapping) else None
     eeg_picks = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
     if notch_hz is not None and len(eeg_picks) > 0:
-        raw.notch_filter(freqs=notch_hz, picks=eeg_picks, verbose=False)
+        operation = start_operation(
+            signal_support_provenance,
+            "notch_filter",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"frequencies_hz": notch_hz},
+            actual_kwargs={"freqs": notch_hz, "picks_count": int(len(eeg_picks)), "verbose": False},
+        )
+        try:
+            raw.notch_filter(freqs=notch_hz, picks=eeg_picks, verbose=False)
+            finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+        except Exception as exc:
+            finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
+            raise
+    else:
+        operation = start_operation(
+            signal_support_provenance,
+            "notch_filter",
+            input_sfreq=float(raw.info["sfreq"]),
+            actual_kwargs={"skipped": True, "reason": "disabled_or_no_eeg_channels"},
+        )
+        finish_operation(operation, status="skipped", output_sfreq=float(raw.info["sfreq"]))
 
     eeg_bandpass = preprocess_cfg.get("eeg_bandpass", [1, 45]) if isinstance(preprocess_cfg, Mapping) else [1, 45]
     meg_bandpass = (
@@ -1832,13 +2632,80 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         if isinstance(preprocess_cfg, Mapping)
         else eeg_bandpass
     )
+    causal_eeg_filter_spec: Optional[dict[str, Any]] = None
     if eeg_bandpass is not None and len(eeg_bandpass) == 2 and len(eeg_picks) > 0:
-        raw.filter(l_freq=eeg_bandpass[0], h_freq=eeg_bandpass[1], picks=eeg_picks, verbose=False)
+        operation = start_operation(
+            signal_support_provenance,
+            "eeg_bandpass",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"bandpass_hz": eeg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in eeg_picks]},
+            actual_kwargs={"l_freq": eeg_bandpass[0], "h_freq": eeg_bandpass[1], "picks_count": int(len(eeg_picks)), "verbose": False},
+        )
+        operation["actual_kwargs"]["call_signature"] = callable_signature(raw.filter)
+        try:
+            if causal_finite_mode:
+                causal_eeg_filter_spec = _minimum_phase_eeg_filter_spec(raw, eeg_picks, eeg_bandpass)
+                operation["actual_kwargs"].update({
+                    "method": "fir",
+                    "phase": "minimum",
+                    "fir_design": "firwin",
+                    "fir_window": "hamming",
+                    "filter_length": "auto",
+                    "pad": "constant",
+                })
+                operation["support"] = causal_eeg_filter_spec
+                operation["temporal_support_status"] = "finite_causal"
+                operation["support_reason"] = "minimum-phase FIR with constant zero-state padding"
+                raw.filter(
+                    l_freq=eeg_bandpass[0],
+                    h_freq=eeg_bandpass[1],
+                    picks=eeg_picks,
+                    method="fir",
+                    phase="minimum",
+                    fir_design="firwin",
+                    fir_window="hamming",
+                    filter_length="auto",
+                    pad="constant",
+                    verbose=False,
+                )
+            else:
+                raw.filter(l_freq=eeg_bandpass[0], h_freq=eeg_bandpass[1], picks=eeg_picks, verbose=False)
+            finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+        except Exception as exc:
+            finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
+            raise
+    else:
+        operation = start_operation(
+            signal_support_provenance,
+            "eeg_bandpass",
+            input_sfreq=float(raw.info["sfreq"]),
+            actual_kwargs={"skipped": True, "reason": "disabled_or_no_eeg_channels"},
+        )
+        finish_operation(operation, status="skipped", output_sfreq=float(raw.info["sfreq"]))
 
     reref = preprocess_cfg.get("reref", None) if isinstance(preprocess_cfg, Mapping) else None
     if str(reref).lower() == "average" and len(eeg_picks) > 0:
+        operation = start_operation(
+            signal_support_provenance,
+            "average_rereference",
+            operation_class="spatial",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"requested": True, "channels": [raw.ch_names[int(i)] for i in eeg_picks]},
+            actual_kwargs={"method": "mean_across_selected_channels", "copy": False},
+        )
         eeg_data = raw.get_data(picks=eeg_picks)
         raw._data[eeg_picks, :] = eeg_data - np.mean(eeg_data, axis=0, keepdims=True)  # type: ignore[attr-defined]
+        finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+    else:
+        operation = start_operation(
+            signal_support_provenance,
+            "average_rereference",
+            operation_class="spatial",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"requested": str(reref).lower() == "average"},
+            actual_kwargs={"skipped": True, "reason": "disabled_or_no_eeg_channels"},
+        )
+        finish_operation(operation, status="skipped", output_sfreq=float(raw.info["sfreq"]))
 
     if len(eeg_picks) == 0:
         raise RuntimeError(f"No EEG channels detected in WFDB record: {file_path}")
@@ -1853,9 +2720,105 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         ],
         dtype=float,
     )
+    wfdb_eeg_source_units = [str(units[int(idx)] or "").strip() for idx in eeg_picks]
     eeg_values = raw.get_data(picks=eeg_picks)
     if eeg_scale.shape[0] == eeg_values.shape[0]:
+        operation = start_operation(
+            signal_support_provenance,
+            "wfdb_unit_scaling",
+            operation_class="amplitude",
+            input_sfreq=float(raw.info["sfreq"]),
+            parameters={"scale_to_microvolts": scale_to_microvolts, "source_units": wfdb_eeg_source_units},
+            actual_kwargs={"per_channel_factors": eeg_scale.tolist()},
+        )
         eeg_values = eeg_values * eeg_scale[:, np.newaxis]
+        finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
+
+    normalized_wfdb_units = {
+        "v": "V", "volt": "V", "volts": "V",
+        "mv": "mV", "millivolt": "mV", "millivolts": "mV",
+        "uv": "microvolt", "µv": "microvolt", "microvolt": "microvolt", "microvolts": "microvolt",
+    }
+    source_unit_keys = [unit.lower() for unit in wfdb_eeg_source_units]
+    all_physical_units_known = bool(source_unit_keys) and all(unit in normalized_wfdb_units for unit in source_unit_keys)
+    if scale_to_microvolts and all_physical_units_known:
+        eeg_amplitude_unit, eeg_amplitude_unit_status = "microvolt", "verified"
+        eeg_amplitude_unit_reason = "wfdb_physical_channel_units_scaled_to_microvolts"
+    elif not scale_to_microvolts and len(set(source_unit_keys)) == 1 and all_physical_units_known:
+        eeg_amplitude_unit = normalized_wfdb_units[source_unit_keys[0]]
+        eeg_amplitude_unit_status = "verified"
+        eeg_amplitude_unit_reason = "uniform_wfdb_physical_channel_unit_preserved"
+    else:
+        eeg_amplitude_unit, eeg_amplitude_unit_status = None, "unknown"
+        eeg_amplitude_unit_reason = (
+            "wfdb_channel_units_not_physical_or_not_recorded"
+            if not all_physical_units_known
+            else "mixed_wfdb_channel_units_not_normalized"
+        )
+    wfdb_reference_mode = str(reref).strip().lower() if reref is not None else "native_reference_as_loaded"
+    wfdb_reference_verified = wfdb_reference_mode == "average" and len(eeg_picks) > 0
+
+    signal_support_provenance["raw_clock_after_crop"] = {
+        "sfreq_hz": float(raw.info["sfreq"]),
+        "first_time_sec": float(getattr(raw, "first_time", 0.0) or 0.0),
+        "first_samp": int(getattr(raw, "first_samp", 0)),
+        "n_times": int(raw.n_times),
+        "duration_sec": float(raw.n_times / float(raw.info["sfreq"])) if float(raw.info["sfreq"]) > 0 else None,
+    }
+    if causal_finite_mode and causal_resampler_spec is not None and causal_eeg_filter_spec is not None:
+        effective_support = {
+            "status": "finite_causal",
+            "mode": "causal_finite",
+            "reason": "verified contiguous WFDB source plus finite causal polyphase resampler and minimum-phase EEG FIR",
+            "resampler": causal_resampler_spec,
+            "eeg_bandpass": causal_eeg_filter_spec,
+            "excluded_operations": ["notch_filter", "crop", "annotations", "nonfinite_input"],
+            "boundary_handling": "zero-state causal padding at record start; source contributors clipped to source array",
+        }
+        signal_support_provenance["effective_time_support"] = effective_support
+        signal_support_provenance["temporal_support"] = {
+            "status": "finite_causal_conservative_bound",
+            "reason": effective_support["reason"],
+            "epoch_bounds": "per-epoch source contributor interval emitted by map_preprocessed_window_to_source_samples",
+        }
+    else:
+        signal_support_provenance["effective_time_support"] = {
+            "status": "unknown",
+            "reason": "filter_or_resampler_dependency_map_not_recorded",
+        }
+    # If a test double or unusual header lacked file references, retain a
+    # clearly marked fallback identity for an existing conventional sibling.
+    if not payload_files:
+        fallback_payload = file_path.with_suffix(".mat")
+        if fallback_payload.is_file():
+            payload_files.append({
+                "path": str(fallback_payload.resolve()),
+                "exists": True,
+                "size_bytes": int(fallback_payload.stat().st_size),
+                "hash_status": "captured_after_wfdb_read",
+                "sha256": file_sha256(fallback_payload),
+            })
+    for identity in payload_files:
+        path = Path(str(identity.get("path", "")))
+        before = identity.get("sha256")
+        try:
+            after = file_sha256(path)
+            identity["sha256_after"] = after
+            identity["hash_stable"] = bool(before and str(before).lower() == after.lower())
+            if not before:
+                identity["hash_status"] = "captured_after_wfdb_read"
+        except Exception as exc:
+            identity["sha256_after"] = None
+            identity["hash_stable"] = False
+            identity["hash_after_error"] = str(exc)
+    support_source["associated_signal_files"] = payload_files
+    support_source["associated_signal_files_status"] = (
+        "verified"
+        if source_sample_grid_supported and payload_files and all(item.get("hash_stable") is True for item in payload_files)
+        else "unknown"
+    )
+    refresh_source_hash(signal_support_provenance)
+    signal_support_provenance["status"] = "completed"
 
     preprocess_timings["total"] = float(time.perf_counter() - t_pre0)
     meta: Dict[str, Any] = {
@@ -1864,9 +2827,17 @@ def preprocess_wfdb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         "source_format": "WFDB",
         "wfdb_record_name": str(getattr(record, "record_name", "") or ""),
         "wfdb_scale_to_microvolts": scale_to_microvolts,
+        "wfdb_eeg_source_units": wfdb_eeg_source_units,
+        "eeg_amplitude_unit": eeg_amplitude_unit,
+        "eeg_amplitude_unit_status": eeg_amplitude_unit_status,
+        "eeg_amplitude_unit_reason": eeg_amplitude_unit_reason,
+        "eeg_reference_mode": wfdb_reference_mode,
+        "eeg_reference_status": "verified" if wfdb_reference_verified else "unknown",
+        "eeg_reference_reason": "configured_average_reference_applied" if wfdb_reference_verified else "source_reference_not_verified",
         "original_sfreq": float(fs),
         "target_sfreq_resolved": float(raw.info["sfreq"]),
         "sfreq_policy": sfreq_policy,
+        "signal_support_provenance": signal_support_provenance,
         "timings": preprocess_timings,
     }
     channels = {"eeg": [raw.ch_names[i] for i in eeg_picks]}
@@ -2086,6 +3057,8 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
         "nwb_unit_to_output_factor": float(unit_factor),
         "nwb_reref_mode": reref_mode,
         "nwb_reref_channel_count": len(eeg_picks),
+        "eeg_reference_mode": reref_mode,
+        "eeg_reference_status": "verified" if reref_mode in {"average", "median", "median_within_probe"} and len(eeg_picks) > 0 else "unknown",
         "lfp_channel_selection": {
             "artifact_path": str(selection_path_value) if selection_path_value else None,
             "artifact_sha256": selection_hash,
@@ -2108,18 +3081,32 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
     return PreprocessedSignals(signals=signals, sfreq=float(raw.info["sfreq"]), channels=channels, meta=meta)
 
 
-def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSignals:
-    """Preprocess a single file (EEG or fMRI) and return signals plus metadata.
+def preprocess_file(
+    file_path: Path,
+    config: Mapping[str, Any],
+    *,
+    index_record: Optional[Mapping[str, Any]] = None,
+    dataset_root: Optional[Path] = None,
+) -> PreprocessedSignals:
+    """Preprocess a single file (currently EEG/fMRI and other supported types).
 
     Args:
-        file_path: Path to a raw EEG or fMRI file.
+        file_path: Path to a raw signal file.
         config: Ingest configuration with ``preprocess`` and modality sections.
+        index_record: BIDS index row for modality-specific metadata contracts.
+        dataset_root: Dataset root used to resolve index-relative sidecar paths.
 
     Returns:
         :class:`PreprocessedSignals` with arrays, ``sfreq``, channel maps, and meta.
     """
     suffixes = "".join(file_path.suffixes).lower()
     source_datatype = _infer_path_datatype(file_path)
+    if suffixes.endswith(".snirf"):
+        return _preprocess_fnirs_file(
+            file_path,
+            index_record=index_record,
+            dataset_root=dataset_root,
+        )
     if suffixes.endswith((".tsv", ".csv")) and source_datatype == "pupil":
         return preprocess_pupil_table(file_path, config)
     if mne is None:
@@ -2280,8 +3267,24 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         "duration_sec": float(raw.n_times / original_sfreq) if original_sfreq > 0 else None,
     }
     dataset_id = _infer_dataset_id(file_path, config)
-    # Preserve source quality intervals before crop. These records are
-    # observational only: they do not alter annotations, masks, or samples.
+    quality_interval_policy = _resolve_quality_interval_policy(config, dataset_id)
+    raw_flatline_qc_cfg = _resolve_raw_flatline_qc(config, dataset_id)
+    quality_interval_policy_record: Dict[str, Any] = {
+        "enabled": bool(quality_interval_policy.get("enabled", False)),
+        "status": "configured" if quality_interval_policy.get("enabled", False) else "disabled",
+        "source_kinds": quality_interval_policy.get("source_kinds", []),
+        "annotation_description": quality_interval_policy.get("annotation_description", "BAD_acq_skip"),
+        "mask_bad_annotations": bool(quality_interval_policy.get("mask_bad_annotations", True)),
+        "segment_resampling": bool(quality_interval_policy.get("segment_resampling", False)),
+    }
+    raw_flatline_qc_record: Dict[str, Any] = {
+        "enabled": bool(raw_flatline_qc_cfg.get("enabled", False)),
+        "status": "configured" if raw_flatline_qc_cfg.get("enabled", False) else "disabled",
+        "interval_count": 0,
+    }
+    # Preserve source quality intervals before crop. Their source records remain
+    # observational; an explicit opt-in policy may additionally mark selected
+    # kinds BAD so temporal operations can respect those unavailable intervals.
     quality_intervals: List[Dict[str, Any]] = []
     annotations = getattr(raw, "annotations", None)
     annotation_status = "unavailable"
@@ -2353,7 +3356,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             "unavailable" if "unavailable" in {annotation_status, event_status} else "none_observed"
         )
     )
-    signal_support_provenance["source_quality_intervals"] = {
+    source_quality_record: Dict[str, Any] = {
         "status": overall_quality_status,
         "clock": "original_raw_seconds",
         "intervals": quality_intervals,
@@ -2362,6 +3365,11 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         "raw_file": raw_file_str,
         "analysis_admissibility": "not_assessed_here",
     }
+    signal_support_provenance["source_quality_intervals"] = source_quality_record
+    quality_interval_policy_record.update(
+        _apply_quality_interval_annotations(raw, quality_intervals, quality_interval_policy)
+    )
+    source_quality_record["application_policy"] = dict(quality_interval_policy_record)
 
     # Determine crop window (event-based preferred, falling back to static crop)
     dataset_id = _infer_dataset_id(file_path, config)
@@ -2384,6 +3392,13 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         "actual_tmax_sec": None,
         "reason": "not_configured",
     }
+    is_flattened_eeglab_epochs = bool(
+        isinstance(eeglab_import_meta, Mapping)
+        and str(eeglab_import_meta.get("source", "")).strip().lower() == "eeglab_epoched_concat"
+    )
+    if is_flattened_eeglab_epochs:
+        crop_record["source_sample_mapping_status"] = "unknown"
+        crop_record["source_sample_mapping_reason"] = "flattened_eeglab_epochs_have_no_continuous_source_sample_map"
     if crop_window is None:
         crop_cfg = _resolve_crop_config(config, dataset_id)
         if crop_cfg:
@@ -2414,18 +3429,50 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
                     tmax_clamped,
                 )
             else:
+                pre_crop_sfreq = float(raw.info["sfreq"])
+                pre_crop_first_time = float(getattr(raw, "first_time", 0.0) or 0.0)
+                pre_crop_first_samp = int(getattr(raw, "first_samp", original_first_samp))
                 raw.crop(tmin=tmin_clamped, tmax=tmax_clamped)
                 actual_first_samp = int(getattr(raw, "first_samp", original_first_samp))
+                actual_sfreq = float(raw.info["sfreq"])
+                actual_first_time = float(getattr(raw, "first_time", 0.0) or 0.0)
+                actual_n_times = int(raw.n_times)
+                actual_last_samp_exclusive = actual_first_samp + actual_n_times
+                crop_clock = {
+                    "sfreq_hz": actual_sfreq,
+                    "first_time_sec": actual_first_time,
+                    "first_samp": actual_first_samp,
+                    "n_times": actual_n_times,
+                }
+                crop_source_map = map_preprocessed_window_to_source_samples(
+                    0,
+                    actual_n_times,
+                    preprocessed_sfreq_hz=actual_sfreq,
+                    provenance={
+                        **signal_support_provenance,
+                        "raw_clock_after_crop": crop_clock,
+                    },
+                    allow_source_grid=not is_flattened_eeglab_epochs,
+                    refusal_reason="flattened_eeglab_epochs_have_no_continuous_source_sample_map",
+                )
                 crop_record.update(
                     {
                         "applied": True,
-                        **actual_crop_bounds(
-                            original_first_samp=original_first_samp,
-                            actual_first_samp=actual_first_samp,
-                            actual_n_times=int(raw.n_times),
-                            sfreq_hz=original_sfreq,
-                            original_first_time_sec=original_first_time_sec,
-                        ),
+                        "actual_first_samp": actual_first_samp,
+                        "actual_last_samp_exclusive": actual_last_samp_exclusive,
+                        "actual_tmin_sec": actual_first_time,
+                        "actual_tmax_sec": actual_first_time + actual_n_times / actual_sfreq,
+                        "actual_tmin_from_source_start_sec": actual_first_time - original_first_time_sec,
+                        "actual_tmax_from_source_start_sec": actual_first_time - original_first_time_sec + actual_n_times / actual_sfreq,
+                        "actual_sfreq_hz": actual_sfreq,
+                        "actual_bounds_clock": "post_resample_raw_sample_grid",
+                        "pre_crop_sfreq_hz": pre_crop_sfreq,
+                        "pre_crop_first_time_sec": pre_crop_first_time,
+                        "pre_crop_first_samp": pre_crop_first_samp,
+                        "nominal_source_sample_start": crop_source_map.get("nominal_source_sample_start"),
+                        "nominal_source_sample_end_exclusive": crop_source_map.get("nominal_source_sample_end_exclusive"),
+                        "source_sample_mapping_status": crop_source_map.get("source_sample_mapping_status", "unknown"),
+                        "source_sample_mapping_reason": crop_source_map.get("source_sample_mapping_reason"),
                     }
                 )
 
@@ -2519,6 +3566,63 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         logger.warning("Pre-resample channel prune failed for %s (%s); continuing with all channels", file_path.name, exc)
     preprocess_timings["pre_resample_channel_prune"] = float(time.perf_counter() - t_pick0)
 
+    # Optional, observational pre-filter QC: identify stretches where all
+    # retained EEG-like channels have identical adjacent raw samples. This is
+    # recorded separately and never changes the signal or selected BAD policy.
+    if raw_flatline_qc_record["enabled"]:
+        min_duration_sec = float(raw_flatline_qc_cfg.get("min_duration_sec", 1.0))
+        flatline_picks = mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
+        flatline_names = [raw.ch_names[int(idx)] for idx in flatline_picks]
+        if len(flatline_picks) == 0:
+            raw_flatline_qc_record.update({"status": "no_eeg_like_channels", "min_duration_sec": min_duration_sec})
+        else:
+            flatline_values = raw.get_data(picks=flatline_picks)
+            flatline_intervals = _joint_flatline_quality_intervals(
+                flatline_values,
+                sfreq=float(raw.info["sfreq"]),
+                first_time_sec=float(getattr(raw, "first_time", 0.0) or 0.0) - original_first_time_sec,
+                channel_names=flatline_names,
+                min_duration_sec=min_duration_sec,
+                raw_file=raw_file_str,
+            )
+            raw_flatline_qc_record.update(
+                {
+                    "status": "observed" if flatline_intervals else "none_observed",
+                    "min_duration_sec": min_duration_sec,
+                    "channel_count": int(len(flatline_picks)),
+                    "channel_names": flatline_names,
+                    "interval_count": int(len(flatline_intervals)),
+                    "intervals": flatline_intervals,
+                    "signal_stage": "raw_before_temporal_preprocessing",
+                    "detection": "exact_all_channels_adjacent_sample_equality",
+                }
+            )
+            policy_source_kinds = quality_interval_policy_record.get("source_kinds", [])
+            if isinstance(policy_source_kinds, str):
+                policy_source_kinds = [policy_source_kinds]
+            if (
+                quality_interval_policy_record.get("enabled")
+                and "raw_joint_eeg_flatline" in {str(value) for value in policy_source_kinds or []}
+                and flatline_intervals
+            ):
+                flatline_annotation = _apply_quality_interval_annotations(
+                    raw,
+                    flatline_intervals,
+                    quality_interval_policy,
+                    source_origin_time_sec=original_first_time_sec,
+                )
+                quality_interval_policy_record["derived_qc_annotation"] = flatline_annotation
+                quality_interval_policy_record["selected_source_interval_count"] = int(
+                    quality_interval_policy_record.get("selected_source_interval_count", 0)
+                ) + int(flatline_annotation.get("selected_source_interval_count", 0))
+                quality_interval_policy_record["annotations_added"] = int(
+                    quality_interval_policy_record.get("annotations_added", 0)
+                ) + int(flatline_annotation.get("annotations_added", 0))
+                quality_interval_policy_record["status"] = "applied"
+                source_quality_record["application_policy"] = dict(quality_interval_policy_record)
+        source_quality_record["raw_joint_eeg_flatline_qc"] = dict(raw_flatline_qc_record)
+        signal_support_provenance["raw_joint_eeg_flatline_qc"] = dict(raw_flatline_qc_record)
+
     # Resample immediately after channel pruning to reduce downstream cost.
     t_resample_early0 = time.perf_counter()
     is_eeglab_epoched_concat = bool(
@@ -2535,6 +3639,11 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         except Exception:
             n_jobs_resample = 1
     if is_eeglab_epoched_concat and not eeglab_concat_policy.get("resample_concatenated_epochs", False):
+        if quality_interval_policy_record.get("enabled") and quality_interval_policy_record.get("segment_resampling"):
+            quality_interval_policy_record["resampling"] = {
+                "enabled": True,
+                "status": "not_run_eeglab_concat_policy",
+            }
         logger.warning(
             "Skipping resample for concatenated epoched EEGLAB stream (%s) to avoid boundary artifacts",
             file_path.name,
@@ -2564,12 +3673,27 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             n_jobs_resample,
         )
         try:
+            if quality_interval_policy_record.get("enabled") and quality_interval_policy_record.get("segment_resampling"):
+                raw, segment_resampling_report = _split_raw_at_bad_annotation_boundaries(
+                    raw,
+                    target_sfreq=float(target_sfreq),
+                    annotation_description=str(
+                        quality_interval_policy_record.get("annotation_description", "BAD_acq_skip")
+                    ),
+                )
+                quality_interval_policy_record["resampling"] = segment_resampling_report
+                operation["actual_kwargs"]["quality_interval_resampling"] = segment_resampling_report
             raw.resample(target_sfreq, n_jobs=n_jobs_resample, verbose=False)
         except Exception as exc:
             finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
             raise
         finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
     else:
+        if quality_interval_policy_record.get("enabled") and quality_interval_policy_record.get("segment_resampling"):
+            quality_interval_policy_record["resampling"] = {
+                "enabled": True,
+                "status": "not_needed_target_rate_matches_input",
+            }
         skipped = start_operation(
             signal_support_provenance,
             "resample_early",
@@ -2747,6 +3871,10 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
 
     # Apply notch filter globally if configured (in-place)
     t_notch0 = time.perf_counter()
+    filter_annotation_kwargs: Dict[str, Any] = {}
+    filter_skip_by_annotation = _filter_skip_by_annotation(raw, quality_interval_policy_record)
+    if filter_skip_by_annotation is not None:
+        filter_annotation_kwargs["skip_by_annotation"] = filter_skip_by_annotation
     if notch_hz is not None and not skip_time_filters:
         if source_datatype == "ecg":
             notch_picks = mne.pick_types(
@@ -2787,12 +3915,22 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             "notch_filter",
             input_sfreq=float(raw.info["sfreq"]),
             parameters={"freqs_hz": notch_hz, "picked_channels": int(len(notch_picks))},
-            actual_kwargs={"freqs": notch_hz, "picks_count": int(len(notch_picks)), "verbose": False},
+            actual_kwargs={
+                "freqs": notch_hz,
+                "picks_count": int(len(notch_picks)),
+                "verbose": False,
+                **({"skip_by_annotation": list(filter_skip_by_annotation)} if filter_skip_by_annotation is not None else {}),
+            },
         )
         operation["actual_kwargs"]["call_signature"] = callable_signature(raw.notch_filter)
         if len(notch_picks) > 0:
             try:
-                raw.notch_filter(freqs=notch_hz, picks=notch_picks, verbose=False)
+                raw.notch_filter(
+                    freqs=notch_hz,
+                    picks=notch_picks,
+                    verbose=False,
+                    **filter_annotation_kwargs,
+                )
             except Exception as exc:
                 finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=exc)
                 raise
@@ -2814,13 +3952,29 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     t_bandpass0 = time.perf_counter()
     eeg_chans = eeg_like_chans
     if len(eeg_chans) > 0 and eeg_bandpass is not None and len(eeg_bandpass) == 2 and not skip_time_filters:
-        operation = start_operation(signal_support_provenance, "eeg_bandpass", input_sfreq=float(raw.info["sfreq"]), parameters={"bandpass_hz": eeg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in eeg_chans]}, actual_kwargs={"l_freq": eeg_bandpass[0], "h_freq": eeg_bandpass[1], "picks_count": int(len(eeg_chans)), "verbose": False})
+        operation = start_operation(signal_support_provenance, "eeg_bandpass", input_sfreq=float(raw.info["sfreq"]), parameters={"bandpass_hz": eeg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in eeg_chans]}, actual_kwargs={"l_freq": eeg_bandpass[0], "h_freq": eeg_bandpass[1], "picks_count": int(len(eeg_chans)), "verbose": False, **({"skip_by_annotation": list(filter_skip_by_annotation)} if filter_skip_by_annotation is not None else {})})
         operation["actual_kwargs"]["call_signature"] = callable_signature(raw.filter)
         try:
-            raw.filter(l_freq=eeg_bandpass[0], h_freq=eeg_bandpass[1], picks=eeg_chans, verbose=False)
+            raw.filter(
+                l_freq=eeg_bandpass[0],
+                h_freq=eeg_bandpass[1],
+                picks=eeg_chans,
+                verbose=False,
+                **filter_annotation_kwargs,
+            )
             finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
         except Exception as primary_exc:
             # Fallback to mne.filter.filter_data on array if raw.filter fails
+            if quality_interval_policy_record.get("enabled") and _has_bad_raw_annotations(raw):
+                finish_operation(
+                    operation,
+                    status="failed",
+                    output_sfreq=float(raw.info["sfreq"]),
+                    error=primary_exc,
+                )
+                raise RuntimeError(
+                    "Refusing annotation-unaware EEG filter fallback while BAD intervals are active"
+                ) from primary_exc
             try:
                 data = raw.get_data(picks=eeg_chans)
                 filtered = mne.filter.filter_data(data, raw.info["sfreq"], eeg_bandpass[0], eeg_bandpass[1], verbose=False)
@@ -2838,12 +3992,28 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     t_meg_bandpass0 = time.perf_counter()
     meg_chans = mne.pick_types(raw.info, meg=True, ref_meg=False)
     if len(meg_chans) > 0 and meg_bandpass is not None and len(meg_bandpass) == 2 and not skip_time_filters:
-        operation = start_operation(signal_support_provenance, "meg_bandpass", input_sfreq=float(raw.info["sfreq"]), parameters={"bandpass_hz": meg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in meg_chans]}, actual_kwargs={"l_freq": meg_bandpass[0], "h_freq": meg_bandpass[1], "picks_count": int(len(meg_chans)), "verbose": False})
+        operation = start_operation(signal_support_provenance, "meg_bandpass", input_sfreq=float(raw.info["sfreq"]), parameters={"bandpass_hz": meg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in meg_chans]}, actual_kwargs={"l_freq": meg_bandpass[0], "h_freq": meg_bandpass[1], "picks_count": int(len(meg_chans)), "verbose": False, **({"skip_by_annotation": list(filter_skip_by_annotation)} if filter_skip_by_annotation is not None else {})})
         operation["actual_kwargs"]["call_signature"] = callable_signature(raw.filter)
         try:
-            raw.filter(l_freq=meg_bandpass[0], h_freq=meg_bandpass[1], picks=meg_chans, verbose=False)
+            raw.filter(
+                l_freq=meg_bandpass[0],
+                h_freq=meg_bandpass[1],
+                picks=meg_chans,
+                verbose=False,
+                **filter_annotation_kwargs,
+            )
             finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
         except Exception as primary_exc:
+            if quality_interval_policy_record.get("enabled") and _has_bad_raw_annotations(raw):
+                finish_operation(
+                    operation,
+                    status="failed",
+                    output_sfreq=float(raw.info["sfreq"]),
+                    error=primary_exc,
+                )
+                raise RuntimeError(
+                    "Refusing annotation-unaware MEG filter fallback while BAD intervals are active"
+                ) from primary_exc
             data = raw.get_data(picks=meg_chans)
             try:
                 filtered = mne.filter.filter_data(data, raw.info["sfreq"], meg_bandpass[0], meg_bandpass[1], verbose=False)
@@ -2982,6 +4152,15 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     # Collect per-modality arrays
     modality_signals: Dict[str, np.ndarray] = {}
     channels_dict: Dict[str, List[str]] = {}
+    mask_quality_intervals = bool(
+        quality_interval_policy_record.get("enabled")
+        and quality_interval_policy_record.get("mask_bad_annotations")
+    )
+
+    def _get_modality_data(picks: Any) -> np.ndarray:
+        if mask_quality_intervals:
+            return raw.get_data(picks=picks, reject_by_annotation="NaN")
+        return raw.get_data(picks=picks)
 
     t_collect0 = time.perf_counter()
     # EEG (including iEEG: seeg/ecog and scalp EEG transformed to CSD)
@@ -2994,21 +4173,31 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     )
     if len(eeg_chans) > 0:
         bad_segments_cfg = bdf_adapter_meta.get("bad_segments", {}) if isinstance(bdf_adapter_meta, Mapping) else {}
-        mask_bad_segments = bool(
+        mask_bdf_bad_segments = bool(
             isinstance(bad_segments_cfg, Mapping)
             and bad_segments_cfg.get("enabled")
             and bad_segments_cfg.get("available")
         )
-        if mask_bad_segments:
+        if mask_bdf_bad_segments or mask_quality_intervals:
             # Preserve the source time grid and mark BAD_ samples as NaN. The
             # EEG extractor rejects every window touching a non-finite sample,
             # avoiding synthetic adjacency across omitted artifact intervals.
             eeg_values = raw.get_data(picks=eeg_chans, reject_by_annotation="NaN")
             bad_sample_mask = ~np.isfinite(eeg_values).all(axis=0)
-            bad_segments_cfg = dict(bad_segments_cfg)
-            bad_segments_cfg["masked_samples"] = int(bad_sample_mask.sum())
-            bad_segments_cfg["masked_duration_sec"] = float(bad_sample_mask.sum() / raw.info["sfreq"])
-            bdf_adapter_meta["bad_segments"] = bad_segments_cfg
+            masked_samples = int(bad_sample_mask.sum())
+            masked_duration_sec = float(masked_samples / raw.info["sfreq"])
+            if mask_bdf_bad_segments:
+                bad_segments_cfg = dict(bad_segments_cfg)
+                bad_segments_cfg["masked_samples"] = masked_samples
+                bad_segments_cfg["masked_duration_sec"] = masked_duration_sec
+                bdf_adapter_meta["bad_segments"] = bad_segments_cfg
+            if mask_quality_intervals:
+                quality_interval_policy_record["masking"] = {
+                    "status": "applied",
+                    "masked_samples": masked_samples,
+                    "masked_duration_sec": masked_duration_sec,
+                    "description": "MNE BAD_* annotations",
+                }
         else:
             eeg_values = raw.get_data(picks=eeg_chans)
         modality_signals["eeg"] = eeg_values * 1e6
@@ -3017,27 +4206,27 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     # MEG
     meg_chans = mne.pick_types(raw.info, meg=True, ref_meg=False)
     if len(meg_chans) > 0:
-        modality_signals["meg"] = raw.get_data(picks=meg_chans)
+        modality_signals["meg"] = _get_modality_data(meg_chans)
         channels_dict["meg"] = [raw.ch_names[i] for i in meg_chans]
         meg_mag_chans = mne.pick_types(raw.info, meg="mag", ref_meg=False)
         meg_grad_chans = mne.pick_types(raw.info, meg="grad", ref_meg=False)
         if len(meg_mag_chans) > 0:
-            modality_signals["meg_mag"] = raw.get_data(picks=meg_mag_chans)
+            modality_signals["meg_mag"] = _get_modality_data(meg_mag_chans)
             channels_dict["meg_mag"] = [raw.ch_names[i] for i in meg_mag_chans]
         if len(meg_grad_chans) > 0:
-            modality_signals["meg_grad"] = raw.get_data(picks=meg_grad_chans)
+            modality_signals["meg_grad"] = _get_modality_data(meg_grad_chans)
             channels_dict["meg_grad"] = [raw.ch_names[i] for i in meg_grad_chans]
 
     # EOG
     eog_chans = mne.pick_types(raw.info, eog=True)
     if len(eog_chans) > 0:
-        modality_signals["eog"] = raw.get_data(picks=eog_chans)
+        modality_signals["eog"] = _get_modality_data(eog_chans)
         channels_dict["eog"] = [raw.ch_names[i] for i in eog_chans]
 
     # EMG
     emg_chans = mne.pick_types(raw.info, emg=True)
     if len(emg_chans) > 0:
-        modality_signals["emg"] = raw.get_data(picks=emg_chans)
+        modality_signals["emg"] = _get_modality_data(emg_chans)
         channels_dict["emg"] = [raw.ch_names[i] for i in emg_chans]
 
     # ECG
@@ -3045,12 +4234,12 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     if len(ecg_chans) == 0 and source_datatype == "ecg" and len(raw.ch_names) > 0:
         ecg_chans = np.asarray([0], dtype=int)
     if len(ecg_chans) > 0:
-        modality_signals["ecg"] = raw.get_data(picks=ecg_chans)
+        modality_signals["ecg"] = _get_modality_data(ecg_chans)
         channels_dict["ecg"] = [raw.ch_names[i] for i in ecg_chans]
     # Respiration
     resp_chans = mne.pick_types(raw.info, resp=True)
     if len(resp_chans) > 0:
-        modality_signals["resp"] = raw.get_data(picks=resp_chans)
+        modality_signals["resp"] = _get_modality_data(resp_chans)
         channels_dict["resp"] = [raw.ch_names[i] for i in resp_chans]
     # PPG / pleth: prefer explicit bio channels or name-based matching.
     bio_chans = list(mne.pick_types(raw.info, bio=True))
@@ -3064,7 +4253,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
     if not ppg_chans and source_datatype == "ecg":
         ppg_chans = [idx for idx in range(len(raw.ch_names)) if idx not in list(ecg_chans)][:1]
     if ppg_chans:
-        modality_signals["ppg"] = raw.get_data(picks=ppg_chans)
+        modality_signals["ppg"] = _get_modality_data(ppg_chans)
         channels_dict["ppg"] = [raw.ch_names[i] for i in ppg_chans]
     # EDA / GSR: prefer MNE's native "gsr" channel type (available since
     # MNE >= 1.6). Also match by name among any remaining/misc-typed
@@ -3079,7 +4268,7 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
             if re.search(r"(?i)(eda|gsr)", str(ch_name))
         ]
     if eda_chans:
-        modality_signals["eda"] = raw.get_data(picks=eda_chans)
+        modality_signals["eda"] = _get_modality_data(eda_chans)
         channels_dict["eda"] = [raw.ch_names[i] for i in eda_chans]
     preprocess_timings["collect_modalities"] = float(time.perf_counter() - t_collect0)
     preprocess_timings["total"] = float(time.perf_counter() - t_pre0)
@@ -3090,6 +4279,9 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         "n_times": int(raw.n_times),
         "duration_sec": float(raw.n_times / float(raw.info["sfreq"])) if float(raw.info["sfreq"]) > 0 else None,
     }
+    source_quality_record["application_policy"] = dict(quality_interval_policy_record)
+    signal_support_provenance["quality_interval_policy"] = dict(quality_interval_policy_record)
+    signal_support_provenance["raw_joint_eeg_flatline_qc"] = dict(raw_flatline_qc_record)
     refresh_source_hash(signal_support_provenance)
     signal_support_provenance["status"] = "completed"
 
@@ -3126,6 +4318,20 @@ def preprocess_file(file_path: Path, config: Mapping[str, Any]) -> PreprocessedS
         },
         "artifact": artifact_meta,
         "bdf_adapter": bdf_adapter_meta,
+        "quality_interval_policy": quality_interval_policy_record,
+        "raw_joint_eeg_flatline_qc": raw_flatline_qc_record,
+        "eeg_amplitude_unit": "microvolt" if len(eeg_chans) > 0 and not csd_applied else None,
+        "eeg_amplitude_unit_status": "verified" if len(eeg_chans) > 0 and not csd_applied else "unknown",
+        "eeg_amplitude_unit_reason": (
+            "mne_si_volt_data_scaled_to_microvolts"
+            if len(eeg_chans) > 0 and not csd_applied
+            else "eeg_channel_missing_or_spatial_csd_changes_amplitude_unit"
+        ),
+        "eeg_reference_mode": "average" if reref_operation.get("status") == "applied" else (
+            "csd_reference_free" if csd_applied else "source_reference_as_loaded"
+        ),
+        "eeg_reference_status": "verified" if reref_operation.get("status") == "applied" else "unknown",
+        "eeg_reference_reason": str(reref_operation.get("status", "unknown")),
         "eeg_csd": {
             "enabled": bool(eeg_csd_cfg.get("enabled", False)),
             "applied": bool(csd_applied),

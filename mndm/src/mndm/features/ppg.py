@@ -12,6 +12,7 @@ import pandas as pd
 from scipy import signal
 
 from . import epoch_selection
+from .temporal_support import apply_to_finite_segments, finite_slices
 from ..signal_support_provenance import build_signal_support_provenance, finish_operation, start_operation
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,8 @@ def compute_ppg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     prominence_mult = float(ppg_cfg.get("prominence_mult", 0.75) or 0.75)
 
     ppg_channel = np.asarray(ppg_arr[0], dtype=float)
+    if not np.isfinite(ppg_channel).any():
+        return pd.DataFrame()
     epoch_length_samples = int(length_s * sfreq)
     epoch_step_samples = int(step_s * sfreq)
     n_samples = int(len(ppg_channel))
@@ -114,41 +117,99 @@ def compute_ppg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         "ppg_bandpass_filtfilt",
         input_sfreq=sfreq,
         parameters={"low_hz": lo, "high_hz": hi, "order": bandpass_order},
-        actual_kwargs={"method": "scipy.signal.filtfilt", "b": "recorded_below", "a": "recorded_below"},
+        actual_kwargs={
+            "method": "scipy.signal.filtfilt",
+            "finite_segment_policy": "filter_each_contiguous_finite_run_independently",
+            "b": "recorded_below",
+            "a": "recorded_below",
+        },
     )
+
+    filter_runs: list[slice] = []
+    filter_fallbacks: list[slice] = []
+
+    def _demean_segment(segment: np.ndarray) -> np.ndarray:
+        return segment - np.median(segment)
+
     try:
         b, a = signal.butter(bandpass_order, [lo / nyquist, hi / nyquist], btype="bandpass")
         ppg_filter["actual_kwargs"]["b"] = np.asarray(b).tolist()
         ppg_filter["actual_kwargs"]["a"] = np.asarray(a).tolist()
-        filtered_full = signal.filtfilt(b, a, ppg_channel)
-        finish_operation(ppg_filter, status="applied", output_sfreq=sfreq)
+        filtered_full, filter_runs, filter_fallbacks = apply_to_finite_segments(
+            ppg_channel,
+            lambda segment: signal.filtfilt(b, a, segment),
+            fallback=_demean_segment,
+        )
+        ppg_filter["actual_kwargs"]["finite_segment_count"] = len(filter_runs)
+        ppg_filter["actual_kwargs"]["fallback_segment_count"] = len(filter_fallbacks)
+        finish_operation(
+            ppg_filter,
+            status="fallback" if filter_fallbacks else "applied",
+            output_sfreq=sfreq,
+            fallback="demeaned_finite_segments" if filter_fallbacks else None,
+        )
     except Exception as primary_exc:
         logger.exception("PPG bandpass failed; falling back to demeaned signal for pulse detection")
-        filtered_full = ppg_channel - np.nanmedian(ppg_channel)
-        finish_operation(ppg_filter, status="fallback", output_sfreq=sfreq, fallback="demeaned_signal", error=primary_exc)
+        filtered_full, filter_runs, _ = apply_to_finite_segments(ppg_channel, _demean_segment)
+        ppg_filter["actual_kwargs"]["finite_segment_count"] = len(filter_runs)
+        ppg_filter["actual_kwargs"]["fallback_segment_count"] = len(filter_runs)
+        finish_operation(
+            ppg_filter,
+            status="fallback",
+            output_sfreq=sfreq,
+            fallback="demeaned_finite_segments",
+            error=primary_exc,
+        )
 
-    centered = filtered_full - np.nanmedian(filtered_full)
-    abs_sig = np.abs(centered)
-    mad = float(np.nanmedian(np.abs(centered))) + 1e-8
-    prominence = max(1e-6, prominence_mult * mad)
     min_dist = max(1, int(round(refractory_s * sfreq)))
+    segmented_support = not bool(np.isfinite(ppg_channel).all())
+    peak_parts: list[np.ndarray] = []
+    prominence_parts: list[np.ndarray] = []
+    segment_prominences: list[float] = []
+    for run in finite_slices(filtered_full):
+        segment = filtered_full[run]
+        centered = segment - np.median(segment)
+        mad = float(np.median(np.abs(centered))) + 1e-8
+        prominence = max(1e-6, prominence_mult * mad)
+        segment_prominences.append(float(prominence))
+        local_peaks, props = signal.find_peaks(
+            np.abs(centered), distance=min_dist, prominence=prominence
+        )
+        peak_parts.append(local_peaks.astype(int) + int(run.start or 0))
+        prominence_parts.append(
+            np.asarray(props.get("prominences", np.asarray([], dtype=float)), dtype=float)
+        )
+    peaks = np.concatenate(peak_parts) if peak_parts else np.asarray([], dtype=int)
+    prominences = (
+        np.concatenate(prominence_parts) if prominence_parts else np.asarray([], dtype=float)
+    )
+    representative_prominence = (
+        float(np.median(segment_prominences)) if segment_prominences else float("nan")
+    )
     peak_operation = start_operation(
         provenance,
         "ppg_peak_detection",
         input_sfreq=sfreq,
         parameters={
             "distance_samples": min_dist,
-            "prominence": prominence,
+            "prominence": representative_prominence,
             "prominence_mult": prominence_mult,
-            "threshold_fit_scope": "whole_stream_median_and_MAD",
+            "threshold_fit_scope": (
+                "per_contiguous_finite_segment_median_and_MAD"
+                if segmented_support
+                else "whole_stream_median_and_MAD"
+            ),
+            "finite_segment_count": len(filter_runs),
+            "prominence_by_segment": segment_prominences,
         },
-        actual_kwargs={"distance": min_dist, "prominence": prominence},
+        actual_kwargs={"distance": min_dist, "prominence_by_segment": segment_prominences},
     )
-    peaks, props = signal.find_peaks(abs_sig, distance=min_dist, prominence=prominence)
-    peaks = np.asarray(peaks, dtype=int)
-    prominences = np.asarray(props.get("prominences", np.asarray([], dtype=float)), dtype=float)
     finish_operation(peak_operation, status="applied", output_sfreq=sfreq)
-    peak_operation["result"] = {"peaks_count": int(peaks.size), "global_threshold": True}
+    peak_operation["result"] = {
+        "peaks_count": int(peaks.size),
+        "global_threshold": not segmented_support,
+        "finite_segment_count": len(filter_runs),
+    }
 
     records: List[Dict[str, Any]] = []
     for epoch_idx in range(n_epochs):
@@ -158,6 +219,8 @@ def compute_ppg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         end_idx = start_idx + epoch_length_samples
         if end_idx > n_samples:
             break
+        if not np.isfinite(ppg_channel[start_idx:end_idx]).all():
+            continue
 
         left = int(np.searchsorted(peaks, start_idx, side="left"))
         right = int(np.searchsorted(peaks, end_idx, side="left"))

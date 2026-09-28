@@ -92,7 +92,7 @@ def test_cmd_summarize_with_fmri_features(tmp_path, require_real_h5py):
     import h5py
 
     with h5py.File(h5_files[0], "r") as h5:
-        assert h5.attrs["export_contract_version"] == "mndm.fmri_h5_contract.v1"
+        assert h5.attrs["export_contract_version"] == "mndm.fmri_h5_contract.v2"
         has_eeg = np.asarray(h5["row_source/has_eeg"][:])
         raw_src = h5["row_source/row_source"][:]
         row_src = [
