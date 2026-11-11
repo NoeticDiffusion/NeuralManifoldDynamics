@@ -1,0 +1,51 @@
+schema: mndm.mnps_v3_1_eeg_grid.v0
+eeg_grid:
+  grid_id: mnps_v3_1_anphy_epctl01_e1_g2_20260929
+  decision_status: SELECT_FOR_G2_TECHNICAL_EVALUATION
+  decision_record: project/new_mnps_v.3.1/external_llm/g1_decision_record_20260929.md
+  dataset_id: ANPHY
+  dataset_version: unresolved
+  subject_id: EPCTL01
+  session_id: unresolved
+  task_id: unresolved
+  run_id: unresolved
+  metadata_status: partial_unresolved
+  metadata_note: Dataset release/version and session/task/run identifiers were not present in the resolved source inventory.
+  source_edf: K:/ExternalReceivedDatasets/ANPHY/Subjects/EPCTL01/EPCTL01 - fixed.edf
+  positions_file: K:/ExternalReceivedDatasets/ANPHY/Co-registered average positions.pos
+  channel_count: 83
+  channel_labels_only: true
+  coordinates_read: false
+  crop_sec: [0.0, 300.001]
+  nominal_windows_sec:
+    - [0.0, 20.0]
+    - [20.0, 40.0]
+    - [40.0, 60.0]
+    - [60.0, 80.0]
+    - [80.0, 100.0]
+    - [100.0, 120.0]
+    - [120.0, 140.0]
+    - [140.0, 160.0]
+    - [160.0, 180.0]
+    - [180.0, 200.0]
+    - [200.0, 220.0]
+    - [220.0, 240.0]
+    - [240.0, 260.0]
+    - [260.0, 280.0]
+    - [280.0, 300.0]
+  target_sfreq_hz: 250.0
+  resampler_id: mndm.causal_polyphase_kaiser_beta5.v0
+  eeg_bandpass_hz: [1.0, 45.0]
+  filter_phase: minimum
+  filter_pad: constant
+  notch_hz: null
+  rereference: average_over_fixed_channel_set
+  csd: false
+  candidate_id: e_irregularity_channel_median_pe_v0
+  estimator_id: mndm.mnps_v3_1.e1_channel_median_pe.v0
+  embedding_order: 5
+  delay_samples: 1
+  normalize: true
+  tie_policy: stable_mergesort
+  qualified: false
+  output_root: H:/SourceRepo2/NeuralManifoldDynamics/project/new_mnps_v.3.1/outputs/anphy_epctl01_e1_g2_grid_20260929

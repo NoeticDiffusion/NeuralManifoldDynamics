@@ -1,0 +1,49 @@
+# Fold-safe, label-free chart qualification for the ds005555 continuous surface.
+# This imports the frozen feature/measurement definitions without redefining
+# the 3D or 9D maps. A concrete manifest, role and support ledger must be
+# supplied in a run-specific overlay; the enabled-but-empty split fails closed.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123_prediction_safe_full_cohort_features_20260929.yaml"
+
+# This is the explicit chart-qualification gate after a features-only extract.
+summarize_forbidden: false
+
+# Do not attach human-scored BIDS events/stages to chart-only qualification H5.
+# The default remains enabled for other configs and ordinary summary runs.
+summarize:
+  include_bids_event_annotations: false
+
+# Do not compute derivative/Jacobian families in a chart-coordinate gate.
+# These flags do not alter 3D/9D coordinate construction or anchoring.
+mnps:
+  stage_codebook:
+    __replace: true
+  jacobian:
+    enabled: false
+
+mnps_9d:
+  jacobian:
+    enabled: false
+
+mnps_projection:
+  export_contracts:
+    subject_anchored: false
+    cohort_anchored: true
+  fold_safe:
+    enabled: true
+    manifest: ""
+    role: ""
+    signal_support_ledger: ""
+  anchor_auto_fit:
+    enabled: false
+    scale_method: iqr
+    min_subjects: 20
+    anchor_id: ""
+  anchor:
+    enabled: false
+    path: ""
+    scale_method: iqr
+    min_subjects: 20

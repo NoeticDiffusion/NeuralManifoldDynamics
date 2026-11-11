@@ -238,3 +238,11 @@ results/
 .work
 data/nemar/*
 tmp/pycache/
+# MNPS v3.2 bounded vector feasibility run artifacts
+/outputs/VECTOR-FEASIBILITY-002/
+/outputs/NIE-INCREMENTAL-001/
+/outputs/OI-TEMPORAL-SPECIFICITY-001/
+
+AGENTS.md
+zenodo
+outputs/*

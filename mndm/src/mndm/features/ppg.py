@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from copy import deepcopy
 from pathlib import Path
+import re
 from typing import Any, Dict, List, Mapping, Optional
 
 import numpy as np
@@ -73,6 +74,38 @@ def compute_ppg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     ppg_cfg = features_cfg.get("ppg", {}) if isinstance(features_cfg, Mapping) else {}
     if not isinstance(ppg_cfg, Mapping):
         ppg_cfg = {}
+    preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
+    temporal_support_mode = (
+        str(preprocess_cfg.get("temporal_support_mode", "default")).strip().lower()
+        if isinstance(preprocess_cfg, Mapping)
+        else "default"
+    )
+    estimator = str(ppg_cfg.get("estimator", "recording_stream_v1")).strip().lower()
+    window_local_mode = estimator == "window_local_present_only_v1"
+    if temporal_support_mode == "causal_finite" and not window_local_mode:
+        raise ValueError(
+            "causal_finite preprocessing requires features.ppg.estimator=window_local_present_only_v1"
+        )
+    if window_local_mode and temporal_support_mode != "causal_finite":
+        raise ValueError(
+            "window_local_present_only_v1 requires preprocess.temporal_support_mode=causal_finite"
+        )
+    source_channels = (
+        list(signals.get("channels", {}).get("ppg", []))
+        if isinstance(signals.get("channels", {}), Mapping)
+        else []
+    )
+    if window_local_mode and (
+        len(source_channels) != 1
+        or not re.search(r"(?i)(ppg|pleth|pulse|photopleth)", str(source_channels[0]))
+    ):
+        raise ValueError(
+            "window_local_present_only_v1 requires exactly one source channel identified by its pulse/PPG name"
+        )
+    if window_local_mode and (ppg_arr.ndim != 2 or ppg_arr.shape[0] != len(source_channels) or ppg_arr.shape[0] != 1):
+        raise ValueError(
+            "window_local_present_only_v1 requires exactly one PPG signal row matching its source-channel metadata"
+        )
     bandpass_low_hz = float(ppg_cfg.get("bandpass_low_hz", 0.4) or 0.4)
     bandpass_high_hz = float(ppg_cfg.get("bandpass_high_hz", 8.0) or 8.0)
     bandpass_order = int(ppg_cfg.get("bandpass_order", 3) or 3)
@@ -112,104 +145,164 @@ def compute_ppg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         target_sfreq=sfreq,
         source_datatype="ppg",
     )
-    ppg_filter = start_operation(
-        provenance,
-        "ppg_bandpass_filtfilt",
-        input_sfreq=sfreq,
-        parameters={"low_hz": lo, "high_hz": hi, "order": bandpass_order},
-        actual_kwargs={
-            "method": "scipy.signal.filtfilt",
-            "finite_segment_policy": "filter_each_contiguous_finite_run_independently",
-            "b": "recorded_below",
-            "a": "recorded_below",
-        },
-    )
-
     filter_runs: list[slice] = []
     filter_fallbacks: list[slice] = []
 
     def _demean_segment(segment: np.ndarray) -> np.ndarray:
         return segment - np.median(segment)
 
-    try:
-        b, a = signal.butter(bandpass_order, [lo / nyquist, hi / nyquist], btype="bandpass")
-        ppg_filter["actual_kwargs"]["b"] = np.asarray(b).tolist()
-        ppg_filter["actual_kwargs"]["a"] = np.asarray(a).tolist()
-        filtered_full, filter_runs, filter_fallbacks = apply_to_finite_segments(
-            ppg_channel,
-            lambda segment: signal.filtfilt(b, a, segment),
-            fallback=_demean_segment,
+    if window_local_mode:
+        ppg_filter = start_operation(
+            provenance,
+            "ppg_bandpass",
+            operation_class="temporal",
+            input_sfreq=sfreq,
+            parameters={"enabled": False, "reason": "present_only_window_local_estimator"},
+            actual_kwargs={"skipped": True, "reason": "raw PPG is analyzed within each current measurement window"},
         )
-        ppg_filter["actual_kwargs"]["finite_segment_count"] = len(filter_runs)
-        ppg_filter["actual_kwargs"]["fallback_segment_count"] = len(filter_fallbacks)
-        finish_operation(
-            ppg_filter,
-            status="fallback" if filter_fallbacks else "applied",
-            output_sfreq=sfreq,
-            fallback="demeaned_finite_segments" if filter_fallbacks else None,
+        finish_operation(ppg_filter, status="skipped", output_sfreq=sfreq)
+        filtered_full = ppg_channel.copy()
+        filter_runs = finite_slices(filtered_full)
+        provenance["ppg_feature_contract"] = {
+            "schema": "mndm.ppg_window_feature.v1",
+            "status": "computed_unqualified",
+            "estimator": "window_local_present_only_v1",
+            "source_channels": source_channels,
+            "source_channel_types_after_dataset_typing": {
+                str(name): str(value)
+                for name, value in provenance.get("channel_types_after_dataset_typing", {}).items()
+                if name in source_channels
+            },
+            "source_channel_selection": (
+                provenance.get("ppg_source_selection", {}).get("rule") or "not_recorded"
+                if isinstance(provenance.get("ppg_source_selection", {}), Mapping)
+                else "not_recorded"
+            ),
+            "feature_window_sec": float(length_s),
+            "feature_step_sec": float(step_s),
+            "signal_filter": "none",
+            "threshold_scope": "each_current_window_median_and_MAD",
+            "information_scope": "present_only_within_[t_start,t_end); no full-recording threshold or filter",
+            "rate_unit": "beats_per_minute",
+            "qc_rule": "finite rate and at least two detected peaks in the current window",
+        }
+    else:
+        ppg_filter = start_operation(
+            provenance,
+            "ppg_bandpass_filtfilt",
+            input_sfreq=sfreq,
+            parameters={"low_hz": lo, "high_hz": hi, "order": bandpass_order},
+            actual_kwargs={
+                "method": "scipy.signal.filtfilt",
+                "finite_segment_policy": "filter_each_contiguous_finite_run_independently",
+                "b": "recorded_below",
+                "a": "recorded_below",
+            },
         )
-    except Exception as primary_exc:
-        logger.exception("PPG bandpass failed; falling back to demeaned signal for pulse detection")
-        filtered_full, filter_runs, _ = apply_to_finite_segments(ppg_channel, _demean_segment)
-        ppg_filter["actual_kwargs"]["finite_segment_count"] = len(filter_runs)
-        ppg_filter["actual_kwargs"]["fallback_segment_count"] = len(filter_runs)
-        finish_operation(
-            ppg_filter,
-            status="fallback",
-            output_sfreq=sfreq,
-            fallback="demeaned_finite_segments",
-            error=primary_exc,
-        )
+        try:
+            b, a = signal.butter(bandpass_order, [lo / nyquist, hi / nyquist], btype="bandpass")
+            ppg_filter["actual_kwargs"]["b"] = np.asarray(b).tolist()
+            ppg_filter["actual_kwargs"]["a"] = np.asarray(a).tolist()
+            filtered_full, filter_runs, filter_fallbacks = apply_to_finite_segments(
+                ppg_channel,
+                lambda segment: signal.filtfilt(b, a, segment),
+                fallback=_demean_segment,
+            )
+            ppg_filter["actual_kwargs"]["finite_segment_count"] = len(filter_runs)
+            ppg_filter["actual_kwargs"]["fallback_segment_count"] = len(filter_fallbacks)
+            finish_operation(
+                ppg_filter,
+                status="fallback" if filter_fallbacks else "applied",
+                output_sfreq=sfreq,
+                fallback="demeaned_finite_segments" if filter_fallbacks else None,
+            )
+        except Exception as primary_exc:
+            logger.exception("PPG bandpass failed; falling back to demeaned signal for pulse detection")
+            filtered_full, filter_runs, _ = apply_to_finite_segments(ppg_channel, _demean_segment)
+            ppg_filter["actual_kwargs"]["finite_segment_count"] = len(filter_runs)
+            ppg_filter["actual_kwargs"]["fallback_segment_count"] = len(filter_runs)
+            finish_operation(
+                ppg_filter,
+                status="fallback",
+                output_sfreq=sfreq,
+                fallback="demeaned_finite_segments",
+                error=primary_exc,
+            )
 
     min_dist = max(1, int(round(refractory_s * sfreq)))
     segmented_support = not bool(np.isfinite(ppg_channel).all())
     peak_parts: list[np.ndarray] = []
     prominence_parts: list[np.ndarray] = []
     segment_prominences: list[float] = []
-    for run in finite_slices(filtered_full):
-        segment = filtered_full[run]
-        centered = segment - np.median(segment)
-        mad = float(np.median(np.abs(centered))) + 1e-8
-        prominence = max(1e-6, prominence_mult * mad)
-        segment_prominences.append(float(prominence))
-        local_peaks, props = signal.find_peaks(
-            np.abs(centered), distance=min_dist, prominence=prominence
+    if window_local_mode:
+        peak_operation = start_operation(
+            provenance,
+            "ppg_peak_detection",
+            operation_class="feature",
+            input_sfreq=sfreq,
+            parameters={
+                "distance_samples": min_dist,
+                "prominence_mult": prominence_mult,
+                "threshold_fit_scope": "per_measurement_window_median_and_MAD",
+                "feature_window_sec": float(length_s),
+                "feature_step_sec": float(step_s),
+            },
+            actual_kwargs={"signal": "raw_window_centered_by_median", "peak_input": "absolute_centered_signal"},
         )
-        peak_parts.append(local_peaks.astype(int) + int(run.start or 0))
-        prominence_parts.append(
-            np.asarray(props.get("prominences", np.asarray([], dtype=float)), dtype=float)
-        )
-    peaks = np.concatenate(peak_parts) if peak_parts else np.asarray([], dtype=int)
-    prominences = (
-        np.concatenate(prominence_parts) if prominence_parts else np.asarray([], dtype=float)
-    )
-    representative_prominence = (
-        float(np.median(segment_prominences)) if segment_prominences else float("nan")
-    )
-    peak_operation = start_operation(
-        provenance,
-        "ppg_peak_detection",
-        input_sfreq=sfreq,
-        parameters={
-            "distance_samples": min_dist,
-            "prominence": representative_prominence,
-            "prominence_mult": prominence_mult,
-            "threshold_fit_scope": (
-                "per_contiguous_finite_segment_median_and_MAD"
-                if segmented_support
-                else "whole_stream_median_and_MAD"
-            ),
+        peak_operation["information_scope"] = "present_only_within_each_current_feature_window"
+        finish_operation(peak_operation, status="applied", output_sfreq=sfreq)
+        peak_operation["result"] = {
+            "global_threshold": False,
+            "threshold_fitted_per_window": True,
             "finite_segment_count": len(filter_runs),
-            "prominence_by_segment": segment_prominences,
-        },
-        actual_kwargs={"distance": min_dist, "prominence_by_segment": segment_prominences},
-    )
-    finish_operation(peak_operation, status="applied", output_sfreq=sfreq)
-    peak_operation["result"] = {
-        "peaks_count": int(peaks.size),
-        "global_threshold": not segmented_support,
-        "finite_segment_count": len(filter_runs),
-    }
+        }
+        peaks = np.asarray([], dtype=int)
+        prominences = np.asarray([], dtype=float)
+    else:
+        for run in finite_slices(filtered_full):
+            segment = filtered_full[run]
+            centered = segment - np.median(segment)
+            mad = float(np.median(np.abs(centered))) + 1e-8
+            prominence = max(1e-6, prominence_mult * mad)
+            segment_prominences.append(float(prominence))
+            local_peaks, props = signal.find_peaks(
+                np.abs(centered), distance=min_dist, prominence=prominence
+            )
+            peak_parts.append(local_peaks.astype(int) + int(run.start or 0))
+            prominence_parts.append(
+                np.asarray(props.get("prominences", np.asarray([], dtype=float)), dtype=float)
+            )
+        peaks = np.concatenate(peak_parts) if peak_parts else np.asarray([], dtype=int)
+        prominences = (
+            np.concatenate(prominence_parts) if prominence_parts else np.asarray([], dtype=float)
+        )
+        representative_prominence = (
+            float(np.median(segment_prominences)) if segment_prominences else float("nan")
+        )
+        peak_operation = start_operation(
+            provenance,
+            "ppg_peak_detection",
+            input_sfreq=sfreq,
+            parameters={
+                "distance_samples": min_dist,
+                "prominence": representative_prominence,
+                "prominence_mult": prominence_mult,
+                "threshold_fit_scope": (
+                    "per_contiguous_finite_segment_median_and_MAD"
+                    if segmented_support
+                    else "whole_stream_median_and_MAD"
+                ),
+                "finite_segment_count": len(filter_runs),
+                "prominence_by_segment": segment_prominences,
+            },
+            actual_kwargs={"distance": min_dist, "prominence_by_segment": segment_prominences},
+        )
+        finish_operation(peak_operation, status="applied", output_sfreq=sfreq)
+        peak_operation["result"] = {
+            "peaks_count": int(peaks.size),
+            "global_threshold": not segmented_support,
+            "finite_segment_count": len(filter_runs),
+        }
 
     records: List[Dict[str, Any]] = []
     for epoch_idx in range(n_epochs):
@@ -222,10 +315,20 @@ def compute_ppg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         if not np.isfinite(ppg_channel[start_idx:end_idx]).all():
             continue
 
-        left = int(np.searchsorted(peaks, start_idx, side="left"))
-        right = int(np.searchsorted(peaks, end_idx, side="left"))
-        epoch_peaks = peaks[left:right]
-        epoch_prom = prominences[left:right] if prominences.size == peaks.size else np.asarray([], dtype=float)
+        if window_local_mode:
+            current_window = ppg_channel[start_idx:end_idx]
+            centered_window = current_window - np.median(current_window)
+            window_mad = float(np.median(np.abs(centered_window))) + 1e-8
+            window_prominence = max(1e-6, prominence_mult * window_mad)
+            epoch_peaks, props = signal.find_peaks(
+                np.abs(centered_window), distance=min_dist, prominence=window_prominence
+            )
+            epoch_prom = np.asarray(props.get("prominences", np.asarray([], dtype=float)), dtype=float)
+        else:
+            left = int(np.searchsorted(peaks, start_idx, side="left"))
+            right = int(np.searchsorted(peaks, end_idx, side="left"))
+            epoch_peaks = peaks[left:right]
+            epoch_prom = prominences[left:right] if prominences.size == peaks.size else np.asarray([], dtype=float)
         pulse_intervals = np.diff(epoch_peaks.astype(float)) / sfreq if epoch_peaks.size >= 2 else np.asarray([], dtype=float)
         rate_bpm = float(60.0 / np.mean(pulse_intervals)) if pulse_intervals.size > 0 and np.mean(pulse_intervals) > 0 else np.nan
         amp_mean = float(np.mean(epoch_prom)) if epoch_prom.size > 0 else np.nan

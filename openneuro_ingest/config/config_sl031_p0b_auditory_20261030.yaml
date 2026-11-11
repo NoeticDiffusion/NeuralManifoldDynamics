@@ -1,0 +1,11 @@
+datasets:
+  - ds005048
+  - ds003800
+paths:
+  received_dir: "K:/ExternalDataSources/openneuro"
+  processed_dir: "K:/ExternalDataSources/openneuro_processed"
+download:
+  retries: 2
+  use_uvx: true
+  include_patterns: []
+  exclude_patterns: []

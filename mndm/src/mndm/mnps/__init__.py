@@ -8,6 +8,7 @@ refactor can move code without changing the public ``mndm.*`` import surface.
 
 from ..projection import project_features, project_features_v2, project_to_mnps
 from ..schema import MNPS_AXIS_NAMES, mnps_9d_CANONICAL_ORDER
+from . import v3_1
 
 __all__ = [
     "MNPS_AXIS_NAMES",
@@ -15,4 +16,5 @@ __all__ = [
     "project_features",
     "project_features_v2",
     "project_to_mnps",
+    "v3_1",
 ]

@@ -2,6 +2,37 @@
 
 ---
 
+## v3.1.0 — Alternative MNPS candidate implementation begins
+
+Package version `3.1.0`. Release notes: `release_notes/RELEASE_NOTES_v3.1.0.md`.
+
+- Adds the `mndm.mnps.v3_1` candidate namespace and registry for all nine
+  proposed M/D/E families. EEG sensor-space prototypes cover M1, M3, D1–D3,
+  E1, and E3. E2 has an unadjusted LZ78 core probe; at the original 3.1.0
+  release, M2 had no executable prototype.
+- All numerical functions require an explicit support audit and preserve
+  `computed`, `valid`, and `qualified` independently. Every result is
+  unqualified; unsupported inputs carry a reason and no numeric substitute.
+- Adds an opt-in audited EDF window loader with annotation checks, finite FIR
+  dependency bounds, and source/config/channel/runtime hashes. The E1 contract
+  fails closed unless the fixed set has 83 labels and the bandpass is exactly
+  `[1, 45]` Hz. Point annotations use a half-open dependency interval. A
+  one-window ANPHY pilot and a frozen 15-window EPCTL01 grid passed technical
+  support checks; neither qualifies E1.
+- No candidate is assigned to a chart coordinate. No alternative HDF5 path,
+  default pipeline integration, or alternative MNJ is added. Canonical
+  `mnps_3d=[m,d,e]`, `coords_9d`, anchored layers, and existing Jacobian
+  outputs remain unchanged.
+
+### 2026-10-02 experimental candidate follow-up
+
+- Adds an opt-in native/Core60/Core19 candidate surface grid. Its bounded
+  ds004148 use is a technical implementation/support pilot, not a retest
+  reliability estimate or candidate qualification.
+- Adds experimental M2 lag-1 decorrelation and D2 sensor-label-prefix coupling
+  proxies. The M2 spectral-knee path and D2 physical near/far interpretation
+  remain unresolved; all new measurements remain unqualified.
+
 ## v3.0.2 — fMRI measurement contract and NEMAR download
 
 Patch on the v3.0.1 measurement contract. Package version `3.0.2`.

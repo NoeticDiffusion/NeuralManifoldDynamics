@@ -1,0 +1,80 @@
+version: 1.2
+modality: eeg
+
+# MNPS-BENCH-001R: SHA-256 ranks 101-200, session-1 acq-pre subset.
+# Selection IDs and metadata-only support are in the ignored project manifest.
+imports:
+  - "../../config_ingest_common_eeg.yaml"
+
+datasets:
+  - ds005385
+
+exclude-files:
+  - '(?i)^(?!.*(?:^|[\\/])(?:sub\-406|sub\-256|sub\-296|sub\-280|sub\-515|sub\-588|sub\-195|sub\-468|sub\-580|sub\-520|sub\-555|sub\-399|sub\-315|sub\-136|sub\-264|sub\-498|sub\-124|sub\-575|sub\-125|sub\-186|sub\-389|sub\-202|sub\-247|sub\-232|sub\-464|sub\-557|sub\-010|sub\-121|sub\-218|sub\-301|sub\-081|sub\-093|sub\-501|sub\-176|sub\-549|sub\-601|sub\-089|sub\-551|sub\-403|sub\-345|sub\-106|sub\-527|sub\-417|sub\-304|sub\-566|sub\-405|sub\-002|sub\-592|sub\-115|sub\-418|sub\-132|sub\-086|sub\-524|sub\-258|sub\-013|sub\-492|sub\-512|sub\-380|sub\-293|sub\-465|sub\-279|sub\-229|sub\-029|sub\-178|sub\-401|sub\-404|sub\-382|sub\-331|sub\-342|sub\-189|sub\-433|sub\-239|sub\-148|sub\-199|sub\-518|sub\-141|sub\-180|sub\-062|sub\-602|sub\-070|sub\-198|sub\-165|sub\-435|sub\-072|sub\-561|sub\-080|sub\-144|sub\-112|sub\-155|sub\-332|sub\-589|sub\-043|sub\-007|sub\-288|sub\-234|sub\-540|sub\-290|sub\-358|sub\-350|sub\-526)_ses-1_task-(?:EyesClosed|EyesOpen)_acq-pre_eeg\.edf$).*'
+
+source:
+  name: "OpenNeuro via NEMAR mirror"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: "ds005385"
+  dataset_name: "Eyes-open / eyes-closed resting EEG before cognitive battery"
+  dataset_version: "OpenNeuro ds005385 v1.0.3; NEMAR on005385 v1.0.0"
+  doi: "10.18112/openneuro.ds005385.v1.0.3"
+  url: "https://openneuro.org/datasets/ds005385"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/nemar"
+  dataset_received_dirs:
+    ds005385: "K:/ExternalReceivedDatasets/nemar/on005385"
+  processed_dir: "J:/repos/nmd-analysis/articles/mnps_bench_001_ds005385/outputs/bench_001r_processed"
+
+preprocess:
+  sfreq: 250
+  notch_hz: 50
+  eeg_bandpass: [1, 45]
+  reref: "average"
+  bad_channels:
+    enabled: false
+  ica:
+    enabled: false
+  eeg_csd:
+    enabled: false
+
+epoching:
+  length_s: 8.0
+  step_s: 4.0
+  sampling:
+    read_bids_events: false
+    prefer_events_stage_in_summary: false
+  datasets: {}
+
+mnps_v3_1_measurements:
+  enabled: true
+  window_length_sec: 20.0
+  step_sec: 20.0
+  sequence_complexity_reference_count: 32
+  activity_block_sec: 2.0
+  temporal_realizations:
+    temporal_persistence_win4s_v1:
+      enabled: true
+  recording_level_experimental:
+    d2_scg:
+      enabled: false
+
+conventional_eeg:
+  enabled: true
+  packs: ["tier1"]
+  export:
+    per_epoch_columns: true
+    summaries: true
+
+metadata_extraction:
+  datasets:
+    ds005385:
+      participants:
+        enabled: false
+      task:
+        from_filename: true
+
+summarize:
+  include_bids_event_annotations: false

@@ -176,11 +176,15 @@ def _write_extensions_group(h5: h5py.File, extensions: Mapping[str, Any]) -> Non
 
     def _write_mapping(parent: h5py.Group, key: str, value: Any) -> None:
         """Internal helper: write mapping."""
+        if value is None:
+            return
         safe_key = _sanitize_h5_key(str(key))
         if isinstance(value, Mapping):
             sub = parent.require_group(safe_key)
             for k2, v2 in value.items():
                 _write_mapping(sub, str(k2), v2)
+        elif isinstance(value, (list, tuple)) and value and any(isinstance(item, Mapping) for item in value):
+            _write_json_value_dataset(parent, f"{safe_key}_json", list(value))
         else:
             # Delegate dtype handling to _create_dataset
             _create_dataset(parent, safe_key, value)
@@ -763,6 +767,22 @@ def write_h5(
                 qc_windows,
                 schema_version="mndm.qc.windows.v1",
             )
+
+        measurement_exports = getattr(payload, "measurement_exports", None)
+        if isinstance(measurement_exports, Mapping) and measurement_exports:
+            measurements_root = h5.require_group("measurements")
+            measurements_root.attrs["_schema_version"] = "mndm.measurements.v1"
+            measurement_schema = str(
+                measurement_exports.get("schema_version", "mndm.measurements.v1")
+            )
+            v31_payload = measurement_exports.get("v3_1")
+            if isinstance(v31_payload, Mapping) and v31_payload:
+                _write_nested_mapping_group(
+                    measurements_root,
+                    "v3_1",
+                    v31_payload,
+                    schema_version=str(v31_payload.get("schema", measurement_schema)),
+                )
 
         if payload.nn_indices is not None and payload.nn_indices.size:
             nn_grp = h5.require_group("nn")

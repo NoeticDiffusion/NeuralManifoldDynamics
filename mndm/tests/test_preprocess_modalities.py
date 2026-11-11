@@ -583,3 +583,247 @@ def test_wfdb_causal_finite_pilot_records_and_maps_support(
     annotated_raw.set_annotations(mne.Annotations(onset=[3.0], duration=[0.1], description=["BAD boundary"]))
     with pytest.raises(ValueError, match="annotated boundaries"):
         preprocess._causal_polyphase_resample(annotated_raw, 100.0)
+
+
+def test_causal_finite_edf_identity_grid_support_is_one_sided_and_fail_closed():
+    """The generic EDF path records a bounded FIR on an unchanged source grid."""
+    mne = pytest.importorskip("mne")
+    import mndm.preprocess as preprocess
+    from mndm.signal_support_provenance import (
+        finish_operation,
+        map_preprocessed_window_to_source_samples,
+        start_operation,
+    )
+
+    sfreq = 100.0
+    n_times = 2400
+    base = np.zeros((2, n_times), dtype=float)
+    changed = base.copy()
+    changed[:, 1800] = 1.0
+    info = mne.create_info(["C3", "C4"], sfreq=sfreq, ch_types=["eeg", "eeg"])
+    base_raw = mne.io.RawArray(base, info, verbose=False)
+    changed_raw = mne.io.RawArray(changed, info, verbose=False)
+    base_filter = preprocess._apply_minimum_phase_eeg_filter(base_raw, [0, 1], [0.5, 40.0])
+    changed_filter = preprocess._apply_minimum_phase_eeg_filter(changed_raw, [0, 1], [0.5, 40.0])
+    assert np.allclose(base_raw.get_data()[:, :1800], changed_raw.get_data()[:, :1800], atol=1e-12)
+    assert base_filter["phase"] == "minimum"
+    assert base_filter["tap_count"] > 1
+
+    identity = preprocess._identity_sample_grid_support_spec(base_raw)
+    provenance = {
+        "raw_clock_before_crop": {
+            "sfreq_hz": sfreq,
+            "first_time_sec": 0.0,
+            "first_samp": 0,
+            "n_times": n_times,
+        },
+        "raw_clock_after_crop": {
+            "sfreq_hz": sfreq,
+            "first_time_sec": 0.0,
+            "first_samp": 0,
+            "n_times": n_times,
+        },
+        "effective_time_support": {
+            "status": "finite_causal",
+            "resampler": identity,
+            "eeg_bandpass": base_filter,
+        },
+        "operations": [],
+    }
+    operation = start_operation(provenance, "eeg_bandpass", input_sfreq=sfreq)
+    operation["support"] = base_filter
+    operation["temporal_support_status"] = "finite_causal"
+    finish_operation(operation, status="applied", output_sfreq=sfreq)
+
+    mapped = map_preprocessed_window_to_source_samples(
+        1000,
+        1300,
+        preprocessed_sfreq_hz=sfreq,
+        provenance=provenance,
+    )
+    assert mapped["actual_sample_contributors_status"] == "finite_causal_conservative_bound"
+    assert mapped["actual_source_sample_start"] == max(0, 1000 - (base_filter["tap_count"] - 1))
+    assert mapped["actual_source_sample_end_exclusive"] == 1300
+
+    zero_phase = {
+        **provenance,
+        "effective_time_support": {
+            **provenance["effective_time_support"],
+            "eeg_bandpass": {**base_filter, "phase": "zero"},
+        },
+    }
+    refused = map_preprocessed_window_to_source_samples(
+        1000, 1300, preprocessed_sfreq_hz=sfreq, provenance=zero_phase
+    )
+    assert refused["actual_sample_contributors_status"] == "unknown"
+
+
+def test_causal_finite_edf_sample_grid_rejects_mixed_rates_wrong_length_and_gaps(tmp_path):
+    import mndm.preprocess as preprocess
+
+    def raw_stub(sample_counts, *, sample_rate=256.0, records=20, n_times=None, reserved=b"", annotations=()):
+        max_samples = int(max(sample_counts))
+        path = tmp_path / f"sample-{len(list(tmp_path.iterdir()))}.edf"
+        fixed_header = bytearray(256)
+        fixed_header[192:192 + len(reserved)] = reserved
+        path.write_bytes(fixed_header)
+        return SimpleNamespace(
+            _raw_extras=[{
+                "n_samps": np.asarray(sample_counts, dtype=np.int64),
+                "max_samp": max_samples,
+                "n_records": records,
+                "record_length": np.asarray([max_samples / sample_rate] * len(sample_counts), dtype=float),
+            }],
+            info={"sfreq": sample_rate},
+            n_times=records * max_samples if n_times is None else n_times,
+            ch_names=[f"EEG{idx}" for idx in range(len(sample_counts))],
+            filenames=[str(path)],
+            annotations=SimpleNamespace(description=list(annotations)),
+        )
+
+    valid = preprocess._verify_uniform_edf_sample_grid(raw_stub([256, 256], reserved=b"EDF+C"))
+    assert valid["status"] == "verified_uniform_edf_grid"
+    assert valid["continuity_status"] == "verified_continuous"
+    assert valid["continuity_marker"] == "EDF+C"
+    assert valid["sample_count"] == 5120
+    with pytest.raises(ValueError, match="heterogeneous or inconsistent"):
+        preprocess._verify_uniform_edf_sample_grid(raw_stub([128, 256]))
+    with pytest.raises(ValueError, match="heterogeneous or inconsistent"):
+        preprocess._verify_uniform_edf_sample_grid(raw_stub([256, 256], n_times=5119))
+    with pytest.raises(ValueError, match=r"EDF\+D"):
+        preprocess._verify_uniform_edf_sample_grid(raw_stub([256, 256], reserved=b"EDF+D"))
+    with pytest.raises(ValueError, match="BAD_ACQ_SKIP"):
+        preprocess._verify_uniform_edf_sample_grid(
+            raw_stub([256, 256], reserved=b"EDF+C", annotations=["BAD_ACQ_SKIP"])
+        )
+    with pytest.raises(ValueError, match="EDGE annotations"):
+        preprocess._verify_uniform_edf_sample_grid(
+            raw_stub([256, 256], reserved=b"EDF+C", annotations=["EDGE boundary"])
+        )
+    with pytest.raises(ValueError, match="BAD boundary annotations"):
+        preprocess._verify_uniform_edf_sample_grid(
+            raw_stub([256, 256], reserved=b"EDF+C", annotations=["BAD boundary"])
+        )
+    with pytest.raises(ValueError, match="unrecognized EDF continuity marker"):
+        preprocess._verify_uniform_edf_sample_grid(raw_stub([256, 256], reserved=b"UNKNOWN"))
+    no_annotation_object = raw_stub([256, 256], reserved=b"EDF+C")
+    no_annotation_object.annotations = None
+    with pytest.raises(ValueError, match="inspectable MNE annotation metadata"):
+        preprocess._verify_uniform_edf_sample_grid(no_annotation_object)
+    no_annotation_descriptions = raw_stub([256, 256], reserved=b"EDF+C")
+    no_annotation_descriptions.annotations = SimpleNamespace()
+    with pytest.raises(ValueError, match="annotation description list"):
+        preprocess._verify_uniform_edf_sample_grid(no_annotation_descriptions)
+
+
+def test_preprocess_file_fails_closed_on_edf_skip_annotation_before_filter(tmp_path, monkeypatch):
+    import mndm.preprocess as preprocess
+
+    source = tmp_path / "ds005555" / "sub-100" / "eeg" / "sub-100_task-Sleep_acq-psg_eeg.edf"
+    source.parent.mkdir(parents=True)
+    fixed_header = bytearray(256)
+    fixed_header[192:198] = b"EDF+C "
+    source.write_bytes(fixed_header)
+    raw_stub = SimpleNamespace(
+        _raw_extras=[{"n_samps": np.asarray([256, 256]), "max_samp": 256, "n_records": 1, "record_length": [1.0, 1.0]}],
+        info={"sfreq": 256.0},
+        n_times=256,
+        ch_names=["F3", "F4"],
+        filenames=[str(source)],
+        annotations=SimpleNamespace(description=["BAD_ACQ_SKIP"]),
+        first_samp=0,
+        first_time=0.0,
+    )
+    monkeypatch.setattr(preprocess.mne.io, "read_raw", lambda *args, **kwargs: raw_stub)
+    config = {
+        "datasets": ["ds005555"],
+        "preprocess": {
+            "temporal_support_mode": "causal_finite",
+            "sfreq": 256,
+            "sfreq_candidates": [256],
+            "resample": {"method": "identity_sample_grid"},
+            "notch_hz": None,
+            "eeg_bandpass": [1.0, 45.0],
+            "eeg_bandpass_phase": "minimum",
+        },
+    }
+    with pytest.raises(ValueError, match="BAD_ACQ_SKIP"):
+        preprocess.preprocess_file(source, config)
+
+
+def test_valid_edf_runs_through_causal_grid_filter_provenance_and_mapping(tmp_path):
+    mne = pytest.importorskip("mne")
+    from mndm.preprocess import preprocess_file
+    from mndm.signal_support_provenance import map_preprocessed_window_to_source_samples
+
+    sfreq = 128
+    record_count = 48
+    names = ["F3", "F4", "PSG_PULSE"]
+
+    def field(value, width):
+        return str(value).encode("ascii").ljust(width, b" ")
+
+    fixed = b"".join([
+        field("0", 8), field("X X X X", 80), field("Startdate X X X", 80),
+        field("01.01.85", 8), field("00.00.00", 8), field(256 + 256 * len(names), 8),
+        field("", 44), field(record_count, 8), field("1", 8), field(len(names), 4),
+    ])
+    signal_header = b"".join([
+        b"".join(field(name, 16) for name in names),
+        b"".join(field("", 80) for _ in names),
+        b"".join(field("uV", 8) for _ in names),
+        b"".join(field(-1000, 8) for _ in names),
+        b"".join(field(1000, 8) for _ in names),
+        b"".join(field(-32768, 8) for _ in names),
+        b"".join(field(32767, 8) for _ in names),
+        b"".join(field("", 80) for _ in names),
+        b"".join(field(sfreq, 8) for _ in names),
+        b"".join(field("", 32) for _ in names),
+    ])
+    time = np.arange(record_count * sfreq, dtype=float) / sfreq
+    values = np.vstack([
+        8000 * np.sin(2 * np.pi * 10.0 * time),
+        7000 * np.sin(2 * np.pi * 12.0 * time + 0.3),
+        5000 * np.sin(2 * np.pi * 1.1 * time),
+    ]).astype(np.int16)
+    data = bytearray()
+    for record in range(record_count):
+        start, end = record * sfreq, (record + 1) * sfreq
+        for channel in range(len(names)):
+            data.extend(values[channel, start:end].astype("<i2").tobytes())
+    source = tmp_path / "dsTEST" / "sub-001" / "eeg" / "sub-001_task-sleep_eeg.edf"
+    source.parent.mkdir(parents=True)
+    source.write_bytes(fixed + signal_header + data)
+
+    raw = mne.io.read_raw_edf(source, preload=False, verbose=False)
+    assert raw.n_times == record_count * sfreq
+    result = preprocess_file(source, {
+        "datasets": ["dsTEST"],
+        "preprocess": {
+            "temporal_support_mode": "causal_finite",
+            "sfreq": sfreq,
+            "sfreq_candidates": [sfreq],
+            "resample": {"method": "identity_sample_grid"},
+            "notch_hz": None,
+            "eeg_bandpass": [2.0, 30.0],
+            "eeg_bandpass_phase": "minimum",
+            "reref": None,
+        },
+        "robustness": {"bad_channels": {"enabled": False}},
+    })
+    provenance = result.meta["signal_support_provenance"]
+    assert provenance["status"] == "completed"
+    assert provenance["edf_sample_grid"]["continuity_status"] == "verified_continuous"
+    assert provenance["edf_sample_grid"]["continuity_marker"] == "EDF"
+    assert provenance["edf_sample_grid"]["boundary_annotation_check"]["status"] == "verified_absent"
+    assert provenance["edf_sample_grid"]["samples_per_record_by_channel"] == [sfreq, sfreq, sfreq]
+    assert provenance["effective_time_support"]["eeg_bandpass"]["phase"] == "minimum"
+    mapped = map_preprocessed_window_to_source_samples(
+        1280,
+        2560,
+        preprocessed_sfreq_hz=sfreq,
+        provenance=provenance,
+    )
+    assert mapped["source_sample_mapping_status"] == "nominal_bounds_mapped"
+    assert mapped["actual_sample_contributors_status"] == "finite_causal_conservative_bound"
+    assert mapped["actual_source_sample_end_exclusive"] == 2560

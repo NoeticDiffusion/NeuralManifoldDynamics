@@ -10,17 +10,18 @@ from __future__ import annotations
 import math
 import logging
 import json
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 import warnings
 
 import numpy as np
 import pandas as pd
-from numpy.lib.stride_tricks import sliding_window_view
 from scipy import signal
 import time
 
 from core import ensembles
+from .eeg_entropy import compute_permutation_entropy as _compute_permutation_entropy
 from . import epoch_selection
 from . import eeg_complexity
 from . import eeg_dfc
@@ -1286,6 +1287,11 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
             )
 
     sampling_cfg = epoch_selection.resolve_epoching_sampling_cfg(config, dataset_id)
+    # Some analyses deliberately freeze their labels from the filename or a
+    # separate design table and must not inspect BIDS event rows. Preserve the
+    # historical default while allowing a dataset overlay to opt out of event
+    # reads for both stage-stratified sampling and the stage-column fallback.
+    read_bids_events = bool(sampling_cfg.get("read_bids_events", True))
     chosen_meta: List[tuple[int, int, int]] = meta_all
     stage_per_epoch: Optional[np.ndarray] = None
     nwb_epoch_labels = nwb_intervals.NwbEpochLabels()
@@ -1317,7 +1323,11 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                         stage_map[str(k)] = int(v)
                     except Exception:
                         continue
-            events_path = epoch_selection.find_events_tsv_for_raw(str(raw_file_path))
+            events_path = (
+                epoch_selection.find_events_tsv_for_raw(str(raw_file_path))
+                if read_bids_events
+                else None
+            )
             if events_path is not None:
                 events_df = pd.read_csv(events_path, sep="\t")
                 stage_cols = sampling_cfg.get("stage_columns", ["stage_hum", "stage_ai", "stage"])
@@ -1387,7 +1397,11 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
                     except Exception:
                         continue
             # 1) BIDS events
-            events_path = epoch_selection.find_events_tsv_for_raw(str(raw_file_path))
+            events_path = (
+                epoch_selection.find_events_tsv_for_raw(str(raw_file_path))
+                if read_bids_events
+                else None
+            )
             if events_path is not None:
                 events_df = pd.read_csv(events_path, sep="\t")
                 stage_cols = (
@@ -1608,6 +1622,83 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         if isinstance(payload_meta, Mapping)
         else "unknown"
     )
+    support_provenance = payload_meta.get("signal_support_provenance", {}) if isinstance(payload_meta, Mapping) else {}
+    v31_cfg = config.get("mnps_v3_1_measurements", {}) if isinstance(config, Mapping) else {}
+    v31_cfg = v31_cfg if isinstance(v31_cfg, Mapping) else {}
+    v31_enabled = bool(v31_cfg.get("enabled", False))
+    v31_measurement_windows: List[Dict[str, Any]] = []
+    v31_temporal_realizations: List[Dict[str, Any]] = []
+    v31_recording_level_experimental: Dict[str, Any] | None = None
+    v31_module = None
+    if v31_enabled:
+        try:
+            from ..mnps.v3_1 import pipeline_measurements as v31_module
+        except Exception:
+            logger.exception("MNPS v3.1 measurement module unavailable; continuing with ordinary EEG features")
+            v31_enabled = False
+    source_id = "unknown_source"
+    source_identity_metadata: Dict[str, Any] = {
+        "identity_basis": "unknown",
+        "source_sha256": None,
+        "dataset_id": str(dataset_id or "unknown_dataset"),
+    }
+    if isinstance(support_provenance, Mapping):
+        source_record = support_provenance.get("source", {})
+        if isinstance(source_record, Mapping):
+            source_sha256 = source_record.get("sha256") or source_record.get("source_sha256")
+            if source_sha256:
+                source_id = str(source_sha256)
+                source_identity_metadata.update({
+                    "identity_basis": "source_file_sha256",
+                    "source_sha256": str(source_sha256),
+                    "hash_stable": source_record.get("hash_stable"),
+                })
+    if source_id == "unknown_source":
+        source_path = str(payload_meta.get("file", raw_file_path or "")) if isinstance(payload_meta, Mapping) else str(raw_file_path or "")
+        source_name = Path(source_path).name if source_path else "unknown_file"
+        identity_material = "|".join((str(dataset_id or "unknown_dataset"), source_path or source_name))
+        source_id = hashlib.sha256(identity_material.encode("utf-8")).hexdigest()
+        source_identity_metadata.update({
+            "identity_basis": "dataset_and_source_path_sha256" if source_path else "dataset_and_unknown_file_sha256",
+            "source_path_sha256": hashlib.sha256(source_path.encode("utf-8")).hexdigest() if source_path else None,
+            "source_name": source_name,
+        })
+    source_identity_metadata["source_identity_id"] = source_id
+    operations = support_provenance.get("operations", []) if isinstance(support_provenance, Mapping) else []
+    configured_filter_band = None
+    for operation in operations if isinstance(operations, list) else []:
+        if not isinstance(operation, Mapping) or str(operation.get("name", "")) != "eeg_bandpass":
+            continue
+        parameters = operation.get("parameters", {})
+        if isinstance(parameters, Mapping) and isinstance(parameters.get("bandpass_hz"), (list, tuple)):
+            configured_filter_band = list(parameters["bandpass_hz"])
+            break
+    input_branch = {
+        "branch_id": "mndm.preprocessed_native_eeg_window.v1",
+        "reference_mode": reference_mode or "unknown",
+        "reference_set_sha256": payload_meta.get("reference_set_hash") if isinstance(payload_meta, Mapping) else None,
+        "filter_band_hz": configured_filter_band,
+        "amplitude_unit": amplitude_unit or "unknown",
+        "reference_status": reference_status,
+    }
+    eeg_acquisition_qc = payload_meta.get("eeg_acquisition_qc", {}) if isinstance(payload_meta, Mapping) else {}
+    prefilter_qc = eeg_acquisition_qc.get("prefilter", {}) if isinstance(eeg_acquisition_qc, Mapping) else {}
+    postfilter_qc = eeg_acquisition_qc.get("postfilter", {}) if isinstance(eeg_acquisition_qc, Mapping) else {}
+    eeg_channel_count = len(eeg_channel_names) if isinstance(eeg_channel_names, (list, tuple)) else 0
+    acquisition_qc = {
+        "line_noise_48_52_ratio": prefilter_qc.get("line_noise_48_52_ratio") if isinstance(prefilter_qc, Mapping) else None,
+        "line_noise_48_52_ratio_status": prefilter_qc.get("line_noise_48_52_ratio_status", "unknown") if isinstance(prefilter_qc, Mapping) else "unknown",
+        "postfilter_line_noise_residual": postfilter_qc.get("line_noise_48_52_ratio") if isinstance(postfilter_qc, Mapping) else None,
+        "postfilter_line_noise_residual_status": postfilter_qc.get("line_noise_48_52_ratio_status", "unknown") if isinstance(postfilter_qc, Mapping) else "unknown",
+        "broadband_noise_proxy": prefilter_qc.get("broadband_noise_proxy") if isinstance(prefilter_qc, Mapping) else None,
+        "broadband_noise_proxy_status": prefilter_qc.get("broadband_noise_proxy_status", "unknown") if isinstance(prefilter_qc, Mapping) else "unknown",
+        "channel_type_profile": payload_meta.get("channel_type_profile") if isinstance(payload_meta, Mapping) else None,
+        "eeg_channel_count": payload_meta.get("eeg_channel_count", eeg_channel_count) if isinstance(payload_meta, Mapping) else eeg_channel_count,
+        "misc_channel_count": payload_meta.get("misc_channel_count") if isinstance(payload_meta, Mapping) else None,
+        "reference_set_hash": payload_meta.get("reference_set_hash") if isinstance(payload_meta, Mapping) else None,
+        "channel_set_hash": payload_meta.get("channel_set_hash") if isinstance(payload_meta, Mapping) else None,
+        "measurement_adjustment_applied": False,
+    }
 
     for i, (epoch_id, start_idx, end_idx) in enumerate(meta):
         support_provenance = payload_meta.get("signal_support_provenance", {}) if isinstance(payload_meta, Mapping) else {}
@@ -1981,6 +2072,453 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         adv_df = pd.DataFrame(adv_cols, index=df.index)
         df = pd.concat([df, adv_df], axis=1)
 
+    if v31_enabled and v31_module is not None:
+        labels_for_measurement = tuple(str(name) for name in eeg_channel_names) if eeg_channel_names is not None else ()
+        segment_id = Path(str(payload_meta.get("file", raw_file_path or "recording"))).name if isinstance(payload_meta, Mapping) else "recording"
+        try:
+            requested_window_sec = float(v31_cfg.get("window_length_sec", 20.0) or 20.0)
+            requested_step_sec = float(v31_cfg.get("step_sec", requested_window_sec) or requested_window_sec)
+            requested_window_samples = int(round(requested_window_sec * float(sfreq)))
+            step_samples = int(round(requested_step_sec * float(sfreq)))
+        except (TypeError, ValueError, OverflowError):
+            requested_window_samples = 0
+            step_samples = 0
+            requested_window_sec = 20.0
+        if requested_window_samples > 0 and step_samples > 0 and eeg_data.shape[1] >= 2:
+            if eeg_data.shape[1] < requested_window_samples:
+                measurement_window_samples = int(eeg_data.shape[1])
+                window_starts = [0]
+            else:
+                measurement_window_samples = requested_window_samples
+                window_starts = list(range(0, int(eeg_data.shape[1]) - measurement_window_samples + 1, step_samples))
+            eeglab_import = payload_meta.get("eeglab_import", {}) if isinstance(payload_meta, Mapping) else {}
+            flattened_epochs = (
+                isinstance(eeglab_import, Mapping)
+                and str(eeglab_import.get("source", "")).strip().lower() == "eeglab_epoched_concat"
+            )
+            source_grid_supported = not (
+                isinstance(support_provenance, Mapping)
+                and support_provenance.get("source_sample_grid_supported") is False
+            )
+            for measurement_window_index, start_idx in enumerate(window_starts):
+                end_idx = int(start_idx + measurement_window_samples)
+                input_window = np.asarray(eeg_data[:, start_idx:end_idx])
+                finite = bool(input_window.size and np.isfinite(input_window).all())
+                source_map = map_preprocessed_window_to_source_samples(
+                    int(start_idx),
+                    int(end_idx),
+                    preprocessed_sfreq_hz=float(sfreq),
+                    provenance=support_provenance if isinstance(support_provenance, Mapping) else {},
+                    allow_source_grid=not flattened_epochs and source_grid_supported,
+                    refusal_reason=(
+                        "flattened_eeglab_epochs_have_no_continuous_source_sample_map"
+                        if flattened_epochs
+                        else str(
+                            support_provenance.get("source_sample_grid_reason") or "source_clock_mapping_not_supported"
+                            if isinstance(support_provenance, Mapping)
+                            else "source_clock_mapping_not_supported"
+                        )
+                    ),
+                )
+                source_is_continuous = False if flattened_epochs else None
+                explicit_grid_support = (
+                    support_provenance.get("source_sample_grid_supported")
+                    if isinstance(support_provenance, Mapping)
+                    else None
+                )
+                source_mapping_verified = source_map.get("source_sample_mapping_status") == "nominal_bounds_mapped"
+                timestamps_uniform = (
+                    True if explicit_grid_support is True and source_mapping_verified
+                    else None
+                )
+                effective_filter_support_status = source_map.get("actual_sample_contributors_status")
+                support_qc = {
+                    "source_is_continuous": source_is_continuous,
+                    "timestamps_uniform": timestamps_uniform,
+                    "input_samples_finite": finite,
+                    "gap_free": None,
+                    "bad_interval_free": None,
+                    "within_recording_bounds": bool(0 <= int(start_idx) < end_idx <= int(eeg_data.shape[1])),
+                    "effective_filter_support_valid": (
+                        True if effective_filter_support_status == "finite_causal_conservative_bound" else None
+                    ),
+                    "effective_filter_support_status": effective_filter_support_status,
+                }
+                try:
+                    v31_result = v31_module.compute_pipeline_window_measurements(
+                        input_window,
+                        labels_for_measurement,
+                        sample_rate_hz=float(sfreq),
+                        window_start_sec=float(start_idx) / float(sfreq),
+                        window_end_sec=float(end_idx) / float(sfreq),
+                        segment_id=segment_id,
+                        source_identity=source_id,
+                        input_branch=input_branch,
+                        support_qc=support_qc,
+                        acquisition_qc=acquisition_qc,
+                        sequence_complexity_reference_count=int(v31_cfg.get("sequence_complexity_reference_count", 32) or 32),
+                        activity_block_sec=float(v31_cfg.get("activity_block_sec", 2.0) or 2.0),
+                    )
+                except Exception as exc:
+                    logger.exception(
+                        "MNPS v3.1 candidates failed on independent measurement window %s; preserving legacy EEG features",
+                        measurement_window_index,
+                    )
+                    v31_result = v31_module.failed_pipeline_window_measurements(
+                        channel_names=labels_for_measurement,
+                        sample_rate_hz=float(sfreq),
+                        window_start_sec=float(start_idx) / float(sfreq),
+                        window_end_sec=float(end_idx) / float(sfreq),
+                        segment_id=segment_id,
+                        input_branch=input_branch,
+                        support_qc=support_qc,
+                        error=exc,
+                    )
+                v31_measurement_windows.append({
+                    "window_index": int(measurement_window_index),
+                    "requested_window_length_sec": float(requested_window_sec),
+                    "window_start_sec": float(start_idx) / float(sfreq),
+                    "window_end_sec": float(end_idx) / float(sfreq),
+                    "source_sample_mapping": source_map,
+                    "source_identity": dict(source_identity_metadata),
+                    **v31_result,
+                })
+
+        temporal_realizations_cfg = v31_cfg.get("temporal_realizations", {})
+        temporal_realizations_cfg = temporal_realizations_cfg if isinstance(temporal_realizations_cfg, Mapping) else {}
+        m2_win4_cfg = temporal_realizations_cfg.get("temporal_persistence_win4s_v1", {})
+        m2_win4_cfg = m2_win4_cfg if isinstance(m2_win4_cfg, Mapping) else {}
+        if bool(m2_win4_cfg.get("enabled", True)):
+            realization_id = "temporal_persistence.win4s.v1"
+            support_window_sec = 4.0
+            step_sec = 4.0
+            try:
+                realization_sfreq = float(sfreq)
+                if not math.isfinite(realization_sfreq) or realization_sfreq <= 0.0:
+                    raise ValueError("invalid sampling frequency")
+                requested_window_samples = int(round(support_window_sec * realization_sfreq))
+                step_samples = int(round(step_sec * realization_sfreq))
+            except (TypeError, ValueError, OverflowError):
+                realization_sfreq = math.nan
+                requested_window_samples = 0
+                step_samples = 0
+            realization_windows: List[Dict[str, Any]] = []
+            realization_reason = None
+            if requested_window_samples <= 1 or step_samples <= 0:
+                realization_status = "unsupported"
+                realization_reason = "invalid_sample_rate_or_temporal_realization_parameters"
+            elif eeg_data.shape[1] < requested_window_samples:
+                realization_status = "unsupported"
+                realization_reason = "recording_shorter_than_requested_support"
+            else:
+                window_starts = list(range(0, int(eeg_data.shape[1]) - requested_window_samples + 1, step_samples))
+                eeglab_import = payload_meta.get("eeglab_import", {}) if isinstance(payload_meta, Mapping) else {}
+                flattened_epochs = (
+                    isinstance(eeglab_import, Mapping)
+                    and str(eeglab_import.get("source", "")).strip().lower() == "eeglab_epoched_concat"
+                )
+                source_grid_supported = not (
+                    isinstance(support_provenance, Mapping)
+                    and support_provenance.get("source_sample_grid_supported") is False
+                )
+                for window_index, start_idx in enumerate(window_starts):
+                    end_idx = int(start_idx + requested_window_samples)
+                    input_window = np.asarray(eeg_data[:, start_idx:end_idx])
+                    finite = bool(input_window.size and np.isfinite(input_window).all())
+                    source_map = map_preprocessed_window_to_source_samples(
+                        int(start_idx),
+                        int(end_idx),
+                        preprocessed_sfreq_hz=float(sfreq),
+                        provenance=support_provenance if isinstance(support_provenance, Mapping) else {},
+                        allow_source_grid=not flattened_epochs and source_grid_supported,
+                        refusal_reason=(
+                            "flattened_eeglab_epochs_have_no_continuous_source_sample_map"
+                            if flattened_epochs
+                            else str(
+                                support_provenance.get("source_sample_grid_reason") or "source_clock_mapping_not_supported"
+                                if isinstance(support_provenance, Mapping)
+                                else "source_clock_mapping_not_supported"
+                            )
+                        ),
+                    )
+                    source_mapping_verified = source_map.get("source_sample_mapping_status") == "nominal_bounds_mapped"
+                    explicit_grid_support = (
+                        support_provenance.get("source_sample_grid_supported")
+                        if isinstance(support_provenance, Mapping)
+                        else None
+                    )
+                    effective_filter_support_status = source_map.get("actual_sample_contributors_status")
+                    support_qc = {
+                        "source_is_continuous": False if flattened_epochs else None,
+                        "timestamps_uniform": (
+                            True if explicit_grid_support is True and source_mapping_verified else None
+                        ),
+                        "input_samples_finite": finite,
+                        "gap_free": None,
+                        "bad_interval_free": None,
+                        "within_recording_bounds": bool(0 <= int(start_idx) < end_idx <= int(eeg_data.shape[1])),
+                        "effective_filter_support_valid": (
+                            True if effective_filter_support_status == "finite_causal_conservative_bound" else None
+                        ),
+                        "effective_filter_support_status": effective_filter_support_status,
+                    }
+                    try:
+                        measurement = v31_module.compute_pipeline_m2_temporal_measurement(
+                            input_window,
+                            labels_for_measurement,
+                            sample_rate_hz=float(sfreq),
+                        window_start_sec=float(start_idx) / float(sfreq),
+                        window_end_sec=float(end_idx) / realization_sfreq,
+                            segment_id=segment_id,
+                            input_branch=input_branch,
+                            support_qc=support_qc,
+                            acquisition_qc=acquisition_qc,
+                        )
+                    except Exception as exc:
+                        logger.exception("MNPS v3.1 M2 4-second temporal realization failed on window %s", window_index)
+                        measurement = {
+                            "candidate_id": "M2",
+                            "estimator_id": "TP.pipeline_native_window_lag1_decorrelation.v1",
+                            "value": None,
+                            "units": "1",
+                            "computed": False,
+                            "valid": False,
+                            "qualified": False,
+                            "status": "unsupported",
+                            "reason": "candidate_estimator_exception",
+                            "details": {"exception_type": type(exc).__name__},
+                        }
+                    realization_windows.append({
+                        "window_index": int(window_index),
+                        "realization_id": realization_id,
+                        "support_window_sec_requested": support_window_sec,
+                        "step_sec_requested": step_sec,
+                        "window_start_sec": float(start_idx) / float(sfreq),
+                        "window_end_sec": float(end_idx) / float(sfreq),
+                        "source_sample_mapping": source_map,
+                        "source_identity": dict(source_identity_metadata),
+                        "measurements": [measurement],
+                    })
+                realization_status = "computed" if realization_windows else "no_windows"
+                if not realization_windows:
+                    realization_reason = "no_full_support_window_on_requested_grid"
+            v31_temporal_realizations.append({
+                "realization_id": realization_id,
+                "candidate_id": "M2",
+                "estimator_id": "TP.pipeline_native_window_lag1_decorrelation.v1",
+                "support_window_sec_requested": support_window_sec,
+                "step_sec_requested": step_sec,
+                "grid_alignment": "preprocessed_array_sample_grid",
+                "status": realization_status,
+                "reason": realization_reason,
+                "qualified": False,
+                "coordinate_assignment": None,
+                "windows": realization_windows,
+            })
+
+        recording_cfg = v31_cfg.get("recording_level_experimental", {})
+        recording_cfg = recording_cfg if isinstance(recording_cfg, Mapping) else {}
+        d2_recording_cfg = recording_cfg.get("d2_scg", {})
+        d2_recording_cfg = d2_recording_cfg if isinstance(d2_recording_cfg, Mapping) else {}
+        if bool(d2_recording_cfg.get("enabled", True)):
+            recording_values = np.asarray(eeg_data)
+            recording_sample_count = int(recording_values.shape[1]) if recording_values.ndim == 2 else 0
+            recording_duration = recording_sample_count / float(sfreq) if float(sfreq) > 0.0 else 0.0
+            recording_is_finite = bool(recording_values.size and np.isfinite(recording_values).all())
+            quality_record = (
+                support_provenance.get("source_quality_intervals", {})
+                if isinstance(support_provenance, Mapping) else {}
+            )
+            quality_record = quality_record if isinstance(quality_record, Mapping) else {}
+            quality_status = str(quality_record.get("status", "unknown"))
+            quality_intervals = quality_record.get("intervals", [])
+            crop_record = support_provenance.get("crop", {}) if isinstance(support_provenance, Mapping) else {}
+            crop_record = crop_record if isinstance(crop_record, Mapping) else {}
+            try:
+                recording_source_start = float(crop_record.get("actual_tmin_from_source_start_sec", 0.0) or 0.0)
+            except (TypeError, ValueError, OverflowError):
+                recording_source_start = None
+            bad_interval_free: bool | None = None
+            if quality_status == "none_observed":
+                bad_interval_free = True
+            elif quality_status == "observed" and isinstance(quality_intervals, list) and recording_source_start is not None:
+                recording_source_end = recording_source_start + recording_duration
+                parsed_intervals: list[tuple[float, float]] = []
+                intervals_valid = True
+                for interval in quality_intervals:
+                    if not isinstance(interval, Mapping):
+                        intervals_valid = False
+                        break
+                    try:
+                        interval_start = float(interval["start_sec"])
+                        interval_end = interval_start + float(interval["duration_sec"])
+                    except (KeyError, TypeError, ValueError, OverflowError):
+                        intervals_valid = False
+                        break
+                    if not math.isfinite(interval_start) or not math.isfinite(interval_end):
+                        intervals_valid = False
+                        break
+                    parsed_intervals.append((interval_start, interval_end))
+                if intervals_valid:
+                    bad_interval_free = not any(
+                        interval_start < recording_source_end and interval_end > recording_source_start
+                        for interval_start, interval_end in parsed_intervals
+                    )
+
+            eeglab_import = payload_meta.get("eeglab_import", {}) if isinstance(payload_meta, Mapping) else {}
+            is_flattened_eeglab_epochs = (
+                isinstance(eeglab_import, Mapping)
+                and str(eeglab_import.get("source", "")).strip().lower() == "eeglab_epoched_concat"
+            )
+            raw_gap_samples = (
+                support_provenance.get("time_gap_sample_indices")
+                if isinstance(support_provenance, Mapping) else None
+            )
+            source_grid_reason = str(
+                support_provenance.get("source_sample_grid_reason", "")
+                if isinstance(support_provenance, Mapping) else ""
+            ).casefold()
+            known_discontinuity = any(
+                token in source_grid_reason
+                for token in ("gap", "segment", "discontinu", "boundary")
+            )
+            if is_flattened_eeglab_epochs or known_discontinuity:
+                source_is_continuous: bool | None = False
+                gap_free: bool | None = False
+            else:
+                # This is the regular sample grid returned by the continuous
+                # preprocessing path. Exact mapping to the source clock is a
+                # separate provenance field and is retained below as QC.
+                source_is_continuous = True
+                gap_free = (
+                    bool(len(raw_gap_samples) == 0)
+                    if isinstance(raw_gap_samples, (list, tuple))
+                    else None
+                )
+            timestamps_uniform = bool(math.isfinite(float(sfreq)) and float(sfreq) > 0.0)
+            within_recording_bounds = bool(recording_sample_count > 0)
+            temporal_support = (
+                support_provenance.get("temporal_support", {})
+                if isinstance(support_provenance, Mapping) else {}
+            )
+            temporal_support = temporal_support if isinstance(temporal_support, Mapping) else {}
+            temporal_support_status = str(temporal_support.get("status", "unknown"))
+            estimator_filter_support_valid = (
+                True if temporal_support_status in {"finite_causal", "finite_causal_conservative_bound"}
+                else None
+            )
+            support_warnings: list[str] = []
+            if not recording_is_finite:
+                support_warnings.append("recording_contains_nonfinite_samples")
+            if isinstance(support_provenance, Mapping) and support_provenance.get("source_sample_grid_supported") is not True:
+                support_warnings.append("exact_source_sample_grid_mapping_not_verified")
+            if quality_status not in {"none_observed", "observed"}:
+                support_warnings.append("source_bad_interval_inventory_incomplete")
+            if is_flattened_eeglab_epochs:
+                support_warnings.append("flattened_epoched_source_has_no_continuous_recording_support")
+            if not isinstance(raw_gap_samples, (list, tuple)):
+                support_warnings.append("source_gap_inventory_not_available")
+            if estimator_filter_support_valid is None:
+                support_warnings.append("upstream_filter_edge_support_not_verified")
+            support_qc = {
+                "source_is_continuous": source_is_continuous,
+                "timestamps_uniform": timestamps_uniform,
+                "input_samples_finite": recording_is_finite,
+                "gap_free": gap_free,
+                "bad_interval_free": bad_interval_free,
+                "within_recording_bounds": within_recording_bounds,
+                "effective_filter_support_valid": estimator_filter_support_valid,
+                "effective_filter_support_basis": "upstream_temporal_support_provenance; unknown_when_no_finite_causal_support_record",
+                "source_sample_grid_supported": (
+                    support_provenance.get("source_sample_grid_supported")
+                    if isinstance(support_provenance, Mapping) else None
+                ),
+                "source_sample_grid_reason": (
+                    support_provenance.get("source_sample_grid_reason")
+                    if isinstance(support_provenance, Mapping) else None
+                ),
+                "continuity_assessment_basis": (
+                    "flattened_epoch_concat_or_source_grid_reason_declares_discontinuity"
+                    if is_flattened_eeglab_epochs or known_discontinuity
+                    else "preprocessed_sample_array; exact_source_clock_mapping_reported_separately"
+                ),
+                "source_gap_inventory_count": len(raw_gap_samples) if isinstance(raw_gap_samples, (list, tuple)) else None,
+                "source_bad_interval_status": quality_status,
+                "source_bad_interval_count": len(quality_intervals) if isinstance(quality_intervals, list) else None,
+                "warnings": sorted(set(support_warnings)),
+            }
+            processing_operations = (
+                support_provenance.get("operations", [])
+                if isinstance(support_provenance, Mapping) else []
+            )
+            preprocessing_metadata = {
+                "signal_support_provenance_schema": (
+                    support_provenance.get("schema") if isinstance(support_provenance, Mapping) else None
+                ),
+                "temporal_support": (
+                    support_provenance.get("temporal_support") if isinstance(support_provenance, Mapping) else None
+                ),
+                "effective_time_support": (
+                    support_provenance.get("effective_time_support") if isinstance(support_provenance, Mapping) else None
+                ),
+                "operations": [
+                    {
+                        "name": operation.get("name"),
+                        "status": operation.get("status"),
+                        "parameters": operation.get("parameters"),
+                        "actual_kwargs": operation.get("actual_kwargs"),
+                    }
+                    for operation in processing_operations if isinstance(operation, Mapping)
+                ] if isinstance(processing_operations, list) else [],
+                "recording_duration_sec": float(recording_duration),
+                "sample_rate_hz": float(sfreq),
+                "upstream_filter_edge_support_status": (
+                    (support_provenance.get("temporal_support") or {}).get("status", "unknown")
+                    if isinstance(support_provenance, Mapping)
+                    and isinstance(support_provenance.get("temporal_support", {}), Mapping)
+                    else "unknown"
+                ),
+            }
+            recording_input_branch = {
+                **input_branch,
+                "branch_id": "mndm.preprocessed_native_eeg_recording.v1",
+                "aggregation_level": "recording",
+            }
+            try:
+                v31_recording_level_experimental = (
+                    v31_module.compute_pipeline_recording_level_experimental_measurements(
+                        recording_values,
+                        labels_for_measurement,
+                        sample_rate_hz=float(sfreq),
+                        support_qc=support_qc,
+                        source_identity=source_id,
+                        dataset_id=str(dataset_id) if dataset_id is not None else None,
+                        input_branch=recording_input_branch,
+                        preprocessing_metadata=preprocessing_metadata,
+                        signal_units=str(amplitude_unit or "unknown"),
+                        include_core19=bool(d2_recording_cfg.get("include_core19", True)),
+                        include_ds004148_core60=bool(d2_recording_cfg.get("include_ds004148_core60", True)),
+                    )
+                )
+            except Exception as exc:
+                logger.exception("MNPS v3.1 recording-level D2/SCG failed; preserving window measurements")
+                v31_recording_level_experimental = {
+                    "schema": "mndm.mnps_v3_1.recording_level_experimental.v1",
+                    "status": "candidate_pipeline_exception",
+                    "qualified": False,
+                    "coordinate_assignment": None,
+                    "historical_slot": "D2",
+                    "construct_id": "spatial_coupling_gradient",
+                    "short_name": "SCG",
+                    "aggregation_level": "recording",
+                    "support_window_sec": float(recording_duration),
+                    "step_sec": None,
+                    "source_identity": source_id,
+                    "support_qc": support_qc,
+                    "reason": "candidate_pipeline_exception",
+                    "exception_type": type(exc).__name__,
+                }
+
     logger.info(
         "Computed %d EEG epochs (groups=%d). Timings: epoch+PSD=%.2fs (PSD=%.2fs)",
         len(df),
@@ -1988,6 +2526,31 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         (t_epoch1 - t_psd0),
         (t_psd1 - t_psd0),
     )
+    if v31_enabled:
+        df.attrs["mnps_v3_1_measurements"] = {
+            "schema": "mndm.mnps_v3_1.pipeline_measurements.v1",
+            "status": "computed" if (
+                v31_measurement_windows
+                or any(realization.get("windows") for realization in v31_temporal_realizations)
+                or v31_recording_level_experimental
+            ) else "no_windows",
+            "registry_version": "mndm.mnps_v3_1.construct_registry.v1",
+            "standard_candidate_ids": ["M1", "M2", "M3", "D1", "D3", "E1", "E2", "E3"],
+            "experimental_candidate_ids": ["D2"],
+            "window_grid": {
+                "window_length_sec_requested": float(v31_cfg.get("window_length_sec", 20.0) or 20.0),
+                "step_sec_requested": float(v31_cfg.get("step_sec", v31_cfg.get("window_length_sec", 20.0)) or 20.0),
+                "alignment": "preprocessed_array_sample_grid",
+                "grid_is_separate_from_legacy_feature_epoch_grid": True,
+            },
+            "qualified": False,
+            "coordinate_assignment": None,
+            "source_identity": dict(source_identity_metadata),
+            "windows": v31_measurement_windows,
+            "temporal_realizations": v31_temporal_realizations,
+            "recording_level_experimental_measurements": v31_recording_level_experimental,
+            "acquisition_qc": acquisition_qc,
+        }
     return df
 
 
@@ -2017,48 +2580,6 @@ def _compute_spectral_entropy(data: np.ndarray, sfreq: float) -> float:
     psd_norm = np.clip(psd_norm, 1e-12, None)
     psd_norm /= float(np.sum(psd_norm))
     return float(-np.sum(psd_norm * np.log(psd_norm)))
-
-
-def _compute_permutation_entropy(
-    data: np.ndarray,
-    order: int = 5,
-    delay: int = 1,
-    normalize: bool = True,
-) -> float:
-    """Compute permutation entropy deterministically with NumPy only."""
-    x = np.asarray(data, dtype=np.float64)
-    x = x[np.isfinite(x)]
-    n = x.size
-    order_i = int(order)
-    delay_i = int(delay)
-    if order_i < 2 or delay_i < 1:
-        return np.nan
-    if n < (order_i - 1) * delay_i + 2:
-        return np.nan
-
-    y = x[::delay_i]
-    if y.size < order_i + 1:
-        return np.nan
-    emb = sliding_window_view(y, window_shape=order_i)
-    if emb.size == 0:
-        return np.nan
-
-    patterns = np.argsort(emb, axis=1, kind="mergesort")
-    pat_view = np.ascontiguousarray(patterns).view(
-        np.dtype((np.void, patterns.dtype.itemsize * patterns.shape[1]))
-    )
-    _, counts = np.unique(pat_view, return_counts=True)
-    if counts.size == 0:
-        return np.nan
-
-    p = counts.astype(np.float64) / float(np.sum(counts))
-    h_val = -np.sum(p * np.log(p + 1e-32))
-    if normalize:
-        denom = math.log(math.factorial(order_i))
-        if denom <= 0:
-            return np.nan
-        h_val /= denom
-    return float(h_val)
 
 
 def _compute_entropy_feature(

@@ -1,0 +1,29 @@
+version: 1.2
+modality: eeg
+
+# MNPS-BENCH-001R H2: same outcome-blind ranks 101-200 as H1R, in a distinct
+# 4 s fast-core realization and a separate output root.
+imports:
+  - "./config_ingest_mnps_bench_001r_ds005385.yaml"
+
+paths:
+  processed_dir: "J:/repos/nmd-analysis/articles/mnps_bench_001_ds005385/outputs/bench_001r_fast4s_processed"
+
+mnps_9d:
+  enabled: false
+
+conventional_eeg:
+  enabled: false
+
+mnps_v3_1_measurements:
+  enabled: true
+  window_length_sec: 4.0
+  step_sec: 4.0
+  sequence_complexity_reference_count: 32
+  activity_block_sec: 2.0
+  temporal_realizations:
+    temporal_persistence_win4s_v1:
+      enabled: true
+  recording_level_experimental:
+    d2_scg:
+      enabled: false

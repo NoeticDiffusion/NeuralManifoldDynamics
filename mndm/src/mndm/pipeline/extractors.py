@@ -1157,6 +1157,13 @@ def load_participant_table(
     if isinstance(per_ds, Mapping) and isinstance(per_ds.get("participants"), Mapping):
         participants_cfg.update(dict(per_ds.get("participants") or {}))
 
+    # A source-specific analysis may intentionally use only filename entities
+    # and must not inspect participant-level phenotype/demographic values.
+    # Keep the existing auto-discovery default, but allow an explicit opt-out
+    # that skips the base table and all optional participant sidecar tables.
+    if participants_cfg.get("enabled", True) is False:
+        return None
+
     dataset_root = _resolve_dataset_root_for_participants(received_dir, dataset_id, config)
     path_value = participants_cfg.get("path")
     candidate_path: Optional[Path] = None

@@ -1,0 +1,22 @@
+# Download-only configuration for the three-session EEG repeat dataset.
+# Keep the retrieval scoped to EEG recordings and the BIDS metadata needed to
+# identify participants, sessions, channels, and events.
+datasets:
+  - ds004148
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed"
+download:
+  retries: 3
+  datasets:
+    ds004148:
+      include_patterns:
+        - "**/eeg/**"
+        - "**/participants.tsv"
+        - "**/participants.json"
+        - "**/*_sessions.tsv"
+        - "**/*_sessions.json"
+        - "**/dataset_description.json"
+        - "**/README*"
+        - "**/CHANGES"
+        - "**/LICENSE"

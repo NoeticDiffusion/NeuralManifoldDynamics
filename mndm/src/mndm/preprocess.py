@@ -2273,8 +2273,29 @@ def _causal_polyphase_resample(raw: Any, target_sfreq: float) -> tuple[Any, dict
     return result, description
 
 
+def _identity_sample_grid_support_spec(raw: Any) -> dict[str, Any]:
+    """Describe an unchanged, verified sample grid as a causal identity map."""
+    sfreq = float(raw.info["sfreq"])
+    if not np.isfinite(sfreq) or sfreq <= 0 or int(raw.n_times) < 1:
+        raise ValueError("identity sample-grid support requires a positive clock and nonempty recording")
+    return {
+        "method": "identity_sample_grid",
+        "up": 1,
+        "down": 1,
+        "tap_count": 1,
+        "coefficient_sha256": hashlib.sha256(np.asarray([1.0], dtype="<f8").tobytes()).hexdigest(),
+        "group_delay_input_samples": 0.0,
+        "group_delay_seconds": 0.0,
+        "source_sfreq_hz": sfreq,
+        "output_sfreq_hz": sfreq,
+        "output_sample_count": int(raw.n_times),
+        "phase": "identity",
+        "boundary_extension": "none; source and processed sample grids are identical",
+    }
+
+
 def _minimum_phase_eeg_filter_spec(raw: Any, picks: Sequence[int], bandpass: Sequence[float]) -> dict[str, Any]:
-    """Describe the exact MNE FIR used by the opt-in causal WFDB pilot."""
+    """Describe the exact MNE FIR used by an opt-in causal finite-support path."""
     if mne is None:
         raise RuntimeError("MNE is required for the causal EEG filter")
     data = raw.get_data(picks=list(picks))
@@ -2300,6 +2321,121 @@ def _minimum_phase_eeg_filter_spec(raw: Any, picks: Sequence[int], bandpass: Seq
         "bandpass_hz": [float(bandpass[0]), float(bandpass[1])],
         "sfreq_hz": float(raw.info["sfreq"]),
         "support_interpretation": "output k depends on input [max(0,k-tap_count+1),k]",
+    }
+
+
+def _apply_minimum_phase_eeg_filter(
+    raw: Any,
+    picks: Sequence[int],
+    bandpass: Sequence[float],
+    *,
+    skip_by_annotation: Optional[Sequence[str]] = None,
+) -> dict[str, Any]:
+    """Apply and describe one minimum-phase FIR with matching finite support."""
+    spec = _minimum_phase_eeg_filter_spec(raw, picks, bandpass)
+    kwargs: dict[str, Any] = {}
+    if skip_by_annotation is not None:
+        kwargs["skip_by_annotation"] = tuple(str(value) for value in skip_by_annotation)
+    raw.filter(
+        l_freq=float(bandpass[0]),
+        h_freq=float(bandpass[1]),
+        picks=list(picks),
+        method="fir",
+        phase="minimum",
+        fir_design="firwin",
+        fir_window="hamming",
+        filter_length="auto",
+        pad="constant",
+        verbose=False,
+        **kwargs,
+    )
+    return spec
+
+
+def _verify_uniform_edf_sample_grid(raw: Any, source_path: Optional[Path] = None) -> dict[str, Any]:
+    """Verify one uniform, continuous EDF source grid without EDF+D gaps."""
+    extras = getattr(raw, "_raw_extras", None)
+    if not isinstance(extras, (list, tuple)) or len(extras) != 1 or not isinstance(extras[0], Mapping):
+        raise ValueError("causal_finite EDF mode requires one inspectable EDF signal header")
+    header = extras[0]
+    edf_path = Path(source_path) if source_path is not None else None
+    if edf_path is None:
+        filenames = getattr(raw, "filenames", None)
+        if isinstance(filenames, (list, tuple)) and len(filenames) == 1 and filenames[0]:
+            edf_path = Path(str(filenames[0]))
+    if edf_path is None or not edf_path.is_file():
+        raise ValueError("causal_finite EDF mode requires the original EDF header path for continuity verification")
+    try:
+        with edf_path.open("rb") as stream:
+            fixed_header = stream.read(256)
+        if len(fixed_header) != 256:
+            raise ValueError("EDF fixed header is truncated")
+        reserved = fixed_header[192:236].decode("ascii", errors="strict").strip(" \x00").upper()
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise ValueError("causal_finite EDF mode could not verify the EDF continuity marker") from exc
+    if reserved.startswith("EDF+D"):
+        raise ValueError("causal_finite EDF mode refuses EDF+D recordings until discontinuous clocks are mapped explicitly")
+    if reserved and reserved != "EDF+C":
+        raise ValueError(f"causal_finite EDF mode refuses unrecognized EDF continuity marker: {reserved!r}")
+    annotations = getattr(raw, "annotations", None)
+    if annotations is None:
+        raise ValueError("causal_finite EDF mode requires inspectable MNE annotation metadata")
+    descriptions = getattr(annotations, "description", None)
+    if descriptions is None:
+        raise ValueError("causal_finite EDF mode requires an MNE annotation description list")
+    bad_acq_skip = [str(value) for value in descriptions if str(value).strip().upper().startswith("BAD_ACQ_SKIP")]
+    if bad_acq_skip:
+        raise ValueError("causal_finite EDF mode refuses recordings with MNE BAD_ACQ_SKIP annotations")
+    edge_boundaries = [str(value) for value in descriptions if str(value).strip().upper().startswith("EDGE")]
+    if edge_boundaries:
+        raise ValueError("causal_finite EDF mode refuses MNE EDGE annotations without a qualified boundary map")
+    bad_boundaries = [str(value) for value in descriptions if str(value).strip().upper().startswith("BAD BOUNDARY")]
+    if bad_boundaries:
+        raise ValueError("causal_finite EDF mode refuses MNE BAD boundary annotations without a qualified boundary map")
+    try:
+        samples_per_record = np.asarray(header["n_samps"], dtype=np.int64).reshape(-1)
+        max_samples = int(header["max_samp"])
+        record_count = int(header["n_records"])
+        record_lengths = np.asarray(header["record_length"], dtype=float).reshape(-1)
+        sfreq = float(raw.info["sfreq"])
+        n_times = int(raw.n_times)
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("causal_finite EDF mode requires complete per-channel sample-grid metadata") from exc
+    if (
+        samples_per_record.size != len(raw.ch_names)
+        or samples_per_record.size == 0
+        or np.any(samples_per_record <= 0)
+        or np.any(samples_per_record != samples_per_record[0])
+        or record_lengths.size == 0
+        or np.any(~np.isfinite(record_lengths))
+        or np.any(record_lengths <= 0)
+        or np.any(record_lengths != record_lengths[0])
+        or max_samples != int(samples_per_record[0])
+        or record_count <= 0
+        or n_times != record_count * max_samples
+        or not np.isfinite(sfreq)
+        or sfreq <= 0
+        or not np.isclose(record_lengths[0], max_samples / sfreq, rtol=0.0, atol=max(1e-9, 1e-9 / sfreq))
+    ):
+        raise ValueError("causal_finite EDF mode refuses heterogeneous or inconsistent channel sample grids")
+    return {
+        "status": "verified_uniform_edf_grid",
+        "continuity_status": "verified_continuous",
+        "continuity_marker": reserved or "EDF",
+        "continuity_verification": "EDF+D rejected; EDF/EDF+C record grid checked; no BAD_ACQ_SKIP, BAD boundary, or EDGE boundary annotations",
+        "boundary_annotation_check": {
+            "status": "verified_absent",
+            "rejected_prefixes": ["BAD_ACQ_SKIP", "BAD BOUNDARY", "EDGE"],
+        },
+        "channel_count": int(samples_per_record.size),
+        "samples_per_record_by_channel": samples_per_record.tolist(),
+        "records": record_count,
+        "samples_per_record": max_samples,
+        "record_duration_seconds": float(record_lengths[0]),
+        "recorded_continuous_duration_seconds": float(record_count * record_lengths[0]),
+        "sample_rate_hz": sfreq,
+        "sample_count": n_times,
+        "verification": "all signal channels share one samples-per-record value and exact record-count grid",
     }
 
 
@@ -3227,6 +3363,47 @@ def preprocess_file(
                 pass
 
     assert raw is not None
+    temporal_support_mode = str(preprocess_cfg.get("temporal_support_mode", "default")).strip().lower()
+    if temporal_support_mode not in {"default", "causal_finite"}:
+        raise ValueError(f"unsupported MNE temporal_support_mode: {temporal_support_mode}")
+    causal_finite_mode = temporal_support_mode == "causal_finite"
+    causal_edf_sample_grid: Optional[dict[str, Any]] = None
+    if causal_finite_mode:
+        if not suffixes.endswith(".edf"):
+            raise ValueError("causal_finite MNE mode currently requires one continuous EDF source file")
+        causal_edf_sample_grid = _verify_uniform_edf_sample_grid(raw, Path(file_path_for_mne))
+        original_rate = float(raw.info["sfreq"])
+        if (
+            int(getattr(raw, "first_samp", 0)) != 0
+            or abs(float(getattr(raw, "first_time", 0.0) or 0.0)) > 1e-12
+            or abs(float(target_sfreq) - original_rate) > max(1e-9, original_rate * 1e-12)
+        ):
+            raise ValueError("causal_finite EDF mode requires an unshifted source grid and no resampling")
+        resample_cfg_for_mode = preprocess_cfg.get("resample", {})
+        resample_method = (
+            str(resample_cfg_for_mode.get("method", "")).strip().lower()
+            if isinstance(resample_cfg_for_mode, Mapping)
+            else ""
+        )
+        if resample_method != "identity_sample_grid":
+            raise ValueError("causal_finite EDF mode requires resample.method=identity_sample_grid")
+        if notch_hz is not None:
+            raise ValueError("causal_finite EDF mode currently requires notch_hz=null")
+        if str(preprocess_cfg.get("eeg_bandpass_phase", "")).strip().lower() != "minimum":
+            raise ValueError("causal_finite EDF mode requires eeg_bandpass_phase=minimum")
+        if not (isinstance(eeg_bandpass, (list, tuple)) and len(eeg_bandpass) == 2):
+            raise ValueError("causal_finite EDF mode requires a two-edge EEG bandpass")
+        if _resolve_crop_config(config, dataset_id_hint) or bool(
+            _resolve_event_crop_config(config, dataset_id_hint).get("enabled", False)
+        ):
+            raise ValueError("causal_finite EDF mode currently refuses configured or event-based crops")
+        robustness_cfg = config.get("robustness", {}) if isinstance(config, Mapping) else {}
+        bad_channel_cfg = robustness_cfg.get("bad_channels", {}) if isinstance(robustness_cfg, Mapping) else {}
+        if isinstance(bad_channel_cfg, Mapping) and bool(bad_channel_cfg.get("enabled", False)):
+            raise ValueError("causal_finite EDF mode refuses whole-recording bad-channel selection")
+    signal_support_provenance["temporal_support_mode"] = temporal_support_mode
+    if causal_edf_sample_grid is not None:
+        signal_support_provenance["edf_sample_grid"] = causal_edf_sample_grid
     bdf_adapter_meta: Dict[str, Any] = {"applied": False}
     if suffixes.endswith(".bdf"):
         try:
@@ -3504,6 +3681,10 @@ def preprocess_file(
         _apply_channel_typing(raw, dataset_id, config)
     except Exception:
         logger.exception("Failed to apply channel typing rules for %s; continuing with MNE defaults", dataset_id)
+    signal_support_provenance["channel_types_after_dataset_typing"] = {
+        str(name): str(channel_type)
+        for name, channel_type in zip(raw.ch_names, raw.get_channel_types())
+    }
 
     # Inject physiological channels from a companion BIDS *_physio.tsv.gz file,
     # if configured under preprocess.datasets.<id>.physio_tsv_inject.
@@ -3716,6 +3897,8 @@ def preprocess_file(
     artifact_cfg = _resolve_artifact_config(config, dataset_id)
     art_cfg = artifact_cfg or {}
     art_method = str(art_cfg.get("method", "none")).lower()
+    if causal_finite_mode and art_method not in {"", "none", "null"}:
+        raise ValueError("causal_finite EDF mode refuses recording-fitted temporal artifact correction")
 
     def _apply_eog_regression(r: mne.io.BaseRaw) -> bool:
         """Internal helper: apply eog regression. Returns True iff it actually applied."""
@@ -3849,6 +4032,42 @@ def preprocess_file(
             logger.warning("ICA artifact removal failed (%s); continuing without ICA", exc)
             return False
 
+    # Acquisition-side EEG QC is read before notch/bandpass and before the
+    # configured rereference. It is descriptive only and never changes data.
+    raw_eeg_acquisition_qc: Dict[str, Any] = {
+        "status": "unsupported",
+        "reason": "no_eeg_channels",
+    }
+    acquisition_eeg_picks = (
+        mne.pick_types(raw.info, eeg=True, seeg=True, ecog=True)
+        if source_datatype != "ecg"
+        else np.asarray([], dtype=int)
+    )
+    if len(acquisition_eeg_picks) > 0:
+        try:
+            from .mnps.v3_1.pipeline_measurements import compute_acquisition_qc
+
+            qc_rate = float(raw.info["sfreq"])
+            qc_samples = min(int(raw.n_times), max(8, int(round(20.0 * qc_rate))))
+            qc_raw = raw.get_data(picks=acquisition_eeg_picks, start=0, stop=qc_samples)
+            raw_eeg_acquisition_qc = compute_acquisition_qc(
+                qc_raw,
+                sample_rate_hz=qc_rate,
+                stage="prefilter_before_artifact_reduction_and_rereference",
+                window_start_sec=0.0,
+                amplitude_unit="volt",
+            )
+            raw_eeg_acquisition_qc["status"] = (
+                "computed"
+                if raw_eeg_acquisition_qc.get("line_noise_48_52_ratio_status") == "computed"
+                else "partial"
+            )
+        except Exception as exc:
+            raw_eeg_acquisition_qc = {
+                "status": "unsupported",
+                "reason": f"acquisition_qc_failed:{type(exc).__name__}",
+            }
+
     t_artifact0 = time.perf_counter()
     # Whether an artifact-reduction method actually executed and modified the
     # signal (not merely configured) -- see project/mnps_v3/tests/
@@ -3951,19 +4170,52 @@ def preprocess_file(
     # Apply EEG bandpass on EEG-like picks only
     t_bandpass0 = time.perf_counter()
     eeg_chans = eeg_like_chans
+    causal_eeg_filter_spec: Optional[dict[str, Any]] = None
+    if causal_finite_mode and (
+        len(eeg_chans) == 0
+        or eeg_bandpass is None
+        or len(eeg_bandpass) != 2
+        or skip_time_filters
+    ):
+        raise ValueError("causal_finite EDF mode requires eligible EEG channels and an applied bandpass")
     if len(eeg_chans) > 0 and eeg_bandpass is not None and len(eeg_bandpass) == 2 and not skip_time_filters:
         operation = start_operation(signal_support_provenance, "eeg_bandpass", input_sfreq=float(raw.info["sfreq"]), parameters={"bandpass_hz": eeg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in eeg_chans]}, actual_kwargs={"l_freq": eeg_bandpass[0], "h_freq": eeg_bandpass[1], "picks_count": int(len(eeg_chans)), "verbose": False, **({"skip_by_annotation": list(filter_skip_by_annotation)} if filter_skip_by_annotation is not None else {})})
         operation["actual_kwargs"]["call_signature"] = callable_signature(raw.filter)
         try:
-            raw.filter(
-                l_freq=eeg_bandpass[0],
-                h_freq=eeg_bandpass[1],
-                picks=eeg_chans,
-                verbose=False,
-                **filter_annotation_kwargs,
-            )
+            if causal_finite_mode:
+                eeg_data = raw.get_data(picks=eeg_chans)
+                if eeg_data.size == 0 or not np.isfinite(eeg_data).all():
+                    raise ValueError("causal_finite EDF mode requires finite EEG input samples")
+                operation["actual_kwargs"].update({
+                    "method": "fir",
+                    "phase": "minimum",
+                    "fir_design": "firwin",
+                    "fir_window": "hamming",
+                    "filter_length": "auto",
+                    "pad": "constant",
+                })
+                causal_eeg_filter_spec = _apply_minimum_phase_eeg_filter(
+                    raw,
+                    eeg_chans,
+                    eeg_bandpass,
+                    skip_by_annotation=filter_skip_by_annotation,
+                )
+                operation["support"] = causal_eeg_filter_spec
+                operation["temporal_support_status"] = "finite_causal"
+                operation["support_reason"] = "minimum-phase FIR with constant zero-state padding and finite past-only support"
+            else:
+                raw.filter(
+                    l_freq=eeg_bandpass[0],
+                    h_freq=eeg_bandpass[1],
+                    picks=eeg_chans,
+                    verbose=False,
+                    **filter_annotation_kwargs,
+                )
             finish_operation(operation, status="applied", output_sfreq=float(raw.info["sfreq"]))
         except Exception as primary_exc:
+            if causal_finite_mode:
+                finish_operation(operation, status="failed", output_sfreq=float(raw.info["sfreq"]), error=primary_exc)
+                raise
             # Fallback to mne.filter.filter_data on array if raw.filter fails
             if quality_interval_policy_record.get("enabled") and _has_bad_raw_annotations(raw):
                 finish_operation(
@@ -3991,6 +4243,8 @@ def preprocess_file(
     # Optional MEG bandpass for FIF-based M/EEG recordings.
     t_meg_bandpass0 = time.perf_counter()
     meg_chans = mne.pick_types(raw.info, meg=True, ref_meg=False)
+    if causal_finite_mode and len(meg_chans) > 0:
+        raise ValueError("causal_finite EDF mode currently supports EEG-only temporal preprocessing")
     if len(meg_chans) > 0 and meg_bandpass is not None and len(meg_bandpass) == 2 and not skip_time_filters:
         operation = start_operation(signal_support_provenance, "meg_bandpass", input_sfreq=float(raw.info["sfreq"]), parameters={"bandpass_hz": meg_bandpass, "picked_channels": [raw.ch_names[int(i)] for i in meg_chans]}, actual_kwargs={"l_freq": meg_bandpass[0], "h_freq": meg_bandpass[1], "picks_count": int(len(meg_chans)), "verbose": False, **({"skip_by_annotation": list(filter_skip_by_annotation)} if filter_skip_by_annotation is not None else {})})
         operation["actual_kwargs"]["call_signature"] = callable_signature(raw.filter)
@@ -4052,6 +4306,8 @@ def preprocess_file(
     else:
         bad_info = _detect_bad_eeg_channels(raw, bad_channel_cfg)
         bad_eeg_channels = bad_info.get("bad_channels", []) or []
+        if causal_finite_mode and bad_eeg_channels:
+            raise ValueError("causal_finite EDF mode refuses whole-recording bad-channel exclusion")
         if bad_eeg_channels:
             try:
                 raw.drop_channels(bad_eeg_channels)
@@ -4171,6 +4427,10 @@ def preprocess_file(
         if source_datatype != "ecg"
         else np.array([], dtype=int)
     )
+    postfilter_eeg_acquisition_qc: Dict[str, Any] = {
+        "status": "unsupported",
+        "reason": "no_eeg_channels",
+    }
     if len(eeg_chans) > 0:
         bad_segments_cfg = bdf_adapter_meta.get("bad_segments", {}) if isinstance(bdf_adapter_meta, Mapping) else {}
         mask_bdf_bad_segments = bool(
@@ -4202,6 +4462,28 @@ def preprocess_file(
             eeg_values = raw.get_data(picks=eeg_chans)
         modality_signals["eeg"] = eeg_values * 1e6
         channels_dict["eeg"] = [raw.ch_names[i] for i in eeg_chans]
+        try:
+            from .mnps.v3_1.pipeline_measurements import compute_acquisition_qc
+
+            qc_rate = float(raw.info["sfreq"])
+            qc_samples = min(int(eeg_values.shape[1]), max(8, int(round(20.0 * qc_rate))))
+            postfilter_eeg_acquisition_qc = compute_acquisition_qc(
+                eeg_values[:, :qc_samples],
+                sample_rate_hz=qc_rate,
+                stage="postfilter_postreference_first_20s",
+                window_start_sec=0.0,
+                amplitude_unit="volt",
+            )
+            postfilter_eeg_acquisition_qc["status"] = (
+                "computed"
+                if postfilter_eeg_acquisition_qc.get("line_noise_48_52_ratio_status") == "computed"
+                else "partial"
+            )
+        except Exception as exc:
+            postfilter_eeg_acquisition_qc = {
+                "status": "unsupported",
+                "reason": f"postfilter_qc_failed:{type(exc).__name__}",
+            }
 
     # MEG
     meg_chans = mne.pick_types(raw.info, meg=True, ref_meg=False)
@@ -4248,13 +4530,21 @@ def preprocess_file(
         for idx, ch_name in enumerate(raw.ch_names)
         if re.search(r"(?i)(ppg|pleth|pulse|photopleth)", str(ch_name))
     ]
+    ppg_channel_selection = "source_channel_name_regex"
     if not ppg_chans and bio_chans:
         ppg_chans = [idx for idx in bio_chans if idx not in list(ecg_chans)]
+        ppg_channel_selection = "mne_bio_channel_type_fallback"
     if not ppg_chans and source_datatype == "ecg":
         ppg_chans = [idx for idx in range(len(raw.ch_names)) if idx not in list(ecg_chans)][:1]
+        ppg_channel_selection = "ecg_source_non_ecg_channel_fallback"
     if ppg_chans:
         modality_signals["ppg"] = _get_modality_data(ppg_chans)
         channels_dict["ppg"] = [raw.ch_names[i] for i in ppg_chans]
+    signal_support_provenance["ppg_source_selection"] = {
+        "rule": ppg_channel_selection if ppg_chans else "no_ppg_source_selected",
+        "channel_names": [raw.ch_names[i] for i in ppg_chans],
+        "channel_types_after_dataset_typing": [raw.get_channel_types()[i] for i in ppg_chans],
+    }
     # EDA / GSR: prefer MNE's native "gsr" channel type (available since
     # MNE >= 1.6). Also match by name among any remaining/misc-typed
     # channels for datasets whose config still types EDA as "misc" — this
@@ -4279,6 +4569,48 @@ def preprocess_file(
         "n_times": int(raw.n_times),
         "duration_sec": float(raw.n_times / float(raw.info["sfreq"])) if float(raw.info["sfreq"]) > 0 else None,
     }
+    if causal_finite_mode:
+        before = signal_support_provenance.get("raw_clock_before_crop", {})
+        after = signal_support_provenance["raw_clock_after_crop"]
+        if (
+            crop_record.get("applied") is True
+            or int(before.get("first_samp", -1)) != 0
+            or int(after.get("first_samp", -1)) != 0
+            or int(before.get("n_times", -1)) != int(after.get("n_times", -2))
+            or abs(float(before.get("sfreq_hz", float("nan"))) - float(after["sfreq_hz"])) > 1e-9
+            or abs(float(before.get("first_time_sec", float("nan"))) - float(after["first_time_sec"])) > 1e-12
+        ):
+            raise ValueError("causal_finite EDF mode detected an unsupported crop or changed source sample grid")
+        if causal_eeg_filter_spec is None:
+            raise ValueError("causal_finite EDF mode completed without a recorded EEG FIR")
+        applied_temporal = [
+            operation.get("name")
+            for operation in signal_support_provenance.get("operations", [])
+            if isinstance(operation, Mapping)
+            and operation.get("class", "temporal") == "temporal"
+            and operation.get("status") == "applied"
+        ]
+        if applied_temporal != ["eeg_bandpass"]:
+            raise ValueError(
+                "causal_finite EDF mode observed unsupported applied temporal operations: "
+                + ", ".join(str(name) for name in applied_temporal)
+            )
+        identity_support = _identity_sample_grid_support_spec(raw)
+        signal_support_provenance["source_sample_grid_supported"] = True
+        signal_support_provenance["source_sample_grid_reason"] = "verified_uniform_edf_sample_grid_no_resampling"
+        signal_support_provenance["effective_time_support"] = {
+            "status": "finite_causal",
+            "mode": "causal_finite_edf_identity_grid",
+            "resampler": identity_support,
+            "eeg_bandpass": causal_eeg_filter_spec,
+            "excluded_operations": ["notch_filter", "crop", "nonfinite_input", "recording-fitted_temporal_artifact_correction"],
+            "support_scope": "all raw modalities conservatively bounded by the union of the EEG FIR and identity-grid dependencies",
+        }
+        signal_support_provenance["temporal_support"] = {
+            "status": "finite_causal",
+            "reason": "verified uniform EDF sample grid plus recorded minimum-phase EEG FIR tap extent",
+            "epoch_bounds": "per-epoch source contributor interval emitted by map_preprocessed_window_to_source_samples",
+        }
     source_quality_record["application_policy"] = dict(quality_interval_policy_record)
     signal_support_provenance["quality_interval_policy"] = dict(quality_interval_policy_record)
     signal_support_provenance["raw_joint_eeg_flatline_qc"] = dict(raw_flatline_qc_record)
@@ -4300,6 +4632,25 @@ def preprocess_file(
         "bad_eeg_reasons": bad_info.get("reasons", {}),
     }
 
+    final_eeg_labels = list(channels_dict.get("eeg", []))
+    final_channel_types = list(raw.get_channel_types())
+    channel_type_profile: Dict[str, int] = {}
+    for channel_type in final_channel_types:
+        key = str(channel_type).strip().lower() or "unknown"
+        channel_type_profile[key] = channel_type_profile.get(key, 0) + 1
+    channel_set_hash = hashlib.sha256(
+        "\n".join(sorted(str(label).strip().casefold() for label in final_eeg_labels)).encode("utf-8")
+    ).hexdigest() if final_eeg_labels else None
+    reference_set_hash = (
+        channel_set_hash
+        if reref_operation.get("status") == "applied" and final_eeg_labels
+        else None
+    )
+    raw_eeg_acquisition_qc["channel_type_profile"] = channel_type_profile
+    raw_eeg_acquisition_qc["eeg_channel_count"] = int(len(final_eeg_labels))
+    raw_eeg_acquisition_qc["misc_channel_count"] = int(channel_type_profile.get("misc", 0))
+    raw_eeg_acquisition_qc["channel_set_hash"] = channel_set_hash
+    raw_eeg_acquisition_qc["reference_set_hash"] = reference_set_hash
     meta: Dict[str, Any] = {
         "file": str(file_path),
         "dataset_id": dataset_id,
@@ -4332,6 +4683,18 @@ def preprocess_file(
         ),
         "eeg_reference_status": "verified" if reref_operation.get("status") == "applied" else "unknown",
         "eeg_reference_reason": str(reref_operation.get("status", "unknown")),
+        "channel_type_profile": channel_type_profile,
+        "eeg_channel_count": int(len(final_eeg_labels)),
+        "misc_channel_count": int(channel_type_profile.get("misc", 0)),
+        "channel_set_hash": channel_set_hash,
+        "reference_set_hash": reference_set_hash,
+        "eeg_acquisition_qc": {
+            "schema": "mndm.eeg_acquisition_qc.v1",
+            "prefilter": raw_eeg_acquisition_qc,
+            "postfilter": postfilter_eeg_acquisition_qc,
+            "descriptive_only": True,
+            "measurement_adjustment_applied": False,
+        },
         "eeg_csd": {
             "enabled": bool(eeg_csd_cfg.get("enabled", False)),
             "applied": bool(csd_applied),

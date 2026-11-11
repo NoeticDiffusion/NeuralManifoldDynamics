@@ -18,8 +18,10 @@ from mndm.pipeline.fold_safe import (
     FoldSplitError,
     fit_fold_anchor_artifact,
     load_fold_split,
+    load_signal_support_ledger,
     select_fold_rows,
     validate_fold_anchor_artifact,
+    validate_fold_signal_support,
     verify_source_file_hashes,
 )
 from mndm import anchors
@@ -541,3 +543,35 @@ def test_successful_training_replay_uses_frozen_anchor(tmp_path: Path):
     anchor = external_anchor["eeg_alpha"]
     expected = np.clip((transformed - anchor["center"]) / (anchor["scale"] + 1e-9), -6.0, 6.0)
     np.testing.assert_allclose(chart[:, 0], expected, rtol=1e-6, atol=1e-6)
+
+
+def test_numeric_zero_epoch_id_matches_fold_signal_support_ledger(tmp_path: Path):
+    payload = _manifest_payload()
+    payload["_with_signal_support"] = True
+    manifest_path = _write_manifest(tmp_path / "numeric-epoch-id.json", payload)
+
+    ledger_path = manifest_path.with_name("signal_support_ledger.json")
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    for row in ledger["per_epoch_input_extent"]:
+        row["epoch_id"] = int(str(row["epoch_id"])[1:])
+    ledger_bytes = json.dumps(ledger, sort_keys=True).encode("utf-8")
+    ledger_path.write_bytes(ledger_bytes)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["signal_support_ledger_sha256"] = hashlib.sha256(ledger_bytes).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True), encoding="utf-8")
+
+    features = _features()
+    features["epoch_id"] = [0, 1, 2, 3]
+    split = load_fold_split(manifest_path)
+    training = select_fold_rows(features, split, "training")
+    apply = select_fold_rows(features, split, "apply")
+    assert training.row_records[0]["epoch_id"] == "0"
+    assert apply.row_records[0]["epoch_id"] == "2"
+    ledger_ref = load_signal_support_ledger(
+        ledger_path,
+        expected_sha256=split.payload["signal_support_ledger_sha256"],
+    )
+    validation = validate_fold_signal_support(training, apply, split, ledger_ref)
+    assert validation["status"] == "verified_no_shared_source_samples"
+    assert validation["training_rows_verified"] == 2
+    assert validation["apply_rows_verified"] == 2

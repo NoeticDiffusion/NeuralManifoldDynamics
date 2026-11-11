@@ -2,8 +2,8 @@
 
 MNPS computation pipeline that computes per-epoch features and produces MNPS summaries, Jacobians, and derived outputs.
 
-Documented for **NeuralManifoldDynamics 3.0.2**. See
-[`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md).
+Documented for **NeuralManifoldDynamics 3.1.0**. See
+[`../release_notes/RELEASE_NOTES_v3.1.0.md`](../release_notes/RELEASE_NOTES_v3.1.0.md).
 
 Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package covers feature extraction, summarization, packing, and structure checks.
 
@@ -16,6 +16,7 @@ Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package co
 | [`Command_cheat_sheet.md`](Command_cheat_sheet.md) | All CLI commands in one place |
 | [`Output_variables_guide.md`](Output_variables_guide.md) | Full HDF5 schema and variable reference |
 | [`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md) | v3.0.2 fMRI contract and NEMAR download |
+| [`../release_notes/RELEASE_NOTES_v3.1.0.md`](../release_notes/RELEASE_NOTES_v3.1.0.md) | Initial alternative MNPS candidate implementation |
 
 ## Overview
 
@@ -38,6 +39,7 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 - **Jacobian estimation**: Local linear approximations of MNPS dynamics with meta-indices (trace, rotation, anisotropy)
 - **MNDM 3.0 dynamical families** (dynamical-families overlay; not on common EEG/fMRI/ephys profiles): versioned `/dynamical_families/{diffusion,destination,resilience,drift,one_step,amplification,history,turning}/v1` writes with validity certificates, inferential grain, and `/support_signature/v1/`. Gate F \(W_Q\) is `/stochastic_reachability/v1`. The MNPS chart and `J_hat` are unchanged. See [`../release_notes/RELEASE_NOTES_v3.0.1.md`](../release_notes/RELEASE_NOTES_v3.0.1.md).
 - **MNPS extensions**: E-Kappa (energetic curvature), RFM (resonant frequency modes), O-Koh (organizational coherence), TIG (temporal integrity grade)
+- **MNPS v3.1 EEG measurements**: the common EEG template can emit eight named, native-sensor measurements (`PCV`, `TP`, `AR`, `NIE`, `RD`, `OI`, `SC`, `ED`) to `/measurements/v3_1`. The current shared-grid configuration uses 20-second windows with a 20-second step as an operational baseline, independent of legacy feature epochs; this is not a universal or empirically selected v3.1 window contract. Window length and step are part of a measurement realization. The current pipeline schedules all eight window candidates on one shared configured grid; candidate-specific support or mixed-support coordinates need a separately versioned design. Values remain separate from feature columns, MNPS coordinates, and Jacobians; every row keeps the legacy M/D/E slot and exact estimator ID, native channel/reference provenance, and support/QC. Computed values remain unqualified. Experimental D2 Spatial Coupling Gradient (`SCG`) and its LDCB sidecar are emitted separately at recording level, outside the window chart and MNJ coordinates. Core19 and ds004148 Core60 are named realizations; smaller computable template-supported sets remain available with actual labels and QC warnings. SCG is not a standard coordinate. The earlier ds004148 surface grid remains a separate pilot interface.
 - **Robustness**: Ensemble variance, split-half reliability, PSD multiverse stability, entropy sanity checks, and an always-on mathematical invalidity policy for MNPS/MNJ geometry
 - **Preprocessing robustness**:
   - Automatic bad-channel detection (flat / high-variance / decorrelated) with optional RANSAC interpolation
@@ -1037,7 +1039,7 @@ This pipeline is the data-preparation / measurement-contract layer. It exports:
 - **Stratified MNPS**: 9D chart subcoordinates compatible with the 3D export
 - **MNJ**: local chart Jacobian on exported coordinates, not a biophysical Jacobian
 - **Dynamical families (v3.0.1 overlay)**: fail-closed schema objects beside MNPS, not licensed NDT \(\alpha/\omega/G_{\mathrm{peak}}\)
-- **fMRI contract (v3.0.2)**: TR, atlas space, nuisance, and the common-fMRI Jacobian support gate. A finite fMRI `J_hat` remains class `limited`.
+- **fMRI contract (introduced in v3.0.2)**: TR, atlas space, nuisance, and the common-fMRI Jacobian support gate. A finite fMRI `J_hat` remains class `limited`.
 
 See [`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md) for claim ceilings.
 

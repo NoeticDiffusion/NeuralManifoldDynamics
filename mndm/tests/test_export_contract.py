@@ -44,7 +44,7 @@ def test_nifti_row_source_has_no_eeg_flag():
 
 
 def test_fmri_h5_contract_v2_stays_distinct_from_eeg_v1():
-    """Lock the 3.0.2 stamp. EEG must not move when the fMRI name changes."""
+    """Lock the schemas introduced in 3.0.2; EEG must not move."""
     assert FMRI_H5_CONTRACT_VERSION == "mndm.fmri_h5_contract.v2"
     assert EEG_H5_CONTRACT_VERSION == "mndm.eeg_h5_contract.v1"
     assert resolve_export_contract_version("fmri") == "mndm.fmri_h5_contract.v2"

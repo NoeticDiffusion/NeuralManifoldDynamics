@@ -11,8 +11,9 @@ from typing import Any, Iterable, Optional
 
 EEG_H5_CONTRACT_VERSION = "mndm.eeg_h5_contract.v1"
 FNIRS_H5_CONTRACT_VERSION = "mndm.fnirs_native_h5_contract.v1"
-# v2 marks fMRI files written by the 3.0.2 writer (P5 Jacobian support gate
-# is available). v1 and the historical EEG string remain on older files.
+# v2 was introduced by the 3.0.2 writer and is retained by later 3.x writers
+# (P5 Jacobian support gate is available). v1 and the historical EEG string
+# remain on older files.
 # The stamp follows modality; it does not prove an overlay left the gate on.
 FMRI_H5_CONTRACT_VERSION = "mndm.fmri_h5_contract.v2"
 

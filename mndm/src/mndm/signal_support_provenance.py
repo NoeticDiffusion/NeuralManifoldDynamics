@@ -284,10 +284,9 @@ def map_preprocessed_window_to_source_samples(
         "actual_source_time_end_sec": None,
     }
 
-    # A finite causal bound is emitted only by the explicit WFDB pilot path.
-    # Compute the union of all original samples that can contribute through
-    # the EEG FIR followed by the causal polyphase FIR; exact zero taps may
-    # make this interval conservative but never too small.
+    # Compute a finite causal bound only from an explicitly recorded identity
+    # sample grid or causal polyphase FIR followed by the EEG FIR. Exact zero
+    # taps may make this interval conservative but never too small.
     support = provenance.get("effective_time_support", {})
     if not isinstance(support, Mapping) or support.get("status") != "finite_causal":
         return mapped
@@ -305,9 +304,12 @@ def map_preprocessed_window_to_source_samples(
         )
         if min(up, down, resampler_taps, filter_taps) < 1:
             raise ValueError("nonpositive dependency parameters")
+        resampler_method = resampler.get("method")
+        identity_grid = resampler_method == "identity_sample_grid"
         if (
-            resampler.get("method") != "scipy.signal.upfirdn_causal_fir"
-            or resampler.get("phase") != "causal_uncompensated"
+            (identity_grid and resampler.get("phase") != "identity")
+            or (not identity_grid and resampler_method != "scipy.signal.upfirdn_causal_fir")
+            or (not identity_grid and resampler.get("phase") != "causal_uncompensated")
             or eeg_filter.get("method") != "mne.filter.filter_data_fir"
             or eeg_filter.get("phase") != "minimum"
             or eeg_filter.get("pad") != "constant"
@@ -318,7 +320,16 @@ def map_preprocessed_window_to_source_samples(
         if int(resampler.get("output_sample_count", -1)) != processed_n_times:
             raise ValueError("recorded resampler sample count disagrees with processed clock")
         if source_first_samp != 0 or int(processed_clock.get("first_samp", 0)) != 0:
-            raise ValueError("causal support mapper currently requires a zero-origin WFDB array")
+            raise ValueError("causal support mapper currently requires a zero-origin sample array")
+        if identity_grid and (
+            up != 1
+            or down != 1
+            or resampler_taps != 1
+            or source_n_times != processed_n_times
+            or abs(source_hz - processed_hz) > max(1e-9, processed_hz * 1e-10)
+            or abs(processed_first_time - source_first_time) > max(1e-9, 1e-9 / source_hz)
+        ):
+            raise ValueError("recorded identity sample grid disagrees with source and processed clocks")
         if abs(source_hz * up / down - processed_hz) > max(1e-9, processed_hz * 1e-10):
             raise ValueError("recorded rational resampling ratio disagrees with sample clocks")
         if abs(recorded_source_hz - source_hz) > max(1e-9, source_hz * 1e-10):
@@ -335,8 +346,9 @@ def map_preprocessed_window_to_source_samples(
             for op in temporal_ops
         ):
             raise ValueError("an applied temporal operation lacks a finite causal dependency record")
-        if [op.get("name") for op in temporal_ops] != ["resample", "eeg_bandpass"]:
-            raise ValueError("causal resampling must precede the EEG bandpass operation")
+        expected_temporal_ops = ["eeg_bandpass"] if identity_grid else ["resample", "eeg_bandpass"]
+        if [op.get("name") for op in temporal_ops] != expected_temporal_ops:
+            raise ValueError("recorded causal temporal operations do not match the supported sample-grid path")
 
         first_resampled = max(0, start_sample - (filter_taps - 1))
         last_resampled = end_sample_exclusive - 1

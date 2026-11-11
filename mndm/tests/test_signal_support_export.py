@@ -67,14 +67,22 @@ def test_signal_support_export_round_trips_through_h5_writer(require_real_h5py, 
         assert grp.attrs.get("temporal_support_status") == "unknown" or grp["temporal_support_status"][()] == b"unknown"
 
 
-def test_feature_concat_retains_modality_support_attrs(monkeypatch):
+def test_feature_concat_retains_modality_support_attrs(monkeypatch, tmp_path):
     import mndm.parallel as parallel
+
+    feature_contract = {
+        "schema": "mndm.ppg_window_feature.v1",
+        "status": "computed_unqualified",
+        "estimator": "window_local_present_only_v1",
+        "information_scope": "present_only_within_[t_start,t_end)",
+    }
 
     def handler(payload, config):
         frame = pd.DataFrame({"epoch_id": [0], "t_start": [0.0], "t_end": [1.0]})
         frame.attrs["signal_support_provenance"] = {
             "schema": "mndm.signal_support_provenance.v1",
             "temporal_support": {"status": "unknown", "reason": "test"},
+            "ppg_feature_contract": feature_contract,
         }
         return frame
 
@@ -86,6 +94,45 @@ def test_feature_concat_retains_modality_support_attrs(monkeypatch):
         meta = {"dataset_id": "ds-test"}
     merged, _ = _compute_features_from_preprocessed(Pre(), {})
     assert merged.attrs["signal_support_provenance"]["temporal_support"]["status"] == "unknown"
+    assert merged.attrs["signal_support_provenance"]["ppg_feature_contract"] == feature_contract
+    write_qc_json(
+        {"signal_support_provenance": merged.attrs["signal_support_provenance"]},
+        tmp_path / "qc_artifacts",
+        "raw.edf",
+    )
+    sidecar = json.loads((tmp_path / "qc_artifacts" / "raw_qc_artifacts.json").read_text(encoding="utf-8"))
+    assert sidecar["signal_support_provenance"]["ppg_feature_contract"] == feature_contract
+
+
+def test_feature_contract_conflicts_are_explicitly_ambiguous(monkeypatch):
+    import mndm.parallel as parallel
+
+    def handler(contract):
+        def extract(payload, config):
+            frame = pd.DataFrame({"epoch_id": [0], "t_start": [0.0], "t_end": [1.0]})
+            frame.attrs["signal_support_provenance"] = {
+                "schema": "mndm.signal_support_provenance.v1",
+                "ppg_feature_contract": contract,
+            }
+            return frame
+        return extract
+
+    monkeypatch.setattr(parallel, "_get_modality_handlers", lambda: {
+        "ppg": handler({"estimator": "window_local_present_only_v1"}),
+        "eog": handler({"estimator": "recording_wide_future_looking"}),
+    })
+
+    class Pre:
+        signals = {"ppg": [[1.0, 2.0]], "eog": [[1.0, 2.0]]}
+        sfreq = 1.0
+        channels = {"ppg": ["PPG"], "eog": ["EOG"]}
+        meta = {"dataset_id": "ds-test"}
+
+    merged, _ = parallel._compute_features_from_preprocessed(Pre(), {})
+    contract = merged.attrs["signal_support_provenance"]["ppg_feature_contract"]
+    assert contract["schema"] == "mndm.feature_contract_merge.v1"
+    assert contract["status"] == "ambiguous"
+    assert len(contract["candidate_contracts"]) == 2
 
 
 def test_worker_metadata_qc_roundtrip_keeps_operations_and_schema(tmp_path):

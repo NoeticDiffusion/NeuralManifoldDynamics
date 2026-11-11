@@ -58,6 +58,36 @@ def test_compute_eeg_features_shape():
     assert "eeg_hjorth_activity" not in out.columns
 
 
+def test_compute_eeg_features_can_skip_bids_event_rows_for_frozen_filename_labels(tmp_path, monkeypatch):
+    from mndm.features import eeg, epoch_selection
+
+    raw_path = tmp_path / "sub-HUP060_task-ictal_ieeg.edf"
+    event_path = tmp_path / "sub-HUP060_task-ictal_events.tsv"
+    event_path.write_text("onset\tduration\ttrial_type\n0\t1\tseizure\n", encoding="utf-8")
+
+    def fail_if_events_are_located(_raw_path):
+        raise AssertionError("BIDS events should not be inspected for this configuration")
+
+    monkeypatch.setattr(epoch_selection, "find_events_tsv_for_raw", fail_if_events_are_located)
+    signals = {
+        "signals": {"eeg": np.random.default_rng(9).normal(size=(2, 1000))},
+        "sfreq": 250,
+        "dataset_id": "ds004100",
+        "file_path": str(raw_path),
+    }
+    config = {
+        "epoching": {
+            "length_s": 4.0,
+            "step_s": 4.0,
+            "sampling": {"read_bids_events": False},
+        }
+    }
+
+    out = eeg.compute_eeg_features(signals, config)
+    assert len(out) == 1
+    assert "stage" not in out.columns
+
+
 def test_eeg_rows_keep_actual_epoch_indices_and_map_nominal_source_samples():
     from mndm.features.eeg import compute_eeg_features
 

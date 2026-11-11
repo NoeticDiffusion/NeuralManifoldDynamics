@@ -5,6 +5,7 @@ from mndm.features.epoch_selection import resolve_stage_stratified_epoch_set
 
 
 CONFIG = Path(__file__).resolve().parents[1] / "config" / "sources" / "openneuro" / "config_ingest_ds005555_dynamical_families_continuous_pilot.yaml"
+PREDICTION_SAFE_CONFIG = CONFIG.parent / "config_ingest_ds005555_continuous_c123_prediction_safe_pilot_20260929.yaml"
 
 
 def test_continuous_pilot_resolves_imports_and_isolated_output():
@@ -44,3 +45,19 @@ def test_continuous_pilot_effectively_bypasses_stage_sampler():
         epoch_step_samples=3000,
     )
     assert selected is None
+
+
+def test_prediction_safe_measurement_pilot_resolves_features_only_without_chart_contracts():
+    cfg = load_config(PREDICTION_SAFE_CONFIG)
+    assert cfg["summarize_forbidden"] is True
+    assert cfg["mnps_projection"] == {}
+    assert cfg["mnps_9d"] == {"enabled": False}
+    assert cfg["preprocess"]["temporal_support_mode"] == "causal_finite"
+    assert cfg["features"]["ppg"]["estimator"] == "window_local_present_only_v1"
+
+
+def test_prediction_safe_measurement_pilot_refuses_summarize(tmp_path):
+    from mndm.orchestrate import cmd_summarize
+
+    assert cmd_summarize({"summarize_forbidden": True}, ["ds005555"], tmp_path) == 1
+    assert list(tmp_path.iterdir()) == []

@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 
 import numpy as np
+import pytest
 
 from mndm.signal_support_provenance import (
     SCHEMA_VERSION,
@@ -152,3 +153,75 @@ def test_ppg_records_filter_fallback_and_global_peak_threshold() -> None:
     assert operations["ppg_peak_detection"]["parameters"]["threshold_fit_scope"] == "whole_stream_median_and_MAD"
     assert provenance["temporal_support"]["status"] == "unknown"
     assert len(result) == 4
+
+
+def test_causal_ppg_window_estimator_is_present_only_and_requires_explicit_mode() -> None:
+    sfreq = 50.0
+    time = np.arange(40 * int(sfreq), dtype=float) / sfreq
+    pulse = np.maximum(0.0, np.sin(2.0 * np.pi * 1.1 * time)) ** 2
+    changed = pulse.copy()
+    changed[20 * int(sfreq):] = 100.0 + 7.0 * changed[20 * int(sfreq):]
+    config = {
+        "preprocess": {"temporal_support_mode": "causal_finite"},
+        "epoching": {"length_s": 10.0, "step_s": 10.0},
+        "features": {"ppg": {"estimator": "window_local_present_only_v1"}},
+    }
+    base = compute_ppg_features(
+        {
+            "signals": {"ppg": pulse[None, :]},
+            "channels": {"ppg": ["PSG_PULSE"]},
+            "sfreq": sfreq,
+            "dataset_id": "dsX",
+        },
+        config,
+    )
+    perturbed = compute_ppg_features(
+        {
+            "signals": {"ppg": changed[None, :]},
+            "channels": {"ppg": ["PSG_PULSE"]},
+            "sfreq": sfreq,
+            "dataset_id": "dsX",
+        },
+        config,
+    )
+    columns = ["ppg_rate_bpm", "ppg_pulse_count", "ppg_amplitude_mean", "ppg_quality_score"]
+    np.testing.assert_allclose(
+        base.loc[base.epoch_id < 2, columns].to_numpy(dtype=float),
+        perturbed.loc[perturbed.epoch_id < 2, columns].to_numpy(dtype=float),
+        equal_nan=True,
+    )
+    provenance = base.attrs["signal_support_provenance"]
+    operations = {item["name"]: item for item in provenance["operations"]}
+    assert operations["ppg_bandpass"]["status"] == "skipped"
+    assert operations["ppg_peak_detection"]["class"] == "feature"
+    assert operations["ppg_peak_detection"]["information_scope"] == (
+        "present_only_within_each_current_feature_window"
+    )
+    assert provenance["ppg_feature_contract"]["source_channels"] == ["PSG_PULSE"]
+    assert provenance["ppg_feature_contract"]["source_channel_selection"] == "not_recorded"
+    assert provenance["ppg_feature_contract"]["rate_unit"] == "beats_per_minute"
+    with pytest.raises(ValueError, match="requires features.ppg.estimator"):
+        compute_ppg_features(
+            {"signals": {"ppg": pulse[None, :]}, "sfreq": sfreq, "dataset_id": "dsX"},
+            {"preprocess": {"temporal_support_mode": "causal_finite"}, "epoching": {"length_s": 10, "step_s": 10}},
+        )
+    with pytest.raises(ValueError, match="exactly one source channel"):
+        compute_ppg_features(
+            {
+                "signals": {"ppg": pulse[None, :]},
+                "channels": {"ppg": ["misc-1"]},
+                "sfreq": sfreq,
+                "dataset_id": "dsX",
+            },
+            config,
+        )
+    with pytest.raises(ValueError, match="signal row matching its source-channel metadata"):
+        compute_ppg_features(
+            {
+                "signals": {"ppg": np.vstack([pulse, pulse * 2.0])},
+                "channels": {"ppg": ["PSG_PULSE"]},
+                "sfreq": sfreq,
+                "dataset_id": "dsX",
+            },
+            config,
+        )

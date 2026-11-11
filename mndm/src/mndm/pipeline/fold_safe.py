@@ -552,7 +552,8 @@ def select_fold_rows(features_df: pd.DataFrame, split: FoldSplit, role: str) -> 
                 raise FoldSplitError(
                     f"row {index!r} recording_id does not match its source file basename"
                 )
-        epoch_id = str(row.get("epoch_id", row.get("window_id", "")) or "")
+        raw_epoch_id = row.get("epoch_id", row.get("window_id", ""))
+        epoch_id = "" if raw_epoch_id is None or pd.isna(raw_epoch_id) else str(raw_epoch_id)
         identity = {
             "subject_id": subject,
             "recording_id": recording,

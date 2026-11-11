@@ -1,0 +1,47 @@
+# Continuous prediction-safe feature extraction for the full ds005555 PSG cohort.
+# This is a separate raw-feature branch; it does not replace the frozen v5 or
+# ordinary descriptive export. Run `mndm features` only. Fold-safe chart
+# summaries require separate manifests/configs and are not enabled here.
+version: 1.2
+modality: eeg
+
+imports:
+  - "./config_ingest_ds005555_continuous_c123_cautious_gap_safe_final.yaml"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/processed/ds005555_continuous_c123_prediction_safe_full_cohort_features_20260929"
+  dataset_received_dirs:
+    ds005555: "K:/ExternalReceivedDatasets/openneuro/received/ds005555"
+
+preprocess:
+  temporal_support_mode: "causal_finite"
+  sfreq: 256
+  sfreq_candidates: [256]
+  resample:
+    method: "identity_sample_grid"
+    n_jobs: 1
+  notch_hz: null
+  eeg_bandpass: [1, 45]
+  eeg_bandpass_phase: "minimum"
+  meg_bandpass: null
+  crop:
+    __replace: true
+  event_crop: {}
+  artifacts:
+    method: "none"
+
+features:
+  ppg:
+    estimator: "window_local_present_only_v1"
+    refractory_s: 0.35
+    prominence_mult: 0.75
+
+robustness:
+  bad_channels:
+    enabled: false
+
+# Keep inherited canonical chart definitions for later explicit fold-safe
+# summarize passes, but prevent this features-only configuration from creating
+# chart coordinates or summaries.
+summarize_forbidden: true

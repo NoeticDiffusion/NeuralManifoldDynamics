@@ -178,6 +178,9 @@ class MNPSPayload:
     provenance: MutableMapping[str, Any] = field(default_factory=dict)
     coverage: MutableMapping[str, Any] = field(default_factory=dict)
     qc_windows: MutableMapping[str, Any] = field(default_factory=dict)
+    # First-class measurement outputs that are not MNPS coordinates/features.
+    # Versioned measurement families are serialized under /measurements/<id>.
+    measurement_exports: MutableMapping[str, Any] = field(default_factory=dict)
     # Canonical modality-agnostic regional output. Each entry maps network
     # label to a dict containing 'mnps' [T,3], 'jacobian' [W,3,3], and
     # optional supporting fields such as 'stratified' and 'metrics'.
@@ -273,6 +276,7 @@ class MNPSPayload:
             "provenance": dict(self.provenance),
             "coverage": dict(self.coverage),
             "qc_windows": dict(self.qc_windows),
+            "measurement_exports": dict(self.measurement_exports),
             "regional_mnps": dict(self.regional_mnps),
             "block_table_columns": dict(self.block_table_columns),
             "block_window_table_columns": dict(self.block_window_table_columns),

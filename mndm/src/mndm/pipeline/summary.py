@@ -4713,6 +4713,78 @@ class SubjectSummaryRunner:
             "records": records,
         }
 
+    def _mnps_v3_1_measurement_export(self, sub_frame: pd.DataFrame) -> Optional[Dict[str, Any]]:
+        """Collect v3.1 per-window measurements from the standard QC sidecar path.
+
+        This deliberately avoids reconstructing measurements from feature
+        columns: absolute v3.1 values remain separate from the MNPS chart and
+        feature-projection inputs.
+        """
+        if "file" not in sub_frame.columns:
+            return None
+        qc_dir = self.ds_path / "qc_artifacts"
+        recordings: list[Dict[str, Any]] = []
+        for file_name in sorted({Path(str(value)).name for value in sub_frame["file"].dropna()}):
+            lookup = getattr(self, "_lookup_rel_paths_by_file_value", None)
+            indexed_paths = lookup(file_name) if callable(lookup) else []
+            if len(indexed_paths) > 1:
+                recordings.append({
+                    "raw_file": file_name,
+                    "status": "ambiguous_source_file",
+                    "reason": "duplicate_raw_basename_in_file_index",
+                })
+                continue
+            sidecar = qc_dir / f"{Path(file_name).stem}_qc_artifacts.json"
+            if not sidecar.exists():
+                continue
+            try:
+                data = json.loads(sidecar.read_text(encoding="utf-8"))
+            except Exception as exc:
+                recordings.append({
+                    "raw_file": file_name,
+                    "status": "invalid_sidecar",
+                    "reason": f"invalid_qc_sidecar:{type(exc).__name__}",
+                })
+                continue
+            measurement_payload = data.get("mnps_v3_1_measurements") if isinstance(data, Mapping) else None
+            if not isinstance(measurement_payload, Mapping):
+                continue
+            recordings.append({
+                "raw_file": file_name,
+                "status": str(measurement_payload.get("status", "unknown")),
+                "measurement_payload": dict(measurement_payload),
+            })
+        if not recordings:
+            return None
+        from ..mnps.v3_1.candidates import (
+            MNPS31_CANDIDATES,
+            MNPS31_STANDARD_CANDIDATE_IDS,
+        )
+
+        return {
+            "schema": "mndm.mnps_v3_1.measurement_export.v1",
+            "construct_registry_schema": "mndm.mnps_v3_1.construct_registry.v1",
+            "construct_registry": [
+                {
+                    "construct_id": candidate.public_id,
+                    "construct_name": candidate.construct_name,
+                    "short_name": candidate.short_name,
+                    "historical_slot": candidate.candidate_id,
+                    "historical_family": candidate.family,
+                    "historical_aliases": list(candidate.historical_aliases),
+                    "standard_availability": candidate.standard_availability,
+                    "estimator_ids": list(candidate.estimator_ids),
+                }
+                for candidate in MNPS31_CANDIDATES
+            ],
+            "standard_candidate_ids": list(MNPS31_STANDARD_CANDIDATE_IDS),
+            "experimental_candidate_ids": ["D2"],
+            "coordinate_assignment": None,
+            "qualified": False,
+            "status": "recorded",
+            "recordings": recordings,
+        }
+
     def _artifact_qc_applied(self, sub_frame: pd.DataFrame) -> Optional[bool]:
         """Whether an artifact-reduction method actually ran, per QC sidecars.
 
@@ -4800,6 +4872,7 @@ class SubjectSummaryRunner:
         if "file" in sub_frame.columns and len(sub_frame) > 0:
             representative_file = str(sub_frame["file"].iloc[0])
         signal_support_provenance = self._signal_support_provenance(sub_frame)
+        mnps_v3_1_measurements = self._mnps_v3_1_measurement_export(sub_frame)
         # Computed once and reused for both /qc/windows/qc_ok_eeg (below) and
         # the conventional_eeg extension's artifact_qc provenance, so both
         # surfaces agree on whether an artifact method actually ran for this
@@ -6992,6 +7065,11 @@ class SubjectSummaryRunner:
             provenance=provenance_export,
             coverage=coverage_export,
             qc_windows=qc_windows_export,
+            measurement_exports=(
+                {"schema_version": "mndm.measurements.v1", "v3_1": mnps_v3_1_measurements}
+                if isinstance(mnps_v3_1_measurements, Mapping)
+                else {}
+            ),
             regional_mnps=regional_mnps_export,
             row_source_columns=_row_source_cols,
             attrs={

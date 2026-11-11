@@ -150,8 +150,8 @@ Payload attributes (`payload.attrs`) are also copied into `h5.attrs` when not `N
 - **`stage_codebook`** *(obj)*: codebook for stage labels (often serialized)
 - **`stage_source`** *(str|None)*, **`stage_column`** *(str|None)*
 - **`coords_9d_names`** *(list[str]|None)*: 9D coordinate names (if `coords_9d` exists); this is the actual attr name (an earlier revision of this document called it `coords_v2_names`, which does not exist in current exports).
-- **`schema_version`** *(str)*: the root tensor-spec identifier. Current 3.0 exports write `mnps_tensor_spec_v2_4`; do not hardcode `v2_1` — always read this value from the file rather than assuming it.
-- **`mndm_version`** *(str)*: software/measurement-contract release line recorded in the export metadata; current documentation tracks `3.0.2`.
+- **`schema_version`** *(str)*: the root tensor-spec identifier. MNDM 3.1.0 exports write `mnps_tensor_spec_v2_4`; do not hardcode `v2_1` — always read this value from the file rather than assuming it.
+- **`mndm_version`** *(str)*: MNDM software release recorded in export metadata; current documentation tracks `3.1.0`.
 - **`primary_coordinate_layer`** *(str)*: usually `coords_3d_cohort_anchored` when a cohort/external anchor is configured, otherwise `coords_3d_subject_anchored`.
 - **`primary_coordinate_contract`** *(str)*: `cohort_anchored` or `subject_anchored`.
 - **`available_jacobian_layers`** *(list[str])*: names of the additive anchored-Jacobian-layer groups written for this file (e.g. `[jacobian_subject_anchored, jacobian_9D_subject_anchored]`); see "Groups: MNDM 2.1 Jacobian layers" below. Mirrored under `/provenance/anchoring/available_jacobian_layers`.
@@ -178,7 +178,7 @@ list above is illustrative rather than exhaustive:
 - **`*_hash_saved`** (`x_hash_saved`, `x_hash_jacobian_input`, `x_hash_knn_input`, `jacobian_hash_saved`, `jacobian_dot_hash_saved`, `jacobian_9d_hash_saved`, `jacobian_9d_dot_hash_saved`, `coords_9d_hash_saved`, `coords_9d_hash_jacobian_input`, `coords_9d_hash_knn_input`, `nn_indices_hash_saved`, `features_raw_hash_saved`, `features_robust_z_hash_saved`, `feature_export_names_hash`): content-hash provenance per exported surface, for deterministic-replay checks.
 - **`feature_export_scope`**, **`feature_metadata_fields`**, **`features_raw_column_count`**, **`features_robust_z_column_count`**: feature-table export scope/shape provenance.
 - **`coords_9d_{allow_all_non_finite_columns,allow_duplicate_columns,allow_duplicate_constant_columns,degraded_mode,duplicate_count,duplicate_constant_count,all_non_finite_count}`**, **`e_e_{backend,construct,degraded_mode,metric}`**: 9D-construction policy flags and per-axis fallback provenance (`e_e` is the entropy-energy subcoordinate).
-- **`normalize_mode`**, **`export_contract_version`**: export-contract identifiers. fMRI recordings written by 3.0.2 use `mndm.fmri_h5_contract.v2`. EEG/MEG stay `mndm.eeg_h5_contract.v1`. Files from 3.0.0–3.0.1 fMRI runs can carry `mndm.fmri_h5_contract.v1`. Still older fMRI files can carry `mndm.eeg_h5_contract.v1` because that string was once the only contract name. Neither historical string means the recording is EEG; check `modality` and the source class (`nifti_bold`). `v2` means the writer knows the fMRI Jacobian support gate. It does not prove a dataset overlay left that gate enabled.
+- **`normalize_mode`**, **`export_contract_version`**: export-contract identifiers. fMRI recordings written by 3.0.2 and later use `mndm.fmri_h5_contract.v2`. EEG/MEG stay `mndm.eeg_h5_contract.v1`. Files from 3.0.0–3.0.1 fMRI runs can carry `mndm.fmri_h5_contract.v1`. Still older fMRI files can carry `mndm.eeg_h5_contract.v1` because that string was once the only contract name. Neither historical string means the recording is EEG; check `modality` and the source class (`nifti_bold`). `v2` means the writer knows the fMRI Jacobian support gate. It does not prove a dataset overlay left that gate enabled.
 - **`tr_sec`**, **`sfreq`**, **`tr_source`**: fMRI repetition-time provenance when present. `tr_source` is one of `bids_json`, `nifti_zooms`, `config_fallback`. JSON vs NIfTI mismatch above 1 ms is not serialized; ingest fails closed (`NOT_TESTABLE`). EEG exports omit these attrs.
 - **`filter_stage`**, **`filter_applied`**, **`filter_bandpass_low`**, **`filter_bandpass_high`**: fMRI session-bandpass provenance when present. Canonical stage is `fmri_continuous` (once, before epoching). `preprocess_fmri` does not apply a second filter. EEG exports omit these attrs.
 - **`nuisance_status`**: fMRI nuisance-regression provenance when present. One of `applied`, `skipped_missing_file`, `skipped_no_columns`, `truncated_length`, `failed_clean`, `disabled`. If `preprocess.fmri.nuisance_regression.enabled` is true, ingest fail-closes unless status is `applied`. Length mismatch is not silently truncated; remaining confound NaNs are not zero-filled. EEG exports omit this attr.
@@ -469,6 +469,96 @@ Interpretation note:
 
 - Jacobian windows are not clamped when mathematically unusable
 - instead, invalid windows are removed from the canonical export and recorded in the diagnostics / `geometry_contract`
+
+---
+
+### Group: `/measurements/v3_1`
+
+Written when the standard EEG configuration enables
+`mnps_v3_1_measurements.enabled`. This is an absolute measurement surface,
+separate from `/features_raw`, the canonical `[m,d,e]` chart, `coords_9d`, and
+the Jacobian groups. It does not claim scientific qualification.
+
+- **`/measurements`**: `_schema_version = "mndm.measurements.v1"`.
+- **`/measurements/v3_1`**: `_schema_version = "mndm.mnps_v3_1.measurement_export.v1"`.
+- **`/measurements/v3_1/recordings_json`**: UTF-8 JSON containing one entry per
+  source recording and its measurement-window rows. The current standard EEG
+  configuration uses a shared 20 s window with a 20 s step, independently of
+  legacy feature epochs. This is an operational baseline, not a universal or
+  empirically selected v3.1 duration. Window length and step are parts of the
+  measurement realization; the current pipeline schedules all eight window
+  candidates on that shared configured grid. Additional candidate-specific
+  temporal support is emitted as a separately identified realization with its
+  own requested and effective bounds; it does not replace the shared grid.
+  Recordings shorter than the configured window use one window over the
+  available recording. The recording-level grid metadata reports the requested
+  length and step; each row preserves its actual bounds. It preserves the
+  actual window bounds, native ordered channel labels and hashes, channel
+  count, reference/filter branch, support audit, acquisition QC, exact
+  estimator ID, value, units, computed/valid/qualified status, and any reason
+  for an unsupported value.
+- `temporal_realizations` may carry separately configured candidate outputs.
+  The provisional `temporal_persistence.win4s.v1` realization computes M2 on
+  4 s support with a 4 s step beside the common grid. It retains its own window
+  bounds, support and QC, and does not assign an MNJ coordinate or scientific
+  qualification. Other candidates continue to use the shared grid unless a
+  distinct realization is explicitly defined.
+- Each recording may also contain a separate
+  `recording_level_experimental_measurements` object. When enabled,
+  experimental D2/SCG and its LDCB sidecar are computed once over the full
+  preprocessed recording and written with `aggregation_level="recording"`,
+  `support_window_sec` equal to the recording duration, and `step_sec=null`.
+  They are not inserted into the regular window rows, MNPS/MNJ coordinates, or
+  Jacobian inputs. The object retains separate native, Core19, and (when
+  requested) ds004148 Core60 realizations; each reports actual ordered labels,
+  requested-versus-available sensors, template-position provenance, support,
+  preprocessing branch, and QC. Channel-count/label limitations are warnings
+  where the estimator can still compute. Results remain `qualified=false`.
+- **`/measurements/v3_1/construct_registry_json`**: the public construct names
+  and historical M/D/E slot aliases. Standard-availability constructs are
+  Phase Coordination Variability (`PCV`), Temporal Persistence (`TP`),
+  Activity Reconfiguration (`AR`), Network Integration Efficiency (`NIE`),
+  Representational Dispersion (`RD`), Ordinal Irregularity (`OI`), Sequence
+  Complexity (`SC`), and Effective Dimensionality (`ED`). Spatial Coupling
+  Gradient (`SCG`, historical `D2`; alias `LDCB`) remains experimental and is
+  exported separately at recording level, outside the window estimator table. Its
+  primary value is negative Spearman correlation of sensor-pair geodesic
+  distance and alpha-band mean debiased squared wPLI (`dWPLI²`) across all
+  pairs. The calculation uses separate 2-second nonoverlapping epochs per
+  alpha frequency bin, then takes an unweighted mean across bins. Core19 is the
+  named standard surface; smaller computable sensor sets can be retained as
+  explicitly identified exploratory realizations with a channel-count QC
+  warning. Its distance-quartile local-minus-distributed contrast is a
+  secondary sidecar; neither value is a standard coordinate.
+  The 24-epoch minimum is a technical support floor, not a claim that those
+  epochs are statistically independent or that dWPLI² bias correction is
+  calibrated for every recording.
+
+The current native-window estimators are versioned in each row's `estimator_id`:
+
+| Slot | Name | Window value |
+| --- | --- | --- |
+| M1 | PCV | Population SD of the native-sensor alpha phase-order parameter over time |
+| M2 | TP | Median channel-wise `1 − lag-1 autocorrelation` |
+| M3 | AR | Vector of adjacent-block changes in native-channel RMS pattern |
+| D1 | NIE | Global efficiency of the absolute zero-lag Pearson sensor graph |
+| D3 | RD | Mean pairwise distance between within-channel-centered log PSD patterns |
+| E1 | OI | Median normalized order-5, delay-1 permutation entropy |
+| E2 | SC | LZ78 phrase-count ratio against exact-multiset shuffled references |
+| E3 | ED | Participation ratio of the native-channel covariance |
+
+PCV applies its own fourth-order, zero-phase 8–13 Hz filter within each
+measurement window before estimating analytic phase. The shared
+`effective_filter_support_valid` QC describes upstream preprocessing support;
+it does not certify the support of this window-local filter. Full temporal
+preprocessing provenance remains in the signal-support record, joined by the
+recording identity/hash and `raw_file` where available.
+
+The rows are window-level and use the native preprocessed EEG realization.
+Support that the pipeline cannot establish is recorded as unknown QC while a
+finite, technically computable value may still be emitted. A known gap or
+non-finite input produces an unsupported row with no numeric substitute.
+Acquisition QC is descriptive and never adjusts or suppresses a measurement.
 
 ---
 

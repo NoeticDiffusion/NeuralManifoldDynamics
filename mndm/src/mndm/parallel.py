@@ -560,6 +560,32 @@ def _compute_features_from_preprocessed(
                     operations.append(operation)
                     seen.add(identifier)
         canonical["operations"] = operations
+        feature_contracts: dict[str, list[Mapping[str, Any]]] = {}
+        for record in ([base_support] if isinstance(base_support, Mapping) else []) + support_records:
+            for key, value in record.items():
+                if str(key).endswith("_feature_contract") and isinstance(value, Mapping):
+                    feature_contracts.setdefault(str(key), []).append(value)
+        for key, contracts in feature_contracts.items():
+            unique_contracts: dict[str, Mapping[str, Any]] = {}
+            for contract in contracts:
+                signature = json.dumps(
+                    contract,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    ensure_ascii=False,
+                    allow_nan=False,
+                    default=str,
+                )
+                unique_contracts.setdefault(signature, contract)
+            if len(unique_contracts) == 1:
+                canonical[key] = dict(next(iter(unique_contracts.values())))
+            else:
+                canonical[key] = {
+                    "schema": "mndm.feature_contract_merge.v1",
+                    "status": "ambiguous",
+                    "contract_key": key,
+                    "candidate_contracts": [dict(value) for value in unique_contracts.values()],
+                }
         quality_epoch_intersection = getattr(merged, "attrs", {}).get("quality_interval_epoch_intersection")
         if isinstance(quality_epoch_intersection, Mapping):
             canonical["quality_interval_epoch_intersection"] = dict(quality_epoch_intersection)
@@ -587,6 +613,17 @@ def _compute_features_from_preprocessed(
         merged.attrs["signal_support_provenance"] = canonical
         if fnirs_feature_provenance is not None:
             merged.attrs["fnirs_feature_provenance"] = dict(fnirs_feature_provenance)
+    mnps_v3_1_measurements = next(
+        (
+            frame.attrs.get("mnps_v3_1_measurements")
+            for frame in feature_dfs
+            if isinstance(getattr(frame, "attrs", None), Mapping)
+            and isinstance(frame.attrs.get("mnps_v3_1_measurements"), Mapping)
+        ),
+        None,
+    )
+    if mnps_v3_1_measurements is not None:
+        merged.attrs["mnps_v3_1_measurements"] = dict(mnps_v3_1_measurements)
     feature_stage_times["merge_modalities"] = float(time.perf_counter() - t_merge0)
     return merged, feature_stage_times
 
@@ -782,6 +819,9 @@ def process_single_file(
             fnirs_feature_provenance = getattr(merged, "attrs", {}).get("fnirs_feature_provenance")
             if fnirs_feature_provenance:
                 merged_meta["fnirs_feature_provenance"] = fnirs_feature_provenance
+            v31_measurements = getattr(merged, "attrs", {}).get("mnps_v3_1_measurements")
+            if isinstance(v31_measurements, Mapping):
+                merged_meta["mnps_v3_1_measurements"] = dict(v31_measurements)
             merged["file"] = str(file_path.name)
             total = float(time.perf_counter() - t0)
             stage_times["worker_total"] = total

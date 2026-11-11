@@ -384,6 +384,12 @@ def build_bids_event_stage_provenance(
     dataset_id: str,
 ) -> BidsEventStageProvenance:
     """Build stage/event provenance object from BIDS ``*_events.tsv``."""
+    summarize_cfg = ctx_config.get("summarize", {}) if isinstance(ctx_config, Mapping) else {}
+    if isinstance(summarize_cfg, Mapping) and not bool(
+        summarize_cfg.get("include_bids_event_annotations", True)
+    ):
+        return BidsEventStageProvenance()
+
     events_path = _locate_events_path(
         sub_frame=sub_frame,
         index_df=index_df,
