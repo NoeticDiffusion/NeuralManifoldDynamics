@@ -1576,7 +1576,21 @@ class DatasetSummaryRunner:
         config_copy = copy.deepcopy(ctx.config) if isinstance(ctx.config, Mapping) else ctx.config
         self.ctx = _RunnerContextProxy(ctx, config_copy)
         self.ds_id = ds_id
-        self.subject_filter = self._normalize_subject(subject_filter) if subject_filter else None
+        raw_subject_filters = [
+            token.strip()
+            for token in re.split(r"[,;]", str(subject_filter))
+            if token.strip()
+        ] if subject_filter else []
+        self.subject_filters = [
+            normalized
+            for normalized in (self._normalize_subject(token) for token in raw_subject_filters)
+            if normalized
+        ]
+        self.subject_filter = (
+            self.subject_filters[0]
+            if len(self.subject_filters) == 1
+            else ",".join(self.subject_filters) if self.subject_filters else None
+        )
         self.h5_mode = h5_mode
         self.n_jobs = max(1, int(n_jobs or 1))
         self.resume_run_dir = (
@@ -3102,6 +3116,13 @@ class DatasetSummaryRunner:
             return
 
         mnps_dir = self._create_output_dir(ds_path)
+        from ..mnps.v3_4.external_anchor import guard_run_anchor_selection
+
+        self._v3_4_anchor_run_selection = guard_run_anchor_selection(
+            mnps_dir,
+            self.config if isinstance(self.config, Mapping) else {},
+            resume=self.resume_run_dir is not None,
+        )
         if self.resume_run_dir is not None:
             grouping_items = self._filter_resume_groupings(grouping_items, mnps_dir)
         normalization_report_info = self._write_normalization_report_file(mnps_dir)
@@ -3229,6 +3250,7 @@ class DatasetSummaryRunner:
                             "qc_policy": self.qc_policy,
                             "n_jobs": int(self.n_jobs),
                             "fit_anchor": bool(self._anchor_auto_fit_enabled()),
+                            "mnps_v3_4_external_anchor": self._v3_4_anchor_run_selection,
                         },
                         "reproducibility": self.ctx.reproducibility,
                         "grouping_collisions": self.grouping_collision_info,
@@ -4156,35 +4178,37 @@ class DatasetSummaryRunner:
             if file_name not in self._file_entity_cache:
                 self._file_entity_cache[file_name] = self._parse_file_entities(file_name)
         parsed_subjects = file_series.map(lambda f: self._file_entity_cache.get(f, ("sub-unknown", None, None, None, None))[0])
-        mask = parsed_subjects == self.subject_filter
+        requested_subjects = set(self.subject_filters)
+        mask = parsed_subjects.isin(requested_subjects)
 
         # BIDS datasets are not required to use a fixed zero-padding width
         # (e.g. ``sub-01`` and ``sub-001``).  The CLI normalizes numeric
         # requests to ``sub-001`` for compatibility with the common case, so
         # fall back to numeric equivalence when the exact label is absent.
-        if not bool(mask.any()) and self.subject_filter is not None:
-            requested_token = str(self.subject_filter).removeprefix("sub-")
-            if requested_token.isdigit():
-                requested_numeric = str(int(requested_token))
+        requested_numeric = {
+            str(int(token.removeprefix("sub-")))
+            for token in requested_subjects
+            if token.removeprefix("sub-").isdigit()
+        }
+        if requested_numeric:
+            def _numeric_subject_token(value: Any) -> Optional[str]:
+                token = str(value).removeprefix("sub-")
+                return str(int(token)) if token.isdigit() else None
 
-                def _numeric_subject_token(value: Any) -> Optional[str]:
-                    token = str(value).removeprefix("sub-")
-                    return str(int(token)) if token.isdigit() else None
-
-                numeric_subjects = parsed_subjects.map(_numeric_subject_token)
-                mask = numeric_subjects == requested_numeric
-                if bool(mask.any()):
-                    logger.info(
-                        "Subject filter %s matched numerically equivalent BIDS label(s)",
-                        self.subject_filter,
-                    )
+            numeric_subjects = parsed_subjects.map(_numeric_subject_token)
+            numeric_mask = numeric_subjects.isin(requested_numeric)
+            if bool(numeric_mask.any()):
+                mask = mask | numeric_mask
 
         # Backward-compatible fallback for legacy datasets where file parsing is
         # intentionally minimal and subject ID appears directly in filename text.
         if not bool(mask.any()):
-            legacy_mask = file_series.str.contains(self.subject_filter, na=False)
-            if self.subject_filter.startswith("sub-"):
-                legacy_mask = legacy_mask | file_series.str.contains(self.subject_filter[4:], na=False)
+            legacy_mask = pd.Series(False, index=features_df.index)
+            for requested in requested_subjects:
+                token = requested.removeprefix("sub-")
+                legacy_mask = legacy_mask | file_series.str.contains(requested, na=False, regex=False)
+                if token:
+                    legacy_mask = legacy_mask | file_series.str.contains(token, na=False, regex=False)
             mask = legacy_mask
 
         filtered = features_df[mask]
@@ -4201,6 +4225,12 @@ class DatasetSummaryRunner:
 
         policy = self.qc_policy
         before = len(features_df)
+        if policy == "keep_all":
+            logger.info(
+                "Retaining all %d epochs beside their QC fields (policy=keep_all)",
+                before,
+            )
+            return features_df
         if policy == "eeg_only":
             if "qc_ok_eeg" not in features_df.columns:
                 logger.info("QC policy 'eeg_only' requested but qc_ok_eeg missing; skipping QC filtering")
@@ -4354,17 +4384,21 @@ class DatasetSummaryRunner:
             grouping = features_df.groupby(["_subject", "_session", "_task", "_run", "_acq"], dropna=False)
 
         if self.subject_filter:
-            requested = str(self.subject_filter).removeprefix("sub-")
+            requested = set(self.subject_filters)
+            requested_numeric = {
+                str(int(value.removeprefix("sub-")))
+                for value in requested
+                if value.removeprefix("sub-").isdigit()
+            }
 
             def _matches_requested_subject(group_subject: Any) -> bool:
                 value = str(group_subject)
-                if value == self.subject_filter:
+                if value in requested:
                     return True
                 candidate = value.removeprefix("sub-")
                 return (
-                    requested.isdigit()
-                    and candidate.isdigit()
-                    and int(candidate) == int(requested)
+                    candidate.isdigit()
+                    and str(int(candidate)) in requested_numeric
                 )
 
             grouping_items = [item for item in grouping if _matches_requested_subject(item[0][0])]
@@ -4785,6 +4819,58 @@ class SubjectSummaryRunner:
             "recordings": recordings,
         }
 
+    def _mnps_v3_4_measurement_export(
+        self,
+        sub_frame: pd.DataFrame,
+        *,
+        artifact_qc_applied: bool | None,
+    ) -> Optional[Dict[str, Any]]:
+        """Build the independent experimental MNPS 3.4 coordinate surface."""
+        from ..mnps.v3_4.candidates import resolve_v3_4_config
+        from ..mnps.v3_4.external_anchor import build_measurement_export_with_external_anchor
+
+        v3_4_cfg = resolve_v3_4_config(self.ctx.config if isinstance(self.ctx.config, Mapping) else {})
+        if not v3_4_cfg or not bool(v3_4_cfg.get("enabled", False)):
+            return None
+        return build_measurement_export_with_external_anchor(
+            sub_frame,
+            self.ctx.config if isinstance(self.ctx.config, Mapping) else {},
+            artifact_qc_applied=artifact_qc_applied,
+        )
+
+    def _write_v3_4_measurement_sidecar(
+        self,
+        measurement_payload: Optional[Mapping[str, Any]],
+        *,
+        target_dir: Path,
+        sub_id: str,
+        ses_id: Optional[str],
+        task: Optional[str],
+        run_id: Optional[str],
+        acq_id: Optional[str],
+        skip_reason: str,
+    ) -> Optional[Path]:
+        """Preserve 3.4 windows if a later canonical v2 gate skips the recording."""
+        if not isinstance(measurement_payload, Mapping) or not measurement_payload:
+            return None
+        from core.io.h5_writer import write_measurement_export_sidecar
+
+        return write_measurement_export_sidecar(
+            target_dir / "mnps_v3_4_measurements.h5",
+            measurement_id="v3_4",
+            measurement_payload=measurement_payload,
+            recording_identity={
+                "dataset_id": self.dataset.ds_id,
+                "subject_id": sub_id,
+                "session_id": ses_id,
+                "task": task,
+                "run": run_id,
+                "acquisition": acq_id,
+                "recording_id": target_dir.name,
+            },
+            skip_reason=skip_reason,
+        )
+
     def _artifact_qc_applied(self, sub_frame: pd.DataFrame) -> Optional[bool]:
         """Whether an artifact-reduction method actually ran, per QC sidecars.
 
@@ -4872,12 +4958,16 @@ class SubjectSummaryRunner:
         if "file" in sub_frame.columns and len(sub_frame) > 0:
             representative_file = str(sub_frame["file"].iloc[0])
         signal_support_provenance = self._signal_support_provenance(sub_frame)
-        mnps_v3_1_measurements = self._mnps_v3_1_measurement_export(sub_frame)
         # Computed once and reused for both /qc/windows/qc_ok_eeg (below) and
         # the conventional_eeg extension's artifact_qc provenance, so both
         # surfaces agree on whether an artifact method actually ran for this
         # recording.
         artifact_qc_applied = self._artifact_qc_applied(sub_frame)
+        mnps_v3_1_measurements = self._mnps_v3_1_measurement_export(sub_frame)
+        mnps_v3_4_measurements = self._mnps_v3_4_measurement_export(
+            sub_frame,
+            artifact_qc_applied=artifact_qc_applied,
+        )
 
         mapped_meta = extract_mapped_metadata(
             participant_meta, config, self.dataset.ds_id, ses_id, filename=representative_file
@@ -4965,6 +5055,11 @@ class SubjectSummaryRunner:
         min_seconds_eff = float(coverage_policy.get("min_seconds", self.dataset.min_seconds))
         coverage_tag = str(coverage_policy.get("tag", "default"))
         if len(sub_frame) < min_epochs_eff or coverage_seconds_effective < min_seconds_eff:
+            v3_4_sidecar = self._write_v3_4_measurement_sidecar(
+                mnps_v3_4_measurements, target_dir=target_dir, sub_id=sub_id,
+                ses_id=ses_id, task=task, run_id=run_id, acq_id=acq_id,
+                skip_reason="coverage_too_low",
+            )
             logger.warning(
                 "Skipping %s (coverage too low; tag=%s): epochs=%d, seconds_effective=%.1f (%s), seconds_assumed=%.1f, required_epochs=%d, required_seconds=%.1f",
                 dataset_label,
@@ -4987,6 +5082,7 @@ class SubjectSummaryRunner:
                     "run": run_id,
                     "acq": acq_id,
                     "target_dir": str(target_dir),
+                    "mnps_v3_4_sidecar": str(v3_4_sidecar) if v3_4_sidecar else None,
                     "epochs": int(len(sub_frame)),
                     "coverage_seconds_effective": float(coverage_seconds_effective),
                     "coverage_seconds_assumed": float(coverage_seconds_assumed),
@@ -5394,6 +5490,11 @@ class SubjectSummaryRunner:
                 else coverage_seconds_assumed_post
             )
             if len(sub_frame) < min_epochs_eff or coverage_seconds_effective_post < min_seconds_eff:
+                v3_4_sidecar = self._write_v3_4_measurement_sidecar(
+                    mnps_v3_4_measurements, target_dir=target_dir, sub_id=sub_id,
+                    ses_id=ses_id, task=task, run_id=run_id, acq_id=acq_id,
+                    skip_reason="coverage_too_low_after_nan_cov_mask",
+                )
                 logger.warning(
                     "Skipping %s after nan/cov masking (tag=%s): epochs=%d, seconds_effective=%.1f (%s), required_epochs=%d, required_seconds=%.1f",
                     dataset_label,
@@ -5415,6 +5516,7 @@ class SubjectSummaryRunner:
                         "run": run_id,
                         "acq": acq_id,
                         "target_dir": str(target_dir),
+                        "mnps_v3_4_sidecar": str(v3_4_sidecar) if v3_4_sidecar else None,
                         "epochs": int(len(sub_frame)),
                         "dropped_missing_axis_epochs": int(dropped_missing_axis_epochs),
                         "coverage_seconds_effective": float(coverage_seconds_effective_post),
@@ -5428,6 +5530,11 @@ class SubjectSummaryRunner:
                 return
             if len(sub_frame) == 0:
                 logger.warning("Skipping %s: all epochs dropped by missing-axis policy", dataset_label)
+                v3_4_sidecar = self._write_v3_4_measurement_sidecar(
+                    mnps_v3_4_measurements, target_dir=target_dir, sub_id=sub_id,
+                    ses_id=ses_id, task=task, run_id=run_id, acq_id=acq_id,
+                    skip_reason="all_epochs_dropped_by_missing_axis_policy",
+                )
                 self.dataset._record_skipped_recording(
                     {
                         "reason": "all_epochs_dropped_by_missing_axis_policy",
@@ -5439,6 +5546,7 @@ class SubjectSummaryRunner:
                         "run": run_id,
                         "acq": acq_id,
                         "target_dir": str(target_dir),
+                        "mnps_v3_4_sidecar": str(v3_4_sidecar) if v3_4_sidecar else None,
                         "missing_axis_policy": str(missing_axis_policy),
                         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     }
@@ -5484,6 +5592,11 @@ class SubjectSummaryRunner:
                 else coverage_seconds_assumed_post
             )
             if len(sub_frame) < min_epochs_eff or coverage_seconds_effective_post < min_seconds_eff:
+                v3_4_sidecar = self._write_v3_4_measurement_sidecar(
+                    mnps_v3_4_measurements, target_dir=target_dir, sub_id=sub_id,
+                    ses_id=ses_id, task=task, run_id=run_id, acq_id=acq_id,
+                    skip_reason="coverage_too_low_after_geometry_invalidity_policy",
+                )
                 logger.warning(
                     "Skipping %s after standard geometry invalidity policy (tag=%s): epochs=%d, seconds_effective=%.1f (%s), required_epochs=%d, required_seconds=%.1f",
                     dataset_label,
@@ -5505,6 +5618,7 @@ class SubjectSummaryRunner:
                         "run": run_id,
                         "acq": acq_id,
                         "target_dir": str(target_dir),
+                        "mnps_v3_4_sidecar": str(v3_4_sidecar) if v3_4_sidecar else None,
                         "epochs": int(len(sub_frame)),
                         "dropped_geometry_invalid_epochs": int(dropped_geometry_invalid_epochs),
                         "geometry_invalidity_policy": STANDARD_GEOMETRY_POLICY_VERSION,
@@ -5519,6 +5633,11 @@ class SubjectSummaryRunner:
                 return
             if len(sub_frame) == 0:
                 logger.warning("Skipping %s: all epochs dropped by standard geometry invalidity policy", dataset_label)
+                v3_4_sidecar = self._write_v3_4_measurement_sidecar(
+                    mnps_v3_4_measurements, target_dir=target_dir, sub_id=sub_id,
+                    ses_id=ses_id, task=task, run_id=run_id, acq_id=acq_id,
+                    skip_reason="all_epochs_dropped_by_standard_geometry_invalidity_policy",
+                )
                 self.dataset._record_skipped_recording(
                     {
                         "reason": "all_epochs_dropped_by_geometry_invalidity_policy",
@@ -5530,6 +5649,7 @@ class SubjectSummaryRunner:
                         "run": run_id,
                         "acq": acq_id,
                         "target_dir": str(target_dir),
+                        "mnps_v3_4_sidecar": str(v3_4_sidecar) if v3_4_sidecar else None,
                         "geometry_invalidity_policy": STANDARD_GEOMETRY_POLICY_VERSION,
                         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     }
@@ -7066,8 +7186,12 @@ class SubjectSummaryRunner:
             coverage=coverage_export,
             qc_windows=qc_windows_export,
             measurement_exports=(
-                {"schema_version": "mndm.measurements.v1", "v3_1": mnps_v3_1_measurements}
-                if isinstance(mnps_v3_1_measurements, Mapping)
+                {
+                    "schema_version": "mndm.measurements.v1",
+                    **({"v3_1": mnps_v3_1_measurements} if isinstance(mnps_v3_1_measurements, Mapping) else {}),
+                    **({"v3_4": mnps_v3_4_measurements} if isinstance(mnps_v3_4_measurements, Mapping) else {}),
+                }
+                if isinstance(mnps_v3_1_measurements, Mapping) or isinstance(mnps_v3_4_measurements, Mapping)
                 else {}
             ),
             regional_mnps=regional_mnps_export,

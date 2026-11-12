@@ -45,7 +45,7 @@ def _add_common_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--out-dir", type=Path, default=None, help="Processed output base directory (defaults to config paths.processed_dir)")
     p.add_argument("--data-dir", type=Path, default=None, help="Received/raw data base directory (defaults to config paths.received_dir)")
     p.add_argument("--include-pca-results", action="store_true", help="Include datasets marked with pca_results: true in the config file")
-    p.add_argument("--subject", type=str, default=None, help="Optional subject filter, e.g., 001")
+    p.add_argument("--subject", type=str, default=None, help="Optional subject filter (one ID or comma-separated IDs), e.g., 001 or sub-01,sub-02")
     p.add_argument("--h5-mode", choices=["dataset", "subject"], default="subject", help="Write one H5 per 'dataset' or per 'subject' (default: subject)")
     p.add_argument("--n-jobs", type=int, default=None, help="Number of parallel workers (default: min(cores, 6))")
     p.add_argument("--mem-budget-gb", type=float, default=0.0, help="Memory budget in GB for worker scaling (default: 0 = auto-detect from available RAM)")
@@ -86,6 +86,55 @@ def _add_anchor_fit_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--anchor-id", type=str, default=None, help="Optional stable anchor identifier for one-shot anchor fitting.")
     p.add_argument("--anchor-scale-method", choices=["iqr", "mad", "qn"], default="iqr", help="Robust scale method for one-shot anchor fitting.")
     p.add_argument("--anchor-min-subjects", type=int, default=3, help="Minimum subjects required for a feature to remain usable in the one-shot anchor.")
+
+
+def _add_mnps_v3_4_anchor_args(p: argparse.ArgumentParser) -> None:
+    """Add explicit frozen MNPS 3.4 reference-anchor selection options."""
+    from .mnps.v3_4.external_anchor import PRESETS
+
+    group = p.add_mutually_exclusive_group()
+    group.add_argument(
+        "--mnps-v3-4-anchor-preset",
+        choices=sorted(PRESETS),
+        default=None,
+        help="Select one registered MNPS 3.4 reference anchor, independent of target condition.",
+    )
+    group.add_argument(
+        "--mnps-v3-4-anchor-json",
+        type=Path,
+        default=None,
+        help="Apply a custom frozen MNPS 3.4 anchor manifest JSON.",
+    )
+    p.add_argument(
+        "--mnps-v3-4-anchor-compatibility",
+        choices=["strict", "exploratory_transfer"],
+        default=None,
+        help="Use strict surface matching (default) or explicitly authorize an exploratory transfer.",
+    )
+    p.add_argument(
+        "--mnps-v3-4-transfer-reason",
+        type=str,
+        default=None,
+        help="Required reason when compatibility is exploratory_transfer.",
+    )
+
+
+def _mnps_v3_4_anchor_options_from_args(args) -> dict | None:
+    """Return one explicit 3.4 anchor selection from CLI arguments."""
+    preset = getattr(args, "mnps_v3_4_anchor_preset", None)
+    path = getattr(args, "mnps_v3_4_anchor_json", None)
+    compatibility = getattr(args, "mnps_v3_4_anchor_compatibility", None)
+    reason = getattr(args, "mnps_v3_4_transfer_reason", None)
+    if not preset and not path:
+        if compatibility or reason:
+            raise ValueError("MNPS 3.4 compatibility options require a preset or custom anchor JSON")
+        return None
+    result = {"preset": preset, "path": str(path) if path is not None else None}
+    if compatibility:
+        result["compatibility"] = compatibility
+    if reason:
+        result["transfer_reason"] = reason
+    return result
 
 
 def _mnps_overrides_from_args(args) -> dict:
@@ -139,6 +188,7 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     p_sum = sub.add_parser("summarize", help="Project to MNPS and summarize")
     _add_common_args(p_sum)
     _add_anchor_fit_args(p_sum)
+    _add_mnps_v3_4_anchor_args(p_sum)
     p_sum.add_argument(
         "--resume-run",
         type=Path,
@@ -153,6 +203,7 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     p_resum = sub.add_parser("resummarize", help="Re-run summarize only (alias of summarize)")
     _add_common_args(p_resum)
     _add_anchor_fit_args(p_resum)
+    _add_mnps_v3_4_anchor_args(p_resum)
     p_resum.add_argument(
         "--resume-run",
         type=Path,
@@ -184,6 +235,34 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     p_fnirs_regions.add_argument("--coordsystem-json", type=Path, required=True, help="Matching BIDS coordsystem.json")
     p_fnirs_regions.add_argument("--out-dir", type=Path, required=True, help="New directory for G5 CSV/JSON artifacts")
     p_fnirs_regions.add_argument("--overwrite", action="store_true", help="Replace the named G5 artifacts in --out-dir")
+
+    p_v34_anchor_fit = sub.add_parser(
+        "mnps-v3-4-fit-anchors",
+        help="Fit the experimental MNPS 3.4 feature and coordinate anchors from an explicit feature table",
+    )
+    _add_common_args(p_v34_anchor_fit)
+    p_v34_anchor_fit.add_argument("--features-table", type=Path, required=True)
+    p_v34_anchor_fit.add_argument("--out", type=Path, required=True)
+    p_v34_anchor_fit.add_argument("--anchor-id", type=str, required=True)
+    p_v34_anchor_fit.add_argument("--min-subjects", type=int, default=3)
+    p_v34_anchor_fit.add_argument(
+        "--cohort-manifest",
+        type=Path,
+        default=None,
+        help="Optional frozen metadata-only cohort manifest; selected recording basenames must be a subset of its condition files",
+    )
+    p_v34_anchor_fit.add_argument(
+        "--condition",
+        choices=["EyesClosed", "EyesOpen"],
+        default=None,
+        help="Keep only rows whose BIDS task/recording filename matches this resting condition",
+    )
+    p_v34_anchor_fit.add_argument(
+        "--surface-hash",
+        type=str,
+        default=None,
+        help="Optional exact MNPS 3.4 source_surface_hash filter for a homogeneous anchor realization",
+    )
 
     p_anchor_fit = sub.add_parser("anchors-fit", help="Fit MNDM 2.1 feature anchors from /features_raw H5 surfaces")
     p_anchor_fit.add_argument("--h5-root", type=Path, required=True, help="H5 file, run directory, processed root, or dataset directory")
@@ -243,6 +322,7 @@ def build_parser(argv: Sequence[str] | None = None) -> argparse.ArgumentParser:
     p_all = sub.add_parser("all", help="Run features → summarize")
     _add_common_args(p_all)
     _add_anchor_fit_args(p_all)
+    _add_mnps_v3_4_anchor_args(p_all)
 
     return parser
 
@@ -268,10 +348,155 @@ def main(argv: Sequence[str] | None = None) -> int:
         if isinstance(config, dict):
             _apply_cli_feature_overrides(config, args)
 
-    configure_runtime_logging(
-        verbose=bool(getattr(args, "verbose_logs", False))
-        or verbose_logs_enabled(config if isinstance(config, dict) else None)
-    )
+    if args.command != "mnps-v3-4-fit-anchors":
+        configure_runtime_logging(
+            verbose=bool(getattr(args, "verbose_logs", False))
+            or verbose_logs_enabled(config if isinstance(config, dict) else None)
+        )
+
+    if args.command == "mnps-v3-4-fit-anchors":
+        import hashlib
+        import json
+        import pandas as pd
+        from .mnps.v3_4 import fit_anchor_manifest
+
+        try:
+            features_path = args.features_table.expanduser().resolve()
+            logger.info("Reading MNPS 3.4 feature table: %s", features_path)
+            if features_path.suffix.lower() in {".parquet", ".pq"}:
+                features = pd.read_parquet(features_path)
+            elif features_path.suffix.lower() == ".csv":
+                features = pd.read_csv(features_path)
+            else:
+                raise ValueError("--features-table must be a .parquet or .csv file")
+            logger.info("Loaded MNPS 3.4 feature table: rows=%d columns=%d", len(features), len(features.columns))
+            selected_features = features
+            condition_filter_counts = {}
+            if args.condition:
+                if "file" not in features:
+                    raise ValueError("condition-specific cohort anchor fitting requires a file column for BIDS scope provenance")
+                condition_claims: list[tuple[pd.Series, pd.Series]] = []
+                for column in ("task", "condition"):
+                    if column in features:
+                        text = features[column].fillna("").astype(str)
+                        condition_claims.append((
+                            text.str.contains(r"(?i)eyes[-_ ]?closed", regex=True),
+                            text.str.contains(r"(?i)eyes[-_ ]?open", regex=True),
+                        ))
+                file_text = features["file"].fillna("").astype(str)
+                file_closed = file_text.str.contains(r"(?i)(?:task[-_])?eyes[-_ ]?closed", regex=True)
+                file_open = file_text.str.contains(r"(?i)(?:task[-_])?eyes[-_ ]?open", regex=True)
+                condition_claims.append((file_closed, file_open))
+                closed_claims = sum((closed.astype("int8") for closed, _ in condition_claims), start=pd.Series(0, index=features.index))
+                open_claims = sum((opened.astype("int8") for _, opened in condition_claims), start=pd.Series(0, index=features.index))
+                conflict = (closed_claims > 0) & (open_claims > 0)
+                condition_matches = ((closed_claims > 0) & (open_claims == 0)) if args.condition == "EyesClosed" else ((open_claims > 0) & (closed_claims == 0))
+                session1 = file_text.str.contains(r"(?i)(?:^|[_/\\])ses-1(?:[_/\\.-]|$)", regex=True)
+                acq_pre = file_text.str.contains(r"(?i)(?:^|[_/\\])acq-pre(?:[_/\\.-]|$)", regex=True)
+                in_scope = session1 & acq_pre
+                condition_filter_counts = {
+                    "input_row_count": int(len(features)),
+                    "conflicting_condition_row_count": int(conflict.sum()),
+                    "unidentified_condition_row_count": int(((closed_claims == 0) & (open_claims == 0)).sum()),
+                    "condition_and_session1_acqpre_row_count": int((condition_matches & ~conflict & in_scope).sum()),
+                    "out_of_session1_acqpre_scope_row_count": int((~in_scope).sum()),
+                }
+                selected_mask = condition_matches & ~conflict & in_scope
+                selected_features = features.loc[selected_mask].copy()
+                if selected_features.empty:
+                    raise ValueError(f"no consistent session-1 acq-pre feature rows match condition {args.condition}")
+                logger.info(
+                    "Condition/scope filter=%s selected_rows=%d input_rows=%d metadata_conflicts=%d out_of_scope=%d",
+                    args.condition,
+                    len(selected_features),
+                    len(features),
+                    condition_filter_counts["conflicting_condition_row_count"],
+                    condition_filter_counts["out_of_session1_acqpre_scope_row_count"],
+                )
+            technical_valid_row_count = None
+            if "technical_eeg_status" in selected_features:
+                rows_before_technical_filter = len(selected_features)
+                technical_valid = selected_features["technical_eeg_status"].fillna("").astype(str).str.casefold() == "valid"
+                technical_valid_row_count = int(technical_valid.sum())
+                selected_features = selected_features.loc[technical_valid].copy()
+                if selected_features.empty:
+                    raise ValueError("no feature rows have technical_eeg_status=valid")
+                logger.info(
+                    "Technical-support filter retained_rows=%d excluded_rows=%d",
+                    len(selected_features),
+                    rows_before_technical_filter - technical_valid_row_count,
+                )
+            if args.surface_hash:
+                if "mnps_v3_4_source_surface_hash" not in features:
+                    raise ValueError("feature table has no mnps_v3_4_source_surface_hash column")
+                selected_features = selected_features[
+                    selected_features["mnps_v3_4_source_surface_hash"].astype(str) == str(args.surface_hash)
+                ].copy()
+                if selected_features.empty:
+                    raise ValueError(f"no feature rows match requested surface hash {args.surface_hash}")
+            cohort_manifest_path = None
+            expected_recording_names: list[str] = []
+            missing_manifest_recording_names: list[str] = []
+            if args.cohort_manifest:
+                if not args.condition:
+                    raise ValueError("--cohort-manifest requires --condition")
+                cohort_manifest_path = args.cohort_manifest.expanduser().resolve()
+                cohort_manifest_data = json.loads(cohort_manifest_path.read_text(encoding="utf-8"))
+                expected_recording_names = sorted({
+                    Path(str(participant.get("recordings", {}).get(args.condition, {}).get("path", ""))).name
+                    for participant in cohort_manifest_data.get("participants", [])
+                    if participant.get("recordings", {}).get(args.condition, {}).get("path")
+                })
+                selected_recording_names = sorted({
+                    Path(str(value)).name for value in selected_features["file"].dropna().astype(str)
+                })
+                unexpected = sorted(set(selected_recording_names) - set(expected_recording_names))
+                missing_manifest_recording_names = sorted(set(expected_recording_names) - set(selected_recording_names))
+                if unexpected:
+                    raise ValueError(f"selected feature files are outside the frozen cohort manifest: {unexpected[:5]}")
+            logger.info(
+                "Selected anchor reference rows=%d surface_filter=%s",
+                len(selected_features),
+                args.surface_hash or "single_surface_required",
+            )
+            logger.info("Fitting participant-balanced feature and coordinate anchors")
+            manifest = fit_anchor_manifest(
+                selected_features,
+                config,
+                anchor_id=args.anchor_id,
+                minimum_participants=args.min_subjects,
+                reference_condition=args.condition,
+            )
+            logger.info("Anchor fitting complete; binding manifest to its feature table and selected recordings")
+            manifest["anchor_fit_source"] = {
+                "features_table": str(features_path),
+                "features_table_sha256": hashlib.sha256(features_path.read_bytes()).hexdigest(),
+                "selected_participants": manifest["reference"]["participants"],
+                "surface_hash_filter": args.surface_hash,
+                "condition_filter": args.condition,
+                "condition_filter_counts": condition_filter_counts,
+                "cohort_manifest": str(cohort_manifest_path) if cohort_manifest_path else None,
+                "cohort_manifest_sha256": hashlib.sha256(cohort_manifest_path.read_bytes()).hexdigest() if cohort_manifest_path else None,
+                "expected_condition_recording_name_count": len(expected_recording_names),
+                "expected_manifest_recordings_missing_after_support_filter": missing_manifest_recording_names,
+                "technical_valid_row_count_before_surface_filter": technical_valid_row_count,
+                "selected_row_count": int(len(selected_features)),
+                "input_row_count": int(len(features)),
+                "selected_recording_files": sorted(
+                    set(selected_features.get("file", pd.Series([], dtype=str)).dropna().astype(str))
+                ),
+            }
+            manifest.pop("anchor_hash", None)
+            manifest["anchor_hash"] = hashlib.sha256(
+                json.dumps(manifest, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str).encode("utf-8")
+            ).hexdigest()
+            args.out.parent.mkdir(parents=True, exist_ok=True)
+            args.out.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding="utf-8")
+        except Exception as exc:
+            logger.error("MNPS 3.4 anchor fit failed: %s", exc)
+            return 1
+        logger.info("Wrote MNPS 3.4 anchor manifest: %s", args.out)
+        return 0
 
     if str(config.get("modality", "")).strip().lower() == "fnirs" and args.command in {
         "summarize", "resummarize", "all"
@@ -283,14 +508,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 1
 
     # Get dataset IDs
-    if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "fnirs-export", "fnirs-region-export"}:
+    if args.command in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "fnirs-export", "fnirs-region-export", "mnps-v3-4-fit-anchors"}:
         dataset_ids = []
     elif args.dataset:
         dataset_ids = args.dataset
     else:
         dataset_ids = datasets.list_datasets(config, include_pca_results=args.include_pca_results)
     
-    if not dataset_ids and args.command not in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "meg-transform-replay", "fnirs-export", "fnirs-region-export"}:
+    if not dataset_ids and args.command not in {"anchors-fit", "anchor-smoke", "anchor-sensitivity", "meg-transform-replay", "fnirs-export", "fnirs-region-export", "mnps-v3-4-fit-anchors"}:
         logger.error("No datasets specified")
         return 1
     
@@ -354,6 +579,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_jobs=n_jobs,
             mnps_overrides=_mnps_overrides_from_args(args),
             anchor_fit_options=_anchor_fit_options_from_args(args),
+            v3_4_anchor_options=_mnps_v3_4_anchor_options_from_args(args),
             resume_run=getattr(args, "resume_run", None),
         )
     elif args.command == "resummarize":
@@ -369,6 +595,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_jobs=n_jobs,
             mnps_overrides=_mnps_overrides_from_args(args),
             anchor_fit_options=_anchor_fit_options_from_args(args),
+            v3_4_anchor_options=_mnps_v3_4_anchor_options_from_args(args),
             resume_run=getattr(args, "resume_run", None),
         )
     elif args.command == "pack":
@@ -522,6 +749,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             n_jobs=n_jobs,
             mnps_overrides=_mnps_overrides_from_args(args),
             anchor_fit_options=_anchor_fit_options_from_args(args),
+            v3_4_anchor_options=_mnps_v3_4_anchor_options_from_args(args),
             resume_run=getattr(args, "resume_run", None),
         )
     else:

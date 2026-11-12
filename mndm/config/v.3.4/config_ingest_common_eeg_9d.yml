@@ -1,0 +1,337 @@
+# MNPS 3.4 EEG — explicit experimental technical pilot config, 2026-11-11.
+# Imports the existing EEG ingest defaults. This file is the version-specific
+# opt-in and is currently pinned to the bounded ds004148 retest pilot.
+# The output root is intentionally isolated from all historical MNPS runs.
+# The 3.4 outputs remain experimental and do not replace or qualify MNPS v2.
+imports:
+  - ../config_ingest_common_eeg.yaml
+datasets:
+  - ds004148
+pilot_selection:
+  subject_ids: [sub-01, sub-02, sub-03]
+  tasks: [eyesclosed, eyesopen]
+  sessions: [session1, session2, session3]
+  rationale: "smallest participant-balanced end-to-end anchor pilot; minimum 3 participants; legacy bad-channel dropping explicitly disabled"
+# Keep the pilot on the requested eyes-closed/open retest tasks; this dataset
+# also contains mathematics, memory, and music tasks in the same sessions.
+exclude-files:
+  - "task-mathematic_"
+  - "task-memory_"
+  - "task-music_"
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261111_mnps_v3_4_ds004148_pilot_native_channels/processed"
+  dataset_received_dirs: {}
+run:
+  # Threads avoid loky process creation restrictions in the current Windows run.
+  parallel_backend: threading
+preprocess:
+  # Versioned opt-out from the legacy variance/correlation channel-drop
+  # heuristic; preserve every EEG channel and its QC metadata for v3.4.
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+# Proposed schema: implemented as a separate measurement export in src.
+# Runtime estimator, feature-row, and coordinate assembly hashes are calculated
+# from the code actually executed.
+# No family aggregation, 3D projection, or Jacobian configuration is included.
+# No clipping/winsorization: QC marks invalid observations instead of capping them.
+# Dataset-specific acquisition and preprocessing fields below are authoritative.
+# Retain inherited extraction; do not silently switch to per-channel estimators.
+# Source-feature transforms are applied exactly once before anchored robust_z.
+# Assemble coordinates from standardized features, then apply frozen coordinate
+# anchors fitted on the transformed feature-anchor values in the same declared
+# reference cohort. Feature and coordinate anchor parameters remain separately
+# frozen and embedded in one manifest.
+# For one-input coordinates the coordinate scaling stage remains explicit.
+# All anchors must match the preprocessing/reference/channel/estimator surface.
+# Higher delta_theta_level / alpha_level means more corresponding log power:
+# these reverse legacy m_a / m_e before coordinate reference scaling.
+# spatial_logvariance_dispersion is required as a separately named auxiliary.
+# 8 s windows / 4 s step => nominal 0.25 Hz; actual timestamps remain authoritative.
+# This version does not establish superiority to MNPS v2 or predictive validity.
+
+schema: mnps_flat_coordinates
+schema_version: 1.0-draft
+definition_version: '3.4'
+status: experimental_9d_technical_pilot
+enabled: true
+representation:
+  dimensions: 9
+  coordinate_order:
+  - delta_theta_level
+  - alpha_level
+  - beta_alpha_ratio
+  - gamma_level
+  - hjorth_mobility
+  - alpha_theta_ratio
+  - permutation_entropy
+  - alpha_centroid_hz
+  - alpha_envelope_cv
+  removed_v2_coordinates:
+  - e_s
+  - e_m
+  migration:
+    delta_theta_level: negative of v2 m_a before coordinate reference scaling when source features and anchors match
+    alpha_level: negative of v2 m_e before coordinate reference scaling when source features and anchors match
+    beta_alpha_ratio: m_o
+    gamma_level: d_n
+    hjorth_mobility: d_l
+    alpha_theta_ratio: d_s
+    permutation_entropy: e_e
+    alpha_centroid_hz: paf_cog
+    alpha_envelope_cv: burst_alpha
+measurement_surface:
+  modality: eeg
+  feature_units:
+    eeg_delta: microvolt^2
+    eeg_theta: microvolt^2
+    eeg_alpha: microvolt^2
+    eeg_beta_alpha: dimensionless_ratio
+    eeg_gamma: microvolt^2
+    eeg_hjorth_mobility: dimensionless_per_sample
+    eeg_alpha_theta: dimensionless_ratio
+    eeg_permutation_entropy: dimensionless
+    mnps_v3_4_alpha_centroid_hz: Hz
+    mnps_v3_4_alpha_envelope_cv: dimensionless
+  dataset_overlay:
+    dataset_id: ds004148
+    dataset_version: "doi:10.18112/openneuro.ds004148.v1.0.1"
+    sampling_rate_hz: 500
+    resampling_method: "MNE resample to 250 Hz using common EEG preprocessing"
+    realized_sampling_rate_hz: 250
+    filter_specification: "50 Hz notch; 1-45 Hz EEG bandpass; candidate alpha estimator applies a separate 8-12 Hz order-4 zero-phase Butterworth filter"
+    reference: average
+    channel_selection: "all EEG channels present in each source file, native ordered labels"
+    bad_channel_policy: "variance/correlation channel-drop heuristic explicitly disabled; no channel interpolation or silent drop"
+    channel_label_set_compatibility: "casefold_for_anchor_matching; exact_labels_preserved"
+    continuous_segment_boundaries: "source-file boundary plus any nonfinite all-channel sample runs; never bridge source files or concatenated epoched input"
+    edge_support_policy: "alpha envelope/Hilbert values require a full window and a 10 s symmetric source-segment edge guard; support reason is emitted per window"
+    estimator_parameter_manifest: "estimators section below plus runtime SHA256 of mndm/preprocess.py, mndm/features/eeg.py, mndm/mnps/v3_4/candidates.py, and mndm/mnps/v3_4/coordinates.py"
+    line_frequency_hz: 50
+  require_overlay_before_execution: true
+  required_overlay_fields:
+  - dataset_version
+  - sampling_rate_hz
+  - resampling_method
+  - filter_specification
+  - reference
+  - channel_selection
+  - bad_channel_policy
+  - channel_label_set_compatibility
+  - continuous_segment_boundaries
+  - edge_support_policy
+  - estimator_parameter_manifest
+  - line_frequency_hz
+  scalp_defaults:
+    sampling_rate_target_hz: 250
+    notch_hz: 50
+    bandpass_hz:
+    - 1
+    - 45
+    reference: average
+  window_length_sec: 8.0
+  window_step_sec: 4.0
+  cross_discontinuities: false
+  actual_window_timestamps_required: true
+  prospective_preprocessing_verified: false
+  retain_source_surface_hash: true
+estimators:
+  legacy_trace:
+    aggregation: pointwise_channel_median
+    implementation: frozen_v2_eeg_extractor
+    implementation_hash: null
+    require_hash: true
+    bands_hz:
+      delta:
+      - 1
+      - 4
+      theta:
+      - 4
+      - 8
+      alpha:
+      - 8
+      - 12
+      beta:
+      - 13
+      - 30
+      gamma:
+      - 30
+      - 45
+    psd:
+      method: multitaper
+      bandwidth: null
+    permutation_entropy:
+      order: 5
+      delay_samples: 1
+      normalize: true
+    entropy_fallbacks: []
+    parameter_authority: frozen_v2_implementation_manifest
+    require_parameter_parity_check: true
+  candidates:
+    implementation: frozen_fable001_estimators
+    implementation_hash: null
+    require_hash: true
+    alpha_centroid_hz:
+      input: per_channel_voltage
+      psd:
+        method: welch
+        segment_sec: 4.0
+        overlap_fraction: 0.5
+        window: periodic_hann
+        detrend: constant
+      aggregation: median_psd_across_channels_at_each_frequency
+      frequency_range_hz:
+      - 7
+      - 13
+      formula: sum(f * median_psd[f]) / sum(median_psd[f])
+      interpretation: spectral_centroid_in_declared_band
+      require_positive_denominator: true
+    alpha_envelope_cv:
+      input: per_channel_voltage
+      band_hz:
+      - 8
+      - 12
+      bandpass:
+        family: butterworth
+        order: 4
+        phase: zero
+      envelope: hilbert_magnitude
+      filter_scope: continuous_source_segment
+      edge_support_guard_sec: 10.0
+      hilbert_boundary_policy: "scipy.signal.hilbert on each finite continuous source segment; segment-edge windows outside the declared guard are unsupported"
+      std_ddof: 0
+      formula: median_c(std_t(envelope_c) / mean_t(envelope_c))
+      require_positive_denominator: true
+      interpretation: coefficient_of_variation_of_band_envelope
+coordinates:
+  delta_theta_level:
+    inputs:
+      eeg_delta:
+        transform: log10
+        coefficient: 0.5
+      eeg_theta:
+        transform: log10
+        coefficient: 0.5
+  alpha_level:
+    inputs:
+      eeg_alpha:
+        transform: log10
+        coefficient: 1.0
+  beta_alpha_ratio:
+    inputs:
+      eeg_beta_alpha:
+        transform: identity
+        coefficient: 1.0
+  gamma_level:
+    inputs:
+      eeg_gamma:
+        transform: log10
+        coefficient: 1.0
+  hjorth_mobility:
+    inputs:
+      eeg_hjorth_mobility:
+        transform: identity
+        coefficient: 1.0
+  alpha_theta_ratio:
+    inputs:
+      eeg_alpha_theta:
+        transform: identity
+        coefficient: 1.0
+  permutation_entropy:
+    inputs:
+      eeg_permutation_entropy:
+        transform: identity
+        coefficient: 1.0
+  alpha_centroid_hz:
+    inputs:
+      alpha_centroid_hz:
+        transform: identity
+        coefficient: 1.0
+  alpha_envelope_cv:
+    inputs:
+      alpha_envelope_cv:
+        transform: identity
+        coefficient: 1.0
+scaling:
+  export_raw_features: true
+  pipeline:
+  - feature_transform
+  - feature_reference_robust_z
+  - linear_coordinate_assembly
+  - coordinate_reference_robust_z
+  robust_z:
+    center: median
+    scale: 1.4826 * MAD
+    degenerate_scale_policy: invalid_no_epsilon_substitution
+  anchor_scope: frozen_reference_cohort_or_training_partition
+  anchor_id: ds004148_first3_native_channels_20261111
+  anchor_manifest: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261111_mnps_v3_4_ds004148_pilot_native_channels/anchors/mnps_v3_4_ds004148_first3_native_channels_20261111.json"
+  require_anchor_manifest_for_scaled_output: true
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: false
+  reference_sampling: equal_participant_weight
+  pool_scalp_and_intracranial_anchors: false
+  pool_incompatible_measurement_surfaces: false
+  saturation_policy: none
+  nonpositive_log_input_policy: invalid_no_floor
+  missing_anchor_policy: error_for_scaled_output
+  external_anchor:
+    preset: null
+    path: null
+    compatibility: strict
+    transfer_reason: null
+    reference_feature_units: null
+geometry:
+  distance: weighted_euclidean
+  formula: sqrt(sum_j(weight_j * (z_i_j - z_k_j)^2))
+  coordinate_weights:
+    delta_theta_level: 1.0
+    alpha_level: 1.0
+    beta_alpha_ratio: 1.0
+    gamma_level: 1.0
+    hjorth_mobility: 1.0
+    alpha_theta_ratio: 1.0
+    permutation_entropy: 1.0
+    alpha_centroid_hz: 1.0
+    alpha_envelope_cv: 1.0
+  weighting_status: neutral_design_default_pending_validation
+  whitening: false
+  missing_coordinate_policy: invalidate_full_space_distance
+  pairwise_dimension_renormalization: false
+exports:
+  primary: coords_9d
+  raw_features: true
+  scaled_coordinates: true
+  coordinate_validity_mask: true
+  per_channel_candidate_features: true
+  auxiliary:
+  - spatial_logvariance_dispersion
+  metadata:
+  - coordinate_order
+  - definition_version
+  - units
+  - source_hashes
+  - estimator_hashes
+  - anchor_hash
+  - reference
+  - channel_set
+  - window_start
+  - window_end
+  - edge_support
+downstream:
+  derivatives:
+    enabled: false
+    timebase: actual_window_timestamps
+  nominal_coordinate_rate_hz: 0.25
+validation:
+  fill_missing_with_zero: false
+  require_estimator_parity_before_activation: true
+  promotion_status: candidate_screen_complete_pending_implementation_and_comparative_validation
+  require_all_nine_coordinates_for_complete_state: true
+
+# Keep every computable window in the versioned measurement export. QC remains
+# alongside values and does not suppress measurements in this exploratory run.
+summarize:
+  qc_policy: keep_all

@@ -1623,6 +1623,49 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         else "unknown"
     )
     support_provenance = payload_meta.get("signal_support_provenance", {}) if isinstance(payload_meta, Mapping) else {}
+    # MNPS 3.4 candidates are computed on the preprocessed source segment
+    # before per-window row assembly. They are opt-in and live beside, rather
+    # than inside, the legacy v2 projection feature map.
+    v3_4_candidates_by_epoch: Dict[int, Dict[str, Any]] = {}
+    try:
+        from ..mnps.v3_4 import compute_eeg_candidates, resolve_v3_4_config
+
+        v3_4_cfg = resolve_v3_4_config(config)
+        if v3_4_cfg and bool(v3_4_cfg.get("enabled", False)):
+            eeglab_import_meta = payload_meta.get("eeglab_import", {}) if isinstance(payload_meta, Mapping) else {}
+            flattened_epochs = (
+                isinstance(eeglab_import_meta, Mapping)
+                and str(eeglab_import_meta.get("source", "")).strip().lower() == "eeglab_epoched_concat"
+            )
+            candidate_records = compute_eeg_candidates(
+                np.asarray(eeg_data),
+                sfreq=float(sfreq),
+                windows=meta,
+                channel_labels=list(eeg_channel_names or []),
+                config=config,
+                dataset_id=str(dataset_id) if dataset_id is not None else None,
+                reference=str(reference_mode) if reference_mode else None,
+                reference_set_hash=(
+                    str(payload_meta.get("reference_set_hash"))
+                    if isinstance(payload_meta, Mapping) and payload_meta.get("reference_set_hash")
+                    else None
+                ),
+                source_file=str(raw_file_path) if raw_file_path is not None else None,
+                preprocessed_segmented_epochs=flattened_epochs,
+            )
+            v3_4_candidates_by_epoch = {
+                int(window_meta[0]): record
+                for window_meta, record in zip(meta, candidate_records)
+            }
+    except Exception:
+        # Explicit v3.4 activation is a measurement request: configuration and
+        # provenance errors must fail extraction rather than silently omit it.
+        if isinstance(config, Mapping):
+            requested_v3_4 = config.get("mnps_v3_4", {})
+            requested_v3_4 = requested_v3_4 if isinstance(requested_v3_4, Mapping) else config
+            if bool(requested_v3_4.get("enabled", False)) or config.get("schema") == "mnps_flat_coordinates":
+                raise
+        logger.exception("Optional MNPS 3.4 candidate extraction failed")
     v31_cfg = config.get("mnps_v3_1_measurements", {}) if isinstance(config, Mapping) else {}
     v31_cfg = v31_cfg if isinstance(v31_cfg, Mapping) else {}
     v31_enabled = bool(v31_cfg.get("enabled", False))
@@ -1773,6 +1816,52 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
             ),
             **technical_qc,
         }
+        v3_4_record = v3_4_candidates_by_epoch.get(int(epoch_id))
+        if v3_4_record is not None:
+            for key in (
+                "alpha_centroid_hz",
+                "alpha_envelope_cv",
+                "spatial_logvariance_dispersion",
+                "alpha_centroid_status",
+                "alpha_envelope_status",
+                "spatial_logvariance_status",
+                "alpha_centroid_channel_count",
+                "alpha_envelope_channel_count",
+                "spatial_logvariance_channel_count",
+                "channel_labels_json",
+                "channel_set_hash",
+                "channel_compatibility_set_hash",
+                "channel_order_hash",
+                "reference",
+                "reference_set_hash",
+                "reference_status",
+                "dataset_id",
+                "source_file",
+                "source_surface_hash",
+                "alpha_centroid_hz_per_channel_json",
+                "alpha_envelope_cv_per_channel_json",
+                "spatial_logvariance_per_channel_json",
+                "alpha_envelope_edge_guard_sec",
+                "implementation_hashes_json",
+                "source_component_hashes_json",
+            ):
+                if key not in v3_4_record:
+                    continue
+                value = v3_4_record[key]
+                col_name = f"mnps_v3_4_{key}"
+                if key == "alpha_centroid_hz":
+                    col_name = "mnps_v3_4_alpha_centroid_hz"
+                elif key == "alpha_envelope_cv":
+                    col_name = "mnps_v3_4_alpha_envelope_cv"
+                elif key == "spatial_logvariance_dispersion":
+                    col_name = "mnps_v3_4_spatial_logvariance_dispersion"
+                features_dict[col_name] = value
+            features_dict["mnps_v3_4_channel_count"] = int(len(eeg_channel_names or []))
+            features_dict["mnps_v3_4_source_file_sha256"] = source_identity_metadata.get("source_sha256")
+            features_dict["mnps_v3_4_source_file_sha256_component"] = (
+                Path(str(raw_file_path)).name if raw_file_path is not None else "unknown_source_component"
+            )
+            features_dict["mnps_v3_4_source_identity_basis"] = source_identity_metadata.get("identity_basis")
         if stage_by_epoch_id:
             features_dict["stage"] = int(stage_by_epoch_id.get(int(epoch_id), -1))
         for label_name, value_map in nwb_labels_by_epoch_id.items():

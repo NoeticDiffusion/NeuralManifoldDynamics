@@ -2,7 +2,11 @@
 
 A practical reference for neuroscientists adding a new EEG or fMRI dataset.
 
-Documented for **NeuralManifoldDynamics 3.0.2**. Canonical MNPS `[m,d,e]` / 9D
+This guide describes the established MNPS v2/v3.0 configuration surfaces.
+Package metadata and the latest formal release notes currently report 3.1.0.
+MNPS 3.4 is a separate opt-in experimental measurement definition; use
+[`MNPS_VERSIONED_GUIDE.md`](MNPS_VERSIONED_GUIDE.md) for its YAML, coordinate,
+anchor, and output contract. Canonical MNPS `[m,d,e]` / 9D
 and `J_hat` are unchanged from v2.6. Existing family schema IDs
 (`mndm.diffusion_geometry.v1`, `mndm.committor.v1`,
 `mndm.finite_amplitude_resilience.v1`) remain; v3 also adds

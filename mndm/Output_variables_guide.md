@@ -1,5 +1,12 @@
 ### HDF5 output schema (MNDM 3.0 release line)
 
+This guide describes the established canonical MNPS v2/v3.0 output contract.
+It does not fully describe the separate experimental MNPS 3.4 measurement
+group. For `/measurements/v3_4/`, its masks, provenance, standalone sidecar,
+and legacy-output coexistence, see
+[`MNPS_VERSIONED_GUIDE.md`](MNPS_VERSIONED_GUIDE.md). Do not interpret v3.4
+values using the legacy `coords_9d` or Jacobian definitions below.
+
 This file documents the **canonical groups/datasets and the attributes needed to
 interpret them**, written by the MNDM summarization pipeline into each `*.h5`.
 `payload.attrs` are copied through to `h5.attrs` largely as-is and are **not**

@@ -2,16 +2,16 @@
 
 Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation for EEG and fMRI workflows.
 
-Current documented release line: **NeuralManifoldDynamics 3.0.2**.
-
-Version 3.0.2 keeps the frozen MNPS chart from v3.0.0 / 2.1: canonical
-`mnps_3d = [m,d,e]`, stratified `coords_9d`, and the dynamical-family identities
-from v3.0.1. This patch tightens the common fMRI measurement contract (TR,
-atlas space, nuisance, gap-aware time, and an underdetermined-Jacobian gate)
-and adds `nemar_ingest` for public NEMAR BIDS downloads. Biological inference
-remains downstream in `nmd-analysis`.
-
-See `release_notes/RELEASE_NOTES_v3.0.2.md` and `CHANGELOG.md`.
+Version labels in this checkout refer to different things: package metadata and
+the latest release notes are **3.1.0**, and MNPS **3.4** is
+an opt-in experimental EEG measurement definition, not a package release. The
+canonical/default MNPS v2 workflow remains available. See
+[`mndm/MNPS_VERSIONED_GUIDE.md`](mndm/MNPS_VERSIONED_GUIDE.md) for the version
+map, v3.4 measurement contract, frozen references, outputs, evidence, and
+limits. Release history is in
+[`release_notes/RELEASE_NOTES_v3.1.0.md`](release_notes/RELEASE_NOTES_v3.1.0.md),
+the earlier [`release_notes/RELEASE_NOTES_v3.0.2.md`](release_notes/RELEASE_NOTES_v3.0.2.md),
+and [`CHANGELOG.md`](CHANGELOG.md).
 
 This root README is intentionally high-level. Package-specific usage, schema details, and command references live in each subproject.
 

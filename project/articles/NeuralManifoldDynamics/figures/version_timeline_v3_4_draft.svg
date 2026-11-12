@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-labelledby="title desc">
+<title id="title">NeuralManifoldDynamics release history and experimental measurement definition</title>
+<desc id="desc">Seven release milestones through v3.0.0, plus a separate experimental flat 9D EEG measurement definition. MNPS 3.4 is not a package release and does not replace canonical coordinates or legacy Jacobians.</desc>
+<defs><style>
+.title { font: 700 32px "Times New Roman", serif; fill: #172033; }
+.subtitle { font: 400 23px "Times New Roman", serif; fill: #445168; }
+.version { font: 700 27px "Times New Roman", serif; fill: #fff; }
+.body { font: 400 22px "Times New Roman", serif; fill: #172033; }
+.card { fill: #f5f7fa; stroke: #bdc7d3; stroke-width: 1.5; }
+</style></defs>
+<rect width="1200" height="640" fill="#fff"/>
+<text x="600" y="40" text-anchor="middle" class="title">Release history through v3.0.0 and an experimental MNPS 3.4 definition</text>
+<text x="600" y="77" text-anchor="middle" class="subtitle">Release sequence is left to right, then the second row. The v3.4 callout is not a package release.</text>
+<g transform="translate(30,110)">
+<rect width="270" height="205" rx="9" class="card"/>
+<rect width="270" height="48" rx="9" fill="#667085"/>
+<text x="135" y="33" text-anchor="middle" class="version">MNPS 1.2</text>
+<text x="17" y="89" class="body">Weighted trajectory export</text>
+<text x="17" y="130" class="body">Early proxy summaries</text>
+</g>
+<g transform="translate(320,110)">
+<rect width="270" height="205" rx="9" class="card"/>
+<rect width="270" height="48" rx="9" fill="#35669b"/>
+<text x="135" y="33" text-anchor="middle" class="version">v2.1</text>
+<text x="17" y="89" class="body">Fixed 3D / 9D charts</text>
+<text x="17" y="130" class="body">Subject / cohort anchors</text>
+<text x="17" y="171" class="body">Feature provenance</text>
+</g>
+<g transform="translate(610,110)">
+<rect width="270" height="205" rx="9" class="card"/>
+<rect width="270" height="48" rx="9" fill="#72548f"/>
+<text x="135" y="33" text-anchor="middle" class="version">v2.3</text>
+<text x="17" y="89" class="body">Embodied anchor contract</text>
+<text x="17" y="130" class="body">Separate from MNPS</text>
+<text x="17" y="171" class="body">Extended in v2.4</text>
+</g>
+<g transform="translate(900,110)">
+<rect width="270" height="205" rx="9" class="card"/>
+<rect width="270" height="48" rx="9" fill="#a36237"/>
+<text x="135" y="33" text-anchor="middle" class="version">v2.4</text>
+<text x="17" y="89" class="body">Geometry validity</text>
+<text x="17" y="130" class="body">HRV superwindows</text>
+<text x="17" y="171" class="body">MEG / block sidecars</text>
+</g>
+<g transform="translate(30,355)">
+<rect width="360" height="205" rx="9" class="card"/>
+<rect width="360" height="48" rx="9" fill="#367968"/>
+<text x="180" y="33" text-anchor="middle" class="version">v2.5.0</text>
+<text x="17" y="89" class="body">BDF and NWB adapters</text>
+<text x="17" y="130" class="body">Neuropixels / LFP features</text>
+<text x="17" y="171" class="body">Phase-aware surfaces</text>
+</g>
+<g transform="translate(420,355)">
+<rect width="360" height="205" rx="9" class="card"/>
+<rect width="360" height="48" rx="9" fill="#42617b"/>
+<text x="180" y="33" text-anchor="middle" class="version">v2.6.0</text>
+<text x="17" y="89" class="body">Jacobian-derived metrics</text>
+<text x="17" y="130" class="body">Finite-time response</text>
+<text x="17" y="171" class="body">Gated residual contracts</text>
+</g>
+<g transform="translate(810,355)">
+<rect width="360" height="205" rx="9" class="card"/>
+<rect width="360" height="48" rx="9" fill="#244b63"/>
+<text x="180" y="33" text-anchor="middle" class="version">v3.0.0</text>
+<text x="17" y="89" class="body">Dynamical-family outputs</text>
+<text x="17" y="130" class="body">Validity / grain / support</text>
+<text x="17" y="171" class="body">Opt-in discrete spread</text>
+</g>
+<rect x="30" y="575" width="1140" height="58" rx="9" fill="#f5f0fb" stroke="#72548f" stroke-width="2"/>
+<text x="600" y="600" text-anchor="middle" class="body">MNPS 3.4: experimental flat 9D EEG measurements in a separate output group; no 3D projection or v3.4 Jacobian.</text>
+<text x="600" y="622" text-anchor="middle" class="body">Canonical [m,d,e], legacy coords_9d, and Jacobian outputs retain their own versioned contracts.</text>
+<text x="600" y="675" text-anchor="middle" class="subtitle">Computed measurements do not establish comparability, scientific qualification, or biological validity.</text>
+</svg>

@@ -246,3 +246,24 @@ tmp/pycache/
 AGENTS.md
 zenodo
 outputs/*
+
+# MNPS 3.4 documentation and article revision drafts requested for review.
+# Keep the broader project/ research and output trees ignored.
+!project/
+project/*
+!project/articles/
+project/articles/*
+!project/articles/NeuralManifoldDynamics/
+project/articles/NeuralManifoldDynamics/*
+!project/articles/NeuralManifoldDynamics/*_Revision_Draft.typ
+!project/articles/NeuralManifoldDynamics/Zenodo_version_changelog_draft.md
+!project/articles/NeuralManifoldDynamics/figures/
+project/articles/NeuralManifoldDynamics/figures/*
+!project/articles/NeuralManifoldDynamics/figures/*_draft.svg
+!project/articles/NeuralManifoldDynamics/output/
+project/articles/NeuralManifoldDynamics/output/*
+!project/articles/NeuralManifoldDynamics/output/pdf/
+project/articles/NeuralManifoldDynamics/output/pdf/*
+!project/diary/
+project/diary/*
+!project/diary/20261112_mnps_v3_4_documentation_consolidation.md

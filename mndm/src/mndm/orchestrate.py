@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import multiprocessing
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, Mapping, Optional
@@ -480,11 +481,15 @@ def cmd_features(
                 except Exception as e:
                     logger.warning("Failed to rewrite file_index.csv after filename_parse fill for %s: %s", ds_id, e)
             if subject:
-                subj_str = _normalize_subject_token(subject)
+                requested_subjects = {
+                    _normalize_subject_token(token)
+                    for token in re.split(r"[,;]", str(subject))
+                    if token.strip()
+                }
                 index_df = index_df[
-                    index_df["subject"].map(_normalize_subject_token) == subj_str
+                    index_df["subject"].map(_normalize_subject_token).isin(requested_subjects)
                 ]
-                logger.info("Filtered to subject %s: %s files", subject, len(index_df))
+                logger.info("Filtered to subject(s) %s: %s files", subject, len(index_df))
             index_df, excluded_count, excluded_patterns = apply_exclude_file_filters(
                 index_df,
                 config=config,
@@ -859,15 +864,48 @@ def cmd_features(
             try:
                 if parallel_supported:
                     run_cfg = config.get("run", {}) if isinstance(config, dict) else {}
+                    parallel_backend = str(run_cfg.get("parallel_backend", "loky")).strip().lower()
+                    if parallel_backend not in {"loky", "threading"}:
+                        raise ValueError(
+                            f"run.parallel_backend must be 'loky' or 'threading'; got {parallel_backend!r}"
+                        )
+                    parallel_preference = "threads" if parallel_backend == "threading" else "processes"
                     batch_size = int(run_cfg.get("parallel_batch_size", 200) or 200)
                     batch_size = max(1, batch_size)
                     for start in range(0, len(subject_task_list), batch_size):
                         batch = subject_task_list[start : start + batch_size]
+                        if parallel_backend == "threading":
+                            from concurrent.futures import ThreadPoolExecutor, as_completed
+
+                            logger.info(
+                                "Processing subject batch with native threads (workers=%d)",
+                                max_workers,
+                            )
+                            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                                futures = {
+                                    executor.submit(_process_subject_files, sub_id, files, config): sub_id
+                                    for sub_id, files in batch
+                                }
+                                for future in as_completed(futures):
+                                    sub_id = futures[future]
+                                    try:
+                                        for res in future.result() or []:
+                                            _handle_result(res)
+                                    except MemoryLimitExceeded:
+                                        raise
+                                    except Exception:
+                                        logger.exception(
+                                            "Threaded subject failed (%s); reprocessing its files sequentially",
+                                            sub_id,
+                                        )
+                                        for res in _process_subject_files(sub_id, dict(batch)[sub_id], config):
+                                            _handle_result(res)
+                            continue
                         try:
                             iter_results = Parallel(
                                 n_jobs=max_workers,
-                                backend="loky",
-                                prefer="processes",
+                                backend=parallel_backend,
+                                prefer=parallel_preference,
                                 verbose=joblib_verbose(verbose_logs=verbose_logs),
                                 return_as="generator",
                             )(
@@ -884,8 +922,8 @@ def cmd_features(
                             )
                             results = Parallel(
                                 n_jobs=max_workers,
-                                backend="loky",
-                                prefer="processes",
+                                backend=parallel_backend,
+                                prefer=parallel_preference,
                                 verbose=joblib_verbose(verbose_logs=verbose_logs),
                             )(
                                 delayed(_process_subject_files)(sub_id, files, config)
@@ -959,6 +997,7 @@ def cmd_summarize(
     n_jobs: int = 1,
     mnps_overrides: Optional[Dict[str, Any]] = None,
     anchor_fit_options: Optional[Dict[str, Any]] = None,
+    v3_4_anchor_options: Optional[Dict[str, Any]] = None,
     resume_run: Path | None = None,
 ) -> int:
     """Project features to MNPS tensors and write HDF5/JSON outputs."""
@@ -976,6 +1015,29 @@ def cmd_summarize(
             )
             return 1
         config_for_run = copy.deepcopy(config)
+        if config_path is not None:
+            if not config_for_run.get("config_dir"):
+                config_for_run["config_dir"] = str(Path(config_path).expanduser().resolve().parent)
+        if v3_4_anchor_options:
+            from .mnps.v3_4.candidates import resolve_v3_4_config
+
+            v34_cfg = resolve_v3_4_config(config_for_run)
+            if not v34_cfg or not bool(v34_cfg.get("enabled", False)):
+                raise ValueError("--mnps-v3-4-anchor-* options require an enabled MNPS 3.4 configuration")
+            scaling_cfg = v34_cfg.get("scaling", {})
+            if not isinstance(scaling_cfg, dict):
+                raise ValueError("MNPS 3.4 scaling configuration must be a mapping")
+            configured_selection = scaling_cfg.get("external_anchor", {})
+            configured_selection = configured_selection if isinstance(configured_selection, dict) else {}
+            if configured_selection.get("preset") or configured_selection.get("path"):
+                raise ValueError(
+                    "A configured MNPS 3.4 external_anchor selection and CLI anchor selection are both active; "
+                    "choose one source"
+                )
+            selection = dict(configured_selection)
+            selection.update({k: v for k, v in v3_4_anchor_options.items() if v is not None})
+            scaling_cfg["external_anchor"] = selection
+            v34_cfg["scaling"] = scaling_cfg
         if anchor_fit_options:
             proj_cfg = config_for_run.setdefault("mnps_projection", {})
             if not isinstance(proj_cfg, dict):

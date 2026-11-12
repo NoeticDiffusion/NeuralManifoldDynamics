@@ -1,7 +1,10 @@
 # MNDM + OpenNeuro Ingest CLI Reference
 
-Documented for **NeuralManifoldDynamics 3.0.2**. Canonical MNPS commands are
-unchanged from v2.6. Common fMRI Jacobians use the v3.0.2 support gate.
+This command sheet covers the established MNPS v2/v3.0 workflows. Package
+metadata and the latest formal release notes currently report 3.1.0.
+The opt-in experimental MNPS 3.4 commands, anchor options, and inspection
+contract are documented in [`MNPS_VERSIONED_GUIDE.md`](MNPS_VERSIONED_GUIDE.md).
+Canonical MNPS commands are unchanged from v2.6. Common fMRI Jacobians use the v3.0.2 support gate.
 Dynamical families and Gate F \(W_Q\) stay on the dynamical-families overlay,
 not on common EEG/fMRI/ephys profiles. See `CONFIG_GUIDE.md` and
 `../release_notes/RELEASE_NOTES_v3.0.2.md`.
@@ -27,7 +30,8 @@ pip install -r requirements.txt
 If you run from this monorepo checkout without installing the packages editably, set `PYTHONPATH` first:
 
 ```powershell
-$env:PYTHONPATH="H:/SourceRepo2/NeuralManifoldDynamics/mndm/src;H:/SourceRepo2/NeuralManifoldDynamics/core/src;H:/SourceRepo2/NeuralManifoldDynamics/openneuro_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/apollo_ingest/src;H:/SourceRepo2/NeuralManifoldDynamics/vitaldb_ingest/src"
+$repo_root = (Resolve-Path .).Path
+$env:PYTHONPATH = "$repo_root/mndm/src;$repo_root/core/src;$repo_root/openneuro_ingest/src;$repo_root/apollo_ingest/src;$repo_root/vitaldb_ingest/src"
 ```
 
 ---

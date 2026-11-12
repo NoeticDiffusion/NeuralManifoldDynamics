@@ -3401,6 +3401,9 @@ def preprocess_file(
         bad_channel_cfg = robustness_cfg.get("bad_channels", {}) if isinstance(robustness_cfg, Mapping) else {}
         if isinstance(bad_channel_cfg, Mapping) and bool(bad_channel_cfg.get("enabled", False)):
             raise ValueError("causal_finite EDF mode refuses whole-recording bad-channel selection")
+        heuristic_exclusion_cfg = preprocess_cfg.get("heuristic_bad_channel_exclusion", {}) if isinstance(preprocess_cfg, Mapping) else {}
+        if isinstance(heuristic_exclusion_cfg, Mapping) and bool(heuristic_exclusion_cfg.get("enabled", False)):
+            raise ValueError("causal_finite EDF mode refuses whole-recording heuristic EEG channel exclusion")
     signal_support_provenance["temporal_support_mode"] = temporal_support_mode
     if causal_edf_sample_grid is not None:
         signal_support_provenance["edf_sample_grid"] = causal_edf_sample_grid
@@ -4298,13 +4301,36 @@ def preprocess_file(
     preprocess_timings["resample_late"] = float(time.perf_counter() - t_resample_late0)
 
     # Detect and drop obviously bad EEG-like channels (simple heuristics) BEFORE CAR reref.
-    bad_channel_cfg = (config.get("robustness", {}).get("bad_channels", {}) if isinstance(config, dict) else {}) or {}
+    # Respect the versioned heuristic exclusion switch. The legacy default
+    # remains enabled for existing overlays that omit the new switch.
+    preprocess_cfg = config.get("preprocess", {}) if isinstance(config, Mapping) else {}
+    heuristic_exclusion_cfg = (
+        preprocess_cfg.get("heuristic_bad_channel_exclusion", {})
+        if isinstance(preprocess_cfg, Mapping)
+        else {}
+    )
+    heuristic_exclusion_cfg = (
+        heuristic_exclusion_cfg if isinstance(heuristic_exclusion_cfg, Mapping) else {}
+    )
+    bad_channel_detection_enabled = bool(heuristic_exclusion_cfg.get("enabled", True))
+    # Preserve the existing thresholds under robustness.bad_channels.
+    robustness_cfg = config.get("robustness", {}) if isinstance(config, Mapping) else {}
+    bad_channel_cfg = (
+        robustness_cfg.get("bad_channels", {})
+        if isinstance(robustness_cfg, Mapping)
+        else {}
+    )
+    bad_channel_cfg = bad_channel_cfg if isinstance(bad_channel_cfg, Mapping) else {}
     t_badch0 = time.perf_counter()
     if source_datatype == "ecg":
-        bad_info = {"bad_channels": [], "reasons": {}}
+        bad_info = {"bad_channels": [], "reasons": {}, "status": "not_applicable_ecg"}
+        bad_eeg_channels = []
+    elif not bad_channel_detection_enabled:
+        bad_info = {"bad_channels": [], "reasons": {}, "status": "disabled_by_config"}
         bad_eeg_channels = []
     else:
         bad_info = _detect_bad_eeg_channels(raw, bad_channel_cfg)
+        bad_info["status"] = "applied"
         bad_eeg_channels = bad_info.get("bad_channels", []) or []
         if causal_finite_mode and bad_eeg_channels:
             raise ValueError("causal_finite EDF mode refuses whole-recording bad-channel exclusion")
@@ -4630,6 +4656,11 @@ def preprocess_file(
         "applied": bool(artifact_applied),
         "bad_eeg_channels": bad_eeg_channels,
         "bad_eeg_reasons": bad_info.get("reasons", {}),
+        "bad_channel_detection": {
+            "method": "variance_correlation_heuristic",
+            "enabled": bool(bad_channel_detection_enabled),
+            "status": str(bad_info.get("status", "unknown")),
+        },
     }
 
     final_eeg_labels = list(channels_dict.get("eeg", []))

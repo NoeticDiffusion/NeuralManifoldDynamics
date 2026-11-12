@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="500" viewBox="0 0 1200 500" role="img" aria-labelledby="title desc">
+<title id="title">Experimental MNPS 3.4 EEG measurement flow</title>
+<desc id="desc">Separate flat 9D measurement path from common EEG windows through frozen feature and coordinate references to support-aware HDF5 output.</desc>
+<defs><style>
+.title { font: 700 31px "Times New Roman", serif; fill: #172033; }
+.subtitle { font: 400 20px "Times New Roman", serif; fill: #445168; }
+.head { font: 700 23px "Times New Roman", serif; fill: #172033; }
+.body { font: 400 18px "Times New Roman", serif; fill: #172033; }
+.small { font: 400 16px "Times New Roman", serif; fill: #445168; }
+.box { fill: #f7f9fc; stroke: #73839a; stroke-width: 2; }
+.feature { fill: #eff6ff; stroke: #2563eb; }
+.anchor { fill: #f5f0fb; stroke: #72548f; }
+.output { fill: #f0fdf4; stroke: #16835d; }
+.arrow { stroke: #334155; stroke-width: 4; fill: none; marker-end: url(#arrow); }
+</style>
+<marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto"><path d="M 0 0 L 12 6 L 0 12 z" fill="#334155"/></marker>
+</defs>
+<rect width="1200" height="500" fill="#ffffff"/>
+<text x="600" y="43" text-anchor="middle" class="title">Experimental MNPS 3.4 EEG measurement path</text>
+<text x="600" y="76" text-anchor="middle" class="subtitle">Nine ordered measurements with estimator and support provenance</text>
+
+<rect x="35" y="112" width="330" height="255" rx="14" class="box feature"/>
+<text x="200" y="151" text-anchor="middle" class="head">1. Window features</text>
+<text x="60" y="190" class="body">Inherited common EEG rows:</text>
+<text x="60" y="218" class="body">channel medians, bandpowers,</text>
+<text x="60" y="246" class="body">ratios, Hjorth, permutation entropy.</text>
+<text x="60" y="287" class="body">New alpha candidates use native</text>
+<text x="60" y="315" class="body">channels; per-channel values and</text>
+<text x="60" y="343" class="body">support remain identifiable.</text>
+
+<rect x="435" y="112" width="330" height="255" rx="14" class="box anchor"/>
+<text x="600" y="151" text-anchor="middle" class="head">2. Frozen references</text>
+<text x="460" y="194" class="body">Transform declared power inputs</text>
+<text x="460" y="222" class="body">Feature robust center and scale</text>
+<text x="460" y="250" class="body">Assemble fixed coordinate order</text>
+<text x="460" y="278" class="body">Coordinate robust center and scale</text>
+<text x="460" y="324" class="small">Strict by default; transfer requires</text>
+<text x="460" y="348" class="small">an explicit mode and reason.</text>
+
+<rect x="835" y="112" width="330" height="255" rx="14" class="box output"/>
+<text x="1000" y="151" text-anchor="middle" class="head">3. Measurement output</text>
+<text x="860" y="194" class="body">/measurements/v3_4/</text>
+<text x="860" y="222" class="body">Raw and anchored values, masks</text>
+<text x="860" y="250" class="body">Window support, QC, time bounds</text>
+<text x="860" y="278" class="body">Sensor, reference, anchor hashes</text>
+<text x="860" y="306" class="body">qualified = false</text>
+<text x="860" y="348" class="small">Unsupported anchors preserve raw data.</text>
+
+<line x1="365" y1="238" x2="427" y2="238" class="arrow"/>
+<line x1="765" y1="238" x2="827" y2="238" class="arrow"/>
+<rect x="35" y="405" width="1130" height="55" rx="10" fill="#fff7ed" stroke="#c16a2b" stroke-width="2"/>
+<text x="600" y="440" text-anchor="middle" class="head">Nine ordered values, per-window support, explicit sensor and reference identity</text>
+</svg>

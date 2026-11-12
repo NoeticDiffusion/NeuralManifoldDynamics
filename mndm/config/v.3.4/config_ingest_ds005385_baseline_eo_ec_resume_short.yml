@@ -1,0 +1,12 @@
+# Resume overlay for the one EC source with 14 supported epochs and 60 s
+# effective coverage. Lower only the run-level minimum epoch gate for this
+# one-subject resume so computable outputs are preserved; per-window support,
+# validity, and QC remain unchanged and visible in the H5.
+imports:
+  - config_ingest_ds005385_baseline_eo_ec.yml
+
+robustness:
+  coverage:
+    datasets:
+      ds005385:
+        min_epochs: 14

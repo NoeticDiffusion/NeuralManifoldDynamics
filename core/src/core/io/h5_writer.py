@@ -153,6 +153,57 @@ def _write_nested_mapping_group(
         _write_value(root, str(key), value)
 
 
+def write_measurement_export_sidecar(
+    path: str | Path,
+    *,
+    measurement_id: str,
+    measurement_payload: Mapping[str, Any],
+    recording_identity: Mapping[str, Any],
+    skip_reason: str,
+) -> Path:
+    """Write a measurement-only HDF5 when the canonical summary is skipped.
+
+    The sidecar keeps its own time axis and makes no synthetic MNPS v2 arrays.
+    """
+    if h5py is None:
+        raise RuntimeError("h5py is required to write a measurement export sidecar")
+    if not isinstance(measurement_payload, Mapping) or not measurement_payload:
+        raise ValueError("measurement_payload must be a nonempty mapping")
+    out_path = Path(path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = out_path.with_name(f".{out_path.name}.tmp")
+    if temp_path.exists():
+        temp_path.unlink()
+    try:
+        with h5py.File(temp_path, "w") as h5:
+            h5.attrs["measurement_only"] = True
+            h5.attrs["source_summary_status"] = "canonical_summary_skipped"
+            h5.attrs["skip_reason"] = str(skip_reason)
+            h5.attrs["measurement_time_axis"] = "window_start_sec and window_end_sec in /measurements/<id>"
+            identity = h5.require_group("recording_identity")
+            for key, value in recording_identity.items():
+                if value is None:
+                    continue
+                identity.attrs[_sanitize_h5_key(str(key))] = _prepare_attr_value(value)
+            measurements = h5.require_group("measurements")
+            measurements.attrs["_schema_version"] = "mndm.measurements.v1"
+            _write_nested_mapping_group(
+                measurements,
+                str(measurement_id),
+                measurement_payload,
+                schema_version=str(measurement_payload.get("schema", "mndm.measurement.v1")),
+            )
+            h5.flush()
+        temp_path.replace(out_path)
+    except Exception:
+        try:
+            temp_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        raise
+    return out_path
+
+
 def _write_extensions_group(h5: h5py.File, extensions: Mapping[str, Any]) -> None:
     """Write nested extension outputs under an ``extensions`` group.
 
@@ -775,13 +826,19 @@ def write_h5(
             measurement_schema = str(
                 measurement_exports.get("schema_version", "mndm.measurements.v1")
             )
-            v31_payload = measurement_exports.get("v3_1")
-            if isinstance(v31_payload, Mapping) and v31_payload:
+            # Measurement families are versioned and remain separate from the
+            # canonical MNPS coordinates. Keep the established v3.1 group and
+            # allow explicitly named experimental versions such as v3.4.
+            for measurement_id, measurement_payload in measurement_exports.items():
+                if measurement_id == "schema_version" or not isinstance(measurement_payload, Mapping):
+                    continue
+                if not measurement_payload:
+                    continue
                 _write_nested_mapping_group(
                     measurements_root,
-                    "v3_1",
-                    v31_payload,
-                    schema_version=str(v31_payload.get("schema", measurement_schema)),
+                    str(measurement_id),
+                    measurement_payload,
+                    schema_version=str(measurement_payload.get("schema", measurement_schema)),
                 )
 
         if payload.nn_indices is not None and payload.nn_indices.size:

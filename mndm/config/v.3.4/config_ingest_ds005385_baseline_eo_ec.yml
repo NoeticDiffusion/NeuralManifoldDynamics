@@ -1,0 +1,90 @@
+# MNPS 3.4 ds005385 cohort reference extraction.
+# Imports the v3.4 schema and shared EEG defaults, then freezes the 608
+# session-1 pre-task EyesClosed/EyesOpen recordings in a separate output root.
+imports:
+  - config_ingest_common_eeg_9d.yml
+
+datasets:
+  - ds005385
+
+pilot_selection:
+  subject_ids: 'all complete ses-1 EC/EO pairs in cohort_selection_manifest.json'
+  tasks: [EyesClosed, EyesOpen]
+  sessions: [ses-1]
+  rationale: 'Frozen metadata-only inclusion manifest; no subject sampling or outcome-based selection.'
+
+# Keep only the first-session baseline EC/EO pair, before cognitive tasks.
+# The output-root file_index.csv is a metadata-only manifest with blank MD5s.
+exclude-files:
+  - '(?i)ses-(?!1(?:[/_.-]|$))'
+  - '(?i)acq-(?!pre(?:[_/.-]|$))'
+  - '(?i)task-(?!(?:EyesClosed|EyesOpen)(?:[_/.-]|$))'
+
+paths:
+  received_dir: 'K:/ExternalReceivedDatasets/nemar'
+  processed_dir: 'M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261111_mnps_v3_4_ds005385_baseline_cohort/processed'
+  dataset_received_dirs:
+    ds005385: 'K:/ExternalReceivedDatasets/nemar/on005385'
+
+run:
+  parallel_backend: loky
+
+preprocess:
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+measurement_surface:
+  feature_units:
+    eeg_delta: microvolt^2
+    eeg_theta: microvolt^2
+    eeg_alpha: microvolt^2
+    eeg_beta_alpha: dimensionless_ratio
+    eeg_gamma: microvolt^2
+    eeg_hjorth_mobility: dimensionless_per_sample
+    eeg_alpha_theta: dimensionless_ratio
+    eeg_permutation_entropy: dimensionless
+    mnps_v3_4_alpha_centroid_hz: Hz
+    mnps_v3_4_alpha_envelope_cv: dimensionless
+  dataset_overlay:
+    dataset_id: ds005385
+    dataset_version: 'OpenNeuro ds005385 v1.0.3; NEMAR on005385 v1.0.0; DOI 10.82901/nemar.on005385'
+    sampling_rate_hz: 1000
+    realized_sampling_rate_hz: 250
+    resampling_method: 'MNE resample to 250 Hz using common EEG preprocessing'
+    filter_specification: '50 Hz notch; 1-45 Hz EEG bandpass; candidate alpha estimator applies a separate 8-12 Hz order-4 zero-phase Butterworth filter'
+    reference: average
+    channel_selection: 'all 64 EEG channels present in each source file, native ordered labels; no channel dropping or interpolation'
+    bad_channel_policy: 'variance/correlation channel-drop heuristic disabled; no channel interpolation or silent drop'
+    channel_label_set_compatibility: 'casefold_for_anchor_matching; exact_labels_preserved'
+    continuous_segment_boundaries: 'source-file boundary plus any nonfinite all-channel sample runs; never bridge source files or concatenated epoched input'
+    edge_support_policy: 'alpha envelope/Hilbert values require a full window and a 10 s symmetric source-segment edge guard; support reason is emitted per window'
+    estimator_parameter_manifest: 'estimators section plus runtime SHA256 of the executed preprocessing, feature, candidate, and coordinate assembly code'
+    line_frequency_hz: 50
+
+scaling:
+  anchor_scope: 'ds005385 session-1 pre-task resting condition-specific experimental cohort reference'
+  anchor_id: ds005385_session1_pretask_condition_specific_20261111
+  anchor_manifest: null
+  anchor_manifests_by_condition:
+    EyesClosed:
+      anchor_id: ds005385_ses1_pretask_EyesClosed_20261111_v1
+      path: anchors/mnps_v3_4_ds005385_ses1_pretask_EyesClosed_20261111_v1.json
+    EyesOpen:
+      anchor_id: ds005385_ses1_pretask_EyesOpen_20261111_v1
+      path: anchors/mnps_v3_4_ds005385_ses1_pretask_EyesOpen_20261111_v1.json
+  external_anchor:
+    preset: null
+    path: null
+    compatibility: strict
+    transfer_reason: null
+    reference_feature_units: null
+  require_anchor_manifest_for_scaled_output: true
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: true
+  reference_sampling: equal_participant_weighted_window_distribution
+  pool_scalp_and_intracranial_anchors: false
+  pool_incompatible_measurement_surfaces: false
+  saturation_policy: none
+  nonpositive_log_input_policy: invalid_no_floor
+  missing_anchor_policy: error_for_scaled_output

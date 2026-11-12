@@ -2,8 +2,11 @@
 
 MNPS computation pipeline that computes per-epoch features and produces MNPS summaries, Jacobians, and derived outputs.
 
-Documented for **NeuralManifoldDynamics 3.1.0**. See
-[`../release_notes/RELEASE_NOTES_v3.1.0.md`](../release_notes/RELEASE_NOTES_v3.1.0.md).
+Package metadata and the latest formal release notes report **3.1.0**. MNPS
+3.4 is an opt-in experimental measurement definition and does
+not change the package version or default MNPS v2 contract. See
+[`MNPS_VERSIONED_GUIDE.md`](MNPS_VERSIONED_GUIDE.md) for the current version
+map, v3.4 outputs, frozen anchors, and verification limits.
 
 Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package covers feature extraction, summarization, packing, and structure checks.
 
@@ -15,6 +18,7 @@ Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package co
 | [`CONFIG_GUIDE.md`](CONFIG_GUIDE.md) | Step-by-step YAML config guide with recipes |
 | [`Command_cheat_sheet.md`](Command_cheat_sheet.md) | All CLI commands in one place |
 | [`Output_variables_guide.md`](Output_variables_guide.md) | Full HDF5 schema and variable reference |
+| [`MNPS_VERSIONED_GUIDE.md`](MNPS_VERSIONED_GUIDE.md) | Version map and opt-in MNPS 3.4 contract, reference anchors, HDF5 paths, and evidence |
 | [`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md) | v3.0.2 fMRI contract and NEMAR download |
 | [`../release_notes/RELEASE_NOTES_v3.1.0.md`](../release_notes/RELEASE_NOTES_v3.1.0.md) | Initial alternative MNPS candidate implementation |
 

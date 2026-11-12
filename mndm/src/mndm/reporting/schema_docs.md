@@ -1,4 +1,11 @@
-# Output Schemas – MNPS, Stratified MNPS v2, and Jacobians
+# Legacy Output Schemas – MNPS v2, Stratified MNPS v2, and Jacobians
+
+This page documents the established canonical/legacy HDF5 schema. It is not
+the schema reference for the independent experimental MNPS 3.4 payload under
+`/measurements/v3_4/`. See
+[`mndm/MNPS_VERSIONED_GUIDE.md`](../../../../mndm/MNPS_VERSIONED_GUIDE.md) for
+the v3.4 coordinate order, support masks, anchor provenance, and sidecar
+contract. A v3.4 group may coexist with the legacy paths described here.
 
 This document describes the **subject-level output schema** for the OpenNeuro ingest pipeline as written by `h5_writer` and `json_writer`. It focuses on MNPS tensors, optional Stratified MNPS v2 subcoordinates, and Jacobians (3D MNPS and higher-dimensional Stratified variants).
 
