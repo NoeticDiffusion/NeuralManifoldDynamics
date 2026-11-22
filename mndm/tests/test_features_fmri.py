@@ -53,6 +53,8 @@ def test_compute_fmri_features_basic_shape():
         "fmri_kuramoto_global",
         "fmri_modularity",
         "fmri_dFC_variance",
+        "fmri_dFC_variance_status",
+        "qc_fmri_dFC_variance_subwindow_count",
         "fmri_slow4_slow5_ratio",
         "fmri_ar1_coefficient",
         "fmri_gradient_ratio",
@@ -63,6 +65,9 @@ def test_compute_fmri_features_basic_shape():
     # Basic sanity checks on values
     assert np.all(np.isfinite(out["fmri_lf_power"]))
     assert np.all(np.isfinite(out["fmri_variance_global"]))
+    assert np.isnan(out["fmri_dFC_variance"]).all()
+    assert set(out["fmri_dFC_variance_status"]) == {"insufficient_temporal_fc_support"}
+    assert np.all(out["qc_fmri_dFC_variance_subwindow_count"] == 0)
     assert int(out["fmri_lf_power_delta_valid"].iloc[0]) == 0
     assert bool(np.isnan(out["fmri_lf_power_delta"].iloc[0]))
 
@@ -219,6 +224,9 @@ def test_dvars_scrubbed_epoch_projects_to_nan_not_zero():
     assert float(out.loc[1, "fmri_dvars"]) > 5.0
     assert bool(np.isnan(out.loc[1, "fmri_variance_global"]))
     assert np.isfinite(out.loc[0, "fmri_variance_global"])
+    assert out.loc[1, "fmri_dFC_variance_status"] == "scrubbed_high_dvars"
+    assert int(out.loc[1, "qc_fmri_dFC_variance_subwindow_count"]) == 0
+    assert bool(np.isnan(out.loc[1, "fmri_dFC_variance"]))
 
     x, coverage, _ = project_features_with_coverage(
         out,
@@ -351,18 +359,80 @@ def test_ar1_ar2_match_per_roi_corrcoef_loop():
     assert not np.isfinite(_compute_ar1_mean(epoch[:2, :2]))
 
 
-def test_dfc_fallback_reuses_epoch_fc_matrix():
-    """P2.2: too few subwindows → nanvar of the provided epoch FC, no second corrcoef."""
-    from mndm.features.fmri_epoch_metrics import _compute_dfc_variance, fc_triu_mean
+def test_dfc_variance_is_missing_when_temporal_support_is_insufficient():
+    """A single inner FC estimate cannot define temporal dFC variance."""
+    from mndm.features.fmri_epoch_metrics import _compute_dfc_variance_with_support
 
     rng = np.random.default_rng(1)
     epoch = rng.standard_normal((8, 16))
-    fc = np.corrcoef(epoch)
-    triu = fc[np.triu_indices_from(fc, k=1)]
-    expected = float(np.nanvar(triu[np.isfinite(triu)]))
-    got = _compute_dfc_variance(epoch, sfreq=1.0, min_timepoints_fc=10, fc_epoch=fc)
-    assert got == pytest.approx(expected, rel=0, abs=1e-12)
-    assert got != pytest.approx(fc_triu_mean(fc))
+    value, support_count, status = _compute_dfc_variance_with_support(
+        epoch, sfreq=1.0, min_timepoints_fc=10
+    )
+    assert not np.isfinite(value)
+    assert support_count == 1
+    assert status == "insufficient_temporal_fc_support"
+
+
+def test_dfc_variance_uses_temporal_variance_when_support_is_sufficient():
+    """Sufficient support computes variance across finite inner-window mean FC."""
+    from mndm.features.fmri_epoch_metrics import (
+        _compute_dfc_variance_with_support,
+        fc_triu_mean,
+    )
+
+    epoch = np.random.default_rng(3).standard_normal((8, 45))
+    fc_means = [
+        fc_triu_mean(np.corrcoef(epoch[:, start : start + 15]))
+        for start in range(0, epoch.shape[1] - 15 + 1, 5)
+    ]
+    expected = float(np.var(np.asarray(fc_means, dtype=float)))
+
+    value, support_count, status = _compute_dfc_variance_with_support(
+        epoch, sfreq=1.0, min_timepoints_fc=10
+    )
+
+    assert support_count == 7
+    assert value == pytest.approx(expected, rel=0, abs=1e-12)
+    assert status == "computed_temporal_variance"
+
+
+def test_dfc_qc_parquet_export_projection_and_h5_feature_bundle(tmp_path):
+    """dFC QC survives Parquet; numeric export/projection preserve missingness."""
+    pytest.importorskip("pyarrow")
+
+    from mndm.projection import build_feature_export_bundle, project_features_v2
+
+    frame = pd.DataFrame(
+        {
+            "fmri_dFC_variance": [0.2, 0.4, np.nan, np.nan],
+            "fmri_dFC_variance_status": [
+                "computed_temporal_variance",
+                "computed_temporal_variance",
+                "insufficient_temporal_fc_support",
+                "scrubbed_high_dvars",
+            ],
+            "qc_fmri_dFC_variance_subwindow_count": [3, 2, 1, 2],
+        }
+    )
+    parquet_path = tmp_path / "features.parquet"
+    frame.to_parquet(parquet_path, index=False)
+    reloaded = pd.read_parquet(parquet_path)
+
+    assert reloaded["fmri_dFC_variance_status"].tolist() == frame["fmri_dFC_variance_status"].tolist()
+    assert reloaded["qc_fmri_dFC_variance_subwindow_count"].tolist() == [3, 2, 1, 2]
+    assert np.isnan(reloaded.loc[2:, "fmri_dFC_variance"]).all()
+
+    bundle = build_feature_export_bundle(reloaded, v2_features=["fmri_dFC_variance"])
+    assert bundle["raw_names"] == ["fmri_dFC_variance"]
+    assert np.isnan(bundle["raw_values"][2:, 0]).all()
+
+    projected, names, _ = project_features_v2(
+        reloaded, {"d_l": {"fmri_dFC_variance": 1.0}}
+    )
+    assert names == ["d_l"]
+    assert projected[0, 0] == pytest.approx(0.2)
+    assert projected[1, 0] == pytest.approx(0.4)
+    assert np.isnan(projected[2:, 0]).all()
 
 
 def _participation_loop(fc: np.ndarray, roi_names: list[str]) -> float:

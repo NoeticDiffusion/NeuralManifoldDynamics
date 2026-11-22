@@ -58,6 +58,7 @@ FEATURE_EXPORT_EXACT_EXCLUDED = {
     "eeg_entropy_backend",
     "eeg_entropy_reason",
     "eeg_entropy_degraded_mode",
+    "qc_fmri_dFC_variance_subwindow_count",
     "source_sfreq_hz",
     "source_first_samp",
     "preprocessed_sfreq_hz",

@@ -1574,6 +1574,26 @@ retune the threshold to rescue a dataset; disable `compute_dvars` on that
 overlay when the units do not match, and keep framewise displacement as
 the motion column.
 
+### Dynamic FC support
+
+`fmri_dFC_variance` is the temporal variance of finite mean-FC estimates from
+the configured inner subwindows. It requires at least two such estimates.
+With two or more, `fmri_dFC_variance_status` is
+`computed_temporal_variance`. With fewer than two, the value is NaN, the status
+is `insufficient_temporal_fc_support`, and
+`qc_fmri_dFC_variance_subwindow_count` records the actual finite support count.
+An epoch suppressed by the DVARS scrub is marked
+`fmri_dFC_variance_status=scrubbed_high_dvars`; its subwindow count is still
+retained.
+The status and `qc_` count are row-level fields in `features.parquet`; they are
+excluded from the numeric HDF5 feature matrix and from MNPS projection. Static
+dispersion across edges of a single-window FC matrix is not a fallback for
+temporal dFC variance. This preserves the value definition when temporal
+support exists and removes the legacy mixed-estimand fallback. Older feature
+tables have no status/count fields, so unsupported legacy values cannot be
+identified from the saved dFC value alone; compare them only after recomputing
+support or treat their branch as unknown.
+
 ### `fs_out` versus realized dt
 
 `mnps.fs_out` is not the derivative time base. Common fMRI sets
@@ -1617,8 +1637,9 @@ band-limited power:
 | `fmri_region_var_mean` | `fmri_variance_global` |
 | `fmri_lf_power` | `fmri_signal_power` |
 
-Map the source column. `fmri_spectral_entropy` (Stage-2, opt-in) is a
-different column.
+`fmri_entropy_global` contains variance and is not an entropy estimator or
+independent entropy evidence. Map the source column. `fmri_spectral_entropy`
+(Stage-2, opt-in) is a different column.
 
 ---
 

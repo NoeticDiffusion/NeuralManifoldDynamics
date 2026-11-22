@@ -199,8 +199,14 @@ def compute_fmri_features(
         dvars_threshold = float(metrics_cfg.get("dvars_threshold", 5.0))
         if np.isfinite(dvars_val) and dvars_val > dvars_threshold:
             for key in list(epoch_metrics.keys()):
-                if key != "fmri_dvars":
+                if key not in {
+                    "fmri_dvars",
+                    "fmri_dFC_variance_status",
+                    "qc_fmri_dFC_variance_subwindow_count",
+                }:
                     epoch_metrics[key] = float("nan")
+            if "fmri_dFC_variance_status" in epoch_metrics:
+                epoch_metrics["fmri_dFC_variance_status"] = "scrubbed_high_dvars"
             logger.debug(
                 "Epoch %d scrubbed due to high DVARS (%.2f > %.2f)",
                 int(epoch_id),

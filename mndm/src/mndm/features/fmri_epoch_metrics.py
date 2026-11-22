@@ -60,7 +60,7 @@ def compute_local_metrics(
     sfreq: float,
     config: Mapping[str, Any] | None,
     roi_names: Sequence[str] | None = None,
-) -> Dict[str, float]:
+) -> Dict[str, Any]:
     """Compute robust local metrics for one epoch.
 
     This function intentionally excludes DFA/PLE and any nested-window logic.
@@ -71,7 +71,7 @@ def compute_local_metrics(
         raise ValueError("epoch_raw and epoch_filtered must have identical shape")
 
     cfg = config if isinstance(config, Mapping) else {}
-    metrics: Dict[str, float] = {}
+    metrics: Dict[str, Any] = {}
     min_timepoints_fc = int(cfg.get("min_timepoints_fc", 10))
 
     compute_variance = bool(cfg.get("compute_variance", True))
@@ -145,10 +145,15 @@ def compute_local_metrics(
             except Exception:
                 logger.debug("Louvain modularity failed for epoch", exc_info=True)
 
-    # 5) dFC variance from internal subwindows (or FC-std proxy when insufficient windows).
+    # 5) dFC variance from internal subwindows. Insufficient temporal support
+    # stays missing; static edge dispersion is a different estimand.
     if compute_dfc_variance:
-        metrics["fmri_dFC_variance"] = _compute_dfc_variance(
-            epoch_filtered, sfreq, min_timepoints_fc, fc_epoch=fc
+        (
+            metrics["fmri_dFC_variance"],
+            metrics["qc_fmri_dFC_variance_subwindow_count"],
+            metrics["fmri_dFC_variance_status"],
+        ) = _compute_dfc_variance_with_support(
+            epoch_filtered, sfreq, min_timepoints_fc
         )
 
     # 6) Kuramoto order parameter from precomputed phase.
@@ -259,13 +264,17 @@ def _compute_epoch_dvars(epoch_raw: np.ndarray) -> float:
     return float(np.mean(finite))
 
 
-def _compute_dfc_variance(
+def _compute_dfc_variance_with_support(
     epoch_filtered: np.ndarray,
     sfreq: float,
     min_timepoints_fc: int,
-    fc_epoch: np.ndarray | None = None,
-) -> float:
-    """dFC variance from inner subwindows; fallback reuses the epoch FC matrix."""
+) -> tuple[float, int, str]:
+    """Return temporal dFC variance, finite support count, and status.
+
+    At least two finite mean-FC estimates are required to compute temporal
+    variance. Static dispersion across edges is not a substitute for that
+    temporal estimator.
+    """
     n_time = int(epoch_filtered.shape[1])
     win_len = max(int(round(15.0 * sfreq)), min_timepoints_fc)
     step = max(int(round(5.0 * sfreq)), 1)
@@ -279,22 +288,9 @@ def _compute_dfc_variance(
                 fc_means.append(mean)
         start += step
     if len(fc_means) >= 2:
-        return float(np.nanvar(np.asarray(fc_means, dtype=float)))
-
-    # Fallback proxy when not enough subwindows: dispersion of static FC edges.
-    fc = fc_epoch
-    if fc is None and epoch_filtered.shape[1] >= max(min_timepoints_fc, 2) and epoch_filtered.shape[0] >= 2:
-        fc = np.corrcoef(epoch_filtered)
-    if fc is None:
-        return float("nan")
-    arr = np.asarray(fc, dtype=float)
-    if arr.ndim != 2 or arr.shape[0] != arr.shape[1] or arr.shape[0] < 2:
-        return float("nan")
-    triu = arr[np.triu_indices_from(arr, k=1)]
-    valid = triu[np.isfinite(triu)]
-    if valid.size:
-        return float(np.nanvar(valid))
-    return float("nan")
+        variance = float(np.nanvar(np.asarray(fc_means, dtype=float)))
+        return variance, len(fc_means), "computed_temporal_variance"
+    return float("nan"), len(fc_means), "insufficient_temporal_fc_support"
 
 
 def _compute_slow4_slow5_ratio(epoch_filtered: np.ndarray, sfreq: float) -> float:
