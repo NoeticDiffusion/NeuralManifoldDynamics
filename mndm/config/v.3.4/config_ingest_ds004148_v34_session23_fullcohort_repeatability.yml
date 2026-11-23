@@ -1,0 +1,34 @@
+# Session-repeatability feature run; session 1 is reused from the frozen baseline.
+imports:
+  - config_ingest_ds004148_v34_baseline_ec_anchor.yml
+
+cohort_selection:
+  subject_ids: all_metadata_complete_session1_session2_session3_EC_EO_pairs
+  subject_id_range: [sub-01, sub-60]
+  sessions: [session2, session3]
+  tasks: [eyesclosed, eyesopen]
+  selection_basis: "All 60 participant session-2/session-3 resting EC/EO recordings selected by metadata-only manifest before signal or coordinate inspection. Session 1 is reused from the frozen baseline output."
+  policy: DS004148_SESSION_REPEATABILITY_V1.md
+
+exclude-files:
+  - "ses-session1_"
+  - "task-mathematic_"
+  - "task-memory_"
+  - "task-music_"
+
+paths:
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261118_ds004148_v3_4_session_repeatability/full_reextracted/processed"
+
+scaling:
+  external_anchor:
+    transfer_reason: "Predeclared descriptive session-repeatability application of one frozen ds005385 EyesClosed scalp-EEG anchor to ds004148 sessions 2 and 3. No target-session refit; acquisition and time-separated-session comparability remain exploratory."
+
+# This comparison evaluates the v3.4 coordinate layer only. Exclude unrelated
+# v3.1 experimental features and Jacobians so runtime is spent on the declared
+# measurements; v3.4 feature definitions, preprocessing, anchor, and QC remain
+# inherited unchanged from the frozen baseline configuration.
+mnps_v3_1_measurements:
+  enabled: false
+
+v3_4_jacobian:
+  enabled: false

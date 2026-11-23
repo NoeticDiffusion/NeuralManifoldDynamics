@@ -1,0 +1,24 @@
+# Re-extract the original three-person pilot subset with current feature code.
+imports:
+  - config_ingest_ds004148_v34_baseline_ec_anchor.yml
+
+cohort_selection:
+  subject_ids: [sub-01, sub-02, sub-03]
+  subject_id_range: [sub-01, sub-03]
+  sessions: [session2, session3]
+  tasks: [eyesclosed, eyesopen]
+  selection_basis: "Original metadata-frozen MNPS 3.4 pilot participants; sessions 2 and 3 re-extracted with current feature code after the historical cache failed the implementation-hash anchor gate."
+  policy: DS004148_SESSION_REPEATABILITY_V1.md
+
+exclude-files:
+  - "ses-session1_"
+  - "task-mathematic_"
+  - "task-memory_"
+  - "task-music_"
+
+paths:
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261118_ds004148_v3_4_session_repeatability/pilot_reextracted/processed"
+
+scaling:
+  external_anchor:
+    transfer_reason: "Predeclared descriptive repeatability pilot using one frozen ds005385 EyesClosed scalp-EEG anchor for ds004148 sessions 2 and 3, with session 1 reused from the full cohort run. No target-session refit; acquisition and time-separated-session comparability remain exploratory."

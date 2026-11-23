@@ -1,0 +1,301 @@
+{
+  "schema": "mndm.ds004148_session_repeatability_analysis.v1",
+  "created_utc": "2026-11-18T19:48:59.395649+00:00",
+  "selection": {
+    "subjects": [
+      "sub-01",
+      "sub-02",
+      "sub-03"
+    ],
+    "sessions": [
+      "session1",
+      "session2",
+      "session3"
+    ],
+    "tasks": [
+      "eyesclosed",
+      "eyesopen"
+    ],
+    "basis": "metadata-only frozen pilot subset"
+  },
+  "anchor": {
+    "id": "ds005385_ses1_pretask_EyesClosed_20261111_v1",
+    "sha256": "79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab"
+  },
+  "methods": {
+    "qc": "fixed baseline policy v1.1; finite source/detector, valid detector, zero score>4 sample overlap",
+    "support": {
+      "eligible_windows": 30,
+      "unique_seconds": 120.0
+    },
+    "summary": "median of QC-eligible supported windows per coordinate, participant, session and condition",
+    "contrast": "EO median minus EC median in the same participant/session",
+    "comparability": "same anchor, source units, estimator identity, normalized channel set, source surface, reference and time grid; channel order/case changes retained as QC when the channel-aggregated estimator remains permutation invariant",
+    "statistics": "ICC(A,1); bias, sample SD and 95% Bland-Altman limits; median absolute difference; Spearman rank correlation descriptive only; no p-values"
+  },
+  "counts": {
+    "h5": 18,
+    "matched_qc_h5_windows": 1332,
+    "supported_coordinate_rows": 153,
+    "complete_9d_rows_meeting_support": 17,
+    "repeatability_rows": 81,
+    "included_n_range": [
+      2,
+      3
+    ]
+  },
+  "channel_order_qc_notes": [
+    {
+      "subject": "sub-02",
+      "session": "session1:session3",
+      "comparison": "eyesclosed",
+      "compatible": true,
+      "identity_mismatches": "",
+      "channel_order_relation": "case_only_label_difference",
+      "channel_compatibility_set_hash": "79aa1bc001ef739408c7b59994049fbf0e5b40976ff109555290940ff878dea9",
+      "source_surface_hash": "b4f77933b8605e8517211c970ba3fd95abf84af089d1f482c38b8b515534639d"
+    },
+    {
+      "subject": "sub-02",
+      "session": "session1:session3",
+      "comparison": "eyesopen",
+      "compatible": true,
+      "identity_mismatches": "",
+      "channel_order_relation": "case_only_label_difference",
+      "channel_compatibility_set_hash": "79aa1bc001ef739408c7b59994049fbf0e5b40976ff109555290940ff878dea9",
+      "source_surface_hash": "b4f77933b8605e8517211c970ba3fd95abf84af089d1f482c38b8b515534639d"
+    },
+    {
+      "subject": "sub-02",
+      "session": "session2:session3",
+      "comparison": "eyesclosed",
+      "compatible": true,
+      "identity_mismatches": "",
+      "channel_order_relation": "case_only_label_difference",
+      "channel_compatibility_set_hash": "79aa1bc001ef739408c7b59994049fbf0e5b40976ff109555290940ff878dea9",
+      "source_surface_hash": "b4f77933b8605e8517211c970ba3fd95abf84af089d1f482c38b8b515534639d"
+    },
+    {
+      "subject": "sub-02",
+      "session": "session2:session3",
+      "comparison": "eyesopen",
+      "compatible": true,
+      "identity_mismatches": "",
+      "channel_order_relation": "case_only_label_difference",
+      "channel_compatibility_set_hash": "79aa1bc001ef739408c7b59994049fbf0e5b40976ff109555290940ff878dea9",
+      "source_surface_hash": "b4f77933b8605e8517211c970ba3fd95abf84af089d1f482c38b8b515534639d"
+    },
+    {
+      "subject": "sub-03",
+      "session": "session1:session3",
+      "comparison": "eyesclosed",
+      "compatible": true,
+      "identity_mismatches": "",
+      "channel_order_relation": "case_only_label_difference",
+      "channel_compatibility_set_hash": "79aa1bc001ef739408c7b59994049fbf0e5b40976ff109555290940ff878dea9",
+      "source_surface_hash": "b4f77933b8605e8517211c970ba3fd95abf84af089d1f482c38b8b515534639d"
+    },
+    {
+      "subject": "sub-03",
+      "session": "session1:session3",
+      "comparison": "eyesopen",
+      "compatible": true,
+      "identity_mismatches": "",
+      "channel_order_relation": "case_only_label_difference",
+      "channel_compatibility_set_hash": "79aa1bc001ef739408c7b59994049fbf0e5b40976ff109555290940ff878dea9",
+      "source_surface_hash": "b4f77933b8605e8517211c970ba3fd95abf84af089d1f482c38b8b515534639d"
+    },
+    {
+      "subject": "sub-03",
+      "session": "session2:session3",
+      "comparison": "eyesclosed",
+      "compatible": true,
+      "identity_mismatches": "",
+      "channel_order_relation": "case_only_label_difference",
+      "channel_compatibility_set_hash": "79aa1bc001ef739408c7b59994049fbf0e5b40976ff109555290940ff878dea9",
+      "source_surface_hash": "b4f77933b8605e8517211c970ba3fd95abf84af089d1f482c38b8b515534639d"
+    },
+    {
+      "subject": "sub-03",
+      "session": "session2:session3",
+      "comparison": "eyesopen",
+      "compatible": true,
+      "identity_mismatches": "",
+      "channel_order_relation": "case_only_label_difference",
+      "channel_compatibility_set_hash": "79aa1bc001ef739408c7b59994049fbf0e5b40976ff109555290940ff878dea9",
+      "source_surface_hash": "b4f77933b8605e8517211c970ba3fd95abf84af089d1f482c38b8b515534639d"
+    }
+  ],
+  "input_hashes": [
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\config\\v.3.4\\DS004148_SESSION_REPEATABILITY_V1.md",
+      "sha256": "e10aade80679be198faeedb9807d162f422320a7bc93182685f0cb2947d42a2a"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\config\\v.3.4\\anchors\\mnps_v3_4_ds005385_ses1_pretask_EyesClosed_20261111_v1.json",
+      "sha256": "79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\config\\v.3.4\\config_ingest_ds004148_v34_baseline_ec_anchor.yml",
+      "sha256": "f67d8e9b311177124cdef3d3a8347486aab0a02c09a3ffeb8c53cc541c51d97d"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\config\\v.3.4\\config_ingest_ds004148_v34_session23_reextracted_pilot.yml",
+      "sha256": "e2c7a83338a57137dd4bbcdd6868fac4962a61d6f9bac641cfea92508ad3c748"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\selection\\selection_manifest.json",
+      "sha256": "fbebc269786d992d546be3c97703cfe92e825b25cca0bff885aefb810d390922"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\summarize_ds004148_baseline.py",
+      "sha256": "73faebb82164636adca7aae6a56c4bbf3bc0e315e3e4bf38ce16480762900465"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\analyze_ds004148_session_repeatability_pilot.py",
+      "sha256": "c64d51a85b9252eaccc1da513cd420ab942d317ca6bf86a9cf82542a54377952"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\src\\mndm\\features\\eeg.py",
+      "sha256": "96392b8cfc04e3a61ac924fbc1e13238e79bc45cca675392533b0a2372a569bf"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\src\\mndm\\mnps\\v3_4\\candidates.py",
+      "sha256": "aae2070d3e5fdf3b170a83a301016943504b9800dfa2acd869989d42ba80d592"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\src\\mndm\\mnps\\v3_4\\coordinates.py",
+      "sha256": "df4745d4821ff9d217a3a16e91cd2e1e3e3d744b9b444ed9001e13a2db014689"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\src\\mndm\\mnps\\v3_4\\external_anchor.py",
+      "sha256": "356a504de3029935d9de477eaeddc1adab21919dab5144a1cdb898db30448f64"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\src\\mndm\\pipeline\\summary.py",
+      "sha256": "b0ca82e5e73057158a9ef3ec9f4fb5356f62f5217f873bf558cce56aad616a3f"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\qc_windows.csv",
+      "sha256": "b87c7092d8f0be1e82bef38286aaccbe4b87ce0f1703c08c3727c03b1a2c4f94"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\qc_recordings.csv",
+      "sha256": "e4baa2c414db4e8b90541432def54c3d211f3d0d701f79667ebb2b66062652f2"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\qc_assessment_manifest.json",
+      "sha256": "e8fb0e3fe782d9dbca8d3da34f364848c87f63edf0f708bdcfd1cca507972a9b"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_cached\\qc_sessions23\\qc_windows.csv",
+      "sha256": "c86d7359ed740220d23616d0b661b98780217931e1964b562c313b920dd693b9"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_cached\\qc_sessions23\\qc_recordings.csv",
+      "sha256": "1106899d3b7b7fc6b32387781b58ab7dd69fa5fcb76f037f9da2361173521f62"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_cached\\qc_sessions23\\qc_assessment_manifest.json",
+      "sha256": "9aeff0800010099679e0252b213d5166b5a5af7b7911b56411f21bfd0f4b2d34"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261117_030415\\run_manifest.json",
+      "sha256": "17f090d8715d309eabcf3d814d77273934507c6baa648a4f092e09a315636fc1"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\run_manifest.json",
+      "sha256": "d7db349e5bf559c90f4888d017bcafcc1995c32143b93d11b194b2cb8132f670"
+    }
+  ],
+  "h5_hashes": [
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261117_030415\\sub-01_ses-session1_eyesclosed\\sub-01_ses-session1_eyesclosed.h5",
+      "sha256": "6f84d6559a422ef13569c124d56840d24327f3b22eab4eee2d9c2f99cab2906a"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261117_030415\\sub-01_ses-session1_eyesopen\\sub-01_ses-session1_eyesopen.h5",
+      "sha256": "305e54ee55738f5722d754e3a3f9e14f9e55840cac893fe0c1250f283fb8f3ef"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261117_030415\\sub-02_ses-session1_eyesclosed\\sub-02_ses-session1_eyesclosed.h5",
+      "sha256": "c19c3c70befb1f4bc42ed9333ffff626b6d564ab0a3a350c2ebc5a8bdbd8db29"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261117_030415\\sub-02_ses-session1_eyesopen\\sub-02_ses-session1_eyesopen.h5",
+      "sha256": "5a001ceafa776a2866c772ed9d9fc0042096715391c60b1b7ecebfc353f28da3"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261117_030415\\sub-03_ses-session1_eyesclosed\\sub-03_ses-session1_eyesclosed.h5",
+      "sha256": "4e8074600bcfc1adeaf66ac6065539640caa418ce9c5bc59a62eb48848f83eaa"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261116_ds004148_v3_4_frozen_ec_baseline\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261117_030415\\sub-03_ses-session1_eyesopen\\sub-03_ses-session1_eyesopen.h5",
+      "sha256": "492f2600e9b998a02baceda53c4adca3ac6c5178adf269f55727f33077faf8b5"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-01_ses-session2_eyesclosed\\sub-01_ses-session2_eyesclosed.h5",
+      "sha256": "59b9190fce9e0ee15765ca8e8f162dcd040171990aa568c6140fecf89512bdf3"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-01_ses-session2_eyesopen\\sub-01_ses-session2_eyesopen.h5",
+      "sha256": "d8ee395a802cc68751e8da4b91ca3986299e619175e5b2fb219287fb531b81bf"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-01_ses-session3_eyesclosed\\sub-01_ses-session3_eyesclosed.h5",
+      "sha256": "9823e5191d4d9d8c241921db734d0efe04552793becb73e8f13174be08725158"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-01_ses-session3_eyesopen\\sub-01_ses-session3_eyesopen.h5",
+      "sha256": "963070ec7f3fc1c10f900647aefe3fed1b8f9c1201b9ec07ddae1d606a40c1ac"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-02_ses-session2_eyesclosed\\sub-02_ses-session2_eyesclosed.h5",
+      "sha256": "4734e70182d1aef6ba78f33b6a503b3f1ced3a366958f9a0218786e4608b57cb"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-02_ses-session2_eyesopen\\sub-02_ses-session2_eyesopen.h5",
+      "sha256": "e4da6edb59d4a535420c062f0050b312899e5689b0bcb270fe32d60444dc321f"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-02_ses-session3_eyesclosed\\sub-02_ses-session3_eyesclosed.h5",
+      "sha256": "27aaa1f2f4b5aadd30d5fe4bd5834d05ab6bd56fec3e9ae1019393ddf320b363"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-02_ses-session3_eyesopen\\sub-02_ses-session3_eyesopen.h5",
+      "sha256": "0e8546892504aaa918113fa809f166a1c1c60e2dec22a725a462832c0ec6ea2d"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-03_ses-session2_eyesclosed\\sub-03_ses-session2_eyesclosed.h5",
+      "sha256": "7c5394284ad3c2181969b6cd19a849709f6b9dbb520663f44bf9746c4cd52fd3"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-03_ses-session2_eyesopen\\sub-03_ses-session2_eyesopen.h5",
+      "sha256": "8110069eb507dad90aff1b3e7e10db52448234dbcbe9e6fa9d8845f75bfbc2ce"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-03_ses-session3_eyesclosed\\sub-03_ses-session3_eyesclosed.h5",
+      "sha256": "46dc74d1e8584530d8083b7d1c0410cf102d1019291bf534f42fc9f000c7429b"
+    },
+    {
+      "path": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\pilot_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_193222\\sub-03_ses-session3_eyesopen\\sub-03_ses-session3_eyesopen.h5",
+      "sha256": "194a5889c8ce21f031f1923cdaaf3e97e7c1114954d7188bea5fd983d03371bb"
+    }
+  ],
+  "raw_eeg_binary_hashes_computed": false,
+  "limitations": [
+    "Three-person pilot; repeatability statistics are unstable.",
+    "QC does not establish artifact absence.",
+    "No population, biological or clinical qualification claim.",
+    "Full 60-participant repeatability cohort not processed."
+  ],
+  "output_hashes": {
+    "participant_session_levels.csv": "5b5d433586dbff93a8085dcd59d77c3583f95ae7f09944a49ba1913a8f99b652",
+    "participant_session_eo_minus_ec.csv": "b708db3a4918c59b6c6e071e6dbf1652c1e4bf456f2c256410a25a6ee98e3e04",
+    "complete_9d_support.csv": "e5489043f7cf21b9c1a05ecaa293ff077b54c90cbbadc9eed5e538a74d30a185",
+    "realization_compatibility.csv": "579ac6b735d4a88025390fc2867fff0219a85a0a05641b26eee4cde3adec2202",
+    "repeatability_eligibility.csv": "f19aca300c6352cab630f3033bcc7f57e996e6af80a5d99f9b77c518f194673d",
+    "repeatability_summary.csv": "8392071b10382f6634e8b301cc2d067d428962904a7b9218ba8ee04f5e849bf2",
+    "report.md": "131bf23dd2adf9a1acf223bcb83a1cadffca1e2e28df1a36371d8cb7defdf288"
+  }
+}

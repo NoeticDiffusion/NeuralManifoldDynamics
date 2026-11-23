@@ -1,0 +1,247 @@
+{
+  "status": "complete",
+  "policy_version": "DS004148_BASELINE_EC_QC_POLICY_V1_1",
+  "anchor_id": "ds005385_ses1_pretask_EyesClosed_20261111_v1",
+  "anchor_manifest_sha256": "79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab",
+  "subjects": 60,
+  "h5_recordings": 120,
+  "qc_windows": 8880,
+  "coordinate_names": [
+    "delta_theta_level",
+    "alpha_level",
+    "beta_alpha_ratio",
+    "gamma_level",
+    "hjorth_mobility",
+    "alpha_theta_ratio",
+    "permutation_entropy",
+    "alpha_centroid_hz",
+    "alpha_envelope_cv"
+  ],
+  "raw_features": [
+    "mnps_v3_4_alpha_centroid_hz",
+    "mnps_v3_4_alpha_envelope_cv",
+    "mnps_v3_4_spatial_logvariance_dispersion",
+    "mnps_v3_4_alpha_centroid_channel_count",
+    "mnps_v3_4_alpha_envelope_channel_count",
+    "mnps_v3_4_spatial_logvariance_channel_count",
+    "mnps_v3_4_alpha_envelope_edge_guard_sec",
+    "mnps_v3_4_channel_count",
+    "eeg_delta",
+    "eeg_theta",
+    "eeg_alpha",
+    "eeg_beta",
+    "eeg_gamma",
+    "eeg_highfreq_power_30_45",
+    "eeg_alpha_theta",
+    "eeg_beta_alpha",
+    "eeg_hjorth_mobility",
+    "eeg_hjorth_complexity",
+    "eeg_permutation_entropy",
+    "eeg_sample_entropy",
+    "embodied_arousal_proxy"
+  ],
+  "min_eligible_windows_per_condition_coordinate": 30,
+  "min_unique_seconds_per_condition_coordinate": 120.0,
+  "qc_eligible_definition": "window has fully finite source samples, a valid artifact-only muscle detector, and zero samples with score > 4",
+  "qc_detector_validity": "requires finite source samples, finite muscle score summaries (and per-sample score support when exported), at least one non-flat channel, and a valid detector flag when exported; invalid detector windows are unassessed and ineligible",
+  "qc_detector_validity_basis": "explicit runner validity and per-sample finite-score fields; legacy QC output is rejected",
+  "coordinate_source_unit_contract": {
+    "delta_theta_level": {
+      "expected": [
+        "microvolt^2",
+        "microvolt^2"
+      ],
+      "observed": [
+        [
+          "microvolt^2",
+          "microvolt^2"
+        ]
+      ],
+      "cohort_compatible": true
+    },
+    "alpha_level": {
+      "expected": [
+        "microvolt^2"
+      ],
+      "observed": [
+        [
+          "microvolt^2"
+        ]
+      ],
+      "cohort_compatible": true
+    },
+    "beta_alpha_ratio": {
+      "expected": [
+        "dimensionless_ratio"
+      ],
+      "observed": [
+        [
+          "dimensionless_ratio"
+        ]
+      ],
+      "cohort_compatible": true
+    },
+    "gamma_level": {
+      "expected": [
+        "microvolt^2"
+      ],
+      "observed": [
+        [
+          "microvolt^2"
+        ]
+      ],
+      "cohort_compatible": true
+    },
+    "hjorth_mobility": {
+      "expected": [
+        "dimensionless_per_sample"
+      ],
+      "observed": [
+        [
+          "dimensionless_per_sample"
+        ]
+      ],
+      "cohort_compatible": true
+    },
+    "alpha_theta_ratio": {
+      "expected": [
+        "dimensionless_ratio"
+      ],
+      "observed": [
+        [
+          "dimensionless_ratio"
+        ]
+      ],
+      "cohort_compatible": true
+    },
+    "permutation_entropy": {
+      "expected": [
+        "dimensionless"
+      ],
+      "observed": [
+        [
+          "dimensionless"
+        ]
+      ],
+      "cohort_compatible": true
+    },
+    "alpha_centroid_hz": {
+      "expected": [
+        "Hz"
+      ],
+      "observed": [
+        [
+          "Hz"
+        ]
+      ],
+      "cohort_compatible": true
+    },
+    "alpha_envelope_cv": {
+      "expected": [
+        "dimensionless"
+      ],
+      "observed": [
+        [
+          "dimensionless"
+        ]
+      ],
+      "cohort_compatible": true
+    }
+  },
+  "paired_summary_unit": "participant-level condition medians; EO minus EC; no window pooling or p-values",
+  "cohort_by_coordinate": [
+    {
+      "layer": "pre_anchor",
+      "coordinate": "delta_theta_level",
+      "paired_n": 45
+    },
+    {
+      "layer": "pre_anchor",
+      "coordinate": "alpha_level",
+      "paired_n": 45
+    },
+    {
+      "layer": "pre_anchor",
+      "coordinate": "beta_alpha_ratio",
+      "paired_n": 45
+    },
+    {
+      "layer": "pre_anchor",
+      "coordinate": "gamma_level",
+      "paired_n": 45
+    },
+    {
+      "layer": "pre_anchor",
+      "coordinate": "hjorth_mobility",
+      "paired_n": 45
+    },
+    {
+      "layer": "pre_anchor",
+      "coordinate": "alpha_theta_ratio",
+      "paired_n": 45
+    },
+    {
+      "layer": "pre_anchor",
+      "coordinate": "permutation_entropy",
+      "paired_n": 45
+    },
+    {
+      "layer": "pre_anchor",
+      "coordinate": "alpha_centroid_hz",
+      "paired_n": 45
+    },
+    {
+      "layer": "pre_anchor",
+      "coordinate": "alpha_envelope_cv",
+      "paired_n": 44
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "delta_theta_level",
+      "paired_n": 45
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "alpha_level",
+      "paired_n": 45
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "beta_alpha_ratio",
+      "paired_n": 45
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "gamma_level",
+      "paired_n": 45
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "hjorth_mobility",
+      "paired_n": 45
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "alpha_theta_ratio",
+      "paired_n": 45
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "permutation_entropy",
+      "paired_n": 45
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "alpha_centroid_hz",
+      "paired_n": 45
+    },
+    {
+      "layer": "frozen_ec_anchored",
+      "coordinate": "alpha_envelope_cv",
+      "paired_n": 44
+    }
+  ],
+  "complete_9d_pairs_meeting_support": 44,
+  "subjects_with_realization_mismatch": 0,
+  "cohort_summaries_written": true
+}

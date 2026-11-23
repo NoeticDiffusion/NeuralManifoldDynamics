@@ -68,6 +68,39 @@ This toolkit transforms raw EEG and fMRI data into analysis-ready MNPS trajector
 
 ---
 
+## Windows startup: MNE and Numba
+
+Set the NMD preprocessing defaults before the first MNE import in standalone
+scripts that run on Windows:
+
+```python
+import os
+
+os.environ.setdefault("MNE_USE_NUMBA", "false")
+os.environ.setdefault("NUMBA_DISABLE_JIT", "1")
+import mne
+```
+
+The canonical setup is in [`src/mndm/preprocess.py`](src/mndm/preprocess.py).
+The normal CLI import path loads that module before lazily loading EEG feature
+handlers. A standalone script that imports MNE directly can bypass this setup.
+Changing these variables after MNE or Numba has already been imported is too
+late for that process.
+
+This avoids a severe import-time stall observed with the default MNE/Numba JIT
+path on Windows. In the ds004148 v3.4 QC investigation, a fresh MNE 1.6.1
+import without either flag did not finish within 600 seconds. With either flag
+alone it completed in about 1.8–2.0 seconds. This implicates MNE's Numba/JIT
+startup path; it was not caused by reading the EEG file or by the QC recording
+loop. The QC runner sets and logs these defaults before importing MNE.
+
+The same ds004148 preflight found 26 recordings (13 participants, both tasks)
+where one BrainVision channel label differs from BIDS only by capitalization
+(`CPz`/`Cpz`, or `Fpz`/`FPz`); all have 61 channels and the same
+case-insensitive order. The QC runner preserves both ordered label lists and
+their hashes and logs this as a warning. A channel-count difference or a
+non-case-only order/identity mismatch still stops that run.
+
 ## Requirements
 
 - Python 3.11+

@@ -22,7 +22,6 @@ This changelog preserves historical version-specific information that is not par
 
 Version labels refer to different objects. The Python package metadata in the current checkout is 3.1.0. The v3.4 label identifies an opt-in experimental EEG measurement definition within that package. It is not a package version. The prior article described a broader series of measurement and analysis capabilities accumulated across earlier package generations; these historical details are summarized below for provenance rather than carried into the current article.
 
-The project owner reports that there are no current NeuralManifoldDynamics users. This permits the new article to state the current measurement contract directly, without preserving the old manuscript's expansive claims as its organizing structure. The historical release itself remains identifiable and should be used when reproducing the earlier paper.
 
 = S6.2 Historical coordinate contract
 
@@ -100,14 +99,30 @@ A value can be computed while comparability or qualification is unknown. Unsuppo
 
 The v3.4 technical references use session-1 pre-task eyes-open and eyes-closed data from OpenNeuro ds005385. Each condition includes 608 participants, and the same participants both define and receive the condition-specific anchor. The two anchors define separate coordinate frames. They are technical reference artifacts, not validated population norms.
 
-Feature extraction produced 55,183 window rows from 1,216 recordings. Anchor fitting and application completed for all 608 recordings in each condition, with no anchor identity failures reported. The cohort inventory includes descriptive statistics and support/QC summaries by measurement path and realization. Source matching used unique manifest basenames when relative paths were unavailable. Raw EDF hashes were not computed, and the metadata-only selection did not establish artifact QC.
+Feature extraction produced 55,183 window rows from 1,216 recordings. Anchor fitting and application completed for all 608 recordings in each condition, with no anchor identity failures reported. The cohort inventory includes descriptive statistics and support/QC summaries by measurement path and realization. Source matching used unique manifest basenames when relative paths were unavailable. Raw EDF hashes and header calibration checks were not computed; the derived-export directory contained no source EDFs. The metadata-only selection did not establish artifact QC.
 
-The previous task session reported 29 focused tests and static checks, but a dedicated SL-007 run log is not present in this checkout. The complete fresh-feature, explicit external-anchor, summarize-to-HDF5 orchestration route remains to be verified in one bounded independent pilot. The reference-cohort run and earlier native pilot do not establish that exact route. No v3.4 biological contrast, prediction, clinical use, or independent replication is claimed.
+The frozen-reference cohort run is complemented by a full-cohort ds004148 session-repeatability analysis. A metadata-only selection fixed 60 participants, three sessions, and resting EC/EO pairs before coordinate inspection. One frozen ds005385 EC anchor was applied unchanged to all 360 recordings. Session-1 HDF5/QC outputs were reused and sessions 2–3 were re-extracted; the QC rule and support floor were fixed before coordinate analysis. QC matched 26,640 windows. The support floor passed for 2,858/3,240 coordinate summaries and 306/360 complete-nine participant-session-condition summaries. Across eligible comparisons, descriptive ICC(A,1) ranged 0.041–0.954 for coordinate levels and 0.249–0.864 for EO−EC differences. This establishes technical fixed-anchor application and dataset-specific repeatability estimates, not artifact absence, biological stability, cross-dataset equivalence, or scientific qualification.
 
 = S6.6 Archival and compatibility notes
 
-The earlier Zenodo-published version is a historical release. Preserve its record, manuscript, and DOI metadata as published. This article revision is a separate document describing the experimental v3.4 definition. The precise archived record and the source manuscript associated with it should be linked in publication metadata using the author's Zenodo record; no DOI is inferred in this local draft.
+The earlier Zenodo-published version is a historical release. The exact record DOI, source commit, and manuscript-to-record mapping could not be verified from the repository files inspected for this revision; no DOI or commit is inferred here. Publication metadata should link the archived record and manuscript once those identifiers are confirmed. This article revision is a separate document describing the experimental v3.4 definition.
 
-The v3.4 code writes to its own measurement namespace and may coexist with other outputs in a combined HDF5. The new article does not promise automatic migration, numerical equivalence, or backward compatibility between historical coordinate values and v3.4 coordinates. Because the project owner reports no current users, this revision optimizes for a clear current contract and records the old contract here for provenance.
+The v3.4 code writes to its own measurement namespace and may coexist with other outputs in a combined HDF5. The new article does not promise automatic migration, numerical equivalence, or backward compatibility between historical coordinate values and v3.4 coordinates. Read-only checks of selected ds005385 and ds004148 combined exports found root-level historical paths; these checks confirm the examined files, not the layout of every archived historical release. In the ds004148 files, the root manifest identifies `/jacobian` as the primary three-component field and `/jacobian_9D` as the legacy `subcoords_9d_v2_0` field. The separately named subject-anchored layers carry schema `mndm.jacobian_layer.v2.1` and state their coordinate space in attributes. The primary groups themselves lack schema attributes, so path identity must be interpreted with the root manifest rather than matrix shape alone. A bounded summarize smoke verified that disabling both legacy Jacobian switches and the separate v3.4 Jacobian candidate omits all these paths while preserving all nine v3.4 coordinates. The prior full-cohort outputs were retained unchanged; their historical Jacobians were not analyzed.
+
+#figure(
+  clean-table(
+    columns: (1.3fr, 1.2fr, 2fr),
+    header: ([*Historical output or concept*], [*v3.4 equivalent*], [*Compatibility statement*]),
+    inset: 4pt,
+    [`/mnps_3d` `[m,d,e]`], [None], [Root-level path observed in selected combined exports; flat v3.4 does not aggregate into a three-axis chart.],
+    [`/coords_9d`], [None], [Root-level group observed in selected combined exports; historical order, transforms, clipping, and reference semantics are not inherited by v3.4.],
+    [Jacobian/MNJ outputs], [None], [v3.4 defines no local derivative or state-transition operator.],
+    [Regional MNPS outputs], [None], [v3.4 does not emit regional or anatomical-network coordinates.],
+    [Dynamical-family outputs], [None], [Prediction, diffusion, reachability, and resilience families remain separate versioned products.],
+    [Embodied or modality-specific projections], [None], [No cardiac, vascular, pupil, MEG, fMRI, or cross-modal projection is part of v3.4.],
+  ),
+  kind: table,
+  caption: [Historical output paths and concepts without a direct equivalent in the MNPS 3.4 flat EEG contract.],
+)
 
 Before public release, freeze the code and configuration commit; identify the exact previous Zenodo version; decide whether v3.4 remains experimental or becomes a release; check all manuscript claims against the frozen implementation; and publish the software and manuscript records with explicit version relationships.

@@ -1,0 +1,62 @@
+{
+  "schema": "mndm.ds004148_qc_attrition.v1",
+  "policy_version": "DS004148_BASELINE_EC_QC_POLICY_V1_1",
+  "expected_subjects": 60,
+  "qc_recordings": 120,
+  "qc_windows": 8880,
+  "core8_coordinates": [
+    "delta_theta_level",
+    "alpha_level",
+    "beta_alpha_ratio",
+    "gamma_level",
+    "hjorth_mobility",
+    "alpha_theta_ratio",
+    "permutation_entropy",
+    "alpha_centroid_hz"
+  ],
+  "core8_paired_subjects": 45,
+  "core8_excluded_subjects": [
+    "sub-02",
+    "sub-04",
+    "sub-05",
+    "sub-06",
+    "sub-12",
+    "sub-23",
+    "sub-30",
+    "sub-31",
+    "sub-33",
+    "sub-36",
+    "sub-41",
+    "sub-42",
+    "sub-43",
+    "sub-46",
+    "sub-52"
+  ],
+  "alpha_envelope_cv_paired_subjects": 44,
+  "alpha_envelope_cv_additional_loss_subjects": [
+    "sub-55"
+  ],
+  "complete_9d_paired_subjects": 44,
+  "condition_window_qc": {
+    "EC": {
+      "recordings": 60,
+      "recorded_windows": 4440,
+      "muscle_overlap_flagged_windows": 1684,
+      "eligible_windows": 2756
+    },
+    "EO": {
+      "recordings": 60,
+      "recorded_windows": 4440,
+      "muscle_overlap_flagged_windows": 1705,
+      "eligible_windows": 2735
+    }
+  },
+  "core8_exclusion_reason_counts": {
+    "EC_eligible_windows_below_30;EC_unique_seconds_below_120": 4,
+    "EO_eligible_windows_below_30;EO_unique_seconds_below_120": 4,
+    "EO_eligible_windows_below_30": 4,
+    "EC_eligible_windows_below_30;EC_unique_seconds_below_120;EO_eligible_windows_below_30": 1,
+    "EC_eligible_windows_below_30": 1,
+    "EC_eligible_windows_below_30;EO_eligible_windows_below_30": 1
+  }
+}

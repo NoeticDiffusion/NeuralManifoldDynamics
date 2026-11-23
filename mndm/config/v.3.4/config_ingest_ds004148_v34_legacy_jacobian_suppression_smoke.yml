@@ -1,0 +1,26 @@
+# One-subject summarize smoke using cached full-cohort features. This verifies
+# that v3.4 coordinates remain exportable while legacy Jacobian paths are off.
+imports:
+  - config_ingest_ds004148_v34_session23_fullcohort_repeatability.yml
+
+paths:
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261118_ds004148_v3_4_session_repeatability/legacy_jacobian_suppression_smoke/processed"
+
+# These are the legacy summarize switches. v3_4_jacobian only controls the
+# separate candidate path under /measurements/v3_4/jacobian.
+mnps:
+  jacobian:
+    enabled: false
+mnps_9d:
+  jacobian:
+    enabled: false
+v3_4_jacobian:
+  enabled: false
+
+downstream:
+  derivatives:
+    enabled: false
+regional_mnps:
+  enabled: false
+  block_jacobians:
+    enabled: false

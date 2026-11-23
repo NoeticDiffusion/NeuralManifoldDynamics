@@ -7452,7 +7452,7 @@ class SubjectSummaryRunner:
                 "anchoring_path": "/provenance/anchoring",
             },
             "jacobian_h5": {
-                "primary_path": "/jacobian",
+                "primary_path": "/jacobian" if jac_res is not None else None,
                 "primary_v2_path": "/jacobian_9D" if jac_res_v2 is not None else None,
                 "layer_paths": [f"/{name}" for name in available_jacobian_layers],
             },

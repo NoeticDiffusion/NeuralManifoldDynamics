@@ -3,9 +3,9 @@
 #import "network_neuroscience_template.typ": *
 
 #show: netn_template.with(
-  title: "S5 - Glossary - Revision Draft",
+  title: "S5 - Glossary: MNPS 3.4 and Historical Terms",
   short_title: "Glossary - NeuralManifoldDynamics",
-  subtitle: "Shared terminology across articles",
+  subtitle: "Current experimental terms followed by version-scoped historical terms",
   authors: (
     (name: "Robin Langell", affil: 1),
   ),
@@ -16,16 +16,72 @@
   keywords: ("glossary", "NDT", "MNDM", "MNPS", "embodied anchoring"),
   article_type: "Supplementary Material",
   abstract: [
-    This document defines shared terminology across articles in this repository. This revision draft adds experimental MNPS 3.4 terms while retaining legacy v2/v3.0 meanings where names remain in use.
+    This is the supplementary glossary for the MNPS 3.4 methods article. Current experimental terms appear first; historical and other-version terms are retained afterward only to distinguish related repository outputs.
   ],
 )
 
 #set heading(numbering: none)
 
-_This is a living glossary. “Implemented” describes the computation or export
-surface; “interpretation” describes the narrowest defensible reading; and
-“not established” identifies a theoretical or clinical claim that the current
-repository does not prove._
+_This is the companion glossary for the present methods article. “Implemented”
+describes a named computation or export; “interpretation” gives its narrow
+reading; “not established” marks claims that are not proved by this measurement
+definition._
+
+= Experimental MNPS 3.4 terms
+
+The following entries are scoped to the experimental EEG definition
+`mndm.mnps_v3_4.experimental_flat_9d.v1` unless the entry says otherwise.
+
+*NDT (Noetic Diffusion Theory)* - *Theory programme.* A framework for
+hypotheses about neural state and condition-dependent future dynamics. NDT is
+not identical to an MNPS chart or a particular NMD measurement definition.
+
+*NMD (NeuralManifoldDynamics)* - *Measurement layer.* A versioned system for
+specified observations, time support, transforms, validity, and provenance.
+MNPS 3.4 is one experimental EEG realization within that layer.
+
+*Operational coordinate* - *Output component.* An ordered measurement value
+under the named v3.4 contract. The word does not identify a latent biological
+axis or establish manifold geometry.
+
+*MNJ (Meta-Noetic Jacobian)* - *Downstream estimator name.* A Jacobian
+estimated for a local flow in a declared MNPS chart. MNPS 3.4 emits no MNJ;
+the term does not mean temporal acceleration or a direct biophysical
+Jacobian.
+
+*Computability, comparability, and qualification* - *Separate decisions.*
+Computability asks whether declared inputs and support allow an estimate;
+comparability asks whether two realizations suit a stated comparison;
+qualification asks whether evidence supports a specified use.
+
+*MNPS 3.4 flat 9D* - *Experimental measurement definition.* An ordered EEG
+vector of nine separately anchored coordinates under `/measurements/v3_4/`.
+It has no M/D/E family aggregation, 3D projection, or v3.4 Jacobian. It does not
+replace the canonical `[m,d,e]` or legacy `coords_9d` contract.
+
+*Feature anchor (MNPS 3.4)* - A frozen, participant-balanced center and
+`1.4826 * MAD` scale applied to transformed source features before coordinate
+assembly. It is separate from the coordinate anchor.
+
+*Coordinate anchor (MNPS 3.4)* - A frozen, participant-balanced center and
+`1.4826 * MAD` scale applied after the fixed 9D coordinate assembly. Separate
+EO and EC anchors define different coordinate frames.
+
+*Complete 9D mask* - The per-window mask indicating that all nine experimental
+v3.4 anchored coordinates are valid. It is distinct from individual
+coordinate validity and does not imply scientific qualification.
+
+*Exploratory transfer (MNPS 3.4)* - Explicit application of a frozen anchor
+across a declared measurement-surface mismatch with a recorded reason and
+mismatch provenance. It does not perform unit conversion or modality
+harmonization.
+
+= Historical and other-version terminology
+
+The terms in this section describe legacy MNPS v2/v3.0 contracts or optional
+measurement families from other software versions. Their use in this glossary
+does not make them part of the experimental MNPS 3.4 EEG definition. Versioned
+exceptions are named in the individual entry.
 
 = A - D
 
@@ -57,9 +113,10 @@ a production C1 gate.
 interpretation, including `no_biological_claim` for computed dynamical-family
 objects.
 
-*Coordinate* - *Implemented.* A release-fixed numerical axis or subcoordinate.
-The labels `m`, `d`, and `e` are operational proxy families, not uniquely
-identified biological quantities.
+*Coordinate (historical v2/v3.0 usage)* - *Implemented in those contracts.* A
+release-fixed numerical axis or subcoordinate. The labels `m`, `d`, and `e`
+are operational proxy families, not uniquely identified biological quantities;
+they are not the coordinates emitted by the flat MNPS 3.4 definition.
 
 *Coverage* - *Implemented.* The fraction of configured feature or axis support
 available after masking and quality control. Minimum coverage is part of
@@ -78,12 +135,15 @@ separate from the canonical neural chart.
 *Event-locked* - *Implemented derived layer.* A window table aligned to an event
 onset or peak, with detector and control-matching provenance.
 
-*Feature anchor* - *Implemented.* Frozen per-feature center/scale metadata used
-to construct cohort-anchored coordinates. It is distinct from `anchor_state`.
+*Feature anchor (legacy/general usage)* - *Implemented in the named versions.*
+Frozen per-feature center/scale metadata used to construct cohort-anchored
+coordinates. The MNPS 3.4 feature anchor has its own definition below and is
+distinct from `anchor_state`.
 
-*Feature standardization* - *Implemented.* The configured transform applied
-before projection, commonly robust-z plus clipping; selected power features
-may use log10 first. The transform is recorded for audit.
+*Feature standardization (legacy projection usage)* - *Implemented in the
+named versions.* The configured transform applied before projection, commonly
+robust-z plus clipping; selected power features may use log10 first. MNPS 3.4
+does not clip its anchored coordinates. The transform is recorded for audit.
 
 *Frobenius norm* - *Implemented.* The square root of the summed squared
 Jacobian entries; a magnitude summary, not a causal strength.
@@ -147,12 +207,14 @@ on a rodent dandiset; no readiness score is computed.
 *Measurement contract* - *Implemented.* The versioned definition of what is
 computed, named, quality-controlled, and serialized for downstream reuse.
 
-*MNPS / `mnps_3d`* - *Implemented operational chart.* The canonical three-axis
-trajectory `[m, d, e]` exported by the current contract.
+*MNPS / `mnps_3d` (historical v2/v3.0 usage)* - *Implemented operational
+chart.* The canonical three-axis trajectory `[m, d, e]` exported by those
+versioned contracts. It is not the output of the MNPS 3.4 flat 9D definition.
 
-*Regional MNPS* - *Implemented optional output.* Separate trajectories and
-Jacobians for fMRI networks or EEG channel groups, subject to modality-specific
-support limits.
+*Regional MNPS (other-version output)* - *Implemented optional output.*
+Separate trajectories and Jacobians for fMRI networks or EEG channel groups,
+subject to modality-specific support limits. It is not an MNPS 3.4 coordinate
+or a default anatomical network.
 
 *Measurement validity* - *Implemented certificate field.* A declared validity
 state for a computed object, such as `not_assessed`, `insufficient_support`, or
@@ -241,27 +303,3 @@ covariance of raw increments divided by the declared sampling interval. A
 fixed evaluation-neighbour set is a property of the bounded M3 benchmark, not
 a universal production rule. This quantity remains distinct from an analytic
 conditional covariance and from an unobserved latent drift.
-
-*MNPS 3.4 flat 9D* - *Experimental measurement definition.* An ordered EEG
-vector of nine separately anchored coordinates under `/measurements/v3_4/`.
-It has no M/D/E family aggregation, 3D projection, or v3.4 Jacobian. It does not
-replace the canonical `[m,d,e]` or legacy `coords_9d` contract.
-
-*Feature anchor (MNPS 3.4)* - A frozen, participant-balanced center and
-`1.4826 * MAD` scale applied to transformed source features before coordinate
-assembly. It is separate from the coordinate anchor.
-
-*Coordinate anchor (MNPS 3.4)* - A frozen, participant-balanced center and
-`1.4826 * MAD` scale applied after the fixed 9D coordinate assembly. Separate
-EO and EC anchors define different coordinate frames.
-
-*Complete 9D mask* - The per-window mask indicating that all nine experimental
-v3.4 anchored coordinates are valid. It is distinct from individual
-coordinate validity and does not imply scientific qualification.
-
-*Exploratory transfer (MNPS 3.4)* - Explicit application of a frozen anchor
-across a declared measurement-surface mismatch with a recorded reason and
-mismatch provenance. It does not perform unit conversion or modality
-harmonization.
-
-#bibliography("NeuralManifoldReferences.bib")

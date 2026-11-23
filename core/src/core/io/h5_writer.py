@@ -845,44 +845,56 @@ def write_h5(
             nn_grp = h5.require_group("nn")
             _create_dataset(nn_grp, "indices", payload.nn_indices)
 
-        jacobian_grp = h5.require_group("jacobian")
-        if payload.jacobian is not None and payload.jacobian.size:
-            _create_dataset(jacobian_grp, "J_hat", payload.jacobian)
-        if payload.jacobian_dot is not None and payload.jacobian_dot.size:
-            _create_dataset(jacobian_grp, "J_dot", payload.jacobian_dot)
-        if payload.jacobian_centers is not None and payload.jacobian_centers.size:
-            _create_dataset(jacobian_grp, "centers", payload.jacobian_centers)
-        if getattr(payload, "jacobian_affine_reference", None) is not None and payload.jacobian_affine_reference.size:
-            _create_dataset(jacobian_grp, "affine_reference", payload.jacobian_affine_reference)
-        if getattr(payload, "jacobian_affine_intercept", None) is not None and payload.jacobian_affine_intercept.size:
-            _create_dataset(jacobian_grp, "affine_intercept", payload.jacobian_affine_intercept)
-        if isinstance(jacobian_diagnostics, Mapping) and jacobian_diagnostics:
-            diag_grp = jacobian_grp.require_group("diagnostics")
-            for diag_key, diag_value in jacobian_diagnostics.items():
-                safe_key = _sanitize_h5_key(str(diag_key))
-                if isinstance(diag_value, np.ndarray):
-                    _create_dataset(diag_grp, safe_key, diag_value)
-                    continue
-                if isinstance(diag_value, (list, tuple)):
-                    _create_dataset(diag_grp, safe_key, np.asarray(diag_value))
-                    continue
-                if isinstance(diag_value, (bool, int, float, np.integer, np.floating, np.bool_)):
-                    if isinstance(diag_value, (float, np.floating)) and not np.isfinite(float(diag_value)):
-                        diag_grp.attrs[safe_key] = np.nan
-                    else:
-                        diag_grp.attrs[safe_key] = diag_value
-                    continue
-                if isinstance(diag_value, (str, bytes)):
-                    diag_grp.attrs[safe_key] = _prepare_attr_value(diag_value)
-
         jacobian_metrics = getattr(payload, "jacobian_derived_metrics", None)
-        if isinstance(jacobian_metrics, Mapping) and jacobian_metrics:
-            _write_nested_mapping_group(
-                jacobian_grp,
-                "derived_metrics",
-                {"v1": jacobian_metrics},
-                schema_version="mndm.jacobian_metrics.v1",
-            )
+        jacobian_arrays = (
+            payload.jacobian,
+            payload.jacobian_dot,
+            payload.jacobian_centers,
+            getattr(payload, "jacobian_affine_reference", None),
+            getattr(payload, "jacobian_affine_intercept", None),
+        )
+        has_jacobian_payload = any(value is not None and np.size(value) > 0 for value in jacobian_arrays)
+        has_jacobian_payload = has_jacobian_payload or bool(
+            isinstance(jacobian_diagnostics, Mapping) and jacobian_diagnostics
+        ) or bool(isinstance(jacobian_metrics, Mapping) and jacobian_metrics)
+        if has_jacobian_payload:
+            jacobian_grp = h5.require_group("jacobian")
+            if payload.jacobian is not None and payload.jacobian.size:
+                _create_dataset(jacobian_grp, "J_hat", payload.jacobian)
+            if payload.jacobian_dot is not None and payload.jacobian_dot.size:
+                _create_dataset(jacobian_grp, "J_dot", payload.jacobian_dot)
+            if payload.jacobian_centers is not None and payload.jacobian_centers.size:
+                _create_dataset(jacobian_grp, "centers", payload.jacobian_centers)
+            if getattr(payload, "jacobian_affine_reference", None) is not None and payload.jacobian_affine_reference.size:
+                _create_dataset(jacobian_grp, "affine_reference", payload.jacobian_affine_reference)
+            if getattr(payload, "jacobian_affine_intercept", None) is not None and payload.jacobian_affine_intercept.size:
+                _create_dataset(jacobian_grp, "affine_intercept", payload.jacobian_affine_intercept)
+            if isinstance(jacobian_diagnostics, Mapping) and jacobian_diagnostics:
+                diag_grp = jacobian_grp.require_group("diagnostics")
+                for diag_key, diag_value in jacobian_diagnostics.items():
+                    safe_key = _sanitize_h5_key(str(diag_key))
+                    if isinstance(diag_value, np.ndarray):
+                        _create_dataset(diag_grp, safe_key, diag_value)
+                        continue
+                    if isinstance(diag_value, (list, tuple)):
+                        _create_dataset(diag_grp, safe_key, np.asarray(diag_value))
+                        continue
+                    if isinstance(diag_value, (bool, int, float, np.integer, np.floating, np.bool_)):
+                        if isinstance(diag_value, (float, np.floating)) and not np.isfinite(float(diag_value)):
+                            diag_grp.attrs[safe_key] = np.nan
+                        else:
+                            diag_grp.attrs[safe_key] = diag_value
+                        continue
+                    if isinstance(diag_value, (str, bytes)):
+                        diag_grp.attrs[safe_key] = _prepare_attr_value(diag_value)
+
+            if isinstance(jacobian_metrics, Mapping) and jacobian_metrics:
+                _write_nested_mapping_group(
+                    jacobian_grp,
+                    "derived_metrics",
+                    {"v1": jacobian_metrics},
+                    schema_version="mndm.jacobian_metrics.v1",
+                )
 
         # Optional Stratified MNPS Jacobians (v2)
         if getattr(payload, "jacobian_9D", None) is not None and payload.jacobian_9D.size:

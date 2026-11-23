@@ -1,0 +1,134 @@
+{
+  "schema": "mndm.ds004148_v34_jacobian_suppression_smoke.v2",
+  "repository_base_commit": "5253a60c6cb562db36ca4c49bf1b61acb3626944",
+  "runtime": {
+    "python": "3.12.0 (tags/v3.12.0:0fb18b0, Oct  2 2023, 13:03:39) [MSC v.1935 64 bit (AMD64)]",
+    "numpy": "1.26.4",
+    "h5py": "3.11.0",
+    "mne": "1.6.1",
+    "MNE_USE_NUMBA": "false",
+    "NUMBA_DISABLE_JIT": "1"
+  },
+  "implementation_sha256": {
+    "h5_writer": "30f9495895e5bcb675e46574b8fa3fb64080b13428c6a755642d9388ef9169f2",
+    "summary_pipeline": "e39bbe416efd4c02dd85c096c8c0073f84d3b9d8edccd76d3f5c684a1441707b",
+    "eeg_feature_pipeline": "96392b8cfc04e3a61ac924fbc1e13238e79bc45cca675392533b0a2372a569bf",
+    "v3_4_candidates": "aae2070d3e5fdf3b170a83a301016943504b9800dfa2acd869989d42ba80d592",
+    "v3_4_coordinates": "df4745d4821ff9d217a3a16e91cd2e1e3e3d744b9b444ed9001e13a2db014689",
+    "v3_4_external_anchor": "356a504de3029935d9de477eaeddc1adab21919dab5144a1cdb898db30448f64",
+    "verification_script": "97eb9b394f34a4b7133e2a94f350554d80117d7f1ef539f416d12c48155469e9"
+  },
+  "reference_legacy_identity_check": {
+    "file": "sub-01_ses-session2_eyesclosed.h5",
+    "sha256": "3f68836254e0c338112dad89c335f6c8f22f137fbb12d1c5943e9f1ce2ccddde",
+    "legacy_primary": "/jacobian",
+    "legacy_9d": "/jacobian_9D",
+    "legacy_9d_coordinate_definition": "subcoords_9d_v2_0",
+    "legacy_layer_identities": {
+      "jacobian_subject_anchored": {
+        "schema_version": "mndm.jacobian_layer.v2.1",
+        "coordinate_contract": "subject_anchored",
+        "coordinate_space": "mnps_3d"
+      },
+      "jacobian_9D_subject_anchored": {
+        "schema_version": "mndm.jacobian_layer.v2.1",
+        "coordinate_contract": "subject_anchored",
+        "coordinate_space": "coords_9d"
+      }
+    },
+    "v3_4_candidate_path_present": false
+  },
+  "suppression_smoke": {
+    "run_dir": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\legacy_jacobian_suppression_smoke\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261119_093722",
+    "unsuppressed_reference_run_dir": "M:\\repos\\NeuralManifoldDynamics\\project\\mnps2_audit\\outputs\\20261118_ds004148_v3_4_session_repeatability\\full_reextracted\\processed\\ds004148\\neuralmanifolddynamics_ds004148_20261118_205216",
+    "jacobian_paths_checked_absent": [
+      "/jacobian",
+      "/jacobian_9D",
+      "/jacobian_subject_anchored",
+      "/jacobian_9D_subject_anchored",
+      "/jacobian_cohort_anchored",
+      "/jacobian_9D_cohort_anchored",
+      "/measurements/v3_4/jacobian"
+    ],
+    "config_path": "M:\\repos\\NeuralManifoldDynamics\\mndm\\config\\v.3.4\\config_ingest_ds004148_v34_legacy_jacobian_suppression_smoke.yml",
+    "config_sha256": "e62c04886fe611f91c4f141d64cd833cacce9ba1cfffe624cd714e1647ee0a27",
+    "inherited_feature_config_sha256": "514ce881d229d49ef3488e36784b48a4ffdc9ba50c0ec7e2256edd4a9162c6e3",
+    "inherited_baseline_config_sha256": "f67d8e9b311177124cdef3d3a8347486aab0a02c09a3ffeb8c53cc541c51d97d",
+    "common_eeg_config_sha256": "28242ba572c54f01a3a811bf31239eaf2c11ad2ec988c4ad895297ca7b6140d2",
+    "cached_features_sha256": "c3507df0a74bb6b270dab22366b354041867e897d2098150af69e33121fd5216",
+    "file_index_sha256": "cb684fedd7bf777c8040364dfa9208b41737c9eac514073f7a0ae8bdbb4fb8c2",
+    "summarize_command": "python -m mndm.cli summarize --config mndm/config/v.3.4/config_ingest_ds004148_v34_legacy_jacobian_suppression_smoke.yml --dataset ds004148 --subject sub-01 --n-jobs 1 --verbose-logs",
+    "run_manifest_sha256": "95a074784fad26f3ad0085be6bc127ccf54af57b652e753cf6f922bb41220b7e",
+    "h5": [
+      {
+        "file": "sub-01_ses-session2_eyesclosed.h5",
+        "sha256": "9569de0d21a50c5354c5821ffff2512eaaf5e1be4a469d8dfdd8f6ddec5f7d38",
+        "windows": 74,
+        "coordinate_count": 9,
+        "valid_coordinate_entries": 660,
+        "coordinate_values_shape": [
+          74,
+          9
+        ],
+        "finite_coordinate_values": 660,
+        "coordinates_match_unsuppressed_reference": true,
+        "unsuppressed_reference_sha256": "3f68836254e0c338112dad89c335f6c8f22f137fbb12d1c5943e9f1ce2ccddde",
+        "anchor_id": "ds005385_ses1_pretask_EyesClosed_20261111_v1",
+        "anchor_sha256": "79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab",
+        "legacy_and_v3_4_jacobian_paths_present": []
+      },
+      {
+        "file": "sub-01_ses-session2_eyesopen.h5",
+        "sha256": "ab492c40e8cfee11ddd903b98756ffb1d0ac733b55c0b11e27737462296a03c5",
+        "windows": 74,
+        "coordinate_count": 9,
+        "valid_coordinate_entries": 660,
+        "coordinate_values_shape": [
+          74,
+          9
+        ],
+        "finite_coordinate_values": 660,
+        "coordinates_match_unsuppressed_reference": true,
+        "unsuppressed_reference_sha256": "b3cc01dbd2c406cc9e164dc1687d37bff579d3bb330b1a5fa62723d762b0ba3c",
+        "anchor_id": "ds005385_ses1_pretask_EyesClosed_20261111_v1",
+        "anchor_sha256": "79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab",
+        "legacy_and_v3_4_jacobian_paths_present": []
+      },
+      {
+        "file": "sub-01_ses-session3_eyesclosed.h5",
+        "sha256": "80f829e999d8ae59c1f9faa81ed8bfd4706ff08ea8c9a2e5acf4cbb0ee1b3095",
+        "windows": 74,
+        "coordinate_count": 9,
+        "valid_coordinate_entries": 660,
+        "coordinate_values_shape": [
+          74,
+          9
+        ],
+        "finite_coordinate_values": 660,
+        "coordinates_match_unsuppressed_reference": true,
+        "unsuppressed_reference_sha256": "4de7300145bc7d0deb53517bddf714cfc331150cb01fefac766bcd81b0fbcddb",
+        "anchor_id": "ds005385_ses1_pretask_EyesClosed_20261111_v1",
+        "anchor_sha256": "79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab",
+        "legacy_and_v3_4_jacobian_paths_present": []
+      },
+      {
+        "file": "sub-01_ses-session3_eyesopen.h5",
+        "sha256": "6145cbe1379283cad48858a1f1729ac4e8ffff18132968b61f133c57b2b498bc",
+        "windows": 74,
+        "coordinate_count": 9,
+        "valid_coordinate_entries": 660,
+        "coordinate_values_shape": [
+          74,
+          9
+        ],
+        "finite_coordinate_values": 660,
+        "coordinates_match_unsuppressed_reference": true,
+        "unsuppressed_reference_sha256": "7a6c281a16638ef630994c2a26332142247b9b2eec6cd15d479e0d40f9369b1a",
+        "anchor_id": "ds005385_ses1_pretask_EyesClosed_20261111_v1",
+        "anchor_sha256": "79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab",
+        "legacy_and_v3_4_jacobian_paths_present": []
+      }
+    ]
+  },
+  "result": "passed"
+}

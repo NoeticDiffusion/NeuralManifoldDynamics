@@ -1,0 +1,77 @@
+# Full session-1 resting EO/EC baseline application.
+# Selection and QC/support decisions are frozen in
+# DS004148_BASELINE_EC_QC_POLICY_V1_1.md before coordinate inspection.
+# cohort_selection is provenance only. The runtime command explicitly passes
+# the 60 manifest IDs, then verifies file_index/features.csv before summarize.
+# Keep all computable windows in NMD; the separate analysis mask applies the
+# policy without rewriting measurements or overloading qc_ok_eeg.
+imports:
+  - config_ingest_common_eeg_9d.yml
+
+datasets:
+  - ds004148
+
+cohort_selection:
+  subject_ids: all_session1_EC_EO_pairs
+  subject_id_range: [sub-01, sub-60]
+  sessions: [session1]
+  tasks: [eyesclosed, eyesopen]
+  selection_basis: "Metadata-only inventory: one session-1 eyesclosed and eyesopen BrainVision recording for each of 60 dataset participants."
+  policy: DS004148_BASELINE_EC_QC_POLICY_V1_1.md
+
+exclude-files:
+  - "ses-session2_"
+  - "ses-session3_"
+  - "task-mathematic_"
+  - "task-memory_"
+  - "task-music_"
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261116_ds004148_v3_4_frozen_ec_baseline/processed"
+  dataset_received_dirs: {}
+
+run:
+  parallel_backend: threading
+
+preprocess:
+  sfreq: 250
+  notch_hz: 50
+  eeg_bandpass: [1, 45]
+  reref: average
+  artifacts:
+    method: none
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+scaling:
+  anchor_scope: "Frozen ds005385 session-1 pre-task EyesClosed experimental cohort reference; no ds004148 target-data refit."
+  anchor_id: ds005385_ses1_pretask_EyesClosed_20261111_v1
+  anchor_manifest: null
+  anchor_manifests_by_condition: {}
+  external_anchor:
+    preset: null
+    path: "M:/repos/NeuralManifoldDynamics/mndm/config/v.3.4/anchors/mnps_v3_4_ds005385_ses1_pretask_EyesClosed_20261111_v1.json"
+    compatibility: exploratory_transfer
+    transfer_reason: "Predeclared exploratory application of the frozen ds005385 EyesClosed scalp-EEG anchor to all ds004148 session-1 EO/EC recordings. No target-data refit. Dataset, source sampling rate and channel realization differ; coordinates are reference-relative measurements and remain unqualified."
+    anchor_id: ds005385_ses1_pretask_EyesClosed_20261111_v1
+    sha256: 79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab
+    reference_feature_units:
+      eeg_delta: microvolt^2
+      eeg_theta: microvolt^2
+      eeg_alpha: microvolt^2
+      eeg_beta_alpha: dimensionless_ratio
+      eeg_gamma: microvolt^2
+      eeg_hjorth_mobility: dimensionless_per_sample
+      eeg_alpha_theta: dimensionless_ratio
+      eeg_permutation_entropy: dimensionless
+      mnps_v3_4_alpha_centroid_hz: Hz
+      mnps_v3_4_alpha_envelope_cv: dimensionless
+  require_anchor_manifest_for_scaled_output: true
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: false
+  missing_anchor_policy: error_for_scaled_output
+
+summarize:
+  qc_policy: keep_all

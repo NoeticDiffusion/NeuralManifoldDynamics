@@ -1,0 +1,23 @@
+# Three-participant technical repeatability pilot using the pre-existing
+# session-1/2/3 feature cache. It re-summarizes, but does not re-extract EEG.
+imports:
+  - config_ingest_ds004148_v34_baseline_ec_anchor.yml
+
+cohort_selection:
+  subject_ids: [sub-01, sub-02, sub-03]
+  sessions: [session1, session2, session3]
+  tasks: [eyesclosed, eyesopen]
+  selection_basis: "The original metadata-frozen three-participant MNPS 3.4 pilot cohort; cached feature arrays were checked for exact session-1 parity against the full-cohort extraction before reuse."
+  policy: DS004148_SESSION_REPEATABILITY_V1.md
+
+exclude-files:
+  - "task-mathematic_"
+  - "task-memory_"
+  - "task-music_"
+
+paths:
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261118_ds004148_v3_4_session_repeatability/pilot_cached/processed"
+
+scaling:
+  external_anchor:
+    transfer_reason: "Predeclared descriptive repeatability pilot using one frozen ds005385 EyesClosed scalp-EEG anchor for all three sessions and both resting conditions. No ds004148 target-session refit; acquisition and time-separated-session comparability remain exploratory."
