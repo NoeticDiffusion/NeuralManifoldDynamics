@@ -1,0 +1,203 @@
+# ds006502 MNPS 3.4 MEG smoke.
+# Three 360 s CTF rest recordings: sub-01, sub-02, sub-03,
+# ses-meg1, task-rest, run-1. CLI also passes those subject ids.
+# Each sidecar reports 600 Hz and 272 MEG channels. This is not a cohort run.
+#
+# Imports the dataset source, which imports the shared EEG 9D file, and the
+# shared dynamical-families defaults. modality is meg, so summarize writes the
+# experimental MEG 3.4 surface (3.4-meg-exp.1) instead of the EEG flat 9D
+# coordinates. v3_4_dynamics computes drift and diffusion on that raw MEG
+# chart. The imported dynamical_families block computes the legacy 3D family
+# measures on the MEG shadow of [m, d, e]. No MEG anchor exists, so anchored
+# layers stay unavailable.
+imports:
+  - ./config_ingest_ds006502.yml
+  - ../../../config_ingest_common_dynamical_families.yaml
+
+modality: meg
+
+paths:
+  processed_dir: "K:/processed/ds006502_mnps_v3_4_smoke"
+
+preprocess:
+  notch_hz: 60
+  meg_bandpass: [1, 45]
+  # MNE's default CTF system-clock truncation shortens these 360 s rests
+  # to 329.7 s. ignore keeps 216000 samples at 600 Hz, matching the sidecar.
+  ctf_system_clock: ignore
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+# Keep one rest recording per requested subject.
+exclude-files:
+  - "\\.nii(\\.gz)?$"
+  - "ses-mri"
+  - "ses-meg2"
+  - "ses-meg3"
+  - "task-training_"
+  - "task-retest_"
+  - "task-control_"
+  - "run-[2-9]_"
+
+features:
+  meg_psd:
+    method: multitaper
+    bandwidth: null
+    fmin: 0.0
+    fmax: 50.0
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  datasets:
+    ds006502:
+      subcoords:
+        m_a: {meg_delta: -0.5, meg_theta: -0.5}
+        m_e: {meg_alpha: -1.0}
+        m_o: {meg_beta_alpha: 1.0}
+        d_n: {meg_gamma: 1.0}
+        d_l: {meg_hjorth_mobility: 1.0}
+        d_s: {meg_alpha_theta: 1.0}
+        e_e: {meg_permutation_entropy: 1.0}
+        e_s: {meg_hjorth_complexity: 1.0}
+        e_m: {meg_sample_entropy: 1.0}
+      metric_policies:
+        e_e:
+          preferred: meg_permutation_entropy
+          fallbacks: [meg_highfreq_power_30_45]
+        e_m:
+          preferred: meg_sample_entropy
+          fallbacks: []
+
+mnps_projection:
+  feature_standardization:
+    meg_delta: ["log10", "robust_z", "clip"]
+    meg_theta: ["log10", "robust_z", "clip"]
+    meg_alpha: ["log10", "robust_z", "clip"]
+    meg_beta: ["log10", "robust_z", "clip"]
+    meg_gamma: ["log10", "robust_z", "clip"]
+    meg_highfreq_power_30_45: ["log10", "robust_z", "clip"]
+    meg_alpha_theta: ["robust_z", "clip"]
+    meg_beta_alpha: ["robust_z", "clip"]
+    meg_permutation_entropy: ["robust_z", "clip"]
+    meg_sample_entropy: ["robust_z", "clip"]
+    meg_hjorth_mobility: ["robust_z", "clip"]
+    meg_hjorth_complexity: ["robust_z", "clip"]
+
+mnps_v3_4_meg:
+  enabled: true
+  definition_version: 3.4-meg-exp.1
+  variants:
+    - existing_coordinate_set
+    - removal_only
+    - alpha_replacement
+  sensor_family_policy: explicit_mag_grad
+  unknown_sensor_type_policy: preserve_unknown_no_coordinate
+  scaling:
+    mode: raw_only
+    anchor_manifest: null
+  estimators:
+    sample_entropy:
+      m: 2
+      r_scale: 0.2
+      max_n: 300
+      invalid_value_policy: missing_with_reason
+    alpha_centroid_hz:
+      frequency_range_hz: [7.0, 13.0]
+      aggregation: median_channel_psd_then_power_weighted_centroid
+      psd:
+        method: welch
+        segment_sec: 4.0
+        overlap_fraction: 0.5
+        window: hann
+        detrend: constant
+        scaling: density
+    alpha_envelope_cv:
+      band_hz: [8.0, 12.0]
+      aggregation: median_of_channelwise_cv
+      bandpass:
+        method: butterworth_sos_zero_phase
+        order: 4
+      envelope_method: hilbert_magnitude
+      edge_support_guard_sec: 10.0
+      invalid_value_policy: missing_with_reason
+
+# Drift and diffusion on each raw MEG coordinate realization. Anchored
+# one-step stays not_testable until a MEG anchor exists.
+v3_4_dynamics:
+  enabled: true
+  nominal_dt_sec: 4.0
+  window_step_tolerance_sec: 1.0e-9
+  coordinate_layers:
+    raw:
+      enabled: true
+    anchored:
+      enabled: true
+  diffusion:
+    enabled: true
+    estimator: local_increment_covariance
+    neighborhood: {k: 32}
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    min_valid_fraction: 0.1
+    psd_floor: 1.0e-8
+    tie_break_neighbors_by_index: true
+  drift:
+    enabled: true
+    estimator: local_conditional_increment_mean
+    neighborhood: {k: 32}
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    max_neighborhood_radius: null
+    min_temporal_span_sec: null
+    min_valid_fraction: 0.1
+    weight_mode: uniform
+    tie_break_neighbors_by_index: true
+    realized_velocity_level0:
+      enabled: true
+    conditional_mean_rate_level1:
+      pooled:
+        enabled: true
+      blocked_crossfit:
+        enabled: true
+        n_blocks: 2
+        embargo_steps: 4
+      lag_diagnostics:
+        enabled: false
+  one_step:
+    enabled: true
+    declared_lags: [1]
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    ridge_alpha: 1.0e-4
+    one_step_rel_mse_threshold: 0.9
+    n_blocks: 2
+    embargo_steps: 4
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+
+measurement_surface:
+  dataset_overlay:
+    sampling_rate_hz: 600
+    resampling_method: "MNE resample 600 Hz to 250 Hz using common preprocessing; MEG bandpass 1-45 Hz"
+    realized_sampling_rate_hz: 250
+    filter_specification: "sidecars do not declare PowerLineFrequency or SoftwareFilters. Smoke applies a 60 Hz notch from the dataset README and a 1-45 Hz MEG bandpass. No CSD and no ICA."
+    reference: "CTF; 28 reference channels in every channels.tsv; not an EEG average reference"
+    channel_selection: "All 380 channels.tsv files label 272 data channels MEGGRADAXIAL in tesla. This MNE build types those channels as mag, not grad, and types the 28 reference channels as ref_meg. The smoke keeps the mag family and drops references."
+    line_frequency_hz: "60 Hz from the dataset README; absent from all 380 meg.json sidecars"
+
+summarize:
+  qc_policy: keep_all

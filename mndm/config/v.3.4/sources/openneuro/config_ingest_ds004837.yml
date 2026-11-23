@@ -1,0 +1,110 @@
+# ds004837 — MNPS 3.4 source config composed on the shared EEG 9D contract.
+#
+# OpenNeuro snapshot 1.0.2:
+# "Magnetoencephalographic (MEG) Pitch and Duration Mismatch Negativity (MMN)
+# in First-Episode Psychosis"
+# Modalities: meg, mri. 60 subjects. 335 files. Tasks: attnmod, p_five.
+# Snapshot size: 128779377455 bytes.
+# DOI: 10.18112/openneuro.ds004837.v1.0.2
+#
+# Dataset README, checked against the local snapshot README:
+# Pittsburgh Early Psychosis Program (PEPP): Mismatch Negativity (MMN)
+# in First-Episode Psychosis.
+# Experimentation period: 2017-12-01 to 2021-09-15.
+# Oddball paradigm with standards, pitch deviants, and duration deviants.
+# Extended description: https://doi.org/10.1111/ejn.16107
+# Participant categories: healthy controls (HC), first-episode schizophrenia
+# (FESZ), first-episode affective psychosis (FEAFF). Clinical,
+# neuropsychological, demographic, and medication data are in
+# derivatives/participants.csv.
+# Events: 1 standard, 2 pitch deviant, 3 duration deviant.
+# Funding: NIH R01 MH108568 and MH113533.
+#
+# This file imports the shared v3.4 EEG contract because that is the requested
+# composition target. ds004837 is MEG plus MRI, so the inherited EEG acquisition
+# surface from ds004148 is replaced below and is not a confirmed MEG measurement.
+# Local sidecars have not been read. This file was not executed as an ingest.
+imports:
+  - ../../config_ingest_common_eeg_9d.yml
+
+datasets:
+  - ds004837
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/processed/ds004837_mnps_v3_4"
+  dataset_received_dirs:
+    ds004837: "K:/ExternalReceivedDatasets/openneuro/received/ds004837"
+
+# Full snapshot. No include filters, so MEG, MRI, and behavioural files all stay.
+download:
+  retries: 3
+  use_uvx: true
+
+pilot_selection: null
+exclude-files: []
+
+run:
+  parallel_backend: threading
+
+preprocess:
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+robustness:
+  ensembles:
+    enabled: false
+
+scaling:
+  __replace: true
+  export_raw_features: true
+  pipeline:
+    - feature_transform
+    - feature_reference_robust_z
+    - linear_coordinate_assembly
+    - coordinate_reference_robust_z
+  robust_z:
+    center: median
+    scale: 1.4826 * MAD
+    degenerate_scale_policy: invalid_no_epsilon_substitution
+  anchor_scope: none_until_a_dataset_reference_is_declared
+  anchor_id: null
+  anchor_manifest: null
+  anchor_manifests_by_condition: null
+  require_anchor_manifest_for_scaled_output: false
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: false
+  reference_sampling: equal_participant_weight
+  pool_scalp_and_intracranial_anchors: false
+  pool_incompatible_measurement_surfaces: false
+  saturation_policy: none
+  nonpositive_log_input_policy: invalid_no_floor
+  missing_anchor_policy: retain_raw_mark_anchored_invalid
+  external_anchor:
+    preset: null
+    path: null
+    compatibility: strict
+    transfer_reason: null
+    reference_feature_units: null
+
+measurement_surface:
+  dataset_overlay:
+    __replace: true
+    dataset_id: ds004837
+    dataset_version: "doi:10.18112/openneuro.ds004837.v1.0.2"
+    sampling_rate_hz: "local *_meg.json: 3000 Hz in 98 files, 1000 Hz in 8 files"
+    resampling_method: "not a confirmed MEG measurement surface; common EEG resample-to-250 Hz remains inherited until a MEG run config overrides it"
+    realized_sampling_rate_hz: null
+    filter_specification: "local *_meg.json PowerLineFrequency is 60 Hz and SoftwareFilters is n/a; acquisition bandpass is not declared in the sidecars"
+    reference: "not declared in local MEG sidecars"
+    channel_selection: "native MEG channels present in each source file; sensor family (magnetometer versus gradiometer) must stay explicit; v3.4 channel-drop heuristic disabled in this overlay"
+    bad_channel_policy: "variance/correlation channel-drop heuristic explicitly disabled; no channel interpolation or silent drop"
+    channel_label_set_compatibility: "casefold_for_anchor_matching; exact_labels_preserved"
+    continuous_segment_boundaries: "source-file boundary plus any nonfinite all-channel sample runs; never bridge source files or concatenated epoched input"
+    edge_support_policy: "support reason is emitted per window; EEG alpha-envelope edge guard is not a confirmed MEG rule"
+    estimator_parameter_manifest: "estimators section plus runtime SHA256 of the executed preprocessing, feature, candidate, and coordinate assembly code"
+    line_frequency_hz: 60
+
+summarize:
+  qc_policy: keep_all

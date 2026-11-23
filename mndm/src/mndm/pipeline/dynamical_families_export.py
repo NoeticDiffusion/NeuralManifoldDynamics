@@ -257,6 +257,9 @@ def build_dynamical_families_export(
             max_dt_relative_deviation=float(diffusion_cfg.get("max_dt_relative_deviation", 0.05)),
             min_valid_fraction=float(diffusion_cfg.get("min_valid_fraction", 0.1)),
             psd_floor=float(diffusion_cfg.get("psd_floor", 1e-8)),
+            tie_break_neighbors_by_index=bool(
+                diffusion_cfg.get("tie_break_neighbors_by_index", False)
+            ),
         )
         if (
             diffusion_result.get("computation_status") == "computed"
@@ -531,6 +534,9 @@ def build_dynamical_families_export(
             embargo_steps=int(crossfit_cfg.get("embargo_steps", 4)),
             ito_lags=tuple(int(value) for value in raw_lags),
             consistency_rel_tol=float(diagnostics_cfg.get("consistency_rel_tol", 0.5)),
+            tie_break_neighbors_by_index=bool(
+                drift_cfg.get("tie_break_neighbors_by_index", False)
+            ),
         )
     one_step_cfg = family_config(root, "one_step")
     reject_forbidden_one_step_config_keys(one_step_cfg)

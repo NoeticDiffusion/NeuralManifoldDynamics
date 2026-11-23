@@ -51,7 +51,7 @@ In the earlier EEG configuration, the three components were recomposed from nine
 
 The historical EEG e_m source could be selected from a priority chain of cardiac, vascular, pupil, eye-movement, MEG, and EEG features, with the chosen source recorded in provenance. Thus the e_m label did not always denote the same sensor or physiological quantity. The 9D historical chart and its fixed weighted projection supported recomposition into the three-component output, with runtime normalization and support handling. The exact old projection was a versioned operational rule, not an optimized biological weighting.
 
-The older article also described derivatives, Jacobian outputs, regional measurements, and body-brain auxiliary surfaces. Those objects belonged to the historical software generations and their own estimator contracts. They are not outputs of the experimental flat v3.4 definition.
+The older article also described derivatives, Jacobian outputs, regional measurements, and body-brain auxiliary surfaces. Those historical objects belonged to earlier software generations and their own estimator contracts; they are not components of the experimental flat v3.4 EEG coordinate payload. Separately versioned v3.4 Jacobian and dynamics exports, along with the MEG and LFP engineering branches, are described in S1 and below.
 
 = S6.3 Summary of software and measurement changes
 
@@ -81,9 +81,11 @@ The current checkout reports package version 3.1.0 and includes additional exper
 
 = S6.4 What changed in the v3.4 article
 
-The new article narrows its subject from a cumulative history of NeuralManifoldDynamics to one implemented experimental measurement definition. It describes nine ordered EEG measurements, per-window support, candidate-specific estimators, participant-balanced robust references, explicit sensor/reference identity, and an HDF5 output contract. It does not carry forward historical model definitions, modality catalogues, regional-network interpretations, Jacobian interpretations, or exploratory cohort findings that are not needed to define this measurement.
+The new article presents NeuralManifoldDynamics as a versioned measurement system through a principal experimental EEG definition and bounded, modality-specific MEG and LFP engineering pilots. It describes nine ordered EEG measurements, per-window support, candidate-specific estimators, participant-balanced robust references, explicit sensor/reference identity, and an HDF5 output contract. The MEG and LFP examples retain separate schemas, sensor realizations, units, and support. Where component labels or order overlap, that does not establish measurement comparability or a shared cross-modal chart. The article does not carry forward historical model definitions, broad modality catalogues, regional-network interpretations, or historical Jacobian interpretations. Separate v3.4 Jacobian and dynamical-family exports are additive measurements; Supplementary Methods S1 describes the ds004511, ds003645, and DANDI pilots, none of which contributes to the EEG reference-cohort or repeatability analyses.
 
-The v3.4 output is flat. Its ordered measurements are delta_theta_level, alpha_level, beta_alpha_ratio, gamma_level, hjorth_mobility, alpha_theta_ratio, permutation_entropy, alpha_centroid_hz, and alpha_envelope_cv. It does not aggregate these values into historical families, project them to a three-component output, or emit a v3.4 Jacobian. The order, estimator, and output namespace are versioned. Historical labels and feature relationships do not imply equal units, scale, estimator, or scientific meaning.
+The core v3.4 coordinate payload is flat. Its ordered measurements are delta_theta_level, alpha_level, beta_alpha_ratio, gamma_level, hjorth_mobility, alpha_theta_ratio, permutation_entropy, alpha_centroid_hz, and alpha_envelope_cv. It does not aggregate these values into historical families or project them to a three-component output. A separately versioned, default-on local Jacobian is available at `/measurements/v3_4/jacobian`; the opt-in drift/diffusion/lag-1 family is at `/measurements/v3_4/dynamics`. These additive outputs do not change the coordinate order or imply equivalence to historical Jacobians or dynamical families. Historical labels and feature relationships do not imply equal units, scale, estimator, or scientific meaning.
+
+The MEG derived-export check and the LFP contact-feature/dynamics pilot are separate engineering realizations. Their successful feature or export computations do not imply common anchors, comparable scales, cross-modal equivalence, or biological qualification.
 
 Several source features are related by name or lineage to inputs used in earlier configurations. These relationships are recorded here only as migration context. Feature anchors, transforms, and a second coordinate-scaling stage mean that same-named source features do not establish equivalence between anchored outputs. A downstream comparison requires the exact definition, feature order, transforms, channel set, reference, time grid, and anchor realization.
 
@@ -116,10 +118,10 @@ The v3.4 code writes to its own measurement namespace and may coexist with other
     inset: 4pt,
     [`/mnps_3d` `[m,d,e]`], [None], [Root-level path observed in selected combined exports; flat v3.4 does not aggregate into a three-axis chart.],
     [`/coords_9d`], [None], [Root-level group observed in selected combined exports; historical order, transforms, clipping, and reference semantics are not inherited by v3.4.],
-    [Jacobian/MNJ outputs], [None], [v3.4 defines no local derivative or state-transition operator.],
+    [Jacobian/MNJ outputs], [Optional 9D local estimate at `/measurements/v3_4/jacobian`.], [Separate chart-level estimator; no numerical equivalence to historical `/jacobian` or `/jacobian_9D`, and not a biophysical Jacobian.],
     [Regional MNPS outputs], [None], [v3.4 does not emit regional or anatomical-network coordinates.],
-    [Dynamical-family outputs], [None], [Prediction, diffusion, reachability, and resilience families remain separate versioned products.],
-    [Embodied or modality-specific projections], [None], [No cardiac, vascular, pupil, MEG, fMRI, or cross-modal projection is part of v3.4.],
+    [Dynamical-family outputs], [Optional drift, local increment covariance, and anchored lag-1 one-step at `/measurements/v3_4/dynamics`.], [Separate experimental realization and support contract; no direct equivalence to legacy family outputs. The ds004511 smoke does not establish predictive validity or scientific qualification.],
+    [Embodied or modality-specific projections], [Separate experimental MEG surface and LFP branch outside the flat EEG schema.], [No shared cross-modal projection or coordinate equivalence is claimed. Historical cardiac, vascular, pupil, and fMRI outputs remain version-specific.],
   ),
   kind: table,
   caption: [Historical output paths and concepts without a direct equivalent in the MNPS 3.4 flat EEG contract.],

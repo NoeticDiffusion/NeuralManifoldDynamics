@@ -4,6 +4,12 @@
 measurement specification. This is a consolidation checkpoint, not a new
 package release or scientific qualification.
 
+This freeze covers the flat nine-coordinate definition, its reference
+artifacts, and the cohort evidence summarized below. Later optional v3.4
+Jacobian and dynamical-family exports are separate additive measurements; see
+the [`versioned guide`](../MNPS_VERSIONED_GUIDE.md) and
+[`dynamics export contract`](../config/v.3.4/DYNAMICS_EXPORT.md).
+
 ## Frozen identity
 
 - Measurement schema: `mndm.mnps_v3_4.experimental_flat_9d.v1`, definition

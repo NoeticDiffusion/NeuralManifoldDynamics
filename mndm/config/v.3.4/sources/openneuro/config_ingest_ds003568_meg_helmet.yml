@@ -1,0 +1,36 @@
+# meg source. The MNPS 3.4 flat EEG 9D map is not applied.
+# Converted from mndm/config/sources/openneuro/config_ingest_ds003568_meg_helmet.yaml with the same
+# family switches as config_ingest_ds004511.yml: dynamical families on,
+# regional MNPS off, block Jacobians off.
+# This file was not executed.
+imports:
+  - ../../../config_ingest_common_dynamical_families.yaml
+  - ../../../sources/openneuro/config_ingest_ds003568_meg_helmet.yaml
+
+datasets:
+  - ds003568
+
+paths:
+  processed_dir: "K:/ExternalReceivedDatasets/openneuro/processed_mnps_v3_4"
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+  one_step:
+    enabled: true
+    declared_lags: [1, 2]
+
+robustness:
+  ensembles:
+    enabled: false

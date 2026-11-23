@@ -1,0 +1,24 @@
+# Concurrent EEG, ECG, and behavior with transcranial electrical stimulation.
+# DOI: 10.5281/zenodo.4456079
+# Exp1_Raw Data.zip is about 12.4 GiB and Exp2_Raw Data.zip is about 12.0 GiB.
+# The include list keeps the small sidecars. Delete it to download every file,
+# or pass --include "*.zip" on the command line when the archives are wanted.
+record: "4456079"
+paths:
+  received_dir: data/zenodo/received
+selection:
+  include:
+    - "*.xlsx"
+    - "*.pdf"
+download:
+  workers: 2
+  chunk_bytes: 8388608
+  retries: 5
+  retry_backoff_seconds: 2
+  timeout_seconds: 120
+  resume: true
+  verify_checksum: true
+  continue_on_error: true
+  # Optional access token for restricted records. The value stays in the
+  # environment; this names the variable only.
+  token_env: ZENODO_TOKEN

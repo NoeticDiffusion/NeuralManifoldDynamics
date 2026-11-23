@@ -1,18 +1,23 @@
 # Versioned MNPS measurements and v3.4 reference workflow
 
-Status checked 2026-11-12. This is the entry point for choosing a measurement
-contract and interpreting the experimental MNPS 3.4 EEG export. It documents
-implemented behavior in this checkout; it does not qualify measurements for a
-scientific comparison.
+Status checked 2026-11-19. This is the entry point for choosing a measurement
+contract and interpreting the experimental MNPS 3.4 EEG export and the
+separate opt-in MEG surface. It documents implemented behavior in this
+checkout; it does not qualify measurements for a scientific comparison.
 
 ## Documentation inventory and version status
 
 | Resource | Scope and current use |
 |---|---|
-| [`README.md`](../README.md), [`mndm/README.md`](README.md) | Repository/package entry points. The root README's previous “current release 3.0.2” line did not distinguish package metadata from release notes; it now links here. |
+| [`README.md`](../README.md), [`mndm/README.md`](README.md) | Repository/package entry points. The root README's previous "current release 3.0.2" line did not distinguish package metadata from release notes; it now links here. |
 | [`CONFIG_GUIDE.md`](CONFIG_GUIDE.md), [`Command_cheat_sheet.md`](Command_cheat_sheet.md) | General v2/v3 configuration and CLI reference. Their existing recipes remain valid for those workflows; this guide supplies the opt-in v3.4 path. |
-| [`Output_variables_guide.md`](Output_variables_guide.md), [`schema_docs.md`](src/mndm/reporting/schema_docs.md) | Existing canonical HDF5 schema, principally MNPS v2 and the v3.0 release line. They are not a complete description of `/measurements/v3_4/`. |
+| [`Output_variables_guide.md`](Output_variables_guide.md), [`schema_docs.md`](src/mndm/reporting/schema_docs.md) | Existing canonical HDF5 schema, principally MNPS v2 and the v3.0 release line. The schema page now also indexes the independent opt-in `/measurements/v3_4_meg/` payload. |
 | [`config/v.3.4/ANCHOR_APPLICATION.md`](config/v.3.4/ANCHOR_APPLICATION.md) | Operational selection, compatibility, resume, and failure behavior for frozen external anchors. |
+| [`config/v.3.4/JACOBIAN_EXPORT_CONFIGURATION.md`](config/v.3.4/JACOBIAN_EXPORT_CONFIGURATION.md) | Legacy Jacobian HDF5 identities and exact switches for v3.4-only exports. |
+| [`config/v.3.4/DYNAMICS_EXPORT.md`](config/v.3.4/DYNAMICS_EXPORT.md) | Opt-in v3.4 drift, diffusion, anchored one-step support rules, and provenance. |
+| [`config/v.3.4/MEG_EXPERIMENTAL_SPEC.md`](config/v.3.4/MEG_EXPERIMENTAL_SPEC.md) | Authoritative `3.4-meg-exp.1` definitions, variants, support rules, HDF5 payload, and bounded evidence/status. |
+| [`docs/MNPS_V3_4_PRELIMINARY_RELEASE.md`](docs/MNPS_V3_4_PRELIMINARY_RELEASE.md) | Frozen preliminary implementation status, anchor hashes, ds004148 repeatability, and deferred evidence. |
+| [`docs/ds004148_session_repeatability_fullcohort/README.md`](docs/ds004148_session_repeatability_fullcohort/README.md) | Full 60-participant, three-session fixed-anchor repeatability results and provenance package. |
 | `src/mndm/mnps/v3_4/` and `config/v.3.4/` | Authoritative v3.4 implementation and version-specific YAML/manifests. |
 | `project/diary/20261112_mnps_v3_4_ds005385_condition_specific_cohort_anchor.md` | Cohort selection, fitting, summary inventory, and evidence limits. |
 
@@ -45,13 +50,14 @@ those directory names.
 3. **Feature extraction** writes per-window feature rows. The v3.4 common EEG
    configuration preserves inherited common EEG features and adds separately
    named alpha-centroid, alpha-envelope-CV, and spatial-logvariance candidates.
-4. **Summarize** emits the v3.4 measurement group and may also emit canonical
-   MNPS v2 objects in the same HDF5. A named v3.4 external anchor overrides
-   config-based anchor selection for the v3.4 measurements. With no explicit
-   external selection, the configured `anchor_manifest` or
-   `anchor_manifests_by_condition` is used; when no usable manifest is
-   configured, raw measurements remain and anchored coordinate values are
-   invalid. There is no implicit fit or recording-local normalization.
+   The independent MEG overlay keeps the existing MEG extraction fixed and
+   computes its two alpha candidates channel-wise within MAG or GRAD.
+4. **Summarize** emits the v3.4 EEG measurement group and may also emit
+   canonical MNPS v2 objects in the same HDF5. When the explicit MEG overlay is
+   enabled, it emits the separate `/measurements/v3_4_meg/` group. EEG v3.4
+   anchor selection applies to the EEG surface; the MEG surface is raw-only
+   and refuses EEG or other uncalibrated anchors. There is no implicit fit or
+   recording-local normalization.
 5. **QC and export** retain window times, per-coordinate support/validity,
    channel/reference realization, anchor selection, implementation hashes,
    and qualification state. A finite value is not by itself evidence of
@@ -63,7 +69,11 @@ reference, time grid, units, and implementation; qualification belongs to the
 downstream scientific protocol. `nmd-analysis` owns scientific contrasts,
 null controls, acceptance rules, and biological interpretation.
 
-## MNPS 3.4 flat 9D definition
+## EEG MNPS 3.4 flat 9D definition
+
+This section defines the experimental EEG surface. MEG uses a separate
+modality-specific contract documented below and in
+[`MEG_EXPERIMENTAL_SPEC.md`](config/v.3.4/MEG_EXPERIMENTAL_SPEC.md).
 
 The payload schema is
 `mndm.mnps_v3_4.experimental_flat_9d.v1`, under definition version `3.4`.
@@ -83,8 +93,8 @@ scaling.
 | 8 | `alpha_centroid_hz` | `mnps_v3_4_alpha_centroid_hz` | Hz | `paf_cog` |
 | 9 | `alpha_envelope_cv` | `mnps_v3_4_alpha_envelope_cv` | dimensionless | `burst_alpha` |
 
-The v3.4 representation is **flat**. It has no M/D/E family aggregation, no
-3D projection, and no v3.4 Jacobian. It removes the legacy `e_s` and `e_m`
+The v3.4 representation is **flat**. It has no M/D/E family aggregation and no
+3D projection. It removes the legacy `e_s` and `e_m`
 coordinates from this representation; alpha centroid and envelope CV are new
 candidate estimators, not evidence that their legacy map labels are
 interchangeable measurements. No coordinate is clipped or winsorized. A
@@ -125,12 +135,101 @@ Feature and coordinate anchors are distinct. Degenerate scales invalidate the
 affected values; no epsilon scale is substituted. `coordinate_weights` in the
 manifest are all 1.0 metadata; they do not aggregate axes into M/D/E families.
 
+`raw_coordinates` retain the source-derived units shown in the definition
+table. After an anchor is applied, `coordinates/values` are dimensionless
+reference-relative scores, including `alpha_centroid_hz`: its name describes
+the unanchored feature and does not mean the anchored value is measured in Hz.
+Always read the output layer and its unit metadata before interpreting a
+coordinate.
+
+The name `qc_ok_eeg` currently has layer-specific meanings. In the feature
+table, `qc_ok_eeg=True` means the configured core EEG feature columns are
+available (finite); it does not mean the signal passed artifact QC. In the v3.4
+HDF5 `support/qc/qc_ok_eeg`, `-1` means artifact QC was not assessed. Consumers
+must use the layer and encoded state to interpret this field. Any future rename
+or split into separate availability and artifact-QC fields must be versioned
+as an output-contract change.
+
 The common YAML also contains geometry defaults (`weighted_euclidean`, unit
 weights, no whitening, full-space invalidation) explicitly marked as neutral
 design defaults pending validation. The v3.4 coordinate exporter does not
-compute distances, trajectories, Jacobians, or these geometry outputs. Any
-downstream geometry or aggregation is a separately declared analysis choice,
-not a v3.4 subject-level default.
+compute distances, trajectories, or those geometry outputs. It does compute a
+local Jacobian on the flat nine when `v3_4_jacobian.enabled` is true, which
+is the default. The fit is written at `/measurements/v3_4/jacobian` and uses
+anchored coordinates only after an anchor has actually applied; otherwise it
+uses the raw nine. Incomplete windows are excluded. Whitening stays off, so
+the numerical abscissa is the Euclidean metric of that declared layer. This
+group does not replace `/jacobian` or `/jacobian_9D`, and it is not an M/D/E
+family Jacobian.
+
+The separate `v3_4_dynamics.enabled` option writes schema
+`mndm.mnps_v3_4.dynamics.v1` under `/measurements/v3_4/dynamics`. Drift and
+local conditional increment-covariance rates preserve separate raw and
+actually anchored 9D realizations; a recording-level covariance without `dt`
+division is also retained. Neither is asserted to be an Itô diffusion tensor.
+Raw neighborhoods use mixed source units; their measurements remain available
+with that limitation recorded, while comparability is left to the downstream
+protocol. The lag-1 affine one-step estimator accepts only an applied anchored
+realization. Missing coordinates and irregular time steps split the
+transition segments. The bounded ds004511 Rest test verified 120 raw-complete
+windows and successful summarize/HDF5 integration for one recording; it did
+not exercise an anchor or a raw one-step fit. See
+[`DYNAMICS_EXPORT.md`](config/v.3.4/DYNAMICS_EXPORT.md) and the integration
+manifest linked in [`mndm/README.md`](README.md).
+
+## Experimental MEG MNPS 3.4 surface
+
+MEG definition `3.4-meg-exp.1` (`mndm.meg_mnps_v3_4.experimental.v1`) is an
+opt-in, raw, unscaled and unqualified measurement surface. It does not alter
+the legacy MEG shadow projection or the EEG `/measurements/v3_4/` contract.
+MAG and GRAD are exported separately under
+`/measurements/v3_4_meg/sensor_families/{mag,grad}/`; explicit sensor metadata
+is required, and an unknown family stays unknown. The baseline and both alpha
+descriptors remain auxiliary; the baseline ds003645 config does not enable the
+overlay.
+
+The three selectable variants are `existing_coordinate_set` (corrected 9D
+comparison baseline), `removal_only` (7D descriptive comparison), and
+`alpha_replacement` (seven shared coordinates plus centroid and envelope CV).
+The latter is opt-in and does not delete or replace canonical MEG coordinates.
+The inherited extraction remains fixed while candidates use separate
+channel-wise aggregation. Per-window units, support masks, failure reasons,
+channel labels/set hashes, estimator settings, and implementation hashes are
+written to the HDF5 payload. EEG anchors are not reused; no recording-local
+scaling is applied.
+
+The ordinary `summarize` → HDF5 smoke passed on one existing pilot recording,
+including a disabled-export historical control. The frozen repeatability
+check covered five same-session run pairs: centroid support was complete and
+run-1 exports matched the earlier pilot. Across-participant Spearman ranking
+was mixed by sensor family (MAG ρ = 0.10, GRAD ρ = 1.00), so repeatability is
+preliminary and does not support replacement. The 0.1103 Hz MAG and 0.0842 Hz
+GRAD summaries are median absolute paired differences; mean signed differences
+are +0.0880 Hz and +0.0121 Hz, respectively. Both workflows used
+`NUMBA_DISABLE_JIT=1`; parity with JIT enabled is untested. See the
+[measurement spec](config/v.3.4/MEG_EXPERIMENTAL_SPEC.md),
+[MEG audit](../project/mnps2_audit/meg_mnps_3.4/audit_001.md),
+[smoke report](../project/mnps2_audit/outputs/20261118_meg_summarize_smoke/verification_report.json),
+and [repeatability summary](../project/mnps2_audit/outputs/20261118_meg_repeatability/repeatability_statistics.csv).
+
+A separate raw-file end-to-end run completed on 2026-11-19 using
+[`config_ingest_ds003645_meg_v34_e2e_k.yml`](config/v.3.4/config_ingest_ds003645_meg_v34_e2e_k.yml):
+one `sub-002` run-1 MEG FIF passed through ordinary `features` and
+`summarize`, which wrote the full subject HDF5 on K:. Its 121-window feature
+table and all three raw coordinate variants matched the HDF5 export. Centroid
+support was 121/121 for MAG and GRAD; `alpha_replacement` was complete in
+116/121 windows because of five declared envelope edge exclusions. This run
+left `NUMBA_DISABLE_JIT` unset, unlike the previous disabled-JIT runs, so no
+cross-setting parity is claimed. It verifies one bounded v3.4 recording, not
+the full cohort. The earlier 18-participant K: end-to-end run exercised only
+the legacy sensor-topography configuration.
+The new output is under
+`K:/ExternalReceivedDatasets/openneuro/processed_ds003645_meg_v34_e2e_20261119/`.
+
+Older repository text reported MEG–EEG directional/readiness results for
+ds003645. Those source result artifacts were not available for reproduction in
+the current audit; do not treat those historical claims as MEG v3.4
+qualification or established cross-modal semantics.
 
 ## Frozen ds005385 references and anchor selection
 
@@ -166,7 +265,22 @@ When an application cannot be established, the exporter retains raw values,
 support, and QC, marks `unsupported_anchor_application`, sets anchored
 coordinates invalid, and records a reason. Partial coordinate support remains
 visible; `complete_9d_mask` marks only windows with all nine valid coordinates.
-The payload stays `qualified=false` even when all nine values are finite.
+This partial support describes per-window estimator availability after the
+anchor application has passed its compatibility gates. It does not mean that
+an anchor can currently be applied coordinate by coordinate: unresolved or
+mismatched units for any required v3.4 feature block the external-anchor
+application as a whole, so all anchored coordinates remain invalid while raw
+and unanchored measurements are retained. A future coordinate-level policy
+would need to version and validate each coordinate's complete estimator
+dependencies; nominally dimensionless units alone do not establish that
+compatibility. The payload stays `qualified=false` even when all nine values
+are finite.
+
+Read `anchor_application_status` to determine whether the target transform was
+computed. After successful application, `evaluation_status` and
+`reference_evaluation_status` describe the reference anchor's own evaluation
+status; they do not qualify the target transfer. With no applied anchor,
+`evaluation_status` may be `not_scaled_no_compatible_anchor`.
 
 Detailed CLI/config semantics and custom manifest behavior are in
 [`ANCHOR_APPLICATION.md`](config/v.3.4/ANCHOR_APPLICATION.md).
@@ -299,9 +413,15 @@ coordinate group invalid.
 | Check | Evidence | What it establishes / does not establish |
 |---|---|---|
 | v3.4 bounded native-channel pilot | `project/diary/589_20261111_mnps_v3_4_ds004148_native_pilot.md` | Earlier 3-participant, 18-recording run wrote 18 HDF5 exports and 1,332 windows; 1,224 windows were complete 9D. It was transductive/unqualified, with artifact QC not established. It predates the SL-007 external-anchor integration. |
+| ds004148 frozen EC-anchor transfer pilot | `project/mnps2_audit/outputs/20261113_mnps_v3_4_ds004148_frozen_ec_anchor_pilot/pilot_report.md` | Six recordings; same frozen ds005385 EC anchor computed in exploratory-transfer mode; 408/444 windows had complete 9D support. Source QC is descriptive, H5 artifact QC remains unknown, and the transfer is incompatible/unqualified. |
 | ds005385 anchor fit and HDF5 statistics inventory | `project/diary/20261112_mnps_v3_4_ds005385_condition_specific_cohort_anchor.md` and the statistics directory above | 608 EO and 608 EC references; all anchors computed, H5 identities matched the selection manifest, and no numeric dataset path was unclassified. Raw EDF hashes and artifact QC were not established. |
-| SL-007 focused verification | Reported in the previous task session; a dedicated `sl_007.md` or run log was not found in this M: checkout | 29 focused tests, compilation, YAML loading, CLI help, diff checks, and an independent review were reported passing. No new dataset extraction, summarize run, or anchor refit was reported. The full external-anchor orchestrator HDF5-writing path remains unverified; the broader orchestrator suite did not finish. This is not a biological or predictive validation. |
-| Documentation checks in this round | To be recorded in the companion diary after completion | Static paths, configuration parsing, CLI help, manuscript compilation/rendering, and PDF visual inspection only; no dataset execution. |
+| SL-007 focused verification | Reported in the previous task session; a dedicated `sl_007.md` or run log was not found in this M: checkout | 29 focused tests, compilation, YAML loading, CLI help, diff checks, and an independent review were reported passing. The later ds004148 pilot below exercises the external-anchor features-to-HDF5 route; no anchor refit was part of that transfer. The broader orchestrator suite did not finish. This is not a biological or predictive validation. |
+| ds004148 participant/QC follow-up | `project/mnps2_audit/outputs/20261113_mnps_v3_4_ds004148_frozen_ec_anchor_pilot/pilot_report.md` and companion diary dated 2026-11-15 | Existing window outputs were summarized by participant and checked against descriptive amplitude/muscle descriptors; no new extraction or anchor fitting was run. All four selected pooled direction signs persist when sub-06 is omitted, while their magnitudes change. A restrictive >200 µV window subset was unbalanced and leaves QC sensitivity unresolved. |
+| Documentation checks in this round | Companion diary dated 2026-11-15 | Static cross-check of the existing pilot report, generated CSV summaries, output-layer units, and the layer-specific `qc_ok_eeg` meanings. No new dataset execution. |
+| ds004148 full-cohort session repeatability | [`docs/ds004148_session_repeatability_fullcohort/README.md`](docs/ds004148_session_repeatability_fullcohort/README.md) and `project/mnps2_audit/outputs/20261118_ds004148_v3_4_session_repeatability/full_reextracted/analysis/analysis_manifest.json` | One frozen EC anchor was applied to 360 recordings from 60 participants across three sessions; QC matched all 26,640 windows. Coordinate-level ICC(A,1) estimates ranged 0.041–0.954 and EO−EC estimates 0.249–0.864; this is descriptive repeatability for this dataset, not qualification. |
+| Legacy Jacobian identity and v3.4-only suppression | [`config/v.3.4/JACOBIAN_EXPORT_CONFIGURATION.md`](config/v.3.4/JACOBIAN_EXPORT_CONFIGURATION.md), [`artifacts/jacobian_suppression_smoke.json`](docs/ds004148_session_repeatability_fullcohort/artifacts/jacobian_suppression_smoke.json) | H5 root manifest and coordinate definitions identify `/jacobian` as primary 3D and `/jacobian_9D` as v2 9D. A one-subject smoke retained v3.4 coordinates while omitting all legacy and v3.4 Jacobian paths. |
+| MNPS 3.4 Jacobian and dynamics summarize smoke | [`project/mnps2_audit/outputs/20261119_mnps_v3_4_ds004511_dynamics_integration_test/processed/ds004511/neuralmanifolddynamics_ds004511_20261119_124848/run_manifest.json`](../project/mnps2_audit/outputs/20261119_mnps_v3_4_ds004511_dynamics_integration_test/processed/ds004511/neuralmanifolddynamics_ds004511_20261119_124848/run_manifest.json) and [`DYNAMICS_EXPORT.md`](config/v.3.4/DYNAMICS_EXPORT.md) | One cached-feature S200116 Rest recording wrote 118 finite 9D Jacobians and computed raw diffusion/drift. The new summarize output exactly matched the adapter-only drift/diffusion arrays. No anchor was applied, so anchored-only one-step was not tested; this is not a full-cohort or qualification result. |
+| Preliminary implementation freeze | [`docs/MNPS_V3_4_PRELIMINARY_RELEASE.md`](docs/MNPS_V3_4_PRELIMINARY_RELEASE.md) | Records the experimental specification, anchors, current evidence, code-hash manifests, and deferred scientific questions without assigning a package version or DOI. |
 
 ## Compact unresolved issues and next check
 
@@ -310,11 +430,11 @@ coordinate group invalid.
   clearly named local draft; it does not replace the historical source/PDF.
 - The SL-007 test-count and review report were relayed from the previous task
   session but are not preserved as a dedicated run artifact in this checkout.
-- Full external-anchor summarize-to-HDF5 orchestrator integration remains
-  unverified; the reference cohort fit and earlier pilot do not cover that
-  exact route.
-
-The single highest-value pre-release check is one bounded, fresh-feature
-end-to-end pilot through the explicit external-anchor route, followed by an
-inspection of its HDF5/sidecar masks and anchor provenance. That check should
-not be replaced by broader dataset-scale runs until it passes.
+- The full ds004148 cohort has now received the same frozen EC anchor under a
+  predeclared QC/support policy. Session repeatability varies by coordinate and
+  session pair; artifact-free signals, cross-dataset equivalence, prediction,
+  and biological or clinical qualification remain unestablished.
+- The v3.4-only Jacobian suppression overlay and smoke manifest now document
+  the legacy-path switches. Existing full-cohort H5 outputs retain the legacy
+  Jacobian matrices that summarize emitted before the fix; they were not used
+  in the repeatability analysis and were not rewritten.

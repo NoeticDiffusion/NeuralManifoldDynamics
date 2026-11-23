@@ -1,0 +1,164 @@
+# ds008037 — MNPS 3.4 flat 9D EEG config.
+#
+# OpenNeuro snapshot 1.0.1, BIDS 1.11.1, raw, CC0.
+# "The neural dynamics of working memory and transcranial magnetic stimulation"
+# Authors: Mana Biabani, Nigel C. Rogasch.
+# Institution: Monash University, Turner Institute for Brain and Mental Health,
+# 770 Blackburn Road, Clayton VIC 3168, Australia.
+# DOI: 10.18112/openneuro.ds008037.v1.0.1
+# Related: https://doi.org/10.64898/2026.07.12.738085
+#          https://doi.org/10.1162/imag_a_00349
+#
+# Local sidecar scan, 2026-11-21, 717 *_eeg.json files:
+#   rest 121, workingmemory 117, tmseeg 479.
+#   Every file: 1000 Hz, PowerLineFrequency 50, EEGReference FCz,
+#   EEGGround AFz, continuous, 10-20, EasyCap EASYCAP BC-TMS-64-58,
+#   SoftwareFilters n/a, HardwareFilters n/a.
+#   Rest and working memory: EEGChannelCount 62.
+#   TMS-EEG: 63 channels in 392 files, 62 in 87.
+#   Rest is eyes-open, duration 480.3-660.8 s. Two of 123 participants
+#   have no rest sidecar.
+#   Working-memory events include eeglab_boundary markers from merged blocks.
+#   TMS-EEG events are single pulses at prefrontal, premotor, parietal,
+#   and shoulder control. Structural MRI is not in this release.
+#   sub-001 rest channels.tsv lists 62 EEG rows in uV, including FCZ,
+#   each with reference FCz.
+#
+# The common EEG preprocess still notch-filters at 50 Hz, bandpasses
+# 1-45 Hz, resamples 1000->250 Hz, and average-rereferences. That is the
+# applied measurement surface. It is not the recorded FCz reference.
+# This file does not remove TMS pulses or split working-memory boundaries.
+#
+# Composes the shared v3.4 EEG contract plus the shared dynamical-families
+# defaults. The ds004148 pilot subject list, task excludes, output root, and
+# anchor inherited from the common EEG file are replaced here.
+#
+# Drift, diffusion, one-step, amplification, history, turning, finite-time
+# response, transition residuals, and stochastic reachability use the
+# subject-anchored 3D chart [m, d, e]. The flat nine keep their own local
+# Jacobian under /measurements/v3_4/jacobian, including spectral and
+# numerical abscissa. Destination and resilience stay enabled and fail
+# closed: this dataset has no first-hit protocol or perturbation outcomes.
+# Regional MNPS and block Jacobians stay off.
+imports:
+  - ../../config_ingest_common_eeg_9d.yml
+  - ../../../config_ingest_common_dynamical_families.yaml
+
+source:
+  name: "OpenNeuro"
+  platform: "OpenNeuro"
+  format: "BIDS"
+  dataset_id: ds008037
+  dataset_name: "The neural dynamics of working memory and transcranial magnetic stimulation"
+  dataset_version: "1.0.1"
+  doi: "doi:10.18112/openneuro.ds008037.v1.0.1"
+  url: "https://openneuro.org/datasets/ds008037/versions/1.0.1"
+  acknowledgement: "Biabani et al., https://doi.org/10.64898/2026.07.12.738085; Biabani et al., https://doi.org/10.1162/imag_a_00349"
+
+datasets:
+  - ds008037
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/processed/ds008037_mnps_v3_4"
+  dataset_received_dirs:
+    ds008037: "K:/ExternalReceivedDatasets/openneuro/received/ds008037"
+
+# Full snapshot. No include filters, so EEG and behavioural files both stay.
+download:
+  retries: 3
+  use_uvx: true
+
+pilot_selection: null
+exclude-files: []
+
+run:
+  parallel_backend: threading
+
+preprocess:
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+features:
+  eeg:
+    complexity:
+      hjorth_mobility: true
+
+robustness:
+  ensembles:
+    enabled: false
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+  one_step:
+    enabled: true
+    declared_lags: [1, 2]
+
+scaling:
+  __replace: true
+  export_raw_features: true
+  pipeline:
+    - feature_transform
+    - feature_reference_robust_z
+    - linear_coordinate_assembly
+    - coordinate_reference_robust_z
+  robust_z:
+    center: median
+    scale: 1.4826 * MAD
+    degenerate_scale_policy: invalid_no_epsilon_substitution
+  anchor_scope: none_until_a_dataset_reference_is_declared
+  anchor_id: null
+  anchor_manifest: null
+  anchor_manifests_by_condition: null
+  require_anchor_manifest_for_scaled_output: false
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: false
+  reference_sampling: equal_participant_weight
+  pool_scalp_and_intracranial_anchors: false
+  pool_incompatible_measurement_surfaces: false
+  saturation_policy: none
+  nonpositive_log_input_policy: invalid_no_floor
+  missing_anchor_policy: retain_raw_mark_anchored_invalid
+  external_anchor:
+    preset: null
+    path: null
+    compatibility: strict
+    transfer_reason: null
+    reference_feature_units: null
+
+measurement_surface:
+  dataset_overlay:
+    __replace: true
+    dataset_id: ds008037
+    dataset_version: "doi:10.18112/openneuro.ds008037.v1.0.1"
+    sampling_rate_hz: 1000
+    resampling_method: "MNE resample 1000 Hz to 250 Hz, integer ratio 4, using common EEG preprocessing"
+    realized_sampling_rate_hz: 250
+    filter_specification: "source SoftwareFilters and HardwareFilters are n/a. Applied preprocess is a 50 Hz notch and 1-45 Hz bandpass. No CSD and no ICA. The alpha-envelope estimator adds its own 8-12 Hz order-4 zero-phase Butterworth filter."
+    reference: average
+    source_eeg_reference: FCz
+    source_eeg_ground: AFz
+    channel_selection: "rest and working memory keep the 62 native EEG labels in each source file, including FCZ while the recorded reference is FCz. TMS-EEG sidecars are 63 channels in 392 files and 62 in 87. v3.4 channel-drop heuristic disabled."
+    bad_channel_policy: "variance/correlation channel-drop heuristic explicitly disabled; no channel interpolation or silent drop"
+    channel_label_set_compatibility: "casefold_for_anchor_matching; exact_labels_preserved"
+    continuous_segment_boundaries: "source-file boundary plus any nonfinite all-channel sample runs; never bridge source files or concatenated epoched input. Rest sidecars are one continuous eyes-open recording. Working-memory events include eeglab_boundary markers from merged blocks, and this overlay does not add a splitter for those markers. TMS-EEG remains continuous around single pulses."
+    edge_support_policy: "alpha envelope/Hilbert values require a full window and a 10 s symmetric source-segment edge guard; support reason is emitted per window"
+    estimator_parameter_manifest: "estimators section plus runtime SHA256 of the executed preprocessing, feature, candidate, and coordinate assembly code"
+    line_frequency_hz: 50
+
+summarize:
+  allow_group_collisions: false
+  qc_policy: keep_all

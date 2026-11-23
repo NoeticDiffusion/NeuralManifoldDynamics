@@ -91,6 +91,12 @@ participant overlap, support/QC and the transfer reason. The result remains
 experimental, measurement-incompatible and unqualified. A transfer option
 does not harmonize scalp EEG and iEEG or establish comparability.
 
+Read `anchor_application_status` for whether the target transform was
+computed. After successful application, `evaluation_status` and
+`reference_evaluation_status` describe the reference anchor's evaluation
+status; they do not qualify the target transfer. Without an applied anchor,
+`evaluation_status` may be `not_scaled_no_compatible_anchor`.
+
 Exploratory transfer can authorize measurement-surface mismatches, but it does
 not bypass unsupported schemas, altered feature/coordinate definitions,
 feature implementation-hash mismatches, invalid scales or unresolved units.

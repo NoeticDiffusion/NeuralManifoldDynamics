@@ -1,0 +1,87 @@
+# ds004837 full-cohort MNPS 3.4 MEG run.
+# Same experimental surface as the sub-2266A smoke
+# (definition 3.4-meg-exp.1, raw and unscaled, MAG and GRAD separate).
+# All indexed MEG FIF files are included. MRI and derivatives stay out of
+# feature extraction. The participant table still uses RECID without the
+# BIDS trailing A, so group, sex, and age do not join sub-*A ids.
+imports:
+  - ./config_ingest_ds004837.yml
+
+modality: meg
+
+preprocess:
+  notch_hz: 60
+  meg_bandpass: [1, 45]
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+exclude-files:
+  - "\\.nii(\\.gz)?$"
+  - "derivatives/"
+
+features:
+  meg_psd:
+    method: multitaper
+    bandwidth: null
+    fmin: 0.0
+    fmax: 50.0
+
+metadata_extraction:
+  datasets:
+    ds004837:
+      participants:
+        path: "derivatives/participants.csv"
+        subject_id_column: "RECID"
+        include_columns: [SUBTYPE2, SEX, AGE]
+      group:
+        candidates: [SUBTYPE2]
+      task:
+        from_filename: true
+
+mnps_v3_4_meg:
+  enabled: true
+  definition_version: 3.4-meg-exp.1
+  variants:
+    - existing_coordinate_set
+    - removal_only
+    - alpha_replacement
+  sensor_family_policy: explicit_mag_grad
+  unknown_sensor_type_policy: preserve_unknown_no_coordinate
+  scaling:
+    mode: raw_only
+    anchor_manifest: null
+  estimators:
+    sample_entropy:
+      m: 2
+      r_scale: 0.2
+      max_n: 300
+      invalid_value_policy: missing_with_reason
+    alpha_centroid_hz:
+      frequency_range_hz: [7.0, 13.0]
+      aggregation: median_channel_psd_then_power_weighted_centroid
+      psd:
+        method: welch
+        segment_sec: 4.0
+        overlap_fraction: 0.5
+        window: hann
+        detrend: constant
+        scaling: density
+    alpha_envelope_cv:
+      band_hz: [8.0, 12.0]
+      aggregation: median_of_channelwise_cv
+      bandpass:
+        method: butterworth_sos_zero_phase
+        order: 4
+      envelope_method: hilbert_magnitude
+      edge_support_guard_sec: 10.0
+      invalid_value_policy: missing_with_reason
+
+summarize:
+  qc_policy: keep_all

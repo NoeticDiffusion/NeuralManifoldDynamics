@@ -1,0 +1,135 @@
+# Bounded MNPS 3.4 exploratory transfer pilot for PhysioNet I-CARE.
+# The cohort and six recording paths were fixed from WFDB headers only before
+# feature extraction or inspection of any MNPS coordinate values.
+imports:
+  - config_ingest_common_eeg_9d.yml
+  - ../sources/other/config_ingest_physionet_i-care_2_1.yaml
+
+datasets:
+  - physionet_icare_2_1
+
+pilot_selection:
+  selection_manifest: project/mnps2_audit/outputs/20261112_mnps_v3_4_icare_ec_anchor_transfer_pilot/selection_manifest.csv
+  subject_ids: [sub-0284, sub-0296, sub-0299]
+  recording_paths:
+    - 0284/0284_001_004_EEG.hea
+    - 0284/0284_002_005_EEG.hea
+    - 0296/0296_001_002_EEG.hea
+    - 0296/0296_002_003_EEG.hea
+    - 0299/0299_002_021_EEG.hea
+    - 0299/0299_003_022_EEG.hea
+  rationale: >-
+    Metadata-only deterministic selection: among subject IDs in ascending order,
+    select the first three with at least two recordings whose WFDB headers declare
+    500 Hz, the same ordered 19-channel scalp montage, an available .mat signal
+    file, and at least 1800 seconds of samples; keep the first two eligible
+    recordings per subject. No feature values, MNPS coordinates, clinical outcomes,
+    diffusion estimates, or Jacobians were inspected for selection.
+
+# Retain only the six preselected WFDB headers. It matches their unique header
+# basenames plus an optional path prefix because file_index and feature rows use
+# different path representations.
+exclude-files:
+  - '^(?!(?:.*[/\\])?(?:0284_001_004_EEG\.hea|0284_002_005_EEG\.hea|0296_001_002_EEG\.hea|0296_002_003_EEG\.hea|0299_002_021_EEG\.hea|0299_003_022_EEG\.hea)$).*'
+
+paths:
+  received_dir: E:/Science_Datasets/physionet/received
+  processed_dir: M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261112_mnps_v3_4_icare_ec_anchor_transfer_pilot/processed
+  dataset_received_dirs:
+    physionet_icare_2_1: E:/Science_Datasets/physionet/received/i-care_2_1_random100_longitudinal/training
+
+run:
+  parallel_backend: threading
+
+# Preserve the established I-CARE preprocessing and native montage. No data
+# dependent channel dropping, interpolation, or artifact rejection is added.
+preprocess:
+  sfreq: 100
+  notch_hz: null
+  eeg_bandpass: [0.5, 40]
+  reref: average
+  heuristic_bad_channel_exclusion:
+    enabled: false
+  artifacts:
+    method: none
+
+measurement_surface:
+  modality: eeg
+  feature_units:
+    eeg_delta: WFDB_nu^2_unscaled
+    eeg_theta: WFDB_nu^2_unscaled
+    eeg_alpha: WFDB_nu^2_unscaled
+    eeg_beta_alpha: dimensionless_ratio
+    eeg_gamma: WFDB_nu^2_unscaled
+    eeg_hjorth_mobility: dimensionless_per_sample
+    eeg_alpha_theta: dimensionless_ratio
+    eeg_permutation_entropy: dimensionless
+    mnps_v3_4_alpha_centroid_hz: Hz
+    mnps_v3_4_alpha_envelope_cv: dimensionless
+  dataset_overlay:
+    dataset_id: i-care
+    dataset_version: PhysioNet I-CARE 2.1 random100 longitudinal training subset
+    sampling_rate_hz: 500
+    realized_sampling_rate_hz: 100
+    resampling_method: MNE preprocessing resamples the selected 500 Hz WFDB records to 100 Hz
+    filter_specification: No notch; 0.5-40 Hz EEG bandpass from the established I-CARE ingest configuration; v3.4 alpha candidate applies its separate 8-12 Hz order-4 zero-phase Butterworth filter
+    reference: average
+    channel_selection: All 19 channels in the native ordered WFDB montage (Fp1, Fp2, F3, F4, C3, C4, P3, P4, O1, O2, F7, F8, T3, T4, T5, T6, Fz, Cz, Pz); no channel dropping or interpolation
+    bad_channel_policy: Variance/correlation channel-drop heuristic disabled; no channel interpolation or silent drop
+    channel_label_set_compatibility: casefold_for_anchor_matching; exact_labels_preserved
+    continuous_segment_boundaries: Each WFDB source recording is independent; do not bridge source files or nonfinite all-channel sample runs
+    edge_support_policy: Alpha envelope/Hilbert values require a full window and a 10 s symmetric source-segment edge guard; support reason is emitted per window
+    estimator_parameter_manifest: v3.4 estimators section plus runtime SHA256 of the executed preprocessing, feature, candidate, and coordinate assembly code
+    line_frequency_hz: 50
+    source_amplitude_unit: WFDB nu; PhysioNet I-CARE 2.1 documents nu as no physical unit, so no microvolt conversion is supported
+
+scaling:
+  anchor_scope: Frozen ds005385 session-1 pre-task EyesClosed experimental cohort reference applied to I-CARE recordings
+  anchor_id: ds005385_ses1_pretask_EyesClosed_20261111_v1
+  anchor_manifest: null
+  anchor_manifests_by_condition: {}
+  external_anchor:
+    preset: null
+    path: M:/repos/NeuralManifoldDynamics/mndm/config/v.3.4/anchors/mnps_v3_4_ds005385_ses1_pretask_EyesClosed_20261111_v1.json
+    compatibility: exploratory_transfer
+    transfer_reason: Bounded cross-dataset exploratory transfer from the frozen ds005385 EyesClosed scalp EEG anchor to I-CARE coma EEG; coordinates describe reference-relative measurement displacement and are not a qualified distance from normal.
+    anchor_id: ds005385_ses1_pretask_EyesClosed_20261111_v1
+    sha256: 79da8c208a6c9240e84cefee7abc9a26c3121d59c1c86bc3324d33172193d1ab
+    reference_feature_units:
+      eeg_delta: microvolt^2
+      eeg_theta: microvolt^2
+      eeg_alpha: microvolt^2
+      eeg_beta_alpha: dimensionless_ratio
+      eeg_gamma: microvolt^2
+      eeg_hjorth_mobility: dimensionless_per_sample
+      eeg_alpha_theta: dimensionless_ratio
+      eeg_permutation_entropy: dimensionless
+      mnps_v3_4_alpha_centroid_hz: Hz
+      mnps_v3_4_alpha_envelope_cv: dimensionless
+  require_anchor_manifest_for_scaled_output: true
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: false
+  missing_anchor_policy: error_for_scaled_output
+
+# This pilot is limited to the 9D measurements and their support/QC. Do not
+# compute v3.4 derivatives, diffusion, regional metrics, or Jacobians here.
+downstream:
+  derivatives:
+    enabled: false
+regional_mnps:
+  enabled: false
+  block_jacobians:
+    enabled: false
+mnps_9d:
+  jacobian:
+    enabled: false
+  block_jacobians:
+    enabled: false
+mnps:
+  jacobian:
+    enabled: false
+robustness:
+  review_qc:
+    null_sanity_tests:
+      enabled: false

@@ -1,0 +1,16 @@
+# Isolated ordinary MEG MNPS 3.4 end-to-end run on K:.
+# Inherits the frozen experimental estimator/variant definitions from the
+# bounded pilot config; this file changes the data/output roots and restricts
+# the actual CLI input to sub-002 FacePerception run 1 MEG FIF.
+imports:
+  - ./config_ingest_ds003645_meg_v34_bounded_pilot.yml
+
+paths:
+  received_dir: K:/ExternalReceivedDatasets/openneuro/received
+  processed_dir: K:/ExternalReceivedDatasets/openneuro/processed_ds003645_meg_v34_e2e_20261119
+
+# The CLI receives --subject sub-002. Keep only run 1 and exclude the separate
+# EEGLAB .set input so the single retained signal file is the paired MEG FIF.
+exclude_files:
+  - "_eeg\\.set$"
+  - "run-[2-6]_"

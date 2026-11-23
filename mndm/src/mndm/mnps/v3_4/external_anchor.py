@@ -789,6 +789,9 @@ def build_measurement_export_with_external_anchor(
         "anchor_fit_scope": reference.get("evaluation_status"),
         "reference_fit_and_apply_overlap": reference.get("fit_and_apply_overlap"),
         "reference_evaluation_status": reference.get("evaluation_status"),
+        # Replace the unanchored payload's default
+        # ``not_scaled_no_compatible_anchor`` after successful application.
+        "evaluation_status": reference.get("evaluation_status"),
         "application_scope": application_scope,
         "target_reference_participant_overlap_status": overlap_status,
         "participant_overlap_identity_scope": (

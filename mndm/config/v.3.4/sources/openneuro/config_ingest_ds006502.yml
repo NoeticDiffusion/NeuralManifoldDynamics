@@ -1,0 +1,112 @@
+# ds006502 — MNPS 3.4 source config composed on the shared EEG 9D contract.
+#
+# OpenNeuro snapshot 1.0.0 (2025-08-12):
+# "Skill learning and consolidation in healthy humans"
+# Authors: Bönstrup, M; Buch, ER; Cohen, LG.
+# Modalities: meg, mri. Snapshot size: 102812849034 bytes.
+# DOI: 10.18112/openneuro.ds006502.v1.0.0
+# License: CC0. BIDSVersion: 1.10.0.
+# Snapshot hexsha: e3c2fd63d5986744cdd85ee7957ec325c9a49a9f
+#
+# Dataset README, checked against the local snapshot on 2026-11-21:
+# Human Cortical Physiology & Neurorehabilitation Section, NINDS intramural.
+# Sequential finger-tapping skill learning, overnight consolidation, and
+# ~30-day retention. participants.tsv has 31 rows, all handedness Right,
+# sex F 21 / M 10.
+# Every meg.json: CTF-275, 600 Hz, MEGChannelCount 272, MEGREFChannelCount 28,
+# ContinuousHeadLocalization false. PowerLineFrequency is absent; the README
+# states 60 Hz. channels.tsv types the 272 data channels as MEGGRADAXIAL.
+# Sessions present: meg1 97 recordings, meg2 147, meg3 136. sub-02 and sub-08
+# have no meg2 or meg3. sub-21 and sub-22 have no meg3.
+# Anatomical T1 MRI is present for the cohort; only sub-01 has a T1w.json.
+# Contact: Ethan R. Buch (ethan.buch@nih.gov).
+#
+# This file imports the shared v3.4 EEG contract because that is the requested
+# composition target. ds006502 is MEG plus MRI, so the inherited EEG acquisition
+# surface from ds004148 is replaced below and is not a confirmed MEG measurement.
+# The ds004148 pilot subject list and task-name excludes inherited from the
+# common file are cleared here. This file was not executed as an ingest.
+imports:
+  - ../../config_ingest_common_eeg_9d.yml
+
+datasets:
+  - ds006502
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro/received"
+  processed_dir: "K:/processed/ds006502_mnps_v3_4"
+  dataset_received_dirs:
+    ds006502: "K:/ExternalReceivedDatasets/openneuro/received/ds006502"
+
+# Full snapshot. No include filters, so MEG, MRI, and behavioural files all stay.
+download:
+  retries: 3
+  use_uvx: true
+
+pilot_selection: null
+exclude-files: []
+
+run:
+  parallel_backend: threading
+
+preprocess:
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+robustness:
+  ensembles:
+    enabled: false
+
+scaling:
+  __replace: true
+  export_raw_features: true
+  pipeline:
+    - feature_transform
+    - feature_reference_robust_z
+    - linear_coordinate_assembly
+    - coordinate_reference_robust_z
+  robust_z:
+    center: median
+    scale: 1.4826 * MAD
+    degenerate_scale_policy: invalid_no_epsilon_substitution
+  anchor_scope: none_until_a_dataset_reference_is_declared
+  anchor_id: null
+  anchor_manifest: null
+  anchor_manifests_by_condition: null
+  require_anchor_manifest_for_scaled_output: false
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: false
+  reference_sampling: equal_participant_weight
+  pool_scalp_and_intracranial_anchors: false
+  pool_incompatible_measurement_surfaces: false
+  saturation_policy: none
+  nonpositive_log_input_policy: invalid_no_floor
+  missing_anchor_policy: retain_raw_mark_anchored_invalid
+  external_anchor:
+    preset: null
+    path: null
+    compatibility: strict
+    transfer_reason: null
+    reference_feature_units: null
+
+measurement_surface:
+  dataset_overlay:
+    __replace: true
+    dataset_id: ds006502
+    dataset_version: "doi:10.18112/openneuro.ds006502.v1.0.0"
+    sampling_rate_hz: "600 in all 380 local meg.json sidecars"
+    resampling_method: "not confirmed; do not assume the common EEG resample-to-250 Hz path applies to this MEG snapshot"
+    realized_sampling_rate_hz: null
+    filter_specification: "not confirmed from local MEG sidecars; the common EEG 50 Hz notch and 1-45 Hz bandpass are not a declared MEG preprocessing surface"
+    reference: "not confirmed from local MEG sidecars"
+    channel_selection: "272 MEGGRADAXIAL data channels in every local channels.tsv, plus 28 MEG reference channels; v3.4 channel-drop heuristic disabled in this overlay"
+    bad_channel_policy: "variance/correlation channel-drop heuristic explicitly disabled; no channel interpolation or silent drop"
+    channel_label_set_compatibility: "casefold_for_anchor_matching; exact_labels_preserved"
+    continuous_segment_boundaries: "source-file boundary plus any nonfinite all-channel sample runs; never bridge source files or concatenated epoched input"
+    edge_support_policy: "support reason is emitted per window; EEG alpha-envelope edge guard is not a confirmed MEG rule"
+    estimator_parameter_manifest: "estimators section plus runtime SHA256 of the executed preprocessing, feature, candidate, and coordinate assembly code"
+    line_frequency_hz: "README states 60 Hz; PowerLineFrequency is absent from all 380 local meg.json sidecars"
+
+summarize:
+  qc_policy: keep_all

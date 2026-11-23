@@ -1,11 +1,63 @@
 # Legacy Output Schemas – MNPS v2, Stratified MNPS v2, and Jacobians
 
 This page documents the established canonical/legacy HDF5 schema. It is not
-the schema reference for the independent experimental MNPS 3.4 payload under
-`/measurements/v3_4/`. See
+the full schema reference for the experimental EEG payload under
+`/measurements/v3_4/` or the separate, opt-in MEG payload under
+`/measurements/v3_4_meg/`. See
 [`mndm/MNPS_VERSIONED_GUIDE.md`](../../../../mndm/MNPS_VERSIONED_GUIDE.md) for
-the v3.4 coordinate order, support masks, anchor provenance, and sidecar
-contract. A v3.4 group may coexist with the legacy paths described here.
+the EEG v3.4 coordinate order, support masks, anchor provenance, and sidecar
+contract, and [`mndm/config/v.3.4/MEG_EXPERIMENTAL_SPEC.md`](../../../../mndm/config/v.3.4/MEG_EXPERIMENTAL_SPEC.md)
+for the MEG measurement definition and variants. These payloads may coexist
+with the legacy paths described here.
+
+The experimental EEG v3.4 export records the realized primary PSD backend in
+`/measurements/v3_4/support/eeg_psd_method_id` and its selection reason in
+`/measurements/v3_4/support/eeg_psd_fallback_reason`, each with one string per
+window. `mne.time_frequency.psd_array_multitaper` and
+`scipy.signal.welch` are distinct estimator realizations. A configured Welch
+run is marked `configured_welch`; a missing multitaper function is marked
+`multitaper_unavailable`. Older cached v3.4 exports without these fields have
+backend identity `not_recorded`; implementation hashes alone do not identify
+the runtime branch.
+
+## Experimental MEG MNPS 3.4 payload (opt-in)
+
+The MEG export uses definition `3.4-meg-exp.1` and schema
+`mndm.meg_mnps_v3_4.experimental.v1`. When enabled in the dataset config, the
+ordinary `summarize` writer embeds it at `/measurements/v3_4_meg/`; the
+measurement sidecar is `mnps_v3_4_meg_measurements.h5`. It is separate from
+both the legacy MEG shadow projection and the EEG `/measurements/v3_4/` group.
+
+The payload records the `window_axis`, `variant_definitions`,
+`coordinate_units`, `sensor_families`, `unknown_sensor_family` (when present),
+and top-level `provenance`. Each available `sensor_families/mag` or
+`sensor_families/grad` realization contains raw features, the selected
+coordinate variants, and support/provenance fields. Available variants are:
+
+- `existing_coordinate_set`: corrected 9D comparison baseline.
+- `removal_only`: seven-coordinate descriptive comparison.
+- `alpha_replacement`: seven shared coordinates plus `alpha_centroid_hz` and
+  `alpha_envelope_cv`.
+
+Each variant stores coordinate names/units, raw values, coordinate support,
+complete-window support, and per-coordinate failure reasons. Family support
+records actual ordered labels and per-window label lists, sensor count,
+channel-set/order hashes, sensor-family status, and inherited/candidate
+estimator status and failure reason. Candidate-specific channel support and
+estimator IDs are included as well. Provenance includes the configuration and
+implementation hashes, aggregation policy, estimator settings, and scaling
+policy.
+
+This surface is currently `experimental_recorded_raw_unscaled`, with
+`qualified=false`, `scale_status=not_scaled_raw_feature_units`, and
+`anchor_application_status=not_applied`. MAG and GRAD are not combined; an
+unknown family is not relabeled GRAD. EEG anchors and recording-local
+normalization are not used. The replacement variant remains opt-in and does
+not change the canonical or historical MEG coordinate set.
+
+For tested behavior, bounded evidence, and current status, see the MEG
+[measurement specification](../../../../mndm/config/v.3.4/MEG_EXPERIMENTAL_SPEC.md)
+and [audit](../../../../project/mnps2_audit/meg_mnps_3.4/audit_001.md).
 
 This document describes the **subject-level output schema** for the OpenNeuro ingest pipeline as written by `h5_writer` and `json_writer`. It focuses on MNPS tensors, optional Stratified MNPS v2 subcoordinates, and Jacobians (3D MNPS and higher-dimensional Stratified variants).
 
@@ -393,42 +445,20 @@ Key sections:
 
 ## Cross-Modal Interpretation Note (MEG vs EEG)
 
-MEG and EEG share the NMD coordinate contract, but individual subcoordinates may not
-have identical sign semantics across modalities.
+MEG and EEG outputs are not interchangeable measurement realizations merely
+because both can be written alongside the NMD coordinate contract. In
+particular, sensor family, reference, aggregation order, units, estimator, and
+window support must be checked before comparing values.
 
-In ds003645 (Wakeman-Henson face perception, simultaneous MEEG, 18 subjects):
-
-- **Hjorth mobility** (`d`-family): MEG shows a fixed face < scrambled direction across
-  all 18 subjects. EEG polarity is variable — 14/18 subjects show the opposite sign to
-  MEG, and the inversion is consistent across MAG sensors, GRAD sensors, EEG-from-FIF,
-  and EEG-from-.set. It survives QC filtering.
-
-- **Hjorth complexity** (`d`-family): MEG shows a fixed face > scrambled direction across
-  all 18 subjects. EEG polarity is again variable.
-
-The d-family inversion has been validated as a **modality-specific signal-space
-difference**, not an artifact. The most likely cause is the contrast between
-reference-free MEG field measurement and scalp-referenced EEG potentials, combined
-with volume conduction mixing in EEG.
-
-**Therefore, cross-modal comparison should:**
-
-1. Prioritize **modality-internal validity** (does MEG separate the task within itself?).
-2. Use **family-level diagnostics** (m-, d-, e-family separately) rather than a single
-   aggregate cosine.
-3. Apply **null-controlled convergence** (label-shuffle and wrong-run nulls) rather than
-   raw sign equality.
-4. Not assume that Hjorth mobility/complexity have the same directional semantics in MEG
-   and EEG.
-
-**Current status (ds003645, `meg_shadow_v0_usable`):**
-
-| Claim | Status |
-|-------|--------|
-| MEG engineering readiness | 0.9419 — production-ready |
-| MEG-internal task separation | 15/18 subjects (p < 0.10) |
-| EEG-MEG convergence | 0.4786 — weak; d-family diverges |
-| d-family inversion | Validated modality-specific finding |
+Older repository text reported ds003645 Hjorth direction differences and
+engineering/readiness summaries, including `meg_shadow_v0_usable`. The current
+MEG audit did not find the source result artifacts needed to reproduce those
+claims locally. Treat them as historical reported results, not current
+qualification, validated modality-specific effects, or established physical
+explanations. See the
+[`MEG MNPS 3.4 audit`](../../../../project/mnps2_audit/meg_mnps_3.4/audit_001.md)
+and the experimental MEG specification for the implemented measurement
+surface and its bounded evidence.
 
 ---
 

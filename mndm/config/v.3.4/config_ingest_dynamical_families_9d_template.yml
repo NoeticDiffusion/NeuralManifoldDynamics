@@ -1,0 +1,130 @@
+# MNPS 3.4 flat-9D dynamical-families template.
+#
+# Design template only. The current ingest exporter routes dynamical families
+# through the legacy 3D [m, d, e] coordinates. Do not import this file as an
+# active ingest overlay until a v3.4 9D adapter consumes this schema.
+# Proposed estimator variants have not yet been tested.
+#
+# Copy the settings into a versioned pilot overlay after the runtime adapter is
+# available. Keep estimator outputs under /measurements/v3_4/dynamical_families.
+
+template:
+  id: mnps_v3_4_flat_9d_dynamical_families
+  status: design_only_unvalidated
+  schema_version: 1
+  source_coordinates: config_ingest_common_eeg_9d.yml
+  measurement_group: /measurements/v3_4/dynamical_families
+  coordinate_order:
+    - delta_theta_level
+    - alpha_level
+    - beta_alpha_ratio
+    - gamma_level
+    - hjorth_mobility
+    - alpha_theta_ratio
+    - permutation_entropy
+    - alpha_centroid_hz
+    - alpha_envelope_cv
+
+  time_support:
+    nominal_window_sec: 8.0
+    nominal_step_sec: 4.0
+    lag_steps: 1
+    lag_interpretation: adjacent_valid_feature_windows_on_actual_timestamps
+    preserve_window_indices: true
+    preserve_actual_timestamps: true
+    do_not_bridge_gaps_or_source_file_boundaries: true
+    retain_unsupported_windows_with_reason: true
+
+  realizations:
+    - id: v3_4_raw
+      coordinate_layer: raw_flat_9d
+      anchor_required: false
+      emit_when_computable: true
+      outputs:
+        - drift_per_coordinate
+        - diffusion_covariance
+    - id: v3_4_anchored
+      coordinate_layer: frozen_anchored_flat_9d
+      anchor_required: true
+      anchor_hash_required: true
+      emit_when_computable: true
+      comparison_requires_matching_anchor_hash: true
+      use_for_geometry_scalars_when_comparable: true
+      outputs:
+        - drift_per_coordinate
+        - drift_norm
+        - diffusion_covariance
+        - total_diffusion
+        - effective_dimension
+
+  estimators:
+    drift:
+      estimator_id: mnps_v3_4_flat_9d_finite_lag_drift_v1
+      status: proposed_untested
+      enabled_for_pilot: true
+      lag_steps: 1
+      neighborhood:
+        metric: declared_coordinate_euclidean
+        k: 32
+        min_valid_neighbor_transitions: 28
+        weights: uniform
+        exclude_query_window_transition: true
+        tie_break: original_window_index_ascending
+      save_neighbor_count_per_window: true
+      save_neighbor_radius_per_window: true
+      save_transition_support_indices: true
+      emit_per_coordinate_vector: true
+      emit_norm_from_raw_coordinates: false
+      emit_norm_from_anchored_coordinates: true
+      raw_distance_scale_note: native_coordinate_scales_determine_neighborhoods
+
+    diffusion:
+      estimator_id: mnps_v3_4_flat_9d_diffusion_geometry_v1
+      status: proposed_untested
+      enabled_for_pilot: true
+      lag_steps: 1
+      neighborhood:
+        metric: declared_coordinate_euclidean
+        k: 32
+        min_valid_neighbor_transitions: 28
+        tie_break: original_window_index_ascending
+      save_neighbor_count_per_window: true
+      save_neighbor_radius_per_window: true
+      save_transition_support_indices: true
+      retain_coordinate_units: true
+
+    one_step:
+      estimator_id: mnps_v3_4_flat_9d_one_step_operator_v1
+      status: separate_candidate_untested
+      enabled_for_pilot: false
+      realization: v3_4_anchored
+      lag_steps: 1
+      minimum_recording_duration: longer_than_bounded_rest_smoke
+      activation_condition: longer_recording_with_frozen_compatible_anchor
+      minimum_training_pairs_per_training_block: 90
+      evaluate_against_persistence_baseline: true
+      persistence_baseline: x_hat_t_plus_1_equals_x_t
+      save_training_pair_count: true
+      save_design_matrix_rank: true
+      save_design_matrix_condition: true
+      save_held_out_prediction_error: true
+      keep_fit_and_prediction_assessment_as_separate_results: true
+
+  provenance:
+    save_ordered_coordinate_names: true
+    save_realization_id: true
+    save_anchor_id_and_sha256_when_present: true
+    save_actual_time_grid: true
+    save_gap_and_segment_boundaries: true
+    save_valid_transition_indices: true
+    save_effective_configuration: true
+    save_input_hashes: true
+    save_code_and_library_versions: true
+    tolerances: declare_before_pilot
+
+  bounded_validation_plan:
+    synthetic_trajectory_with_gap: required
+    rest_recording_raw: S200116
+    anchored_recording: existing_ds004148_recording_with_frozen_anchor
+    require_repeatable_validity_mask_and_neighbor_indices: true
+    require_repeatable_values_within_declared_tolerance: true

@@ -1,0 +1,17 @@
+# Bounded ds004511 smoke for the v3.4 + dynamical-families config.
+# One Rest recording (sub-S200116). Does not replace the full dataset config.
+imports:
+  - ./config_ingest_ds004511.yml
+
+# Subject is also passed as --subject S200116. These patterns drop the
+# other tasks. Negative lookaheads are avoided because indexed Windows
+# paths use backslashes, which the separator class would miss.
+exclude-files:
+  - '(?i)task-CC'
+  - '(?i)task-GG'
+
+paths:
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261118_mnps_v3_4_ds004511_rest_smoke/processed"
+
+run:
+  parallel_backend: threading

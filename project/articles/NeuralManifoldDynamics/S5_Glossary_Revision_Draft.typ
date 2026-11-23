@@ -3,9 +3,9 @@
 #import "network_neuroscience_template.typ": *
 
 #show: netn_template.with(
-  title: "S5 - Glossary: MNPS 3.4 and Historical Terms",
+  title: "S5 - Glossary: Modality-Specific Measurements and Historical Terms",
   short_title: "Glossary - NeuralManifoldDynamics",
-  subtitle: "Current experimental terms followed by version-scoped historical terms",
+  subtitle: "Separate EEG, MEG, and LFP branches followed by version-scoped historical terms",
   authors: (
     (name: "Robin Langell", affil: 1),
   ),
@@ -13,10 +13,10 @@
     "Langell Konsult AB, Vallentuna, Sweden",
   ),
   corresponding_author: "Robin Langell, hello@noeticdiffusion.com",
-  keywords: ("glossary", "NDT", "MNDM", "MNPS", "embodied anchoring"),
+  keywords: ("glossary", "NDT", "MNDM", "MNPS", "EEG", "MEG", "LFP"),
   article_type: "Supplementary Material",
   abstract: [
-    This is the supplementary glossary for the MNPS 3.4 methods article. Current experimental terms appear first; historical and other-version terms are retained afterward only to distinguish related repository outputs.
+    This is the supplementary glossary for the NeuralManifoldDynamics methods article. Current EEG, MEG, and LFP terms appear first; historical and other-version terms are retained afterward only to distinguish related repository outputs.
   ],
 )
 
@@ -27,10 +27,13 @@ describes a named computation or export; “interpretation” gives its narrow
 reading; “not established” marks claims that are not proved by this measurement
 definition._
 
-= Experimental MNPS 3.4 terms
+= Experimental measurement and modality-specific terms
 
-The following entries are scoped to the experimental EEG definition
-`mndm.mnps_v3_4.experimental_flat_9d.v1` unless the entry says otherwise.
+The flat nine-coordinate entries below are scoped to the experimental EEG
+definition `mndm.mnps_v3_4.experimental_flat_9d.v1`. MEG and LFP entries name
+their separate experimental schemas and realizations explicitly. A matching
+component label or order does not establish shared units, anchors, or
+comparability.
 
 *NDT (Noetic Diffusion Theory)* - *Theory programme.* A framework for
 hypotheses about neural state and condition-dependent future dynamics. NDT is
@@ -38,26 +41,30 @@ not identical to an MNPS chart or a particular NMD measurement definition.
 
 *NMD (NeuralManifoldDynamics)* - *Measurement layer.* A versioned system for
 specified observations, time support, transforms, validity, and provenance.
-MNPS 3.4 is one experimental EEG realization within that layer.
+The flat nine-coordinate EEG definition is the article's principal realization;
+the MEG surface and LFP branch are separate experimental realizations.
 
 *Operational coordinate* - *Output component.* An ordered measurement value
 under the named v3.4 contract. The word does not identify a latent biological
 axis or establish manifold geometry.
 
 *MNJ (Meta-Noetic Jacobian)* - *Downstream estimator name.* A Jacobian
-estimated for a local flow in a declared MNPS chart. MNPS 3.4 emits no MNJ;
-the term does not mean temporal acceleration or a direct biophysical
-Jacobian.
+estimated for a local flow in a declared MNPS chart. The EEG 9D MNJ
+is a separate output at `/measurements/v3_4/jacobian`, not one of the nine
+flat coordinates; it is not a direct biophysical Jacobian.
 
 *Computability, comparability, and qualification* - *Separate decisions.*
 Computability asks whether declared inputs and support allow an estimate;
 comparability asks whether two realizations suit a stated comparison;
 qualification asks whether evidence supports a specified use.
 
-*MNPS 3.4 flat 9D* - *Experimental measurement definition.* An ordered EEG
-vector of nine separately anchored coordinates under `/measurements/v3_4/`.
-It has no M/D/E family aggregation, 3D projection, or v3.4 Jacobian. It does not
-replace the canonical `[m,d,e]` or legacy `coords_9d` contract.
+*MNPS 3.4 flat 9D* - *Experimental EEG measurement definition.* An ordered
+vector of nine separately anchored coordinates under
+`/measurements/v3_4/coordinates/`. The coordinate payload has no M/D/E family
+aggregation, 3D projection, or Jacobian matrix. A separately versioned local
+Jacobian export can coexist at `/measurements/v3_4/jacobian`; it does not alter
+the flat coordinate order. This definition does not replace the canonical
+`[m,d,e]` or legacy `coords_9d` contract.
 
 *Feature anchor (MNPS 3.4)* - A frozen, participant-balanced center and
 `1.4826 * MAD` scale applied to transformed source features before coordinate
@@ -187,9 +194,10 @@ and does not add canonical MNPS axes.
 
 = M - R
 
-*MEG shadow mapping* - *Implemented exploratory path.* `meg_*` features route
-through the existing 9D projection slots used by the EEG-family contract.
-Cross-modal biological equivalence is not established.
+*MEG shadow mapping* - *Historical exploratory route.* Earlier code routed
+`meg_*` features through the EEG-family 9D projection slots. This historical
+route is distinct from the separate experimental MEG surface and export smoke
+described in this article; neither establishes cross-modal equivalence.
 
 *Neuropixels Units-to-rate* - *Implemented in v2.5.0, transport/descriptive
 status.* NWB spike times are histogram-binned (default 0.05 s bins, optional
@@ -198,11 +206,12 @@ into `ephys_*` features that fill `coords_9d` through a dedicated
 ephys-specific subcoordinate map. Validated as a one-session smoke run on a
 rodent dandiset; not a validated manifold claim.
 
-*Neuropixels LFP-as-EEG routing* - *Implemented in v2.5.0, transport/descriptive
-status.* DANDI `ElectricalSeries` LFP channels are routed through the existing
-EEG feature and 9D contract with rodent-adapted band edges and optional
-depth-balanced contact selection. Validated through smoke and full-session QC
-on a rodent dandiset; no readiness score is computed.
+*Neuropixels LFP-as-EEG routing* - *Historical v2.5.0 transport route.* DANDI
+`ElectricalSeries` LFP channels were routed through the then-existing EEG
+feature and 9D contract with rodent-adapted band edges and optional
+depth-balanced contact selection. This is distinct from the experimental
+Probe F/MOs contact-feature and finite-lag branch in this article; neither
+route establishes cross-modal equivalence.
 
 *Measurement contract* - *Implemented.* The versioned definition of what is
 computed, named, quality-controlled, and serialized for downstream reuse.

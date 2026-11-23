@@ -1,0 +1,103 @@
+# MNPS 3.4 variant of mndm/config/sources/openneuro/config_ingest_ds005555_rvc_trv.yaml
+# Same composition as config_ingest_ds004511.yml.
+# Flat 9D v3.4 schema, dynamical families, and local dynamics
+# (spectral abscissa, numerical abscissa, finite-time response,
+# transition residuals, stochastic reachability, drift, diffusion,
+# one-step, amplification, history, turning).
+# Regional MNPS and block Jacobians are off: v3.4 has no M/D/E families.
+# Drift, diffusion, one-step, and Jacobian spectral abscissa still use the
+# legacy subject-anchored 3D chart. They are not computed on the flat 9D
+# coordinates. This file was not executed.
+imports:
+  - ../../config_ingest_common_eeg_9d.yml
+  - ../../../config_ingest_common_dynamical_families.yaml
+  - ../../../sources/openneuro/config_ingest_ds005555_rvc_trv.yaml
+
+datasets:
+  - ds005555
+
+paths:
+  processed_dir: "E:/Science_Datasets/openneuro/processed_mnps_v3_4"
+
+run:
+  parallel_backend: threading
+
+preprocess:
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+robustness:
+  ensembles:
+    enabled: false
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+  one_step:
+    enabled: true
+    declared_lags: [1, 2]
+
+scaling:
+  __replace: true
+  export_raw_features: true
+  pipeline:
+    - feature_transform
+    - feature_reference_robust_z
+    - linear_coordinate_assembly
+    - coordinate_reference_robust_z
+  robust_z:
+    center: median
+    scale: 1.4826 * MAD
+    degenerate_scale_policy: invalid_no_epsilon_substitution
+  anchor_scope: none_until_a_dataset_reference_is_declared
+  anchor_id: null
+  anchor_manifest: null
+  anchor_manifests_by_condition: null
+  require_anchor_manifest_for_scaled_output: false
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: false
+  reference_sampling: equal_participant_weight
+  pool_scalp_and_intracranial_anchors: false
+  pool_incompatible_measurement_surfaces: false
+  saturation_policy: none
+  nonpositive_log_input_policy: invalid_no_floor
+  missing_anchor_policy: retain_raw_mark_anchored_invalid
+  external_anchor:
+    preset: null
+    path: null
+    compatibility: strict
+    transfer_reason: null
+    reference_feature_units: null
+
+measurement_surface:
+  dataset_overlay:
+    __replace: true
+    dataset_id: ds005555
+    dataset_version: "see imported source config config_ingest_ds005555_rvc_trv.yaml"
+    sampling_rate_hz: "not_declared_in_source_yaml"
+    resampling_method: "MNE resample using the imported source config and common EEG preprocessing"
+    realized_sampling_rate_hz: 250
+    filter_specification: "inherited from the imported source config; confirm notch, bandpass, reference, and any CSD or ICA before a real run"
+    reference: average
+    channel_selection: "native EEG channels retained by the imported source config; v3.4 channel-drop heuristic disabled in this overlay"
+    bad_channel_policy: "variance/correlation channel-drop heuristic explicitly disabled; no channel interpolation or silent drop"
+    channel_label_set_compatibility: "casefold_for_anchor_matching; exact_labels_preserved"
+    continuous_segment_boundaries: "source-file boundary plus any nonfinite all-channel sample runs; never bridge source files or concatenated epoched input"
+    edge_support_policy: "alpha envelope/Hilbert values require a full window and a 10 s symmetric source-segment edge guard; support reason is emitted per window"
+    estimator_parameter_manifest: "estimators section plus runtime SHA256 of the executed preprocessing, feature, candidate, and coordinate assembly code"
+    line_frequency_hz: 50
+
+summarize:
+  qc_policy: keep_all

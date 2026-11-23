@@ -1,1030 +1,289 @@
-#set page(
-  paper: "us-letter",
-  margin: (x: 1in, y: 1in),
-  numbering: "1",
-)
+#import "template_eLife.typ": *
+#set page(numbering: "1")
 
-#set text(
-  font: "Times New Roman",
-  size: 12pt,
-)
-
-#set par(
-  justify: true,
-  first-line-indent: 0.5in,
-  leading: 1.8em,
-)
-
-#set heading(numbering: none)
-#set math.equation(numbering: "(1)")
-
-#show table: it => {
-  set text(size: 9pt)
-  set par(
-    first-line-indent: 0pt,
-    leading: 1.2em,
-  )
-  it
-}
-
-#align(center)[
-  #text(size: 10pt)[Article type: Methods]
-  #v(1em)
-  #text(size: 18pt, weight: "bold")[
-    NeuralManifoldDynamics: A Versioned Measurement Contract for Low-Dimensional Neural-Manifold Trajectories
+#show: netn-template.with(
+  title: "NeuralManifoldDynamics: A Versioned Measurement System with Modality-Specific EEG, MEG, and LFP Branches",
+  short-title: "Modality-specific neural measurements",
+  subtitle: "An EEG measurement contract with separate MEG and LFP pilots",
+  authors: (
+    (name: "Robin Langell", affil: 1),
+  ),
+  affiliations: (
+    "Langell Konsult AB, Vallentuna, Sweden",
+  ),
+  corresponding-author: "Robin Langell, hello@noeticdiffusion.com",
+  keywords: ("EEG", "MEG", "LFP", "measurement contract", "signal processing", "robust scaling", "data provenance", "reproducibility"),
+  article-type: "Methods",
+  abstract: [
+    NeuralManifoldDynamics is an experimental measurement system that records modality-specific neural measurements with explicit support and provenance. We specify MNPS 3.4, its flat nine-coordinate EEG definition, participant-balanced robust anchors, HDF5 representation, and reference-cohort exports from OpenNeuro ds005385. We also report fixed-anchor, three-session repeatability in 60 participants from ds004148: across 54 EC/EO coordinate-level session comparisons, descriptive ICC(A,1) point estimates ranged from 0.041 to 0.954; across 27 EO−EC contrast comparisons, they ranged from 0.249 to 0.864. Separate engineering pilots demonstrate a MEG derived-export smoke on one ds003645 recording and LFP contact-feature computation plus support audits using DANDI 000458 and metadata-only DANDI 000232. EEG repeatability varied by coordinate and session; the LFP pilot yielded no supported real-data local dynamics estimates or paired held-out predictions. The separate modality branches do not establish a shared cross-modal coordinate system, measurement equivalence, artifact-free signals, biological stability, diagnostic value, or predictive performance.
+  ],
+  author-summary: [
+    EEG processing can produce many numbers while leaving unclear which channels, filters, time windows, reference values, and missing-data rules created them. This paper describes an experimental nine-coordinate EEG definition and reports its extraction, scaling, support, provenance, and a three-session assessment in 60 participants using one fixed external EC reference for both EC and EO recordings. It also summarizes separate MEG and LFP engineering branches. Each modality keeps its own measurement realization; the examples show selected computations and support limits, not cross-modal equivalence or clinical usefulness.
+  ],
+  data-availability: [
+    The core EEG reference and repeatability analyses use OpenNeuro ds005385, version 1.0.3 @openneuro_ds005385_v103, and ds004148, version 1.0.1 @openneuro_ds004148_v101. Separate engineering checks use OpenNeuro ds004511, version 1.0.2, for a single-recording EEG dynamics smoke; ds003645 for one MEG FacePerception run; and DANDI 000458, version 0.240510.2038, for an LFP contact-feature and support pilot. DANDI 000232 / EF0147 was reviewed using metadata only; no signal values were read and no features were extracted. No new recordings were collected. The v3.4 implementation and frozen anchor manifests are in mndm/src/mndm/mnps/v3_4 and mndm/config/v.3.4. The ds005385 cohort outputs and measurement-quality audit are in project/mnps2_audit/outputs/20261111_mnps_v3_4_ds005385_baseline_cohort and project/mnps2_audit/outputs/20261116_mnps_v3_4_measurement_quality_audit. The version-controlled ds004148 full-cohort repeatability package is in mndm/docs/ds004148_session_repeatability_fullcohort; the ds004511 smoke is in project/mnps2_audit/outputs/20261119_mnps_v3_4_ds004511_dynamics_integration_test. Generated HDF5 files and source EEG binaries remain in local output/data locations and are not included in those documentation packages. The v3.4 definition is experimental and the repository package metadata reports 3.1.0; this manuscript does not assign a new package version or archival DOI.
   ]
-  #v(1em)
-  #text(size: 10pt)[Short title: NeuralManifoldDynamics]
-  #v(1em)
-  #text(size: 11pt)[Robin Langell]
-  #v(0.5em)
-  #text(size: 9pt, style: "italic")[Noetic Diffusion Project/Langell Konsult AB]
-  #v(1em)
-  #text(size: 10pt)[Corresponding author: Robin Langell]
-  #v(1em)
-  #text(size: 10pt)[Keywords: NeuralManifoldDynamics, MNPS, MNJ, EEG, MEG, fMRI, embodied anchoring, phase anchor, cardiac phase, respiratory phase, HEP, HRV, event annotations, block-native analysis, robustness]
-]
-
-#v(2em)
-
-= Abstract
-#par(first-line-indent: 0pt)[
-  NeuralManifoldDynamics (v 3.0.0) is a versioned ingest-layer measurement contract for constructing and serializing low-dimensional and stratified neural-manifold proxy trajectories from EEG, MEG, fMRI, and selected NWB/ecephys feature tables, together with optional local Jacobian-based summaries and gated dynamical-family exports. The contract is NDT-aligned but operational rather than definitional: it fixes a canonical 3D chart (`mnps_3d = [m, d, e]`), an optional stratified 9D chart (`coords_9d`), and optional family and Jacobian exports as auditable measurement objects rather than direct measurements of the full theoretical constructs. Version 3.0.0 keeps the MNPS order and fixed projection while making family namespaces, support signatures, computation and measurement validity, grain, and claim status explicit. The primary contribution is a stable, auditable, modality-aware measurement contract rather than comparative superiority over alternative latent-state or clustering frameworks.
-]
-
-= Author Summary
-#par(first-line-indent: 0pt)[
-  NeuralManifoldDynamics (v 3.0.0) describes how this repository turns EEG, MEG, fMRI, and selected NWB/ecephys feature tables into auditable manifold-proxy measurements and explicitly gated dynamical-family objects. The canonical 3D and optional stratified 9D charts remain fixed; v3.0 adds a named `/dynamical_families/` namespace, fail-closed support and validity fields, and a clear boundary between ingest measurements and analysis-owned estimator experiments. The purpose is not to interpret cognition at ingest time, infer diagnosis, or claim that this chart family is already the best available state-space representation. The purpose is to provide a stable, reproducible, and inspectable measurement contract that downstream analysis can compare, filter, and reinterpret.
-]
-
-#par(first-line-indent: 0pt)[
-  #text(style: "italic")[Reading guide: this manuscript defines the measurement contract and its rationale. Six companion supplements provide depth without lengthening the main text: S1 (metric and estimator definitions), S2 (audited numeric results), S3 (QC and robustness audits), S4 (a clinician-facing reading), S5 (a glossary), and S6 (the full version-by-version changelog).]
-]
-
-#v(2em)
+)
 
 = Introduction
-#par(first-line-indent: 0pt)[
-  #text(style: "italic")[Scope in one sentence: this manuscript defines and documents a versioned, auditable measurement contract that turns EEG, MEG, fMRI, and selected NWB/ecephys feature tables into low-dimensional manifold-proxy trajectories and optional local-dynamics summaries, without claiming to identify a uniquely correct latent state space.]
-]
 
-NeuralManifoldDynamics is the current name for the ingest-layer measurement system implemented in this repository for constructing NDT-aligned neural-manifold proxy trajectories from EEG and fMRI feature tables. It is grounded in the broader Noetic Diffusion Theory framework and its formalization of low-dimensional coordinates, stratified coordinates, and local dynamical summaries [@langell2025_6; @langell2025_stratified; @langell2025_mnj], but the contribution of this manuscript is primarily infrastructural and methodological rather than a claim of superior latent-state discovery. The central design choice is that ingest defines a fixed and reproducible measurement contract: it standardizes signals, extracts features, applies release-bound coordinate mappings, optionally estimates local dynamics, and exports auditable artifacts for downstream analysis. It does not adapt its behavior to contrasts of interest, and it does not interpret diagnoses, phenomenology, or conditions.
+Electroencephalography (EEG) is often reduced to spectral and temporal summaries before those values reach a downstream study. A number alone does not identify its signal-processing path. Channel set, reference, filtering, window boundaries, estimator parameters, missingness, and scaling reference can all change what a value represents. An auditable *measurement contract* must therefore describe not only a numeric result but also the realization and support that produced it.
 
-The three NDT background references used here are DOI-backed Zenodo records rather than peer-reviewed journal articles. They are cited to define the current terminology and layered conceptual background, while the present manuscript is intended to remain readable as a standalone methods/software description.
+NeuralManifoldDynamics (NMDM) is an ingest and measurement system. Its scientific boundary separates *computability* (whether an estimator has its declared inputs), *comparability* (whether two values share compatible realizations), and *qualification* (whether they meet a study's requirements for a stated use). These are separate decisions. A measurement can be computable while its support is incomplete, its sensor realization differs from another recording, or its scientific qualification remains unresolved.
 
-This new version replaces the older (internal) MNPS 1.2 style in which the primary emphasis was a weighted low-dimensional trajectory plus limited summary exports. The current implementation is more explicit about measurement support, coverage, failure modes, regionalization, provenance, and export semantics. It separates three related objects: the canonical 3D trajectory, the stratified 9D coordinate system, and the optional family of Jacobian-derived summaries built on top of these trajectories. Within this manuscript, these outputs should therefore be read first as a versioned software and data contract: a stable, inspectable interface between modality-specific preprocessing and downstream statistical or theoretical analysis. The intended contribution is not to benchmark a new state-discovery algorithm against all competing latent-variable methods, but to define and document a reproducible contract for producing auditable manifold-proxy measurements across supported modalities.
+Here we specify MNPS 3.4, an experimental EEG measurement definition implemented in NeuralManifoldDynamics. The term *flat* means that nine ordered components are emitted side by side: the software does not group them into higher-level families, project them to a lower-dimensional chart, or declare a default distance geometry. Each component retains its own source, unit, estimator, validity, support, and provenance. The purpose of this paper is to state that implementation as a versioned, inspectable contract and report the reference-cohort export used to freeze its current technical anchors.
 
-For neuroimaging readers, it is important to distinguish this role from several adjacent method families that are often applied after preprocessing. Common alternatives include modality-native preprocessing and feature ecosystems (`fMRIPrep`, `MNE-BIDS`, `Nilearn`, `mne-features`), dynamic-connectivity and chronnectomic workflows (`dyconnmap`, LEiDA-style analyses), latent state-space models such as HMM and DyNeMo in `OSL-Dynamics`, EEG microstate methods (`Pycrostates`), co-activation pattern approaches (`NeuroCAPs`), and learned latent embeddings such as `CEBRA` [@Esteban2019FMRIPrep; @Appelhoff2019MNEBIDS; @MNEBIDSPipelineDocs; @MNEFeaturesPackage; @Abraham2014Nilearn; @Marimpis2021Dyconnmap; @Cabral2017LEiDA; @Gohil2024OSLDynamics; @Ferat2022Pycrostates; @Smith2025NeuroCAPs; @Schneider2023CEBRA]. These are often stronger choices when the primary aim is adaptive state discovery, discrete state segmentation, or predictive performance. NeuralManifoldDynamics addresses a narrower problem: providing a fixed, auditable, multimodal measurement contract whose outputs remain comparable across runs and datasets. Six companion supplements accompany this manuscript so that the main text can stay focused on the contract itself: S1 gives full metric and estimator definitions, S2 the audited numeric results, S3 the QC and robustness audits, S4 a clinician-facing reading, S5 a glossary, and S6 the complete version-by-version changelog.
+Within the broader Noetic Diffusion Theory (NDT) research programme, NeuralManifoldDynamics provides an empirical measurement layer: NDT frames questions about neural states and their possible futures, while NMD specifies reproducible observations, time support, scaling, validity, and provenance. MNPS 3.4 is one candidate observation chart for that work, not a mathematical prerequisite for neural-dynamics analysis in general; another adequately characterized chart could serve the same role @langell2026_ndt.
 
-#block(
-  width: 100%,
-  breakable: true,
-  inset: 10pt,
-  fill: luma(245),
-  stroke: 0.5pt + luma(120),
-  radius: 4pt,
-)[
-  *Claims and Non-Claims* \
-  *Claims:* fixed export naming, deterministic feature preprocessing, explicit coverage handling, global and regional trajectory construction, optional local Jacobian serialization, and manifest-based self-description. \
-  *Non-claims:* no diagnosis inference, no consciousness-level inference, no claim that ingest-level proxies exhaust the theoretical meaning of `[m, d, e]`, and no claim that EEG channel groups are direct homologues of fMRI networks. The chart labels should be read as operational labels within the current release contract.
-]
+This article presents an experimental measurement system through a primary EEG definition and separate modality-specific engineering branches. It does not re-present the historical NMDM model or imply that EEG, MEG, and LFP values share a coordinate frame. Their version-specific constructs and changes are summarized in Supplementary Changelog S6. The paper specifies the nine EEG measurements and their extraction order; documents condition-specific robust references and the output contract; reports dataset-specific EEG repeatability; and describes bounded MEG/LFP engineering checks with their distinct support and evidence limits.
 
-#block(
-  width: 100%,
-  breakable: true,
-  inset: 10pt,
-  fill: luma(245),
-  stroke: 0.5pt + luma(120),
-  radius: 4pt,
-)[
-  *Chart Definition in Current Release* \
-  `coords_9d` subcoordinates are fixed for this release. \
-  `mnps_3d` is a derived canonical export from a fixed weighted projection of `coords_9d`. \
-  MNDM (the package/CLI name for NeuralManifoldDynamics used in code, configs, and file paths throughout this manuscript) 2.1 made coordinate anchoring explicit through subject-anchored and cohort-anchored layer names plus embedded `feature_anchors` provenance. \
-  MNDM 2.3 keeps those coordinate contracts and adds an additive embodied anchor surface `a_t` serialized separately from the canonical chart. \
-  MNDM 2.4 retains those contracts and further adds geometry-validity diagnostics (`standard_invalidity_v1`), HRV v0.1 superwindow columns, block-native v2 sidecar exports with inter-network coupling columns, and MEG shadow mapping. \
-  MNDM 3.0 retains the chart and projection contracts while placing diffusion, destination, and resilience under the gated `/dynamical_families/*/v1` namespace with explicit support signatures, computation and measurement validity, grain, and claim metadata. \
-  Projection weights, anchor identities, axis names, and serialization paths are versioned and auditable. \
-  They should not be read as claims of unique biological identifiability.
-]
+= Results
 
-#block(
-  width: 100%,
-  breakable: true,
-  inset: 10pt,
-  fill: luma(245),
-  stroke: 0.5pt + luma(120),
-  radius: 4pt,
-)[
-  *Embodied Anchoring Principle (v2.3)* \
-  The canonical MNPS export remains `x_t = [m, d, e]`. \
-  Embodied/interoceptive measurements are added as a parallel time-aligned surface `a_t`, exported through `anchor_state`, `anchor_state_dot`, and `anchor_quality`, with optional downstream `anchor_coupling` diagnostics. \
-  This is an additive analysis layer for body-brain covariation, not a fourth canonical axis and not a replacement for coordinate anchoring through `feature_anchors`.
-]
+== The contract emits nine ordered window-level measurements
+
+The payload is named mndm.mnps_v3_4.experimental_flat_9d.v1 and is written under #raw("/measurements/v3_4/"). The order is fixed and is stored with the values. Table 1 gives each component's source rule before frozen reference scaling.
 
 #figure(
-  image("figures/neuralmanifolddynamics_flow.svg", width: 100%),
-  caption: [
-    Operational flow of the current NeuralManifoldDynamics ingest-layer measurement contract. Raw datasets are indexed, preprocessed, and converted into per-epoch feature tables before projection-time standardization is applied to weighted features for `coords_9d` and derived `mnps_3d`. In the 2.1 release line, the raw feature surface can additionally drive frozen cohort/external anchors, yielding explicit subject-anchored and cohort-anchored coordinate layers. In version 2.3, the same epoch-aligned surface can also feed an additive embodied anchor layer (`anchor_state`, `anchor_quality`, optional `anchor_coupling`) without redefining the canonical 3D chart. In version 3.0, gated dynamical-family objects and their support/claim metadata are serialized beside the chart; analysis-owned estimator studies remain outside ingest. Optional Jacobians, regional outputs, and self-describing HDF5 artifacts are then serialized for downstream analysis.
-  ],
+  clean-table(
+  columns: (auto, 1fr, 1fr),
+  header: ([*Order*], [*Measurement*], [*Source rule and raw unit*]),
+  inset: 4pt,
+  [1], [#raw("delta_theta_level")], [0.5 log10(P_delta / 1 μV²) + 0.5 log10(P_theta / 1 μV²); dimensionless log-power],
+  [2], [#raw("alpha_level")], [log10(P_alpha / 1 μV²); dimensionless log-power],
+  [3], [#raw("beta_alpha_ratio")], [Common EEG beta-to-alpha ratio; dimensionless],
+  [4], [#raw("gamma_level")], [log10(P_gamma / 1 μV²); dimensionless log-power],
+  [5], [#raw("hjorth_mobility")], [sqrt(var(Δx) / var(x)); sample-difference ratio, without division by Δt @hjorth1970],
+  [6], [#raw("alpha_theta_ratio")], [Common EEG alpha-to-theta ratio; dimensionless],
+  [7], [#raw("permutation_entropy")], [Normalized order-5, delay-1 permutation entropy; dimensionless],
+  [8], [#raw("alpha_centroid_hz")], [7-13 Hz power-weighted spectral centroid; Hz],
+  [9], [#raw("alpha_envelope_cv")], [Median across channels of the alpha-envelope coefficient of variation; dimensionless],
+
+  ),
+  kind: table,
+  caption: [Nine ordered measurement components and source definitions before frozen feature and coordinate reference scaling.],
 )
 
-== Minimal NDT Notation Used Here
-For readers encountering NDT here before the theory papers, only a small amount of notation is needed. In the broader NDT framework, neural dynamics are written as latent trajectories on a manifold:
+The first seven components reuse named outputs from the common EEG feature path @gramfort2013_mne. Before window-level feature calculation, this path takes a pointwise median across the available EEG channels. Two candidates are calculated on the native channel realization: a band-limited spectral centroid and a channel-wise alpha-envelope coefficient of variation. A third candidate, spatial log-variance dispersion, is exported as an auxiliary measurement and is not one of the nine coordinates. The source values and transformed values remain distinguishable in the output. Power is expressed in μV² before the logarithm, so each log-power is defined relative to 1 μV².
 
-$ d X_t = f(X_t, t) d t + sigma(t) d W_t $
+== Rationale and expected dependencies among the nine measurements
 
-with observed modality-specific signals generated through an observation map:
+The components cover several descriptive summaries of the same multichannel recording: band-limited power levels (delta/theta, alpha, and gamma), relative spectral balance (beta/alpha and alpha/theta), temporal sample-to-sample structure (Hjorth mobility and permutation entropy), and two alpha-specific summaries (a band power-weighted centroid and envelope variability). The intent is to preserve these named measurement views in a versioned export, not to claim that they are sufficient statistics or orthogonal dimensions of neural activity.
 
-$ Y_t = g(X_t) + epsilon_t $
+Dependence is expected. Delta/theta level, alpha level, beta/alpha ratio, alpha/theta ratio, and the alpha centroid reuse related spectral information. Band summaries can also combine periodic peaks and aperiodic background power, so they are descriptive spectral measurements rather than isolated oscillatory components @donoghue2020_specparam. Hjorth mobility and permutation entropy also depend on the time-series structure of the same aggregated trace. The flat nine-coordinate interface therefore does not imply nine statistically independent degrees of freedom. Correlation diagnostics are reported below using participant-level summaries. Correlated summaries are retained because they are separately defined measurements with distinct formulas, raw units, and support behavior; downstream analyses can select or model them for a stated question.
 
-Here $X_t$ denotes a latent NDT state, $Y_t$ the measured EEG or fMRI signal family, $f$ the local drift field, and $epsilon_t$ measurement noise [@langell2025_6]. In the chart used throughout this manuscript, the coarse state coordinates are:
+== Spatial aggregation is part of the measurement definition
 
-$ x_t = [m_t, d_t, e_t] $
+For the first seven components, the inherited EEG path forms a pointwise median signal across the available, average-referenced channels and then computes window features. This preserves that established extraction path as an explicit v3.4 realization. It is not equivalent to computing each feature per channel and taking a channel median afterward: nonlinear feature extraction and spatial aggregation generally do not commute. The pointwise median is reference- and topography-dependent, and signed channel values can cancel or change with spatial configuration @bigdelShamlo2015_prep. The current audit does not compare this global trace against per-channel feature aggregation or a posterior-channel summary. Accordingly, the paper claims implementation of this specific realization; it does not claim that the aggregation is optimal or interchangeable with those alternatives.
 
-where $m$ denotes a metastability / mobility-aligned coordinate, $d$ a deviation-from-optimal-balance coordinate, and $e$ an entropy / energetic-complexity coordinate [@langell2025_6; @langell2025_stratified]. Stratified NDT extends this to a finer chart:
+No component is automatically interpreted as a biological axis. The flat coordinate payload does not aggregate the nine values or declare one cross-coordinate distance. Separate optional v3.4 Jacobian and dynamical-family exports can operate on a declared coordinate realization; they are additive measurements, not part of the nine-coordinate vector definition.
 
-$ x_t^(9) = [m_a, m_e, m_o, d_n, d_l, d_s, e_e, e_s, e_m] $
+== Explicit references define the scaled coordinate frame
 
-This manuscript does not claim to learn $X_t$ directly. Instead, ingest computes an empirical feature vector $z_t = phi(Y)_t$ from sliding-window EEG or fMRI features and applies a fixed release-bound mapping:
+Scaling uses two distinct stages. For source feature q_j, the declared transform g_j produces u_j, the frozen feature anchor produces z_j, fixed coefficients a_kj assemble coordinate c_k, and the frozen coordinate anchor produces x_k:
 
-$ x_t^(9) = W_(9D) z_t, quad x_t = P x_t^(9) $
+$ u_j = g_j(q_j), quad z_j = (u_j - μ_j) / s_j, quad c_k = sum_j a_(k j) z_j, quad x_k = (c_k - ν_k) / r_k. $
 
-where $W_(9D)$ denotes the configured feature-to-subcoordinate map and $P$ the fixed 9D-to-3D projection used in the current release contract. When local dynamics are exported, the corresponding chart-level Jacobian is:
+Here μ_j and s_j are feature-reference center and scale; ν_k and r_k are coordinate-reference center and scale. For delta/theta, the raw source coordinate is 0.5 log10(P_delta / 1 μV²) + 0.5 log10(P_theta / 1 μV²), while the assembled feature-scaled coordinate is 0.5 z_delta + 0.5 z_theta. Those formulas are not generally equal because the feature anchors can have different centers and scales. The anchor manifest records both stages, the measurement definition, units, estimator identity, preprocessing surface, channel realization, reference, and implementation hashes.
 
-$ J(x_t, t) = frac(partial f(x, t), partial x) |_(x = x_t) $
+For a one-feature coordinate and identical supported reference observations and participant weights at both stages, the second median/MAD normalization is algebraically identity-like, up to floating-point error. A synthetic test checks this property. The coordinate anchor remains explicit as a uniform output interface, but it does not add information for those one-to-one mappings. The multi-feature delta/theta coordinate is not covered by that identity result.
 
-For this paper, the key boundary is simple: NDT supplies the notation, while NeuralManifoldDynamics supplies one auditable empirical realization of that chart for ingest-time serialization rather than claiming to identify the latent manifold uniquely. In version 2.3, the same time grid can additionally carry an additive embodied anchor surface $a_t$, but that surface remains parallel to the canonical chart rather than redefining it.
+The robust center is a participant-balanced median. The robust scale is 1.4826 times the median absolute deviation. Within each participant, finite supported windows share that participant's total weight, so a participant with more usable windows does not receive more total weight. A zero, missing, or otherwise invalid scale leaves the affected anchored values unsupported; the implementation does not substitute an epsilon. Non-positive power inputs to log10 coordinates are unsupported. Coordinates are not clipped or winsorized, and no recording-local refit is performed.
 
-= Model Definition
-Using the notation introduced above, the primary exported 3D trajectory is the canonical chart `x_t = [m_t, d_t, e_t]`, serialized in HDF5 as `mnps_3d`. The exported labels *m*, *d*, and *e* remain aligned to the theoretical MNPS axes of metastability, deviation from optimal integration-segregation balance, and entropy / entropic energy in the broader literature. In this ingest manuscript, however, they should be read as release-fixed operational proxy families rather than as direct redefinitions of those constructs:
-
-- *m* is the current release's metastability-aligned proxy family, implemented through macrostate- and low-frequency morphology features under the active contract.
-- *d* is the current release's deviation-aligned proxy family, implemented through dispersion and network-binding features under the active contract.
-- *e* is the current release's entropy-aligned proxy family, implemented through nonlinear complexity, low-order energy, and auxiliary arousal-related features under the active contract.
-
-Its temporal derivative is exported as `mnps_3d_dot`. The canonical axis order is fixed as `[m, d, e]` and is written explicitly into file-level metadata. Conceptually, this is an ingest-layer proxy realization of the low-dimensional Meta-Noetic Phase Space used in the Noetic Diffusion Theory program [@langell2025_6].
-
-The stratified coordinate system extends this to the 9D chart introduced above, exported as `coords_9d/values` together with `coords_9d/names`. The purpose of the 9D system is not to replace the 3D manifold, but to provide a finer-grained operational decomposition of these proxy families within the current chart version. The primary 3D trajectory and the stratified 9D chart therefore coexist as distinct measurement objects, matching the rationale of Stratified Meta-Noetic Phase Space while remaining operational and version-bound in this ingest contract [@langell2025_stratified].
-
-Version 2.1 adds a second distinction that matters for downstream interpretation: feature export and coordinate export are no longer treated as synonymous contracts. The raw feature matrix (`/features_raw/*`) and the strict robust-z diagnostic matrix (`/features_robust_z/*`) remain available as feature surfaces, while coordinates can be serialized as explicit subject-anchored layers (`coords_3d_subject_anchored`, `coords_9d_subject_anchored`) or cohort/external-anchored layers (`coords_3d_cohort_anchored`, `coords_9d_cohort_anchored`). This separates within-subject geometry from between-group comparability rather than forcing one hidden normalization policy to do both jobs.
-
-Version 2.3 adds a third distinction: coordinate anchors and embodied anchors are not the same object. `feature_anchors` remain frozen cohort/external scaling artifacts used to build cohort-anchored coordinates. By contrast, `anchor_state`, `anchor_state_dot`, and `anchor_quality` are time-aligned embodied/interoceptive measurements derived from modalities such as ECG, PPG, pupillometry, or related support signals. In the current implementation they can include HRV-oriented superwindow features and are intended for body-brain covariation analyses, not for redefining the canonical `[m, d, e]` chart.
-
-When Jacobian estimation is enabled, local dynamics are represented by chart-level Jacobian estimates. The primary Jacobian is written under `jacobian/J_hat`, while stratified dynamics are written under `jacobian_9D/J_hat` in the current codebase. Regional network-specific Jacobians are exported under `regional_mnps/<network>/jacobian`. This follows the role assigned to the Meta-Noetic Jacobian (MNJ) as the local second-order dynamical layer on top of MNPS coordinates [@langell2025_mnj].
-
-When the optional embodied-anchor coupling path is enabled, the export layer can also report additive cross-system diagnostics under `anchor_coupling`. These should be read as downstream body-brain interaction summaries built on top of the main measurement surface, not as part of the canonical chart definition itself.
-
-== Rationale for the Stratified 9D Contract
-The current `coords_9d` configuration is not presented here as a claim of uniquely privileged latent neurobiological ontology. Rather, it should be read as the current release's NDT-aligned measurement contract: a fixed, auditable decomposition chosen to balance increased resolution beyond coarse 3D composites, preserved recomposability into the canonical `mnps_3d` export, modality-level measurability in EEG and fMRI, and estimator-aware robustness at ingest time [@langell2025_stratified].
-
-The main methodological motivation is dimensional masking. In a composite 3D summary, compensatory redistributions among subcoordinates can produce near-zero movement along a canonical axis even when the underlying signal family changes substantially. The stratified 9D chart exposes those redistributions directly and therefore reduces false-null behavior in the canonical 3D summary.
-
-The nine subcoordinates were deliberately restricted to three families aligned with the canonical `[m, d, e]` topology. This grouping allows deterministic recomposition through a fixed weighted 9D->3D projection while keeping naming, provenance, and downstream serialization stable across datasets. The current weight values should therefore be read as release-fixed operational priors encoded in configuration during contract design, chosen to preserve sign consistency, recomposability, modality-level measurability, and estimator robustness across the reference paths. They are not learned dataset-specific optima, and they are not presented as claims of unique biological correctness. Full chart stability under feature substitutions, weighting perturbations, and alternative projection families remains a future validation target rather than an established property of the current release.
-
-== Why this release uses this subcoordinate configuration
-The current 9D chart was selected as the release contract for four practical reasons. First, the base 3D chart is sometimes too coarse: compensatory subcoordinate shifts can cancel in the composite and produce false-null behavior. Second, the chosen 9D grouping preserves recomposability into the canonical `[m, d, e]` export rather than creating nine unrelated free dimensions. Third, the selected subcoordinates remain measurable in the EEG and fMRI feature families actually supported by the current repository. Fourth, the chart had to remain versionable, auditable, and numerically usable under the coverage, finite-support, and Jacobian-validity constraints of the ingest layer, including a local dynamical regime that was neither so aggressive that small feature perturbations were amplified into unstable Jacobian estimates nor so flat that anisotropy and block-level summaries became uninformative.
-
-This is therefore best read as a release-bound operational choice rather than as a claim that these are the uniquely correct latent primitives. The current configuration is intended to balance finer-grained decomposition against export stability: enough stratification to expose masking effects, but still constrained enough that the canonical 3D export can remain fixed across runs and datasets. Stronger claims about uniqueness or invariance belong to future validation rather than to the present contract-definition paper.
+A target run can use a registered external reference or an explicitly configured reference manifest. Strict compatibility checks the declared measurement definition, estimator, units, preprocessing surface, channel set, and reference identity. Known channel-order differences remain QC when the channel set matches. An exploratory transfer requires a reason and records the mismatch; it does not convert units or establish equivalence between modalities.
 
 #figure(
-  image("figures/version_timeline.svg", width: 100%),
+  image("figures/mnps_v3_4_measurement_flow_draft.svg", width: 100%),
   caption: [
-    Cumulative version timeline from the older MNPS 1.2 generation through the current v3.0.0 contract generation. Milestones indicate introduced surfaces; v3.0 retains the frozen MNPS 3D/9D and `J_hat` contracts while adding the namespace migration and certificate fields described in S6.
+    The implemented sequence from window features through frozen feature and coordinate references to the support-aware flat output. The flat coordinate payload preserves raw values and provenance and emits no family aggregation or lower-dimensional projection. Separate optional Jacobian and dynamics groups may coexist under `/measurements/v3_4/` without changing the coordinate order or values.
   ],
 )
 
-= Key Methodological Advances in this version
-NeuralManifoldDynamics introduces several changes relative to the older MNPS 1.2 implementation.
+== The reference run produced two separate technical frames
 
-*Version 2.3 (short release summary).*  
-Major changes in the current release line:
+The reference cohort was selected from session-1, pre-task recordings in OpenNeuro ds005385 version 1.0.3 @openneuro_ds005385_v103. The metadata-based selection included 608 participants with one eyes-closed and one eyes-open recording each, for 1,216 recordings. Feature extraction produced 55,183 window rows: 27,651 eyes-closed and 27,532 eyes-open. Preprocessing used all 64 EEG channels, average reference, a 50 Hz notch, a 1-45 Hz bandpass, resampling to 250 Hz, and 8 s windows advanced by 4 s. The alpha-envelope estimator additionally required a 10 s segment-edge guard.
 
-- `subject_anchored`: preserves subject/session-relative geometry.
-- `cohort_anchored`: uses a frozen feature anchor for cross-subject and cross-group comparisons.
-- `geometry_contract`: adds always-on mathematical validity reporting for canonical geometry.
-- `anchor_state` / `anchor_quality`: add an embodied/interoceptive surface aligned to the canonical MNPS grid.
-- `anchor_coupling`: optional downstream coupling diagnostics between body state and neural state.
-- `event_locked` and `block_native`: generic derived analysis layers for short-event and sustained-block questions, respectively.
+One anchor was fitted for each condition using the 608 participants in that condition. Each anchor was then applied to those same 608 recordings, with no anchor identity failures reported. These are transductive fits, not held-out evaluation. The eyes-open and eyes-closed anchors have different centers and scales and therefore define different coordinate frames. Their scaled values cannot be pooled as if they shared one origin and unit. Applying one common anchor to both target conditions is possible, but it is a separate, explicitly selected analysis design.
 
-Additional functionality:
+A descriptive inventory summarized existing numeric HDF5 outputs by full measurement path and realization. It reported mean, population standard deviation, median, median absolute deviation, scaled median absolute deviation, quartiles, interquartile range, minimum, maximum, skewness, excess kurtosis, and support counts. The broader inventory also included other measurement paths in the enclosing files; each path and realization retains its own estimator identity and is not relabeled as a v3.4 measurement. No inferential eyes-open versus eyes-closed test was performed.
 
-- Added DANDI and PhysioNet ingest/download support.
-- Added sleep-spindle detection support.
-- Added support for NWB and WFDB source formats.
-- Added conventional EEG comparator packs beside the MNPS contract.
-- Added HRV-oriented embodied-anchor features and task-segment-driven block-native export for multimodal datasets such as `ds003838`.
+== Coordinate-specific computability and contract validity
 
-*Version 2.4 (historical release summary).*
-Major changes relative to v2.3:
-
-- `geometry_contract` version policy (`standard_invalidity_v1`): explicit `coords_9d` duplicate-subcoordinate tolerance with per-subject diagnostics; always-on time-grid contract auditing.
-- `anchor_auto_fit`: one-shot per-run cohort anchor fitting, resolving most `cohort_anchored` skip cases without manual anchor preparation.
-- HRV v0.1 superwindow surface: `ecg_hrv_*` time-domain columns (HR mean, IBI mean, SDNN, RMSSD, pNN50, NN count, artifact fraction, coverage fraction, quality score) via 60 s centered windows; optional complexity columns (`ecg_hrv_sampen`, `ecg_hrv_dfa_alpha1`) when enabled; manifest tag `anchor_hrv_v0_1`. (Note: frequency-domain HRV metrics such as HF power and LF/HF are not part of the current v0.1 surface.)
-- Block-native v2 sidecar ecosystem: `block_native_qc.json`, named window profiles, `source_window_index` provenance, and built-in parquet/CSV sidecars alongside HDF5.
-- Inter-network Jacobian coupling columns (`coupl_*`) in block-native sidecars; stage-level pooling fallback for short-trial datasets.
-- MEG ingest and shadow mapping: `meg_*` feature columns routed through the existing 9D contract; validated on ds003645.
-- `participants.extra_tables`: generic clinical TSV join (UPDRS items, longitudinal tables) embedded into per-subject H5 output; demonstrated on ds007526.
-- Conventional EEG proxy pack for clinical ICU datasets: suppression ratio, burst-suppression proxy, spectral ratios, and reactivity proxies.
-- Production validation on six additional cohorts: ds006036 (88 subjects, block-native), ds003838 (130 subjects, HRV + block-native, 27,670 block windows), ds007526 (277 recordings, Parkinson gait/rest + clinical join), and ds003490/ds003506/ds003509 (Parkinson dual-anchor reruns, 75–84 subjects each).
-
-*Version 2.5.0 (current release summary).*
-Major changes relative to v2.4:
-
-- BDF/Figshare infant EEG adapters with privacy-safe metadata, `BAD_` masking,
-  coverage-aware cohort anchoring, and repaired masked-connectivity handling.
-- NWB/Neuropixels Units-to-rate features, DANDI ElectricalSeries/LFP channel
-  selection, state/stimulation annotations, and probe/contact/reference QC.
-- Optional phase-anchor and sleep-EAP surfaces for cardiac/respiratory phase,
-  RR/HR, inhale fraction, HEP-related features, and quality provenance.
-- Explicit `/epoch_id` lineage, stricter MEEG row provenance, robust-z
-  degenerate-scale safeguards, and configuration overlay hardening.
-- Release documentation now separates completed exports, inferential samples,
-  smoke tests, internal validation, exploratory findings, and negative results.
-
-*Version 2.6.0 (local-dynamics interpretation layer).*  Version 2.6 adds
-versioned Jacobian metrics and opt-in finite-time response summaries on the
-unchanged `J_hat` estimator. These are model-derived provenance outputs, not
-S3-licensed empirical NDT quantities. The opt-in discrete `W_Q` surface uses
-only Gate E recording-level transition-residual covariance with its declared
-one-step semantics; it is not `a_hat`, Itô process noise, or a default family
-export. Common profiles leave it disabled.
-
-*Version 3.0.0 (current contract generation).*
-Version 3.0.0 keeps the canonical `[m, d, e]` order, the stratified 9D names,
-and the configured 9D-to-3D projection. It promotes dynamical families to a
-versioned, fail-closed export layer beside the chart:
-
-- canonical writes use `/dynamical_families/{diffusion,destination,resilience}/v1`,
-  while `/orthogonal_dynamics/` is read-only legacy input;
-- family schema identifiers remain versioned and unchanged, and family YAML is
-  disabled by default for common EEG, fMRI, and ephys profiles;
-- diffusion uses the local increment-covariance object `a_hat`; ingest keeps
-  `drift=None` on the ingest path, so `A_bD` and `R_b_over_a` remain
-  `not_testable`;
-- every computed family retains `computation_status`, `measurement_validity`,
-  grain, provenance, and `claim_status = no_biological_claim`; the separate
-  file-level `/support_signature/v1` records coordinate support and capabilities
-  fields. Grain distinguishes recording/subject/window levels; windows are
-  not biological replicates.
-- opt-in discrete `W_Q` remains under `/stochastic_reachability/v1`, fed only
-  by Gate E recording-level transition-residual covariance with the frozen
-  one-step semantics. It is not `a_hat` or process noise.
-
-The v3.0 contract therefore makes the measurement boundary more explicit. An
-analysis repository may study estimator choice, cross-fitting, null controls,
-or scientific contrasts, but those studies do not silently become ingest
-measurements or biological qualifications.
-
-== Stronger Measurement Robustness
-The updated measurement model enforces explicit bounds on estimator support. Epoch inclusion is no longer a minimal pass/fail step. Instead, the pipeline tracks coverage in terms of available seconds, available epochs, and direct axis support. Missing weighted features are handled by per-axis renormalization rather than silent zero-filling. Windows or trajectories with insufficient support, all-non-finite stratified coordinates, or inconsistent dimensionality are now surfaced explicitly rather than silently propagated.
-
-Feature preprocessing is also deterministic rather than ad hoc. In the current reference contracts, projection-time standardization defaults to `robust_z -> clip`, while selected power or bandpower features use explicit `log10 -> robust_z -> clip` overrides, as configured in `mnps_projection.feature_standardization`. Entropy-like, Hjorth-derived, and similar metrics are not subjected to blind `log10` compression unless explicitly configured. Separately, the exported `/features_robust_z/*` surface is a strict robust-z view of the raw feature matrix and does not bake in projection-only `log10` or clipping steps; those remain represented in provenance metadata. The untransformed baselines used to produce projection-time normalized values are retained as per-feature metadata (`abs_median`, `abs_mad`, and applied transformation string), so absolute scale is preserved for audit rather than destroyed by preprocessing.
-
-This release also now records explicit reproducibility provenance for the exported manifold and Jacobian surfaces, including stable hashes for `mnps_3d`, neighbor indices, and primary and stratified Jacobian tensors. In a reference replay on open neuro dataset `ds003059`, two full summarization runs over the same regenerated feature table, executed with identical configuration and seed but different parallel worker counts (`n_jobs = 1` versus `n_jobs = 4`), produced matching subject-level provenance hashes across all `90` summarized runs for `x_hash_saved`, `nn_indices_hash_saved`, `jacobian_hash_saved`, `jacobian_dot_hash_saved`, `coords_9d_hash_saved`, `jacobian_9d_hash_saved`, and `jacobian_9d_dot_hash_saved`. This should be read as an implementation-level reproducibility check within one environment rather than as a claim of cross-machine floating-point identity under arbitrarily different BLAS, OS, or dependency stacks.
-
-== Improved Epoch Quality and Support
-The current pipeline is designed to retain more usable epochs while improving quality control. Coverage policy is now computed explicitly, including effective coverage after masking and quality-control drops. This allows the system to preserve high-quality support where possible while rejecting windows that would otherwise degrade the Jacobian fit or distort anisotropy-related summaries.
-
-The result is not only more data, but more defensible data. This matters because anisotropy, condition numbers, and local Jacobian estimates are highly sensitive to unstable or poorly supported neighborhoods.
-
-== Derivative and Time-Base Contract
-`mnps_3d_dot` is not an unspecified symbolic derivative. In the active contracts it is estimated with a Savitzky-Golay derivative on the epoch-time series, with EEG default `window = 7`, `polyorder = 3`, and fMRI default `window = 5`, `polyorder = 2`. When the sequence is too short for a valid Savitzky-Golay fit, the implementation falls back to central differences; when large jumps segment a trajectory, the robust segmented derivative path prevents smoothing across discontinuities. In the current implementation, Savitzky-Golay derivatives are evaluated with interpolation-based edge handling and are not post-trimmed at segment boundaries before export. Accordingly, boundary derivatives remain part of the serialized contract and should be treated as lower-confidence near short or recently split segments if a downstream analysis requires stricter edge control. These choices are part of the measurement contract because downstream Jacobian estimation depends directly on derivative stability.
-
-== Embodied Anchoring: HRV, Vagal Index, and Pupillometry
-Version 2.3 introduced the Embodied Anchoring Principle as an additive parallel surface alongside the canonical MNPS chart: body-state measurements serialized at the same epoch grid as `mnps_3d` and `coords_9d`, without redefining those coordinate objects. Version 2.4 made this surface concrete through three implemented modalities, while v2.5.0 adds optional phase-aware and sleep-EAP extensions.
-
-*ECG / HRV surface.* A configurable HRV superwindow path (default: 60 s centered window) derives short-list time-domain metrics aligned to the MNPS epoch grid. Exported columns include: `ecg_hrv_hr_mean_bpm`, `ecg_hrv_ibi_mean_ms`, `ecg_hrv_sdnn_ms`, `ecg_hrv_rmssd_ms`, `ecg_hrv_pnn50`, `ecg_hrv_nn_count`, and quality/coverage flags (`ecg_hrv_artifact_fraction`, `ecg_hrv_coverage_fraction`, `ecg_hrv_quality_score`). These columns feed the `anchor_state` surface through a priority hierarchy that resolves four index slots: `vagal_index` (RMSSD-derived parasympathetic proxy), `sympathetic_index` (HR-derived activation proxy), `anchor_index` (signed composite), and `vascular_index` (amplitude complement). When HRV v0.1 columns are present, the `anchor_state` hierarchy prefers them over legacy short-window ECG columns; the chosen source is recorded in provenance. An automatic ECG polarity correction path handles datasets where signal inversion produces systematic QRS mis-detection: in `ds006848`, 92.7% of epochs had inverted QRS polarity, producing spurious HR ≈ 100 bpm and RMSSD ≈ 178 ms; after polarity correction, population-level median HR returned to 76.2 bpm (RMSSD 40.7 ms).
-
-*ds003838 embodied anchoring validation.* The full `ds003838` cohort (130 subjects, digit-span task with five task stages: rest, listen, mem5, mem9, mem13) was processed with HRV v0.1 enabled and task-state-driven block-native sidecars. The full export produced 130 subject-level H5 files and 27,670 block windows with zero run-level errors. A later corrected-ECG statistics run used a separate output directory with 26,460 windows and a complete-case sample of `N = 62`; the Friedman results below belong to that statistics run:
-
-#table(
-  columns: (auto, auto, auto),
-  inset: 6pt,
-  stroke: 0.5pt + black,
-  align: (left, center, center),
-  [*Metric*], [*Friedman χ²*], [*p*],
-  [`vagal_index`],        [88.0],  [3.4×10⁻¹⁸],
-  [`sympathetic_index`],  [63.7],  [4.8×10⁻¹³],
-  [`ecg_hrv_hr_mean_bpm`],[62.6],  [8.3×10⁻¹³],
-  [`ecg_hrv_sdnn_ms`],    [62.0],  [1.1×10⁻¹²],
-  [`ecg_hrv_rmssd_ms`],   [24.1],  [7.7×10⁻⁵],
-  [`anchor_index`],       [13.6],  [8.6×10⁻³],
-)
-
-The listen–mem13 pairwise contrast for `vagal_index` yielded Cohen's d = 1.995 (Wilcoxon p = 1.2×10⁻¹⁰) in the `N = 62` complete-case sample: a very large effect in which passive listening shows the highest parasympathetic engagement and progressive working-memory load suppresses it. This non-monotonic pattern (listen > mem5 ≈ mem9 > mem13) is consistent with the interpretation that the embodied anchor tracks sustained attentional engagement rather than task complexity monotonically. All 12 inter-network Jacobian coupling columns were also stage-dependent (χ² = 65–97, p < 10⁻¹²). These are internally validated results on corrected ECG data. They are not cross-replicated on an independent dataset or benchmarked against an alternative autonomic measurement approach. The full contrast table, block-level counts, and coupling-column statistics are given in S2.1–S2.4; the corresponding QC pass rates and confound audits are in S3.0–S3.1.
-
-*HRV superwindow contamination gating.* In datasets where HRV superwindows overlap with task events, the `ecg_hrv_*` columns carry contamination quality flags. In `ds006848` (verbal working memory, 60 s centered windows), 87.7% of WM-phase HRV windows contained retrieval-task signal; only approximately 2% passed the clean HRV gate. Rest-phase HRV in the same dataset was uncontaminated (85% pass rate). This prevents spurious WM-phase HRV claims in `ds006848` under the current 60 s superwindow design; trial-aligned short-window HRV remains a future option.
-
-*Phase Anchor (Mål B / C).* The v2.5.0 release includes an optional per-epoch extractor (`phase_anchor.enabled: true`) that computes cardiac phase via linear RR interpolation and respiratory phase via Hilbert transform, together with RR intervals, HR, respiration, inhale fraction, HEP-related amplitude, and quality columns. These columns land directly in `features.parquet` and are carried into HDF5 by the summarize pipeline. The extractor handles partial physiological coverage with NaN-filled columns rather than errors. It remains an optional modality surface whose interpretation is dataset-dependent.
-
-*PPG surface.* Per-epoch PPG features (rate, amplitude, variability, quality flags) are extracted when PPG channels are present in the source files, and feed the `vascular_index` slot in `anchor_state`.
-
-*Pupillometry surface.* Per-epoch pupil features (mean diameter, volatility, blink-rate proxy, quality score) are extracted when pupil diameter traces are present in the source files. These provide an arousal-aligned complement to the cardiac anchor surfaces, exported at the same epoch grid as the MNPS trajectory. Pupillometry export is implemented and available for downstream body-brain covariation analyses, but has not been validated at dataset scale in the current release; coverage and quality will remain dataset-dependent.
-
-== Formal 3D, 9D, and anchoring separation
-The older pipeline used naming that blurred low-dimensional and stratified outputs. The new version now makes the distinction explicit:
-
-- `mnps_3d` is the canonical 3D trajectory.
-- `coords_9d` is the stratified coordinate chart.
-- `mnps_3d_dot` is the derivative of the canonical trajectory.
-- `coords_3d_subject_anchored` / `coords_9d_subject_anchored` are the explicit within-subject coordinate layers.
-- `coords_3d_cohort_anchored` / `coords_9d_cohort_anchored` are the explicit cohort/external-anchor layers when a frozen anchor is configured.
-- `/feature_anchors/*` records the per-feature center/scale statistics and the release-bound `anchor_id` / `anchor_hash` used to construct cohort-anchored layers.
-
-This separation makes the output contract more interpretable for human readers and for downstream tooling, while also making normalization choice part of the auditable measurement contract rather than an implicit preprocessing side effect.
-
-= Regional NeuralManifoldDynamics
-Regional manifold dynamics are now a core part of the implemented measurement contract rather than an external post-processing idea. In theoretical terms, this extends the MNPS and MNJ framing from a single global chart to a set of network- or group-specific charts that can be compared within one measurement contract [@langell2025_stratified; @langell2025_mnj].
-
-== Regional fMRI
-The repository already supported regional fMRI through ROI-based or network-based aggregation. The 2.4 release line preserves that path and continues to export regional manifold summaries without changing the basic contract. Canonical derived regional outputs are written under `regional_mnps/*` for both EEG and fMRI, while `/regions/*` is reserved for optional supporting raw regional signals, mainly on the fMRI side. The code keeps modality-specific safeguards where stratified block Jacobians are not empirically justified for fMRI; in the active `ds000228` reference path, regional 3D summaries are enabled but regional stratified and block-Jacobian exports remain disabled.
-
-== Regional EEG via Channel Groups
-The major new addition is regional EEG support. EEG features can now be grouped using topology-based channel ensembles, producing per-group feature columns with `__g_<group>` suffixes. These grouped feature tables are then converted into per-group manifold trajectories and optional stratified regional trajectories.
-
-In practical terms, a channel group such as `frontal`, `central`, `parietal_occipital`, or `temporal` is treated as a topology-based regional surrogate used to approximate a regional decomposition under shared naming and export patterns, while preserving modality-specific interpretive limits. Each region can therefore produce:
-
-- a regional 3D trajectory,
-- a regional 3D Jacobian,
-- an optional regional stratified trajectory,
-- regional CSV-style summaries that are now also embedded into HDF5.
-
-This brings EEG regional processing closer to the fMRI regional path while still keeping modality differences explicit.
-
-== CSD / Surface Laplacian for EEG
-Regional EEG is coupled to an optional *Current Source Density* preprocessing step. This is a critical methodological change because direct channel averaging in sensor space is otherwise vulnerable to volume conduction. In the active EEG reference configuration, the CSD transform uses `lambda2 = 1e-5`, `stiffness = 4.0`, `n_legendre_terms = 50`, and `min_eeg_channels = 16`, with failure behavior controlled by `on_error` (the current `ds004511` overlay uses `warn`). These parameters are written into preprocessing metadata so the exact spatial filter is auditable.
-
-The important design point is that the measurement contract now acknowledges spatial filtering as the preferred safeguard before inter-regional EEG dynamical summaries are interpreted. In the current implementation, CSD is an optional supported preprocessing path rather than a hard requirement, and failure-tolerant configurations can continue without it while recording the chosen behavior in provenance.
-
-= Modality Coverage
-The current reference configurations, `ds000228` for fMRI [@richardson2023_ds000228] and `ds004511` for EEG [@ds004511:1.0.2], support the following entities. In addition, `ds003645` demonstrates a MEG ingest path via shadow mapping:
-
-#table(
-  columns: (auto, auto, auto),
-  inset: 6pt,
-  stroke: 0.5pt + black,
-  align: (left, center, center),
-
-  [*Data entity*], [*fMRI*], [*EEG/iEEG*],
-  [Global `mnps_3d`], [Yes], [Yes],
-  [Global `coords_9d`], [Yes], [Yes],
-  [Global MNJ], 
-  [
-    Yes \
-    `jacobian/J_hat` on `mnps_3d` \
-    `jacobian_9D/J_hat` on `coords_9d`
-  ],
-  [
-    Yes \
-    `jacobian/J_hat` on `mnps_3d` \
-    `jacobian_9D/J_hat` on `coords_9d`
-  ],
-
-  [Regional `mnps_3d`],
-  [
-    Yes \
-    network-level 3D from regional fMRI features
-  ],
-  [
-    Yes \
-    channel-group 3D from `__g_<group>` EEG features
-  ],
-
-  [Regional `coords_9d`],
-  [
-    No in `ds000228` \
-    code path exists, but `regional_mnps.stratified.enabled = false`
-  ],
-  [
-    Yes in `ds004511` \
-    `regional_mnps.stratified.enabled = true`
-  ],
-
-  [Regional `mnps_3d` + MNJ],
-  [
-    Yes \
-    `regional_mnps/<network>/jacobian`
-  ],
-  [
-    Yes \
-    `regional_mnps/<network>/jacobian`
-  ],
-
-  [Regional `coords_9d` + MNJ / block structure],
-  [
-    No in `ds000228` \
-    regional 9D disabled by config
-  ],
-  [
-    Yes in `ds004511` \
-    regional stratified trajectories enabled \
-    regional block Jacobians enabled
-  ],
-)
-
-#par(first-line-indent: 0pt)[
-  Code check: this table reflects the active reference configs rather than only abstract code capability. For fMRI, `ds000228` keeps global `coords_9d` enabled because `mnps_3d` is derived from 9D, but disables regional 9D in config. For EEG, `ds004511` enables both global and regional stratified trajectories, together with regional block-Jacobian summaries. In the current repository, iEEG datasets are routed through the electrophysiology path using `modality: eeg`, so the rightmost column should be read as the current EEG-family implementation path.
-]
-
-== DANDI / NWB ingest path
-In addition to BIDS-style OpenNeuro EEG/fMRI workflows, the repository includes a DANDI/NWB ingest path for selected neurophysiology assets [@dandi2022; @nwb2022]. This path is implemented as a constrained adapter layer rather than as a claim of full NWB ecosystem coverage. DANDI helper configs create asset manifests and probe local `.nwb` files, while MNDM configs such as `config_ingest_dandi_000718.yaml` and `config_ingest_dandi_000458.yaml` route NWB electrical-series data through the same downstream feature, MNPS, and HDF5 writer contracts used by the rest of the package. Where NWB interval tables expose behavioral or state labels, these can be mapped onto the MNPS time axis through `state_labels` / `within_run_labels` and serialized alongside the trajectory as `/labels/stage` or named labels. This makes DANDI/NWB support part of the source-format and label-alignment surface of the measurement contract, not a separate theoretical model.
-
-== PhysioNet / WFDB ingest path and clock provenance
-In parallel with the DANDI/NWB path, the repository now includes a PhysioNet ingest utility for cohort-level selection, checksum-aware transfer, resumable downloads, and manifest logging. On the MNDM side, WFDB headers (`.hea`) with paired signal files (`.mat`/`.dat`) are routed through the same canonical feature, MNPS, and HDF5 measurement contract used by other modalities. For WFDB overlays where `time_reference.enabled = true`, the export layer preserves the canonical relative-time surfaces (`/time`, `/window_start`, `/window_end`) and adds explicit clock-provenance extensions under `/extensions/time_reference/run/*` and `/extensions/time_reference/windows/*`. This extension is metadata-oriented: it improves temporal auditability and cross-run alignment without redefining the underlying MNPS coordinate contract.
-
-== MEG Ingest — Exploratory Pilot Extension
-Beginning with v2.4, the repository includes an exploratory MEG ingest path validated on `ds003645`, a simultaneously-acquired MEEG FacePerception dataset from OpenNeuro. The path processes Neuromag FIF files through MNE-Python, extracting separate magnetometer (`meg_mag_*`), gradiometer (`meg_grad_*`), and sensor-combined (`meg_*`) feature columns alongside the existing `eeg_*` columns. These MEG feature columns are routed through the existing 9D contract by _shadow mapping_: each `meg_*` feature type maps to the same subcoordinate slot as its `eeg_*` counterpart, so the 9D projection and Jacobian machinery remain unchanged.
-
-For simultaneous MEEG recordings — where a single FIF file contains both MEG and EEG channels alongside a separate EEG-only EEGLAB `.set` source representing the same acquisition — the H5 output includes explicit row-provenance arrays under a new `row_source/` group, recording whether each window row originates from a `fif_meeg` (MEG+EEG combined) or `set_eeg` (EEG-only) source file. This replaces the implicit positional half-split assumption with auditable source metadata compatible with `mndm.row_source.v1`.
-
-Because physical MEG power values (~10⁻²⁵ W) collapse to near-zero under raw-space robust-z standardization with a fixed ε = 10⁻⁹, spectral MEG features in `features_robust_z` carry degenerate values. A new `features_projection_z` HDF5 group applies the configured transform pipeline (log10 → robust-z → clip) before export, recovering non-degenerate spectral variance. Downstream MEG spectral analyses should read from `features_projection_z` rather than `features_robust_z`.
-
-A pilot validation of five subjects (sub-002 through sub-006) from `ds003645` was conducted:
-
-#table(
-  columns: (auto, auto),
-  inset: 6pt,
-  stroke: 0.5pt + black,
-  align: (left, left),
-  [*MEG readiness gate*], [*Status*],
-  [H5 contract pass rate],     [1.00],
-  [Feature completeness (MEG spectral non-degenerate)], [1.00],
-  [Window robustness (8 s / 4 s / 2 s face/scr separation)], [1.00],
-  [Subject-level event-response cosine obs > null], [3/5 = 0.60],
-  [Subjects with p < 0.05 (label-shuffle null)], [2/5 (p = 0.018, p = 0.040)],
-  [Jacobian validity], [1.00],
-  [MEG readiness score (weighted)], [0.7879],
-)
-
-The pilot readiness score of 0.7879 places the MEG path in the "usable pilot MEG mapping, cross-modal convergence moderate" band (below the ≥ 0.80 threshold for pilot expansion). Face/scrambled separation in MEG is robust across all three window sizes. At the subject level, two of five pilot subjects show statistically significant MEG–EEG event-response alignment; the remaining two show strong Hjorth-family sign reversal whose source (genuine cross-modal divergence versus subject-level data quality) is not yet resolved.
-
-This path is labeled *exploratory* in the current release. It has not been validated across the full 18-subject ds003645 cohort, MEG-specific 9D coordinate semantics differ from the EEG reference in currently-degenerate spectral slots, and production scaling awaits subject-level Hjorth-family review and full subject-level C1/C2 confirmation.
-
-== Neuropixels / Ecephys Ingest — Transport and Descriptive Pilot
-Beginning with v2.5.0, a separate `neuropixel_ingest` adapter routes NWB electrophysiology assets through the same downstream feature, MNPS, and HDF5 contract. Unlike MEG, this covers two structurally different source types, spike-sorted Units and continuous LFP `ElectricalSeries`, and unlike MEG's shadow mapping onto existing `eeg_*` slots, the two paths use two different construction routes into the 9D chart. The reference DANDI dandisets, `000006` (Units, mouse ALM delay-response task) and `000458` (LFP, mouse cortex with awake/isoflurane/recovery epochs), are rodent recordings; they are included as an ingest-format and QC extension, not as evidence of cross-species chart homology with the human EEG/MEG/fMRI reference paths used elsewhere in this manuscript.
-
-*Units-to-rate path.* NWB `Units.spike_times` are histogram-binned per unit into a population firing-rate matrix in Hz, with a default bin width of 0.05 s (a 20 Hz rate grid) and an optional 0.05 s Gaussian smoothing kernel. This rate matrix is handed to the ingest pipeline as a dedicated `ephys` signal family (`sfreq = 1 / bin_sec`) and windowed (default 2.0 s window, 1.0 s step) into named feature columns: `ephys_mean_rate_hz`, `ephys_rate_std_hz`, `ephys_population_cv`, `ephys_participation_ratio`, `ephys_top_pc_variance_fraction`, `ephys_pairwise_corr_mean`, `ephys_rate_entropy`, `ephys_ar1`, and `ephys_active_unit_fraction`, alongside `ephys_n_units`, `ephys_window_sec`, and `ephys_step_sec` metadata. These columns fill the nine `coords_9d` slots through a dedicated ephys-specific subcoordinate map (`m_a <- ephys_pairwise_corr_mean`, `m_e <- ephys_participation_ratio`, `m_o <- ephys_top_pc_variance_fraction`, `d_n <- ephys_rate_std_hz`, `d_l <- ephys_population_cv`, `d_s <- ephys_ar1`, `e_e <- ephys_rate_entropy`, `e_s <- ephys_mean_rate_hz`, `e_m <- ephys_active_unit_fraction`), which then feeds the same fixed 9D-to-3D projection used elsewhere. This is a parallel modality-specific construction that fills the same nine slot names, not a reuse of the EEG feature definitions.
-
-*LFP path.* Named `ElectricalSeries` channels are instead treated as a continuous signal routed through the existing EEG feature and 9D contract (`eeg_*` band-power features with rodent-adapted band edges), with optional depth-balanced contact selection and reference-choice configuration; the Units path is disabled for these runs so the two signal families do not compete for the same axes.
-
-*Validation status.* The Units path was smoke-validated on one `000006` session (`sub-anm369962`), producing 1,752 windowed `mnps_3d` rows and a full `(1750, 3, 3)` Jacobian export with zero pipeline errors; a second dandiset (`000009`) was inventoried at 10 units and 32 electrodes with unresolved unit-quality labels. The LFP path was validated on `000458` through a channel-count smoke run (28 epochs, 32 channels) and a full-session two-probe QC pass (probe B: 315/384 channels passing, 48 depth-balanced contacts selected; probe F: 200/384 channels passing, 32 contacts selected; 3,433 epochs per probe), together with state/stimulation-aware epoching across awake, isoflurane, and recovery blocks, and a contact-count/reference-choice sensitivity comparison (8-contact native reference versus 4-contact and median-reference variants). No readiness gate analogous to the MEG pilot's weighted score has been computed for either ephys path, and cross-run coordinate orientation for the LFP contrasts is not yet established. Accordingly, both paths are labeled *transport and descriptive sensitivity only*: they demonstrate that Units and LFP assets can be ingested, quality-controlled, and mapped into the standard measurement contract, not that the resulting `mnps_3d`/`coords_9d` trajectories constitute validated neural-manifold evidence.
-
-= Axis Construction
-The same reference configurations construct global `mnps_3d` and `coords_9d` as follows. The rows below should be read as modality-specific operationalizations under a shared chart family, not as claims of one-to-one physiological homology between EEG and fMRI features and not as a redefinition of the underlying theoretical axes.
+The v3.4-only audit separated raw estimator support, coordinate validity under the contract, and whole-vector completeness. Table 2 reports numerically supported-window counts from the selected HDF5 exports. For all nine measurements, each condition included supported values from all 608 participants. The first eight measurements passed their coordinate validity rules in every exported window. The only observed support loss was for `alpha_envelope_cv`, where windows inside the declared edge guard were unsupported. All participants had at least one complete nine-coordinate window. Contract validity does not indicate artifact-free EEG.
 
 #figure(
-  image("figures/coords9d_to_mnps3d_projection.svg", width: 100%),
-  caption: [
-    Schematic of the fixed weighted projection from `coords_9d` to `mnps_3d` for the EEG reference configuration (`ds004511`). The nine subcoordinates are grouped into three families aligned with the canonical `[m, d, e]` topology; the weights shown are release-fixed configuration values, renormalized at runtime over whichever subcoordinates have finite support. The table below gives the full mapping, including the fMRI reference and the `e_m` embodied-arousal fallback chain.
-  ],
+  clean-table(
+    columns: (1.2fr, auto, auto, auto, 2fr),
+    header: ([*Measurement*], [*Eyes closed*], [*Eyes open*], [*Participants*], [*Observed support loss*]),
+    inset: 4pt,
+    [#raw("delta_theta_level")], [27,651 / 27,651], [27,532 / 27,532], [608 / 608 each], [None in exported support mask],
+    [#raw("alpha_level")], [27,651 / 27,651], [27,532 / 27,532], [608 / 608 each], [None in exported support mask],
+    [#raw("beta_alpha_ratio")], [27,651 / 27,651], [27,532 / 27,532], [608 / 608 each], [None in exported support mask],
+    [#raw("gamma_level")], [27,651 / 27,651], [27,532 / 27,532], [608 / 608 each], [None in exported support mask],
+    [#raw("hjorth_mobility")], [27,651 / 27,651], [27,532 / 27,532], [608 / 608 each], [None in exported support mask],
+    [#raw("alpha_theta_ratio")], [27,651 / 27,651], [27,532 / 27,532], [608 / 608 each], [None in exported support mask],
+    [#raw("permutation_entropy")], [27,651 / 27,651], [27,532 / 27,532], [608 / 608 each], [None in exported support mask],
+    [#raw("alpha_centroid_hz")], [27,651 / 27,651], [27,532 / 27,532], [608 / 608 each], [None in exported support mask],
+    [#raw("alpha_envelope_cv")], [24,361 / 27,651], [24,215 / 27,532], [608 / 608 each], [3,290 EC and 3,317 EO windows inside the 10 s segment-edge guard],
+  ),
+  kind: table,
+  caption: [Valid windows by condition, participants with any valid window, and observed support loss. Each window is counted once in its recording; overlapping windows are not independent participants.],
 )
 
-#table(
-  columns: (auto, auto, auto),
-  inset: 6pt,
-  stroke: 0.5pt + black,
-  align: (left, left, left),
+Across the 55,183 windows, coordinate-specific anchor application was reported as `computed` for all 1,216 recordings. The complete-nine mask was true for 24,361/27,651 eyes-closed windows (88.1%) and 24,215/27,532 eyes-open windows (88.0%). All recordings remained unqualified, and artifact QC was unassessed (`qc_ok_eeg = -1`) for every window. These results describe data availability and application behavior, not signal cleanliness or scientific suitability.
 
-  [*Subcoordinate / entity*], [*fMRI (`ds000228`)*], [*EEG (`ds004511`)*],
-  [
-    `mnps_3d`
-  ],
-  [
-    `mnps_3d.mode = from_v2` \
-    `x = coords_9d @ P_fixed` \
-    `P_fixed` from `mnps_projection.v1_mapping` \
-    weights resolved against `mnps_9d.subcoords` \
-    runtime: L2-normalized columns + coverage-aware renormalization
-  ],
-  [
-    `mnps_3d.mode = from_v2` \
-    `m <- 0.62*m_a + 0.55*m_e + 0.45*m_o` \
-    `d <- 0.50*d_n + 0.82*d_l + 0.28*d_s` \
-    `e <- 0.85*e_e + 0.62*e_s + 0.03*e_m` \
-    runtime: L2-normalized columns + coverage-aware renormalization
-  ],
+== The nine participant-level measurements are correlated
 
-  [`m_a`], [`fmri_FC_mean`], [`-0.5*eeg_delta - 0.5*eeg_theta`],
-  [`m_e`], [`fmri_gradient_ratio`], [`-1.0*eeg_alpha`],
-  [`m_o`], [`fmri_modularity`], [`eeg_beta_alpha`],
-  [`d_n`], [`fmri_variance_global`], [`eeg_gamma`],
-  [`d_l`], [`fmri_dFC_variance`], [`eeg_hjorth_mobility`],
-  [`d_s`], [`fmri_kuramoto_global`], [`eeg_alpha_theta`],
-  [`e_e`], [`fmri_signal_power`], [`eeg_permutation_entropy`],
-  [`e_s`], [`fmri_slow4_slow5_ratio`], [`eeg_hjorth_complexity`],
-  [`e_m`], [`fmri_ar1_coefficient`], [`ecg_rmssd -> ecg_hr_bpm -> ppg_rate_bpm -> ppg_amplitude_mean -> pupil_dilation_velocity -> pupil_diameter_std -> eog_blink_rate -> meg_highfreq_power_30_45 -> eeg_highfreq_power_30_45`],
+To avoid treating overlapping windows as independent participants, the dependency audit summarized one median per participant, coordinate, and condition under two window-support policies. Available-coordinate medians use every valid window for each coordinate; matched medians use only windows where all nine coordinates are supported. Both policies retained the same 608 participants per condition. Effective ranks of the Spearman correlation matrices were 4.3649 (available) and 4.3655 (matched) for eyes-closed, and 4.7141 and 4.7185 for eyes-open. Mean absolute matrix differences were 0.0024 and 0.0025; maximum absolute differences were 0.0091 and 0.0101. Participation ratios changed from 3.1687 to 3.1651 and from 3.4594 to 3.4575. These small support-policy differences describe this export; they are not feature-importance tests or estimates of intrinsic neural-state dimension. The matrices are Spearman correlation matrices, not covariance matrices. Positive affine anchor scaling does not change within-condition Spearman ranks, so the separate EO and EC anchors do not explain differences between these within-condition matrices.
+
+#figure(
+  image("figures/mnps_v3_4_dependency_heatmap.svg", width: 100%),
+  caption: [Spearman correlations among participant-level medians under available-coordinate and matched complete-nine window support, shown separately for eyes-closed and eyes-open (608 shared participants per condition). Abbreviations map to the Table 1 names: δ/θ, alpha level, β/α, gamma level, Hjorth mobility, α/θ, permutation entropy, alpha centroid, and alpha envelope CV.],
 )
 
-#par(first-line-indent: 0pt)[
-  These rows summarize the active 9D-to-3D construction used by the current reference configs. The active runtime path is a fixed weighted projection from `coords_9d` to `mnps_3d`, not a trivial equal-weight mean over all subaxes. The projection weights should be read as release-fixed operational priors chosen during contract design to preserve recomposability, interpretability, modality-level measurability, and estimator robustness within the ingest contract; they were not obtained by supervised optimization against one benchmark objective. Part of that robustness criterion was dynamical rather than purely semantic: the selected weighting had to support a usable Jacobian layer that was neither excessively aggressive under small feature perturbations nor trivially flat in ways that would collapse local anisotropy and block-level summaries. The EEG `e_m` slot is especially operational: the current code resolves `embodied_arousal_proxy` through a nine-level priority hierarchy — `ecg_rmssd`, `ecg_hr_bpm`, `ppg_rate_bpm`, `ppg_amplitude_mean`, `pupil_dilation_velocity`, `pupil_diameter_std`, `eog_blink_rate`, `meg_highfreq_power_30_45`, `eeg_highfreq_power_30_45` — filling each epoch from the first finite source available, while also storing the chosen source in `embodied_arousal_proxy_source`. The manuscript therefore treats this slot as an empirical fallback family rather than as a direct embodiment variable. This improves coverage but weakens strict inter-dataset identity for `e_m`, so cross-dataset comparisons involving that slot should be interpreted with added caution and with the recorded source provenance in view. For fMRI, regional stratified construction is present in the dataset file but explicitly disabled. For EEG, the dataset overlay enables regional stratified MNPS and associated regional block-Jacobian summaries.
-]
+== Output groups retain support and provenance
 
-#par(first-line-indent: 0pt)[
-  When subcoordinate support is incomplete, the implementation renormalizes over the weights that remain present and records per-axis coverage. This yields a degraded support class of `mnps_3d` estimates rather than a geometry that is automatically identical to the full-support case. Accordingly, scale-sensitive geometric summaries derived from full-support and degraded-support trajectories should be treated as support-conditioned and, where necessary, adjusted downstream using the exported coverage and provenance rather than assumed to be directly interchangeable.
-]
+In a combined HDF5 file, the v3.4 payload is separate from other measurement groups. The core arrays include raw features, transformed feature values, raw coordinate inputs, anchored coordinates, ordered names, window start and end times, per-coordinate validity, and a *complete-nine-coordinate mask*. Per-channel candidate values are preserved when supported. Support metadata records the ordered labels and *channel-set hash*, channel count, reference and reference-set identity, source surface, code implementation hashes, and QC. Current writes also record the realized PSD method ID and fallback reason per window under `/measurements/v3_4/support/`; these fields were absent from the frozen cohort exports audited here. Anchor selection, compatibility mode, hashes, transfer reason, qualification, and failure status are separately recorded.
 
-= Jacobians, Block Jacobians, and Anisotropy
-The current 3.0 release line extends the dynamical output family beyond a single primary Jacobian. This is directly aligned with the idea that first-order position in manifold space and second-order transformation structure should be reported separately rather than collapsed into one scalar summary [@langell2025_mnj].
+Finite values do not imply successful QC or scientific qualification. If an anchor cannot be applied, raw measurements and QC remain available while the anchored values are marked invalid with a reason. Partial coordinates are retained. The complete-nine-coordinate mask answers whether all nine components are valid for that window; it does not establish comparability with a second recording.
 
-When enabled, the current implementation exports:
+The summarize pipeline can emit the default-on 9D v3.4 local Jacobian at `/measurements/v3_4/jacobian`; this does not replace the older `/jacobian` or `/jacobian_9D` groups. A separate opt-in dynamical-family export writes to `/measurements/v3_4/dynamics`. Both are independently versioned from the flat coordinate arrays. Other Jacobian paths retain independent switches, so disabling the v3.4 Jacobian candidate alone does not suppress every Jacobian path. Supplementary Methods S1 and Changelog S6 describe the output identities and the bounded ds004511 test.
 
-- primary 3D Jacobians on `mnps_3d`,
-- stratified Jacobians on `coords_9d`,
-- regional Jacobians for each network or EEG channel group,
-- block-Jacobian summaries for stratified and regional outputs,
-- embedded tabular exports of those summaries inside HDF5.
+== Evidence supports implementation, not biological qualification
 
-Anisotropy is now treated as a first-class quality and geometry descriptor. It appears in regional summaries and in block-Jacobian summaries, alongside Frobenius norms, trace-like quantities, and symmetric or rotational cross-block metrics where applicable. The practical effect is that the current release line provides a more discriminating description of local geometry than a pure trace-based summary.
+The ds005385 reference work completed feature extraction across the selected cohort, fitted both registered anchors, and produced a descriptive HDF5 statistics inventory. This establishes that the reference artifacts and their recorded cohort summaries exist. It does not establish raw-file byte identity: the cohort matching used metadata and unique manifest basenames, and raw EDF content hashes were not computed. Artifact-level EEG quality was also not established by this metadata-only reference selection.
 
-== Jacobian Validity Domain
-Jacobian export is conditional on support and numerical validity rather than guaranteed by name alone. The active implementation enforces or records at least the following constraints:
+The ds005385 reference-cohort work is complemented by a full-cohort, fixed-anchor repeatability assessment in OpenNeuro ds004148, a separate dataset whose 60 selected participants were not used to fit the reference. The selection fixed all session 1–3 resting EC/EO recordings from metadata before coordinate inspection. Session-1 HDF5/QC outputs were reused; sessions 2–3 were re-extracted. All 360 recordings received the same frozen ds005385 EC anchor, with no refitting, and QC matched 26,640 windows. The prespecified support floor was met by 2,858/3,240 participant-session-condition-coordinate summaries; complete nine-coordinate support passed in 306/360 participant-session-condition summaries. Across 54 eligible EC/EO coordinate-level session comparisons, ICC(A,1) ranged from 0.041 to 0.954 (43–52 participants per row). Across 27 EO−EC comparisons using the same anchor, it ranged from 0.249 to 0.864 (36–42 participants per row). Alpha-centroid level ICC point estimates ranged from 0.762 to 0.954; alpha-envelope-CV EO−EC estimates ranged from 0.793 to 0.864. All anchored coordinates, including `alpha_centroid_hz`, are dimensionless reference-relative values. These are descriptive, coordinate- and session-dependent estimates, not qualification thresholds or evidence that one coordinate is superior. The support/QC rule is an operational eligibility screen and does not prove artifact absence. The assessment establishes technical fixed-anchor application and dataset-specific repeatability behavior; it does not establish biological stability, cross-dataset equivalence, or clinical or predictive utility.
 
-- minimum coverage in seconds and epochs before a segment is processed,
-- minimum direct-axis support after projection renormalization (`min_axis_coverage`, default `0.3`),
-- finite-valued `mnps_3d` rows before kNN/Jacobian estimation,
-- finite-valued `coords_9d` rows before stratified Jacobian estimation,
-- conditioning and anisotropy diagnostics in downstream summaries, including Jacobian condition-number summaries and regional `strat9_condition_number`,
-- withholding or skipping of regional/block Jacobians when the modality/configuration is not empirically supportable, most notably regional 9D block Jacobians for fMRI, which are disabled by default because per-network trajectories are typically rank-deficient at available window counts.
+== Separate MEG and LFP branches demonstrate bounded modality-specific computation
 
-Accordingly, Jacobian-derived exports should be read as valid only within these support constraints. The contract serializes the resulting diagnostics and provenance; it does not imply that every requested Jacobian is estimable for every dataset, modality, or regional decomposition.
+The LFP pilot demonstrates contact-level 3–5 Hz centroid, envelope-CV, and bandpower computation in one DANDI 000458 Probe F/MOs session. Its observed chart keeps two depth groups as separate, session-locally calibrated 3D trajectories. The finite-lag analysis produced no supported real-data local estimates or paired held-out predictions because the eligible transition rows came from too few distinct source batches under the frozen project heuristic. A metadata-only audit of DANDI 000232 / EF0147 was deferred under the same protocol; this does not establish that the data are unsuitable for other LFP measurements. These are LFP-specific results, not coordinates in the EEG 9D definition or evidence of cross-modal transfer. Full methods and support limits are in Supplementary Methods S1.8.1.
 
-== Bounded CHART and Analysis-Owned M3 Validation
-The v3.0 development cycle includes two bounded validation packages whose
-claim ceilings are deliberately separate from the ingest contract. CHART
-checks the existing candidate under coordinate transformations. Orthogonal and
-isotropic transformations preserve the expected vector and covariance
-identities within the frozen tolerance (maximum discrepancy about
-`2.9 × 10^-14`). Anisotropic scaling changes Euclidean neighbourhoods and
-therefore changes local estimates, as expected; it is a sensitivity result,
-not a failed coordinate identity. A separate 3D-to-2D construction shows that
-projection can lose information when a hidden coordinate changes the expected
-future. The scalar CHART alignment is an unregularized diagnostic and is not
-the production C1 `A_bD` object.
+The MEG pilot used one OpenNeuro ds003645 FacePerception run and kept its magnetometer (MAG) and gradiometer (GRAD) realizations separate. Across 121 windows, raw coordinate values and support masks for three variants matched the cached feature table to an absolute tolerance of `1e-12`; no EEG anchor or recording-local normalization was applied. This smoke demonstrates derived-export integration for that recording. The MEG variants have their own schema and sensor identity; overlapping component labels do not make their values interchangeable with EEG. Mixed source units and the separate sensor realizations do not establish a qualified metric, MAG/GRAD comparability, cross-modal equivalence, repeatability, or predictive validity. Full results are in Supplementary Methods S1.8.2.
 
-The analysis-owned M3 extension evaluates the unchanged local mean and local
-affine candidates on six synthetic systems: full linear and nonlinear 3D and
-9D systems, a linear latent 9D system observed in 3D, and a noisy linear 3D
-system. Twelve independent training fits are scored at the same 144 held-out
-query sources in each case, with fixed evaluation neighbourhoods and raw
-observed increment covariance. The integrated 117-test suite, including 18
-dedicated extension tests, and independent artifact checks support the
-implementation evidence. Local mean has lower
-velocity error in five cases, while local linear is better in the noisy case;
-the resulting bias--variance trade-off does not select a universal estimator.
-The simulated 9D coordinates are not the canonical neural features.
+= Discussion
 
-These M3 results are synthetic discrete conditional-velocity evidence. They do
-not establish empirical drift, an Itô drift, Markov sufficiency, production C1
-serialization, biological validity, or a universal state representation. The
-analytic one-lag memory witness is approximately `6.58 × 10^-9` for the
-partial-observation case and `0.0441` in the noisy case; the latter shows that
-recovering a current-observation target does not certify an autonomous observed
-state. This witness is a model-derived diagnostic, not a qualification gate.
+== A measurement contract is useful only with its realization
 
-== Chart Stability as Future Validation Target
-The present manuscript defines the current release contract, not full embedding-family invariance. In particular, it fixes one NDT-aligned chart family, one set of subcoordinate definitions per release, and one auditable 9D->3D projection contract. Future validation should therefore assess chart stability under reasonable feature substitutions, weighting perturbations, and projection changes, so that release stability can be distinguished from calibration dependence.
+The central result is an explicit accounting surface: a fixed coordinate order is paired with declared feature transforms, two stages of robust references, per-window support, and recording-level sensor and implementation identity. This structure permits a later analysis to select a subset, stratify by realization, or exclude unsupported windows with the relevant evidence in hand. It does not determine which measurements should answer a biological question.
 
-= Output Contract and Self-Describing Artifacts
-The export layer has also changed substantially.
+The two reference presets illustrate why a label such as eyes-open or eyes-closed is not enough to make values comparable. Different condition-specific centers and scales create separate frames. The shared participant cohort also means the reference values contain information from target recordings. A study that requires a common frame or held-out normalization must predeclare that reference and apply it consistently.
 
-== Run Directory and Naming
-Runs are now written into directories named:
+The broader system view also does not imply a shared multimodal chart. The EEG, MEG, and LFP branches preserve distinct sensors, units, references, and support rules. The MEG and LFP examples establish selected computation and export behavior only; no cross-modal coordinate comparison was performed or qualified.
 
-`neuralmanifolddynamics_<dataset>_<timestamp>`
+== Relationship to NDT and downstream dynamical inference
 
-This replaces the older `mnps_*` naming convention and makes the run purpose clearer.
+NMD is intended to make downstream dynamical questions empirically inspectable, rather than to supply a new feature table alone. NDT treats a measured state chart as an observation interface to hypotheses about local transitions, fluctuation spread, and context-dependent future laws. MNPS 3.4 contributes a candidate interface with explicit temporal support and realization metadata. It does not make NDT true, and NDT does not depend on this particular chart; other qualified measurement representations could be used.
 
-== HDF5 Naming
-The HDF5 contract is more explicit than before. Important paths now include:
+Local dynamical analyses require a fitted transition or flow field in a declared chart. A spatial Jacobian $J = partial f / partial x$ describes the local derivative of that fitted chart-level field. When estimated in an MNPS chart it is termed a Meta-Noetic Jacobian (MNJ). It is distinct from temporal acceleration $d^2 x / (d t)^2$ and from the time derivative $dot(J)$. The optional v3.4 Jacobian is a local estimate on the declared nine-coordinate layer. The separate v3.4 dynamics export estimates local drift and increment covariance on raw or actually anchored layers, and offers a lag-1 one-step map only for an applied anchored layer. These estimators do not turn the flat coordinate definition into a validated transition model. In the bounded ds004511 Rest smoke, raw drift and diffusion were computable, but no anchor was applied and no one-step result was emitted. The smoke establishes export integration for one recording, not local identifiability, predictive validity, comparability, or scientific qualification. Temporal resolution, observation noise, neighborhood support, estimator fidelity, coordinate dependence, and held-out validation remain separate requirements; details and counts are in Supplementary Methods S1.
 
-- `mnps_3d`
-- `mnps_3d_dot`
-- `coords_9d/values`
-- `coords_9d/names`
-- `coords_3d_subject_anchored/values`
-- `coords_3d_cohort_anchored/values`
-- `coords_9d_subject_anchored/values`
-- `coords_9d_cohort_anchored/values`
-- `feature_anchors/spec`
-- `feature_anchors/per_feature/*`
-- `anchor_state/values`
-- `anchor_state_dot/values`
-- `anchor_quality/values`
-- `anchor_coupling/*`
-- `jacobian/J_hat`
-- `window_start` and `window_end`
-- `blocks/*`
-- `block_windows/*`
-- `block_windows/coupl_*` (inter-network Jacobian coupling columns, v2.4)
-- `extensions/time_reference/run/*`
-- `extensions/time_reference/windows/*`
-- `labels/stage`
-- `regional_mnps/<network>/mnps`
-- `regional_mnps/<network>/jacobian`
-- `dynamical_families/{diffusion,destination,resilience}/v1` with support,
-  validity, grain, provenance, and claim metadata when explicitly
-  enabled
-- `extensions/tabular_exports/*`
+The longer-term research sequence is therefore conditional on evidence at each layer:
 
-The previous ambiguity of short names such as `x` has been removed. In the 2.4 release line, the main compatibility wrinkle is that some embedded sub-schema tags still retain their 2.1 naming (`mndm.coordinate_layer.v2.1`, `mndm.feature_anchors.v2.1`) because those coordinate-layer contracts remain valid while newer additive layers are introduced around them.
+#figure(
+  clean-table(
+    columns: (1.05fr, 2.2fr, 1.45fr),
+    header: ([*Layer*], [*Question*], [*Status in this paper*]),
+    inset: 4pt,
+    [Measurement], [Can the declared coordinates be computed and reproduced with visible support and provenance?], [Characterized for the selected exports.],
+    [Representation], [Are summaries stable and informative under declared temporal, sensor, and reference choices?], [Partly described; robustness remains open.],
+    [Local dynamics], [Can a transition model predict held-out evolution, and can a chart-level MNJ be estimated reliably?], [A 9D local Jacobian and raw drift were emitted in one smoke; no anchored one-step or held-out evaluation.],
+    [Higher-order dynamics], [Can changes in local operators or stochastic spread be estimated and validated?], [Raw local increment covariance was computed in one smoke; validation remains open.],
+    [NDT hypotheses], [Do dynamical summaries add future information beyond current state (C2), or vary across contexts at matched state (C3)?], [Not tested.],
+  ),
+  kind: table,
+  caption: [Evidence layers from measurement to downstream tests; completion of one layer does not establish the next.],
+)
 
-== Self-Description Through Manifests
-Each run writes `run_manifest.json`, which now includes a field guide describing the meaning of key HDF5 paths. Capability probes in the same manifest can also report extension presence (including `time_reference`) so that downstream tooling can branch on available temporal metadata without schema guessing. In the 2.1 release line, the same manifest also exposed whether subject-anchored and cohort-anchored coordinate layers and embedded feature anchors are present, so a downstream analysis does not need to infer the intended primary coordinate contract from naming folklore or source-code inspection. In the current 3.0 release line, the manifest similarly reports embodied-anchor, event/stage provenance, geometry-contract, block-native, expanded source-lineage, and gated dynamical-family capability surfaces, keeping these additions auditable without collapsing them into the canonical coordinate export.
+The contract also differs in scope from neighboring EEG infrastructure. EEG-BIDS standardizes data organization and metadata, and MNE-Python supplies widely used preprocessing and feature-estimation tools; MNPS 3.4 builds on such tools rather than replacing them. Its specific contribution is the integrated contract for frozen participant-balanced feature and coordinate references, per-coordinate support, sensor/reference realization identity, and a separate qualification state. An ordinary feature table can hold the same numerical features, but those additional distinctions must be defined and retained explicitly for downstream reuse @Appelhoff2019MNEBIDS @gramfort2013_mne. In the frozen cohort exports examined here, implementation hashes are present but the runtime choice between multitaper PSD and its Welch fallback was not serialized; the current writer now records that choice for future exports, while the existing values cannot be retrospectively assigned to a backend from these HDF5 files.
 
-Selected summary tables that were previously emitted only as CSV files are now also embedded into HDF5 as columnar exports under `extensions/tabular_exports`. This makes the HDF5 file a more self-contained artifact.
+#figure(
+  clean-table(
+    columns: (1.15fr, 2.65fr),
+    header: ([*Adjacent infrastructure*], [*What the MNPS 3.4 export makes explicit*]),
+    inset: 4pt,
+    [EEG-BIDS], [MNPS does not replace standardized source organization; it records the measurement realization and output support for an analysis built from selected recordings.],
+    [MNE-Python and related estimators], [MNPS declares transforms, frozen references, support, and code identity. A current cohort cache lacks the runtime PSD backend field, so its exact PSD branch is not retrospectively known.],
+    [Feature table], [MNPS preserves raw and transformed values alongside masks, sensor/reference identity, failure reasons, and qualification state.],
+    [Dynamical analysis], [The flat 9D definition does not include these estimators. Optional v3.4 Jacobian, drift, diffusion, and anchored lag-1 one-step groups are separate outputs; the bounded smoke does not establish predictive validity or an NDT claim.],
+  ),
+  kind: table,
+  caption: [MNPS 3.4 is an additive measurement contract that complements data standards and analysis software.],
+)
 
-== Reference Run Snapshot
-To make the contract more concrete, the documentation bundle accompanying this manuscript includes a reference EEG metadata snapshot for `ds004511` under `metadata/`. In that example run, `run_manifest.json` reports 132 subject-level HDF5 outputs, together with 132 `summary.json`, 132 `qc_summary.json`, and 132 `qc_reliability.json` files across 45 subjects and 3 tasks. The same manifest records that all probed HDF5 files contained `mnps_3d`, `coords_9d`, 3D and 9D Jacobian groups, regional outputs, and both raw and strict-robust-z feature exports.
+== A fixed feature representation does not establish a neural manifold
 
-The accompanying `features_snapshot.json` shows the feature-layer side of the contract for the same run, including 55,772 rows and explicit columns for grouped EEG features, entropy provenance fields, and `embodied_arousal_proxy_source`. Per-file QC artifact JSONs further illustrate how preprocessing safeguards are serialized. For example, the `sub-S210317 ... Rest` and `... CC` records both document 3000 Hz -> 250 Hz resampling by integer-ratio policy, identified bad channels, and an EEG CSD path that was enabled but not applied because digitization was unavailable; the chosen failure reason is retained in provenance rather than being hidden. These snapshots are illustrative rather than inferential, but they show that the measurement contract described in this manuscript is realized as concrete, inspectable artifacts.
+The EEG-specific MNPS 3.4 contract emits nine ordered operational measurement components for downstream analyses of windows and trajectories. The use of *coordinate* here denotes an ordered component in the versioned output, not an identified latent dimension or a validated manifold chart. The flat coordinate payload alone does not establish a biologically meaningful distance, identify latent state, or validate a dynamical system. Optional local Jacobian and dynamical-family estimates remain chart-dependent measurements with their own support and validation requirements. The versioned output contract and relationship to earlier software generations are summarized in Supplementary Changelog S6.
 
-A refreshed sleep-dataset run for `ds005555` further illustrates the newer reviewer-facing QA exports. In the `sub-1_Sleep_acq-psg` example, `qc_summary.json` reports 160 retained epochs (640 s) together with a `baseline_comparisons` block spanning raw entropy, smoothed entropy, variance/bandpower summaries, and a simple sliding-window FC baseline via `eeg_dfc_variance`. In the same record, `eeg_permutation_entropy` aligns most strongly with the exported `e` axis (`r = 0.924`), while the null/sanity export shows that time-shuffling collapses the mean axis autocorrelation length from 24-32 s in the original trajectory to 4 s across all three axes. White-noise surrogates similarly inflate total path length by about `2.82x` relative to the observed trajectory. These `ds005555` outputs are still QA artifacts rather than a full benchmark figure panel, but they demonstrate that simple baseline contrasts and null perturbations can now be serialized in the same auditable output surface as the main MNPS summaries.
+== Limits and next validation
 
-A separate event-locked sleep-spindle workflow was developed as a derived layer on top of the same `ds005555` measurement outputs. In that workflow, YASA-derived N2 spindle annotations [@vallat2021_yasa] are aligned to short-window MNPS trajectories, matched to same-subject N2 control windows, and exported as sidecar tables for downstream statistical analysis. The key contract point is architectural rather than biological: spindle annotations, baseline-corrected bins, and event-window mappings are treated as derived event-layer artifacts with their own detector and QC provenance, while the canonical subject HDF5 files continue to store the measurement surface (`mnps_3d`, `coords_9d`, Jacobians, labels, features, and manifests). This prevents a special-purpose sleep analysis from becoming implicit primary output, but still makes event-locked analyses reproducible and joinable to the canonical HDF5 trajectory through subject IDs and window indices. Appendix A.6 gives the recommended layout.
+The ds005385 reference-cohort selection did not establish artifact QC, and raw EDF hashes and header calibration were not verified for that audit. In ds004148, predeclared QC and support rules determine which participant summaries enter repeatability estimates; passing those rules does not establish artifact-free signals. Repeatability is uneven across coordinates and session pairs, and the analysis does not establish biological stability, measurement equivalence across datasets, or qualification for a downstream use. Frozen ds005385 derived exports retain per-channel candidates for centroid and envelope summaries but not raw waveforms or per-channel values for the first seven common features; the source EDFs were unavailable in that audit, so its spatial-aggregation sensitivity cannot be reconstructed. Further work should target a declared measurement question and source-data availability rather than tune coordinates to a preferred contrast.
 
-= Relation to Existing Frameworks
-NeuralManifoldDynamics sits adjacent to several established software ecosystems rather than replacing them. For standardized preprocessing and data organization, the closest precedents are BIDS-oriented pipelines such as `fMRIPrep`, `MNE-BIDS`, and the `MNE-BIDS-Pipeline`, together with feature- and ROI-oriented toolkits such as `mne-features` and `Nilearn` [@Esteban2019FMRIPrep; @Appelhoff2019MNEBIDS; @MNEBIDSPipelineDocs; @MNEFeaturesPackage; @Abraham2014Nilearn]. These systems remain stronger choices when the primary goal is modality-native preprocessing maturity, broad BIDS interoperability, or extraction of clean modality-specific time series. NeuralManifoldDynamics instead occupies a narrower layer: it standardizes feature-level inputs, fixes a versioned proxy-chart contract, serializes auditable outputs, and records provenance and capability metadata for downstream use.
+Future validation should assess measurement-specific reliability, sensitivity to declared preprocessing choices, sensor/reference compatibility, and missingness under a predeclared use case. EEG reliability can differ by estimator and summary property; alpha-asymmetry results across electrode pairs and EEG systems do not establish reliability for a global centroid or envelope summary @metzen2022_alpha_asymmetry. Prior microstate work likewise illustrates that reliability must be measured rather than assumed @kleinert2024_microstate. Alpha-frequency studies report condition-dependent estimator stability, but their peak estimators are distinct from the v3.4 band centroid @han2026_alpha. Preprocessing standardization efforts provide adjacent infrastructure rather than biological validation of this contract @boettcher2026_clean_eeg. Such work should not tune estimators to create a preferred condition contrast. Until that evidence exists, v3.4 should be treated as an experimental measurement definition with transparent technical references, not as a qualified neural state or a clinical or predictive instrument.
 
-The manuscript should also be read against data-adaptive state-space and brain-state software. Methods such as `CEBRA` optimize latent embeddings from data [@Schneider2023CEBRA], while packages such as `Pycrostates` and `NeuroCAPs` operationalize states through discrete microstate segmentation or co-activation pattern clustering [@Ferat2022Pycrostates; @Smith2025NeuroCAPs]. More general neurodynamics and dynamic-connectivity toolboxes, including HMM- and DyNeMo-based workflows in `OSL-Dynamics`, `dyconnmap`, and LEiDA-style state analyses, emphasize generative latent-state inference, time-varying connectivity, recurrent connectivity states, or broader dynamic integration analyses of neural activity [@Gohil2024OSLDynamics; @Marimpis2021Dyconnmap; @Cabral2017LEiDA; @shine2016]. NeuralManifoldDynamics should not be read as claiming empirical superiority over these families. Rather, it makes a different trade-off: less data-adaptive flexibility in exchange for release-bound coordinates, explicit serialization paths, reproducible defaults, and more direct cross-run auditability.
+= Materials and Methods
 
-Accordingly, the main claim of NeuralManifoldDynamics is not that every ingredient is novel in isolation, nor that the repository currently establishes a new performance baseline against clustering-based, HMM-family, or latent-embedding methods. The narrower and more defensible claim is that the repository combines multimodal ingest, a fixed 3D/9D proxy-chart family, optional first-layer Jacobian exports, self-describing HDF5 outputs, and manifest-level provenance into one auditable measurement contract. In publication terms, this places the work closer to a methods-oriented software/resource contribution than to a full comparative benchmark paper.
+== Software and definition identity
 
-= Relationship to the Older MNPS 1.2 Generation
-The appropriate way to think about versions 2.3–3.0.0 is not as a cosmetic rename, but as a stricter and broader measurement model. The version-by-version list of additions is given above under Key Methodological Advances and in full in S6 Changelog; this section states only the two structural differences that separate the 2.x and 3.0 lines from MNPS 1.2, rather than repeating that list.
+The repository package metadata is 3.1.0. The core EEG coordinate definition and its reference-cohort evidence are frozen for further evaluation; separate optional Jacobian and dynamical-family exports are described in Supplementary Methods S1. A distinct experimental MEG surface and the LFP contact-feature/dynamics branch are modality-specific engineering paths summarized in S1.8.1–S1.8.2; neither is part of the EEG nine-coordinate schema or evidence of cross-modal coordinate equivalence. MNPS 3.4 is a measurement definition under the package, not a package release. Its flat EEG coordinate schema is `mndm.mnps_v3_4.experimental_flat_9d.v1` with definition version 3.4. The common EEG and ds005385 configurations, registered anchor JSON files, and source implementation identify that coordinate realization. No public release tag or Zenodo record for this measurement definition is asserted here.
 
-First, MNPS 1.2 treated feature export and coordinate export as effectively one contract, with a single weighted trajectory and limited summary exports. The 2.x line formalizes the distinction between raw/standardized feature surfaces, the 3D and 9D coordinate charts, and explicit subject- or cohort-anchored coordinate layers, so that within-subject geometry and between-group comparability are no longer forced through one implicit normalization.
+== Dataset selection and preprocessing
 
-Second, MNPS 1.2 had no explicit coverage, geometry-validity, or provenance layer: estimator support was a pass/fail gate rather than an audited quantity. The 2.x line makes coverage, geometry validity, Jacobian support, and reproducibility hashes part of the exported contract itself, and extends the same self-describing philosophy to regional EEG/fMRI outputs, event-locked and block-native derived layers, and the additive embodied-anchoring surface. The theoretical object remains a manifold-based description of neural dynamics, but the implementation is now better aligned with estimator hygiene, provenance, and reproducible export semantics.
+The reference-cohort source was OpenNeuro ds005385 version 1.0.3 @getzmann2024_ds005385. Its dataset README warns that physical minimum/maximum specifications in some EDF headers may be invalid and should be ignored @openneuro_ds005385_readme. The source EDFs were unavailable in the derived-export directory, so header calibration and raw-signal identity were not independently verified. Metadata and required sidecars selected session-1 pre-task recordings in both resting conditions, with one recording per condition for 608 participants. The 64-channel EEG was average referenced without common-montage interpolation. Core preprocessing used the versioned filters, resampling to 250 Hz, and 8 s windows advanced by 4 s; exported start/end times remain authoritative, and windows do not cross declared discontinuities. Full selection and preprocessing details are in Supplementary Methods S1.2.
 
-= Methods-Oriented Discussion
-The most important conceptual shift in NeuralManifoldDynamics 3.0.0 is methodological rather than rhetorical. The ingest layer is no longer treated as a lightweight staging area before “real” analysis begins. Instead, it is treated as the place where the measurement contract is fixed, while estimator experiments and scientific contrasts remain analysis-owned.
+The session-repeatability source was OpenNeuro ds004148 version 1.0.1 @openneuro_ds004148_v101, described as a test-retest resting and cognitive-state EEG dataset. The metadata-only selection fixed 60 participants and all session 1–3 resting EC/EO pairs before inspecting features or coordinates. The registered ds005385 EC anchor was applied unchanged to every recording; no ds004148 data were used to refit it. Session-1 HDF5/QC outputs were reused, and sessions 2–3 were processed with the versioned EEG configuration. Eligibility required at least 30 QC-eligible windows and 120 unique seconds per participant, session, condition, and coordinate. Comparisons additionally required compatible declared sensor and signal-processing realizations. These criteria define the analyzed support; they do not certify artifact absence.
 
-This has several consequences. First, naming matters, because ambiguous path names lead to ambiguous downstream assumptions. Second, coverage matters, because local linear estimators fail silently when support is poor. Third, regional EEG cannot be justified merely by averaging channels; it must be coupled to a defensible preprocessing pathway. Fourth, regional fMRI and regional EEG should share a common export logic where possible, while still preserving their modality-specific limits. Fifth, normalization and anchoring policy must be visible in the exported contract rather than hidden inside one local scaling routine when those choices materially affect between-group interpretation.
+Separate engineering checks used one ds004511 EEG recording for the optional raw dynamics smoke, one ds003645 FacePerception MEG run for derived-export integration, and one DANDI 000458 LFP session for contact-level features and support-limited dynamics. The DANDI 000232 / EF0147 assessment used metadata only. These pilots were not used to fit the EEG anchors or estimate EEG repeatability, and their modality-specific outputs are not pooled or compared as a shared chart. Supplementary Methods S1.8 describes each pilot.
 
-Under this design, NeuralManifoldDynamics 3.0.0 is best understood as an auditable, NDT-aligned measurement contract with gated family surfaces. Downstream analysis may compare groups, estimate clinical effects, or test theoretical predictions, but those later steps should inherit a stable coordinate system rather than redefine it. The same principle now extends to embodied covariates and dynamical families: body-state and family surfaces should be serialized explicitly beside the canonical chart, not smuggled into it as unnamed preprocessing side effects.
+The 50 Hz notch and 1–45 Hz EEG bandpass are separate MNE operations; no equivalence between their effects is assumed. The alpha-envelope candidate adds a continuous-segment 8–12 Hz zero-phase filter and Hilbert transform with a 10 s edge guard. These offline operations and their candidate-specific support are detailed in S1.2–S1.3; the guard does not remove other computable coordinates.
 
-= Limitations
-The current manuscript has several important limitations that should be read as part of the contract definition rather than as post hoc caveats.
+== Feature estimators and coordinate assembly
 
-- The chart family is release-bound and auditable, but not yet validated as invariant under feature substitutions, weighting perturbations, or alternative projection families.
-- The present paper does not provide a comparative benchmark against HMM-family models, CAP methods, LEiDA-style workflows, microstate methods, or learned latent embeddings such as `CEBRA`; those methods may be stronger choices when adaptive state discovery or predictive performance is the primary aim.
-- The reference configurations are intentionally asymmetric across modalities: higher-order regional stratified and block-Jacobian exports are enabled for the EEG reference path but disabled for the main fMRI reference path.
-- The EEG `e_m` slot uses the nine-level `embodied_arousal_proxy` fallback family described in Axis Construction when preferred inputs are unavailable. This preserves coverage and provenance, but it weakens strict inter-dataset comparability for that subcoordinate.
-- Jacobian-derived outputs remain support- and estimator-limited. In particular, higher-dimensional regional fMRI Jacobians are withheld by default where available window counts are typically insufficient for stable estimation.
-- Reviewer-oriented `baseline_comparisons` and `null_sanity_tests` are now emitted in subject-level QA JSONs for reference runs, but these should be read as artifact-level sanity checks rather than as a completed comparative benchmark against external methods.
-- The embodied anchoring path remains intentionally additive. `anchor_state` and optional `anchor_coupling` should be read as aligned measurement surfaces and exploratory interaction summaries, not as proof that the canonical MNPS axes have been rederived from physiology.
-- Current embodied-anchor examples are strongest for datasets with genuine multimodal support such as ECG/PPG/pupil traces; coverage and interpretability will remain dataset-dependent. The ds003838 HRV findings (vagal_index listen-peak, Cohen's d = 1.995, complete-case N = 62 from the corrected statistics run) are internally validated on corrected ECG data but have not been cross-replicated on an independent dataset.
-- Pupillometry export is implemented and available, but has not been validated at dataset scale in the current release.
-- HRV superwindow contamination is dataset-dependent: in `ds006848` verbal working-memory, 87.7% of WM-phase 60 s windows overlap retrieval events; WM-phase HRV claims are gated until a shorter trial-aligned window design is implemented for that dataset.
-- The MEG ingest path is labeled exploratory: validated on a 5-subject pilot from `ds003645` (readiness score 0.7879), not yet confirmed at full 18-subject scale. Physical MEG power values (~10⁻²⁵ W) produce degenerate robust-z features in `features_robust_z`; downstream MEG spectral analyses must use `features_projection_z`. Cross-modal EEG–MEG event-response alignment is present but moderate, with a bimodal subject-level structure whose origin is not yet resolved.
-- The Neuropixels/ecephys ingest path is labeled transport-and-descriptive rather than exploratory-with-readiness: the Units path is smoke-validated on one rodent session (`000006`, 1,752 windows), and the LFP path on rodent multi-probe QC and state/reference sensitivity checks (`000458`), but no readiness gate analogous to the MEG pilot has been computed, the ephys-to-9D subcoordinate map is a starter mapping rather than validated manifold evidence, cross-run coordinate orientation for LFP is not established, and the reference datasets are rodent rather than human, so no cross-species chart homology is claimed.
-- The present manuscript now includes a version-timeline figure and a 9D-to-3D projection schematic, but still does not include a dedicated figure panel of reference-run trajectories, QC distributions, or subject-level output examples; these require access to exported run artifacts beyond the current documentation bundle.
+The first seven measurements use the common EEG path, which takes a pointwise median across available average-referenced channels before window-level feature calculation @gramfort2013_mne. This reference- and topography-dependent reduction is not equivalent to computing each channel's feature before aggregation. Exact estimator parameters are in S1.3. The frozen cohort exports do not record whether each PSD used the MNE multitaper method or its SciPy Welch fallback, so those values cannot be retrospectively assigned to a backend. The alpha centroid is a band summary, not a peak detector; alpha-envelope CV measures envelope variability, not bursts. Spatial log-variance dispersion is auxiliary and is not part of the nine coordinates.
 
-= Conclusions
-NeuralManifoldDynamics 3.0.0 is the current implementation name for the manifold measurement system in this repository. It builds on the 2.3--2.5 release line and supersedes the older MNPS 1.2-style ingest contract by making the coordinate hierarchy, anchoring policy, robustness logic, regionalization strategy, provenance surface, and output semantics substantially more explicit. Its gated dynamical-family namespace does not automatically qualify an empirical drift or biological interpretation.
+Table 1 lists the nine source definitions. Log-power uses μV² and a 1 μV² reference; non-positive log inputs or ratio denominators are unsupported, with no floor substituted. Hjorth mobility is a sample-difference ratio without division by Δt, not a physical derivative. Gamma power from 30–45 Hz is computable under the declared estimator but is not necessarily a clean neural-gamma measure without independent muscle-artifact assessment. Feature transforms, candidate support rules, and units are detailed in S1.3.
 
-The present release is best understood as a methods-oriented software and data resource with nine defining properties:
+== Robust reference fitting
 
-1. a canonical 3D manifold trajectory, `mnps_3d`;
-2. a stratified 9D coordinate chart, `coords_9d`;
-3. explicit subject-anchored and cohort-anchored coordinate layers with embedded feature-anchor provenance;
-4. an additive embodied-anchor layer (`anchor_state`, `anchor_quality`, optional `anchor_coupling`) aligned to the same time grid without redefining `mnps_3d`, with concrete implementations for ECG-based HRV v0.1 (`vagal_index`, `sympathetic_index`, `anchor_index`), PPG, pupillometry, and the optional v2.5.0 *phase anchor* extractor (Mål B / C). HRV was validated at export scale on ds003838 (130 subjects), with the listen–mem13 `vagal_index` contrast (`d = 1.995`) estimated on the complete-case statistics sample `N = 62`;
-5. regional trajectory and Jacobian outputs for both fMRI and EEG channel groups;
-6. block-native v2 window sidecars with HRV feature columns and inter-network Jacobian coupling (`coupl_*`);
-7. MEG ingest and shadow mapping through the existing 9D contract, with explicit row-source provenance (`row_source/has_meg`) and transform-aware `features_projection_z` surface; validated on a 5-subject ds003645 pilot (readiness 0.7879, exploratory status);
-8. a Neuropixels/ecephys ingest extension (`neuropixel_ingest`) covering NWB Units-to-rate features (0.05 s spike-rate binning into `ephys_*` columns through a dedicated ephys-to-9D subcoordinate map) and DANDI LFP `ElectricalSeries` channel selection routed through the EEG feature/9D contract; validated as transport-and-descriptive QC on rodent dandisets `000006` (Units) and `000458` (LFP), without a computed readiness score;
-9. self-describing exports designed for auditability and downstream reproducibility.
+Feature and coordinate anchors use participant-balanced weighted medians and 1.4826-scaled median absolute deviations on finite supported observations. The reference manifests record fit counts and status; insufficient or degenerate fits remain unsupported rather than imputed. The ds005385 eyes-closed and eyes-open anchors were fitted separately and applied to the same 608 participants in their respective condition, making each fit transductive. They define technical reference frames, not normative population parameters or one shared frame. Full weighting, fit, and identity details are in S1.4–S1.5.
 
-Its primary contribution is therefore not a claim that the current chart family is uniquely biologically identified or already benchmarked as the best available state-space representation. The contribution is that supported datasets can be processed into a stable, inspectable, versioned measurement object that downstream analyses can compare, filter, reinterpret, and test without having to reconstruct ingest assumptions from source code.
+== Validity, support, and output schema
 
-This makes the system better suited for public release, external inspection, downstream scientific reuse, and future comparative validation against simpler or more data-adaptive alternatives.
+The v3.4 group stores values, per-coordinate validity, complete-nine support, QC, and provenance separately at the window level. Failed anchor applications preserve raw measurements and QC while invalidating anchored values with a reason; unsupported values are not zero-filled. S1.6–S1.7 list the HDF5 paths and fields.
 
+== Cohort inventory
+
+The broad read-only cohort inventory enumerated numeric HDF5 paths, finite components in serialized JSON, support/QC counts, and recording identities. A separate v3.4-only audit reads the 1,216 selected combined HDF5 exports, checks coordinate order, core dataset shapes/dtypes, and support masks, summarizes raw computability, final validity, whole-vector completeness, anchor application, and QC by condition, and calculates available-window and matched-complete-nine participant medians. It reports Spearman correlation-matrix eigenvalue spectra, compares the two support policies, and calculates leave-one-coordinate-out effective-rank diagnostics. EO and EC remain separate. Positive affine anchor scaling does not change within-condition ranks. No inferential condition contrast is fitted. Historical output-path observations are described in Supplementary Changelog S6.
+
+The ds004148 repeatability analysis checks the frozen EC anchor identity and implementation metadata in all 360 HDF5 recordings, matches QC to all 26,640 exported windows, and summarizes participant-level coordinate medians separately by session and condition. For each of three session pairs, it estimates two-way absolute-agreement single-measure ICC, bias, median absolute difference, Bland–Altman limits, and Spearman rank correlation for each coordinate and for EO−EC contrasts. Only participants meeting the predefined support and realization-compatibility criteria in both sessions contribute to a row. The analysis reports coordinate-specific eligibility and excluded-subject reasons; it makes no inferential condition tests. Detailed method, tables, input/run manifests, scripts, anchor hashes, and output hashes are preserved in `mndm/docs/ds004148_session_repeatability_fullcohort/`.
+
+Matching between the metadata selection and HDF5 recording records used unique manifest basenames when relative source paths were not preserved. This is not raw-signal content verification. Raw EDF hashes and artifact QC were not produced by the cohort selection.
+
+== Reproduction commands
+
+From an environment with this repository installed and the ds005385 data available at the configured path, feature extraction and summarization use the same version-specific configuration:
+
+#raw("python -m mndm.cli features --config mndm/config/v.3.4/config_ingest_ds005385_baseline_eo_ec.yml --dataset ds005385\npython -m mndm.cli summarize --config mndm/config/v.3.4/config_ingest_ds005385_baseline_eo_ec.yml --dataset ds005385\npython mndm/src/mndm/tools/mnps_v3_4_measurement_quality_audit.py --h5-root project/mnps2_audit/outputs/20261111_mnps_v3_4_ds005385_baseline_cohort/processed/ds005385/neuralmanifolddynamics_ds005385_20261112_004711 --out project/mnps2_audit/outputs/20261116_mnps_v3_4_measurement_quality_audit --figure-out project/articles/NeuralManifoldDynamics/figures/mnps_v3_4_dependency_heatmap.svg\npython mndm/docs/ds004148_session_repeatability_fullcohort/reproduction/scripts/analyze_ds004148_fullcohort_session_repeatability.py", block: true, lang: "powershell")
+
+The ds005385 feature extraction and anchor fitting were not rerun for this manuscript edit. The ds004148 full-cohort assessment reused session-1 HDF5/QC outputs and re-extracted sessions 2–3, then analyzed all sessions with the frozen EC anchor. The analysis command expects the frozen source data, HDF5 files, and QC manifests at the paths defined in the accompanying script; the run package records their hashes and exact configurations. The article reports the frozen analysis; it does not refit references or claim that eligibility implies artifact quality.
 
 = Acknowledgements
 
-
-Large language model assistants were used under human supervision for literature synthesis, drafting support, peer-review simulation, and editorial refinement. These tools are acknowledged as writing assistants rather than as authors or collaborators.
-
-= Contact
-
-Robin Langell — hello(at)noeticdiffusion.com
-
-= Licensing
-
-GNU GENERAL PUBLIC LICENSE v3. See LICENSE in the root folder.
-
-= Data and Code Availability
-
-Reference implementations and analysis pipelines are available at
-`https://github.com/NoeticDiffusion` 
-
-= Trademark Notice
-
-Certain terms used in this manuscript (including Noetic Diffusion, Noetic
-Diffusion Theory, Noetic Diffusion Mapping, Noetic Diffusion Health Index,
-and Noetic Atlas) are used as project names and are the subject of ongoing
-trademark applications. A concise description of the stewardship rationale,
-current registration status, and how this interacts with open scientific use is
-available at `https://noeticdiffusion.com/license.html`. These trademark aspects
-do not affect the scientific content, reproducibility, or licensing of the
-methods described here.
-
-= Appendix A: Running the Reference Implementation
-
-The current repository is available at:
-
-`https://github.com/NoeticDiffusion/NeuralManifoldDynamics`
-
-The commands below describe a practical way to run the released code from a
-source checkout on Windows PowerShell. The same logic applies on other
-platforms with shell-specific path adjustments.
-
-== A.1 Environment setup
-
-From the repository root:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-pip install -U pip
-pip install -r requirements.txt
-```
-
-When running directly from the monorepo source tree without editable package
-installation, the package roots must also be exposed through `PYTHONPATH`:
-
-```powershell
-$repo_root="C:/path/to/NeuralManifoldDynamics"
-$env:PYTHONPATH="$repo_root/mndm/src;$repo_root/core/src;$repo_root/openneuro_ingest/src;$repo_root/apollo_ingest/src;$repo_root/vitaldb_ingest/src"
-```
-
-`pyarrow` is recommended so feature tables can be written and read cleanly in
-parquet format, although the pipeline can fall back to CSV/JSON-oriented paths
-when necessary.
-
-== A.2 Typical execution pattern
-
-For datasets already present on disk, the main entry point is `mndm.cli`.
-The examples below use the two reference configurations discussed in the main text: `ds004511` for EEG [@ds004511:1.0.2] and `ds000228` for fMRI [@richardson2023_ds000228].
-
-A direct end-to-end EEG example is:
-
-```powershell
-python -m mndm.cli all --dataset ds004511 --config mndm/config/config_ingest_ds004511.yaml --n-jobs 12
-```
-
-A corresponding fMRI example is:
-
-```powershell
-python -m mndm.cli all --dataset ds000228 --config mndm/config/config_ingest_ds000228.yaml --n-jobs 12
-```
-
-This runs:
-
-1. file indexing and feature extraction
-2. MNPS summarization and optional Jacobian estimation
-3. HDF5, JSON, and manifest writing
-
-The stages can also be run separately:
-
-```powershell
-python -m mndm.cli features --dataset ds004511 --config mndm/config/config_ingest_ds004511.yaml --n-jobs 12
-python -m mndm.cli summarize --dataset ds004511 --config mndm/config/config_ingest_ds004511.yaml --n-jobs 12
-```
-
-Optional post-processing utilities include:
-
-```powershell
-python -m mndm.cli pack --dataset ds004511 --config mndm/config/config_ingest_ds004511.yaml
-python -m mndm.cli check-structure --dataset ds004511 --config mndm/config/config_ingest_ds004511.yaml --run-selector latest
-```
-
-== A.3 Data locations and configuration
-
-Runtime behavior is controlled through YAML overlays under `mndm/config/`.
-In practical use, dataset-specific files such as:
-
-`mndm/config/config_ingest_ds004511.yaml`
-
-or
-
-`mndm/config/config_ingest_ds000228.yaml`
-
-override shared defaults from the common EEG or fMRI configurations. Local or
-nonstandard dataset roots can be specified through
-`paths.dataset_received_dirs.<dataset_id>`.
-
-== A.4 Output layout
-
-Processed outputs are typically written under a dataset-specific processed
-directory. Summarized runs appear in directories named:
-
-`neuralmanifolddynamics_<dataset>_<timestamp>`
-
-These runs typically contain:
-
-- `run_manifest.json`
-- `features_snapshot.json`
-- per-subject or per-run subdirectories with:
-  - `summary.json`
-  - `qc_summary.json`
-  - `qc_reliability.json`
-  - subject-level HDF5 outputs
-
-The HDF5 contract described in this manuscript includes canonical `mnps_3d`
-exports, optional `coords_9d`, the explicit subject-anchored and
-cohort-anchored coordinate layers introduced in the 2.1 release line, optional
-Jacobian groups, embedded `/feature_anchors/*` provenance when coordinate
-anchoring is active, additive embodied-anchor groups such as `anchor_state` /
-`anchor_quality`, block/window tables when block-native analysis is enabled, and
-feature surfaces such as `/features_raw/*` and `/features_robust_z/*`.
-
-== A.5 DANDI/NWB execution path
-
-DANDI/NWB workflows use two layers. The `dandi_ingest` package creates manifests,
-probes available assets, and records local triage information for selected
-DANDI dandisets. MNDM then processes local NWB files through dataset overlays such
-as:
-
-```powershell
-python -m dandi_ingest.cli list --config dandi_ingest/configs/dandi_000718.yaml
-python -m dandi_ingest.cli probe --config dandi_ingest/configs/dandi_000718.yaml
-python -m mndm.cli all --dataset dandi_000718 --config mndm/config/config_ingest_dandi_000718.yaml
-```
-
-The current NWB path is intentionally conservative. It selects supported
-electrical-series data, applies the configured preprocessing and epoching rules,
-and emits the same MNDM feature/MNPS/HDF5 contract used for other modalities.
-NWB interval tables can also be used as time-varying state labels when enabled,
-so that states such as behavioral epochs or anesthesia intervals are written as
-time-aligned labels rather than forced into a single run-level condition.
-
-== A.6 Derived event-locked and block-native sidecars
-
-Event-locked analyses should be treated as derived layers unless and until they
-become part of a stable release schema. For sleep spindles, the recommended
-short-window workflow is:
-
-```text
-canonical H5 measurement run
-  -> detector/imported event annotations
-  -> event-to-window alignment
-  -> matched same-stage controls
-  -> derived event-locked sidecar tables
-```
-
-For the `ds005555` sleep-spindle track, the canonical HDF5 files remain the
-source of MNPS, 9D, Jacobian, stage, feature, and provenance data. Detector
-outputs and event-locked summaries are kept as sidecars such as:
-
-```text
-<processed>/<dataset>/baseline_corrected_all_psg_c3.csv
-<processed>/<dataset>/baseline_corrected_all_psg_f3.csv
-```
-
-Those CSV files are sufficient for subject-level sign tests and baseline
-robustness checks because they contain one row per subject/bin with
-baseline-corrected `m`, `d`, and `e` summaries. They are not sufficient for
-event-level analyses of `coords_9d`, Jacobians, or future reachability measures.
-For publication-grade event reuse, the preferred next release format is a
-versioned derived sidecar directory containing per-subject event tables,
-event-window mappings, baseline-corrected bin tables, and QC JSON, for example:
-
-```text
-<run>/derived_events/
-  spindles_yasa_0_7_0_psg_c3/
-    sub-001_events.parquet
-    sub-001_event_locked_windows.parquet
-    sub-001_baseline_corrected_bins.parquet
-    sub-001_qc.json
-```
-
-This keeps the canonical HDF5 measurement contract narrow while preserving the
-information needed to rejoin event-level analyses to `/mnps_3d`, `/coords_9d`,
-`/jacobian/*`, and time-aligned labels.
-
-For sustained paradigms, the repository now also supports a complementary
-block-native path in which windows are generated from inferred or derived
-temporal blocks rather than from short event-centered bins. This is the more
-appropriate derived surface when the scientific question concerns within-block
-position, distance to block end, or slower embodied variables such as HRV.
-Event-locked and block-native sidecars should therefore be understood as
-complementary downstream layers rather than redundant formats.
-
-= Appendix B: Consolidated NDT Reference Notation and Its Relation to Ingest
-
-This appendix consolidates the notation introduced briefly in the Introduction
-so that readers can find the main formulas in one place. The summary does not
-change the main claim of this paper: NeuralManifoldDynamics implements a
-measurement contract, not a full latent-manifold identification procedure.
-
-== B.1 Latent dynamics and observation layer
-
-In the broader NDT formalism, neural dynamics are modeled as a stochastic
-process on a latent manifold:
-
-$ d X_t = f(X_t, t) d t + sigma(t) d W_t $
-
-with observed signals generated through:
-
-$ Y_t = g(X_t) + epsilon_t $
-
-Here $X_t$ denotes the latent NDT state, $f$ the drift field, $sigma(t)$ a
-time-varying diffusion scale, $W_t$ Brownian motion, $Y_t$ the observed EEG or
-fMRI measurement family, $g$ the observation map, and $epsilon_t$ observation
-noise [@langell2025_6].
-
-== B.2 Canonical and stratified charts
-
-The canonical NDT chart is:
-
-$ x_t = [m_t, d_t, e_t] $
-
-with the conventional interpretation:
-
-- $m$: metastability / mobility / rhythmic-coherence-aligned coordinate,
-- $d$: deviation from optimal integration-segregation balance,
-- $e$: entropy / energetic-complexity-aligned coordinate.
-
-Stratified NDT refines this chart to:
-
-$ x_t^(9) = [m_a, m_e, m_o, d_n, d_l, d_s, e_e, e_s, e_m] $
-
-where the three families preserve the $m$-, $d$-, and $e$-aligned grouping while
-making within-family redistributions visible [@langell2025_stratified].
-
-== B.3 Ingest-time operationalization
-
-NeuralManifoldDynamics does not estimate the latent manifold $cal(M)$ from
-scratch in this manuscript. Instead, it computes a windowed empirical feature
-vector:
-
-$ z_t = phi(Y)_t $
-
-and maps that feature vector into a release-fixed chart:
-
-$ x_t^(9) = W_(9D) z_t $
-
-followed by a fixed 9D-to-3D projection:
-
-$ x_t = P x_t^(9) $
-
-In this paper, $W_(9D)$ and $P$ are not learned per contrast; they are versioned
-configuration objects recorded in provenance. That is why the output should be
-read as an auditable measurement contract rather than as a data-adaptive
-embedding benchmark.
-
-== B.4 Local dynamics and Jacobian layer
-
-When local dynamics are exported, the corresponding chart-level Jacobian is:
-
-$ J(x_t, t) = frac(partial f(x, t), partial x) |_(x = x_t) $
-
-This Jacobian summarizes local deformation structure in chart coordinates. It
-is not presented as direct access to a unique biophysical state equation
-[@langell2025_mnj]. In the ingest implementation, Jacobians are estimated only
-when support and numerical validity are sufficient under the active coverage and
-conditioning rules.
-
-== B.5 Interpretation boundary
-
-For a reader seeing NDT first through this manuscript, the practical reading
-rule is therefore:
-
-1. NDT supplies the layered notation: latent state, chart coordinates, and local
-   dynamical summaries.
-2. NeuralManifoldDynamics supplies one release-bound empirical realization of
-   those objects for EEG and fMRI ingest.
-3. Downstream analysis remains responsible for group contrasts, falsification,
-   baseline comparison, and any stronger theoretical interpretation.
-
-#pagebreak()
-
-= References
-#bibliography("NeuralManifoldReferences.bib")
-
-
-= Technical Terms
-#par(first-line-indent: 0pt)[*NeuralManifoldDynamics*: The ingest-layer measurement system in this repository for constructing and serializing manifold-proxy trajectories and optional Jacobian-based summaries from neural data.]
-#par(first-line-indent: 0pt)[*mnps_3d*: The canonical three-dimensional trajectory exported with fixed axis order [m, d, e].]
-#par(first-line-indent: 0pt)[*coords_9d*: The stratified coordinate matrix containing nine subcoordinates that refine the canonical 3D chart.]
-#par(first-line-indent: 0pt)[*Meta-Noetic Jacobian (MNJ)*: A local Jacobian estimate defined on chart trajectories and, when enabled, used to summarize local dynamical structure.]
-#par(first-line-indent: 0pt)[*Anisotropy*: A summary of directional imbalance in a Jacobian or block-Jacobian field.]
-#par(first-line-indent: 0pt)[*Current Source Density (CSD)*: A spatial filtering transform for EEG intended to reduce broad field spread and emphasize more local cortical activity.]
-#par(first-line-indent: 0pt)[*Regional MNPS*: A regionalized trajectory representation in which trajectories and Jacobians are computed separately for networks or channel groups.]
-#par(first-line-indent: 0pt)[*Block Jacobian*: A Jacobian summary restricted to a block or family of coordinates, such as m-to-m or e-to-d interactions.]
-#par(first-line-indent: 0pt)[*Coverage policy*: The rule set that determines whether an epoch or trajectory has sufficient support to be retained for measurement.]
-#par(first-line-indent: 0pt)[*NWB*: Neurodata Without Borders, a neurophysiology data format supported here through a constrained adapter path for selected electrical-series assets.]
-#par(first-line-indent: 0pt)[*Derived event layer*: A sidecar or derived HDF5 group containing event annotations, event-window mappings, matched controls, and event-locked summaries that are joinable to, but separate from, the canonical MNPS measurement output.]
-#par(first-line-indent: 0pt)[*Measurement contract*: The fixed export definition that specifies what is measured, how it is named, and how it is serialized for downstream use.]
-#par(first-line-indent: 0pt)[*Vagal index*: A parasympathetic engagement proxy derived from RMSSD and aligned HRV v0.1 columns, exported in `anchor_state`. Under the current implementation, higher values indicate greater parasympathetic (vagal) tone.]
-#par(first-line-indent: 0pt)[*Sympathetic index*: A cardiac-rate-based activation proxy exported in `anchor_state`, aligned to the same epoch grid as `mnps_3d`.]
-#par(first-line-indent: 0pt)[*HRV v0.1*: The first-release HRV superwindow feature surface in this repository, providing short-list time-domain metrics (HR mean bpm, IBI mean ms, RMSSD, SDNN, pNN50, NN count, artifact fraction, coverage fraction, quality score) derived from ECG using a centered superwindow aligned to the MNPS epoch grid. Optional complexity columns (`ecg_hrv_sampen`, `ecg_hrv_dfa_alpha1`) are available when configured. Frequency-domain metrics (HF power, LF/HF) are not part of the v0.1 surface. Labeled v0.1 to distinguish from future frequency-domain or dedicated HRV-package integrations.]
-#par(first-line-indent: 0pt)[*Row provenance (`row_source`)*: An HDF5 group added in v2.4 for simultaneous MEEG recordings, recording whether each window row originates from a `fif_meeg` (MEG+EEG) or `set_eeg` (EEG-only) source. Replaces implicit positional half-split slicing with auditable per-row source metadata (`mndm.row_source.v1`).]
-#par(first-line-indent: 0pt)[*`features_projection_z`*: A v2.4 HDF5 export surface in which each feature's configured transform pipeline (e.g., log10 → robust-z → clip) is applied before export. Required for MEG spectral features, where physical power values (~10⁻²⁵ W) would otherwise collapse to near-zero under raw-space robust-z.]
-#par(first-line-indent: 0pt)[*MEG shadow mapping*: The routing of `meg_*` feature columns through the existing 9D coordinate projection without changing the projection machinery; each MEG feature type maps to the same subcoordinate slot as its `eeg_*` counterpart.]
-#par(first-line-indent: 0pt)[*Ephys 9D mapping (Units)*: A v2.5.0 dedicated subcoordinate map that fills the nine `coords_9d` slots from spike-rate-derived `ephys_*` features (e.g., `ephys_pairwise_corr_mean -> m_a`, `ephys_rate_entropy -> e_e`). Unlike MEG shadow mapping, this is a parallel modality-specific construction rather than a reuse of EEG feature definitions.]
-#par(first-line-indent: 0pt)[*LFP-as-EEG routing*: A v2.5.0 path in which DANDI `ElectricalSeries` LFP channels are treated as a continuous EEG-like signal and routed through the existing EEG feature and 9D contract, with rodent-adapted band edges and optional depth-balanced contact selection.]
-#par(first-line-indent: 0pt)[*Phase anchor (Mål B / C)*: An optional per-epoch feature extractor (`phase_anchor.enabled: true` in the dataset YAML) that computes cardiac phase (linear RR interpolation), respiratory phase (Hilbert transform), heartbeat-evoked potential (HEP) amplitude, heart rate, respiratory rate, and inhale fraction for each epoch. Results land directly in `features.parquet` and are automatically carried into HDF5 by `mndm.cli summarize`. Missing physiological modalities produce NaN-filled columns rather than errors, enabling partial output for datasets that carry only ECG (cardiac arm) or only a respiratory belt (respiratory arm).]
-
+Generative AI tools assisted with manuscript structure and language editing under human direction. The author remains responsible for the claims and final text.
+
+= Supporting Information
+
+Supplementary Methods S1 details the EEG contract and separate MEG/LFP engineering pilots. Supplementary Data S2 presents expanded cohort support, dependency, and repeatability results; S3 reports quality states, realization compatibility, and bounded robustness checks; S4 translates the scope and limits for clinical readers. The revised S5 glossary scopes current terms separately from historical routes; S6 documents version history and compatibility. Earlier S2–S4 template sources and their existing PDFs are archived under `project/articles/NeuralManifoldDynamics/old/` as historical snapshots.
+
+#bibliography("NeuralManifoldReferences.bib", style: "apa")
+
+#technical-terms((
+  ("measurement contract", [A versioned rule set specifying a measurement and the metadata needed to interpret its output.]),
+  ("computability", [Whether a declared estimator can produce a value from its available inputs.]),
+  ("comparability", [Compatibility of measurement realizations for a stated comparison.]),
+  ("qualification", [Evidence that a measurement is suitable for a specified scientific use.]),
+  ("feature anchor", [A frozen reference for centering and scaling transformed source features.]),
+  ("coordinate anchor", [A separate frozen reference for scaling assembled coordinate values.]),
+  ("window support", [The data and estimator evidence available for a particular time window.]),
+  ("transductive reference", [A reference fitted from the same participants who later receive it.]),
+  ("channel-set hash", [A digest identifying an ordered or canonicalized set of sensor labels.]),
+  ("complete-nine-coordinate mask", [A window-level flag indicating that all nine coordinates are valid.]),
+))

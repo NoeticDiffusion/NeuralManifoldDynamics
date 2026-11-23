@@ -1,0 +1,140 @@
+# ds004511 — MNPS 3.4 flat 9D plus dynamical families.
+#
+# Merges:
+#   mndm/config/sources/openneuro/config_ingest_ds004511.yaml
+#   mndm/config/sources/openneuro/config_ingest_ds004511_dynamical_families.yaml
+# with the v3.4 EEG coordinate schema and the shared dynamical-families defaults.
+#
+# MNPS 3.4 is the flat 9D export under /measurements/v3_4. This file does not
+# enable regional MNPS or block Jacobians: v3.4 has no M/D/E families.
+#
+# Drift, diffusion, one-step, amplification, history, turning, finite-time
+# response, transition residuals, and stochastic reachability stay on the
+# legacy subject-anchored 3D chart [m, d, e]. The flat nine have their own
+# local Jacobian under /measurements/v3_4/jacobian, including spectral and
+# numerical abscissa. That group is separate from /jacobian and /jacobian_9D.
+# Destination and resilience stay enabled and fail closed without an explicit
+# protocol.
+#
+# Output root is separate from the 2026-09 dynamical-families run.
+imports:
+  - ../../config_ingest_common_eeg_9d.yml
+  - ../../../config_ingest_common_dynamical_families.yaml
+  - ../../../sources/openneuro/config_ingest_ds004511.yaml
+  - ../../../sources/openneuro/config_ingest_ds004511_dynamical_families.yaml
+
+datasets:
+  - ds004511
+
+paths:
+  received_dir: "K:/ExternalReceivedDatasets/openneuro"
+  processed_dir: "K:/processed/ds004511_mnps_v3_4"
+  dataset_received_dirs:
+    ds004511: "K:/ExternalReceivedDatasets/openneuro/ds004511"
+
+run:
+  parallel_backend: threading
+
+preprocess:
+  heuristic_bad_channel_exclusion:
+    enabled: false
+
+features:
+  eeg:
+    complexity:
+      # v3.4 hjorth_mobility reads eeg_hjorth_mobility. The common extractor
+      # writes that column; this flag also keeps the conventional column.
+      hjorth_mobility: true
+
+robustness:
+  ensembles:
+    enabled: false
+
+regional_mnps:
+  enabled: false
+  stratified:
+    enabled: false
+  block_jacobians:
+    enabled: false
+
+mnps_9d:
+  block_jacobians:
+    enabled: false
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+  one_step:
+    enabled: true
+    declared_lags: [1, 2]
+
+# Do not apply the ds004148 or ds005385 anchors. This recording is TruScan
+# 128-ch with CSD, so it is not the scalp surface those anchors were fit on.
+# Raw 9D coordinates stay available; anchored coordinates stay invalid until
+# a ds004511 anchor or an explicit exploratory transfer is declared.
+scaling:
+  __replace: true
+  export_raw_features: true
+  pipeline:
+    - feature_transform
+    - feature_reference_robust_z
+    - linear_coordinate_assembly
+    - coordinate_reference_robust_z
+  robust_z:
+    center: median
+    scale: 1.4826 * MAD
+    degenerate_scale_policy: invalid_no_epsilon_substitution
+  anchor_scope: none_until_ds004511_reference_is_declared
+  anchor_id: null
+  anchor_manifest: null
+  anchor_manifests_by_condition: null
+  require_anchor_manifest_for_scaled_output: false
+  fit_test_data: false
+  fit_separately_per_recording: false
+  fit_separately_per_condition: false
+  reference_sampling: equal_participant_weight
+  pool_scalp_and_intracranial_anchors: false
+  pool_incompatible_measurement_surfaces: false
+  saturation_policy: none
+  nonpositive_log_input_policy: invalid_no_floor
+  missing_anchor_policy: retain_raw_mark_anchored_invalid
+  external_anchor:
+    preset: null
+    path: null
+    compatibility: strict
+    transfer_reason: null
+    reference_feature_units: null
+
+measurement_surface:
+  feature_units:
+    __replace: true
+    eeg_delta: microvolt^2
+    eeg_theta: microvolt^2
+    eeg_alpha: microvolt^2
+    eeg_beta_alpha: dimensionless_ratio
+    eeg_gamma: microvolt^2
+    eeg_hjorth_mobility: dimensionless_per_sample
+    eeg_alpha_theta: dimensionless_ratio
+    eeg_permutation_entropy: dimensionless
+    mnps_v3_4_alpha_centroid_hz: Hz
+    mnps_v3_4_alpha_envelope_cv: dimensionless
+  dataset_overlay:
+    __replace: true
+    dataset_id: ds004511
+    dataset_version: "doi:10.18112/openneuro.ds004511.v1.0.0"
+    sampling_rate_hz: 3000
+    resampling_method: "MNE resample to 250 Hz using common EEG preprocessing"
+    realized_sampling_rate_hz: 250
+    filter_specification: "50 Hz notch; 1-45 Hz EEG bandpass; ICA fastica n_components=20; CSD requested (lambda2=1e-5, stiffness=4, n_legendre_terms=50, on_error=warn). Recordings without electrode digitization keep the average-reference voltage and the microvolt^2 band-power unit. Candidate alpha estimator applies a separate 8-12 Hz order-4 zero-phase Butterworth filter."
+    reference: average
+    channel_selection: "TruScan numeric channels renamed to 10-5; all EEG channels present after rename; VEOG typed eog and excluded from the EEG set"
+    bad_channel_policy: "variance/correlation channel-drop heuristic explicitly disabled; no channel interpolation or silent drop"
+    channel_label_set_compatibility: "casefold_for_anchor_matching; exact_labels_preserved"
+    continuous_segment_boundaries: "source-file boundary plus any nonfinite all-channel sample runs; never bridge source files or concatenated epoched input"
+    edge_support_policy: "alpha envelope/Hilbert values require a full window and a 10 s symmetric source-segment edge guard; support reason is emitted per window"
+    estimator_parameter_manifest: "estimators section plus runtime SHA256 of the executed preprocessing, feature, candidate, and coordinate assembly code"
+    line_frequency_hz: 50
+
+summarize:
+  allow_group_collisions: false
+  qc_policy: keep_all

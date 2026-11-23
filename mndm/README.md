@@ -6,7 +6,10 @@ Package metadata and the latest formal release notes report **3.1.0**. MNPS
 3.4 is an opt-in experimental measurement definition and does
 not change the package version or default MNPS v2 contract. See
 [`MNPS_VERSIONED_GUIDE.md`](MNPS_VERSIONED_GUIDE.md) for the current version
-map, v3.4 outputs, frozen anchors, and verification limits.
+map, v3.4 outputs, frozen anchors, and verification limits. The current
+preliminary implementation status and frozen evidence are recorded in
+[`MNPS_V3_4_PRELIMINARY_RELEASE.md`](docs/MNPS_V3_4_PRELIMINARY_RELEASE.md);
+this is not a new package release or scientific qualification.
 
 Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package covers feature extraction, summarization, packing, and structure checks.
 
@@ -19,6 +22,9 @@ Note: OpenNeuro ingest/download now lives in `openneuro_ingest`. This package co
 | [`Command_cheat_sheet.md`](Command_cheat_sheet.md) | All CLI commands in one place |
 | [`Output_variables_guide.md`](Output_variables_guide.md) | Full HDF5 schema and variable reference |
 | [`MNPS_VERSIONED_GUIDE.md`](MNPS_VERSIONED_GUIDE.md) | Version map and opt-in MNPS 3.4 contract, reference anchors, HDF5 paths, and evidence |
+| [`docs/MNPS_V3_4_PRELIMINARY_RELEASE.md`](docs/MNPS_V3_4_PRELIMINARY_RELEASE.md) | Preliminary EEG implementation status, frozen anchors, full-cohort repeatability evidence, and limits |
+| [`config/v.3.4/JACOBIAN_EXPORT_CONFIGURATION.md`](config/v.3.4/JACOBIAN_EXPORT_CONFIGURATION.md) | Separate v3.4 9D Jacobian path, legacy path identities, and configuration switches |
+| [`config/v.3.4/DYNAMICS_EXPORT.md`](config/v.3.4/DYNAMICS_EXPORT.md) | Opt-in v3.4 9D drift, diffusion, anchored one-step outputs, support, and provenance |
 | [`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_v3.0.2.md) | v3.0.2 fMRI contract and NEMAR download |
 | [`../release_notes/RELEASE_NOTES_v3.1.0.md`](../release_notes/RELEASE_NOTES_v3.1.0.md) | Initial alternative MNPS candidate implementation |
 
@@ -1082,48 +1088,107 @@ See [`../release_notes/RELEASE_NOTES_v3.0.2.md`](../release_notes/RELEASE_NOTES_
 
 ---
 
-## Multi-Modal Interpretation Note (MEG vs EEG)
+## MEG measurement status
 
-MEG and EEG share the NMD coordinate contract and can both export MNPS trajectories,
-Jacobians, and 9D stratified coordinates. However, **individual subcoordinates may not
-have identical sign semantics across modalities**, and cross-modal comparison requires
-specific interpretation guidelines.
+The existing ds003645 MEG shadow path remains available for historical replay.
+The repository also contains a separate, opt-in experimental MNPS 3.4 MEG
+surface (`3.4-meg-exp.1`). It leaves the existing MEG feature extraction
+unchanged while keeping MAG and GRAD as separate measurement realizations.
 
-### d-family (Hjorth mobility and complexity)
+| Component | Current status |
+|---|---|
+| Corrected existing-coordinate baseline | Retained as the comparison baseline; exact historical replay remains separate. SampEn and permutation-entropy failures are explicit rather than silently substituted. |
+| `alpha_centroid_hz` | Experimental auxiliary descriptor: channel-wise Welch PSD, median PSD by sensor family, then 7–13 Hz power-weighted centroid in Hz. |
+| `alpha_envelope_cv` | Experimental and preliminary: channel-wise 8–12 Hz envelope CV, median by sensor family, with continuous-segment edge guards. GRAD sensor-split stability is a limitation. |
+| `removal_only` / `alpha_replacement` | Selectable comparison variants; replacement remains opt-in and does not change the default MEG representation. No inherited coordinate is deleted. |
 
-In ds003645 (Wakeman-Henson simultaneous MEEG, 18 subjects), a robust modality-specific
-divergence was observed for Hjorth parameters:
+The standard `summarize` pipeline can write the experimental payload under
+`/measurements/v3_4_meg/`; the measurement sidecar is
+`mnps_v3_4_meg_measurements.h5`. The export keeps feature/coordinate values,
+units, per-window support and failure reasons, sensor labels and set hashes,
+estimator settings, and implementation provenance. Values are raw and
+unscaled (`qualified=false`); EEG anchors and recording-local normalization
+are not used. See the
+[MEG measurement specification](config/v.3.4/MEG_EXPERIMENTAL_SPEC.md),
+[bounded pilot config](config/v.3.4/config_ingest_ds003645_meg_v34_bounded_pilot.yml),
+and [MEG audit](../project/mnps2_audit/meg_mnps_3.4/audit_001.md).
 
-| Measure              | MEG direction (all 18 subjects) | EEG direction (majority)    |
-|----------------------|----------------------------------|------------------------------|
-| Hjorth mobility      | face < scrambled (negative)      | face > scrambled (positive)  |
-| Hjorth complexity    | face > scrambled (positive)      | face < scrambled (negative)  |
+The ordinary `summarize` → HDF5 smoke passed on an existing pilot recording,
+including a disabled-export control that preserved historical outputs. A
+separate frozen run-to-run analysis found full centroid support and matching
+run-1 pilot exports, but only five same-session participant pairs. Its MAG and
+GRAD participant rankings differed (Spearman ρ = 0.10 and 1.00), so the
+repeatability evidence remains preliminary; it is not test–retest evidence or
+a basis for coordinate replacement. Both integrations used
+`NUMBA_DISABLE_JIT=1`; parity with JIT enabled has not been tested. See the
+[summarize smoke report](../project/mnps2_audit/outputs/20261118_meg_summarize_smoke/verification_report.json)
+and [repeatability report](../project/mnps2_audit/outputs/20261118_meg_repeatability/repeatability_statistics.csv).
 
-This inversion is **validated as modality-specific**, not artifactual:
-- Both MAG and GRAD sensors show the same MEG polarity.
-- EEG-from-FIF and EEG-from-.set agree with each other.
-- The inversion survives QC (artifact-clean window filtering).
-- No run-level noise explains it.
+A raw-file `features` → `summarize` end-to-end run for the experimental MEG
+surface then completed on 2026-11-19. It processed only `sub-002` FacePerception
+run 1 MEG FIF, wrote 121 feature windows and an ordinary subject HDF5 on K:.
+The HDF5 contains both legacy outputs and `/measurements/v3_4_meg/`; its raw
+variant values and window axis matched the fresh feature table. Centroid
+support was 121/121 in both families; replacement support was 116/121 because
+of five declared envelope edge exclusions. The new config is
+[`config_ingest_ds003645_meg_v34_e2e_k.yml`](config/v.3.4/config_ingest_ds003645_meg_v34_e2e_k.yml),
+and the isolated output root is
+`K:/ExternalReceivedDatasets/openneuro/processed_ds003645_meg_v34_e2e_20261119/`.
+`NUMBA_DISABLE_JIT` was unset for this run; parity with the earlier disabled-JIT
+pilot/smoke is not claimed. This is the experimental-path end-to-end check,
+not a full-cohort v3.4 run. The older full 18-participant ds003645 run used the
+legacy sensor-topography configuration.
 
-The most likely explanation: MEG measures reference-free magnetic field complexity
-(lower mobility = more structured field dynamics during face processing), while EEG
-is affected by reference montage, volume conduction, and scalp mixing.
+A follow-up MEG dynamics smoke used the cached run-1 features through ordinary
+`summarize`. Local Jacobians, drift and diffusion computed for the 9D variants
+in both MAG and GRAD; diffusion also computed for the 7D `removal_only`
+variant, while its Jacobian and drift stayed explicitly `not_testable` under
+their current dimension contracts. The anchored layer and one-step operator
+were not testable because no MEG anchor has been fitted. This run had
+`NUMBA_DISABLE_JIT` unset. See the
+[MEG dynamics export notes](config/v.3.4/DYNAMICS_EXPORT.md),
+[smoke config](config/v.3.4/config_ingest_ds003645_meg_v34_dynamics_e2e_k.yml),
+and [run diary](../project/diary/20261119_ds003645_meg_v34_dynamics_smoke.md)
+for support counts and output path.
+The final modality-specific Jacobian activation (`v3_4_meg_jacobian`) was
+checked against the same feature table through the production measurement
+adapter and HDF5 writer; an inherited EEG Jacobian setting alone does not turn
+on MEG Jacobians.
 
-**Cross-modal comparison guidelines:**
-1. Prioritise **modality-internal validity** (does MEG separate the task within itself?).
-2. Use **family-level diagnostics** (`m`-, `d`-, `e`-family separately).
-3. Apply **null-controlled convergence** (label-shuffle / wrong-run nulls).
-4. Do not assume Hjorth mobility/complexity have the same directional semantics in MEG and EEG.
-5. Report **two separate readiness scores**: MEG engineering readiness and EEG–MEG convergence.
+Older ds003645 documents reported MEG–EEG direction and readiness summaries,
+including `meg_shadow_v0_usable`. The current audit did not find the source
+result artifacts needed to reproduce those claims locally. Treat them as
+historical reports, not as current engineering qualification or established
+cross-modal semantics.
 
-### ds003645 status
+## MNPS 3.4 EEG Jacobian and dynamical-family exports
 
-| Claim                       | Score  | Status              |
-|-----------------------------|--------|---------------------|
-| MEG engineering readiness   | 0.9419 | Production-ready    |
-| MEG-internal task separation| 15/18  | Strong              |
-| EEG-MEG convergence         | 0.4786 | Weak (d-family diverges) |
-| Config label                | `ds003645_meg_shadow_v0_usable` | Frozen |
+The flat nine-coordinate EEG definition remains unchanged. A local 9D
+Jacobian is enabled by default for v3.4 EEG summaries and is written separately
+to `/measurements/v3_4/jacobian`; it does not replace the legacy `/jacobian`
+or `/jacobian_9D` groups. Set `v3_4_jacobian.enabled: false` to disable this
+candidate.
+
+The separate dynamical-family export is opt-in with `v3_4_dynamics.enabled`
+and writes `/measurements/v3_4/dynamics`. Drift and local conditional
+increment-covariance rates can be computed for distinct raw and actually
+anchored 9D realizations; a separate recording-level increment covariance is
+also retained. Neither covariance is asserted to be an Itô diffusion tensor.
+Raw coordinates use mixed units, so Euclidean neighborhoods and cross-axis
+summaries do not by themselves establish comparability. The affine one-step
+estimator is lag-1 and anchored-only. The export splits support at missing
+coordinates or irregular time steps and records effective configuration and
+implementation hashes. See the
+[dynamics contract](config/v.3.4/DYNAMICS_EXPORT.md) and the
+[bounded ds004511 pilot configuration](config/v.3.4/config_ingest_ds004511_v34_dynamics_pilot.yml).
+
+The ds004511 `S200116` Rest smoke verified the regular summarize/HDF5 path on
+the previously computed feature cache: 120/126 raw 9D windows supported
+diffusion and drift, while no anchor was applied and the anchored-only
+one-step estimator remained unavailable. This was one recording, not a full
+cohort or scientific qualification; see its
+[run manifest](../project/mnps2_audit/outputs/20261119_mnps_v3_4_ds004511_dynamics_integration_test/processed/ds004511/neuralmanifolddynamics_ds004511_20261119_124848/run_manifest.json)
+and [pilot manifest](../project/mnps2_audit/outputs/20261119_mnps_v3_4_dynamics_pilot/processed/ds004511/neuralmanifolddynamics_ds004511_20261119_v34_dynamics/sub-S200116_ses-01_rest_run-01/pilot_manifest.json).
 
 ---
 

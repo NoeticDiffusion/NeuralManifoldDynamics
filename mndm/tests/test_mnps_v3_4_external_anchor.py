@@ -257,6 +257,54 @@ def test_frozen_application_uses_declared_transform_and_composite_delta_theta(tm
     assert payload["provenance"]["anchor_application_status"] == "computed"
 
 
+def test_two_stage_anchors_reproduce_one_to_one_features_on_same_reference():
+    """The second robust normalization is identity-like for one-input mappings."""
+    participants = np.repeat(["sub-01", "sub-02", "sub-03"], 4)
+    base = np.tile(np.array([1.0, 2.0, 4.0, 8.0]), 3)
+    transformed = np.column_stack([
+        base * (index + 1) + index for index in range(len(coordinates.FEATURE_ORDER))
+    ])
+    feature_anchors = {
+        name: coordinates._fit_robust_anchor(
+            transformed[:, index], participants, minimum_participants=3
+        )
+        for index, name in enumerate(coordinates.FEATURE_ORDER)
+    }
+    feature_scaled = coordinates._feature_scaled_values(
+        transformed, coordinates.FEATURE_ORDER, feature_anchors
+    )
+    assembled = coordinates._assemble_coordinates(feature_scaled, coordinates.FEATURE_ORDER)
+    coordinate_anchors = {
+        name: coordinates._fit_robust_anchor(
+            assembled[:, index], participants, minimum_participants=3
+        )
+        for index, name in enumerate(coordinates.COORDINATE_ORDER)
+    }
+    twice_scaled = coordinates._feature_scaled_values(
+        assembled, coordinates.COORDINATE_ORDER, coordinate_anchors
+    )
+
+    feature_index = {name: index for index, name in enumerate(coordinates.FEATURE_ORDER)}
+    for coordinate_index, coordinate_name in enumerate(coordinates.COORDINATE_ORDER):
+        inputs = coordinates.COORDINATE_INPUTS[coordinate_name]
+        if len(inputs) == 1:
+            feature_name = inputs[0][0]
+            np.testing.assert_allclose(
+                twice_scaled[:, coordinate_index],
+                feature_scaled[:, feature_index[feature_name]],
+                rtol=1e-12,
+                atol=1e-12,
+            )
+
+    delta_index = coordinates.COORDINATE_ORDER.index("delta_theta_level")
+    delta_feature = feature_index["eeg_delta"]
+    theta_feature = feature_index["eeg_theta"]
+    np.testing.assert_allclose(
+        assembled[:, delta_index],
+        0.5 * feature_scaled[:, delta_feature] + 0.5 * feature_scaled[:, theta_feature],
+    )
+
+
 def test_fixed_anchor_does_not_refit_when_unrelated_target_rows_are_added(tmp_path):
     path = _write_anchor(tmp_path / "anchor.json", _anchor_manifest())
     config = _config(tmp_path, path)

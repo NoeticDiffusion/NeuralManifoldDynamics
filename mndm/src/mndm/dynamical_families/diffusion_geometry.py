@@ -248,6 +248,7 @@ def estimate_local_diffusion_geometry(
     max_neighborhood_radius: float | None = None,
     min_valid_fraction: float = 0.1,
     psd_floor: float = 1e-8,
+    tie_break_neighbors_by_index: bool = False,
     epsilon: float = 1e-12,
 ) -> dict[str, Any]:
     """Estimate local diffusion tensors from within-segment state increments.
@@ -401,6 +402,7 @@ def estimate_local_diffusion_geometry(
         x[finite_idx],
         increment_state,
         k,
+        tie_break_by_index=tie_break_neighbors_by_index,
     )
     for row, center in enumerate(finite_idx):
         nearest = nearest_indices[row]
@@ -505,6 +507,7 @@ def estimate_local_diffusion_geometry(
                 "max_neighborhood_radius": max_neighborhood_radius,
                 "min_valid_fraction": float(min_valid_fraction),
                 "psd_floor": float(psd_floor),
+                "tie_break_neighbors_by_index": bool(tie_break_neighbors_by_index),
                 "drift_source": source_token,
                 "drift_mode": drift_mode,
                 "drift_residualization": residualization_token,

@@ -86,6 +86,7 @@ REASON_REFLECTION = "operator_polar_reflection_not_rotation"
 REASON_POLAR_LOG = "operator_polar_rotation_log_not_real"
 HORIZON_STEPS = 2
 _SUBJECT_ANCHORED_LAYERS = frozenset({"coords_3d_subject_anchored", "subject_anchored"})
+_V3_4_ANCHORED_LAYER = "v3_4_anchored"
 _LOGM_IMAG_TOL = 1e-8
 _RANK_REL_TOL = 1e-8
 _MIN_HOLDOUT = 8
@@ -189,17 +190,31 @@ def _layer_refusal(
     names = list(coordinate_names or ["m", "d", "e"])
     x = np.asarray(state)
     layer = str(coordinate_layer or "").strip()
-    if layer not in _SUBJECT_ANCHORED_LAYERS:
+    is_v3_4_layer = layer == _V3_4_ANCHORED_LAYER
+    valid_dimension = 9 if is_v3_4_layer else 3
+    valid_layer = is_v3_4_layer or layer in _SUBJECT_ANCHORED_LAYERS
+    if not valid_layer:
         return _unavailable(
             status="not_testable",
-            failure_reason=REASON_SUBJECT_ANCHORED_3D,
+            failure_reason=(
+                "one_step_requires_v3_4_anchored_layer"
+                if layer == "v3_4_raw"
+                else REASON_SUBJECT_ANCHORED_3D
+            ),
             coordinate_layer=layer or "unknown",
             coordinate_names=names,
         )
-    if x.ndim != 2 or x.shape[1] != 3:
+    if x.ndim != 2 or x.shape[1] != valid_dimension:
         return _unavailable(
             status="not_testable",
             failure_reason=REASON_SUBJECT_ANCHORED_3D,
+            coordinate_layer=layer,
+            coordinate_names=names,
+        )
+    if len(names) != valid_dimension:
+        return _unavailable(
+            status="invalid",
+            failure_reason="coordinate_name_dimension_mismatch",
             coordinate_layer=layer,
             coordinate_names=names,
         )
@@ -531,6 +546,7 @@ def _recording_affine_at_lag(
     n_time, dim = x.shape
     n_refs = int(support.source_idx.size)
     minimum_support = max(int(min_samples), int(min_neighborhood_samples), int(dim * (dim + 1)))
+    n_affine_parameters = int(dim * (dim + 1))
     if n_refs < minimum_support:
         return _refuse(
             _unavailable(
@@ -539,6 +555,13 @@ def _recording_affine_at_lag(
                 coordinate_layer=coordinate_layer,
                 coordinate_names=names,
                 extra_settings=shared_settings,
+                extra_summary={
+                    **support_summary_fields(support),
+                    "n_increment_pairs": n_refs,
+                    "minimum_support_pairs": int(minimum_support),
+                    "n_affine_parameters": n_affine_parameters,
+                    "below_declared_support_floor": True,
+                },
             )
         )
 
@@ -557,6 +580,18 @@ def _recording_affine_at_lag(
                     coordinate_layer=coordinate_layer,
                     coordinate_names=names,
                     extra_settings=shared_settings,
+                    extra_summary={
+                        **support_summary_fields(support),
+                        "n_increment_pairs": n_refs,
+                        "n_training_pairs": int(train_idx.size),
+                        "n_holdout_pairs": int(hold_idx.size),
+                        "minimum_support_pairs": int(minimum_support),
+                        "minimum_holdout_pairs": int(min_hold),
+                        "n_affine_parameters": n_affine_parameters,
+                        "below_declared_support_floor": bool(
+                            int(train_idx.size) < minimum_support
+                        ),
+                    },
                 )
             )
         fitted_oos = _fit_affine_map(
@@ -679,6 +714,9 @@ def _recording_affine_at_lag(
     summary_common = {
         **support_summary_fields(support),
         "n_increment_pairs": n_refs,
+        "minimum_support_pairs": int(minimum_support),
+        "n_affine_parameters": n_affine_parameters,
+        "below_declared_support_floor": False,
         "n_fitted_windows": int(n_fitted),
         "n_holdout_pairs": n_holdout,
         "rel_mse_baseline_median": median_rel,

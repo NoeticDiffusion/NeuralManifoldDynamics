@@ -394,6 +394,39 @@ def test_compute_eeg_features_calls_welch_once_for_all_epochs(monkeypatch):
     assert calls == [(len(out), 1, 2000)]
 
 
+def test_multitaper_unavailable_records_welch_fallback_identity(monkeypatch):
+    """A controlled missing-multitaper case reports the backend actually used."""
+    from mndm.features import eeg as eeg_mod
+
+    calls = []
+    original_welch = eeg_mod.signal.welch
+
+    def _counting_welch(data, *args, **kwargs):
+        calls.append(np.asarray(data).shape)
+        return original_welch(data, *args, **kwargs)
+
+    monkeypatch.setattr(eeg_mod, "psd_array_multitaper", None)
+    monkeypatch.setattr(eeg_mod.signal, "welch", _counting_welch)
+    rng = np.random.default_rng(20261116)
+    signals = {
+        "signals": {"eeg": rng.normal(size=(2, 250)).astype(np.float32)},
+        "sfreq": 250,
+    }
+    config = {
+        "epoching": {"length_s": 1.0, "step_s": 1.0},
+        "features": {
+            "eeg_psd": {"method": "multitaper", "fmin": 1.0, "fmax": 45.0},
+        },
+    }
+
+    out = eeg_mod.compute_eeg_features(signals, config)
+
+    assert not out.empty
+    assert calls == [(len(out), 1, 250)]
+    assert set(out["eeg_psd_method_id"]) == {"scipy.signal.welch"}
+    assert set(out["eeg_psd_fallback_reason"]) == {"multitaper_unavailable"}
+
+
 def test_compute_eeg_features_batches_secondary_welch(monkeypatch):
     """Secondary multiverse Welch should use one global epoch batch."""
     from mndm.features import eeg as eeg_mod

@@ -13,7 +13,7 @@ Status: **not a release announcement**. Do not upload or publish this text yet.
 
 ## Proposed change summary
 
-This source-tree update documents a separate experimental MNPS 3.4 EEG measurement surface while retaining the established canonical MNPS v2/v3.0 outputs. The v3.4 payload contains nine ordered flat coordinates, frozen feature and coordinate references, per-window support/validity masks, native sensor/reference provenance, and explicit unqualified status. It does not add M/D/E family aggregation, a 3D projection, or a v3.4 Jacobian.
+This source-tree update documents a separate experimental MNPS 3.4 EEG measurement surface while retaining the established canonical MNPS v2/v3.0 outputs. The v3.4 coordinate payload contains nine ordered flat coordinates, frozen feature and coordinate references, per-window support/validity masks, native sensor/reference provenance, and explicit unqualified status. It does not add M/D/E family aggregation or a 3D projection. The current checkout separately provides a default-on 9D Jacobian at `/measurements/v3_4/jacobian` and opt-in drift, diffusion, and anchored lag-1 one-step measurements at `/measurements/v3_4/dynamics`; these sidecars do not change the flat coordinate definition or assert a new package release.
 
 The v3.4 workflow includes registered, condition-specific technical references from the ds005385 session-1 pre-task EyesClosed and EyesOpen cohorts (608 participants per condition). External-anchor selection is independent of target condition. Strict compatibility is the default; exploratory transfer requires a recorded rationale and does not establish cross-dataset or scalp-to-iEEG harmonization.
 

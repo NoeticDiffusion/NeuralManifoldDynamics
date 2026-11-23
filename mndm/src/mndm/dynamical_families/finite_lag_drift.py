@@ -54,6 +54,7 @@ _DISTANCE_FLOOR = 1e-12
 _SUBJECT_ANCHORED_LAYERS = frozenset(
     {"coords_3d_subject_anchored", "subject_anchored"}
 )
+_V3_4_LAYERS = frozenset({"v3_4_raw", "v3_4_anchored"})
 
 
 def _finalize(result: Mapping[str, Any]) -> dict[str, Any]:
@@ -108,21 +109,24 @@ def _layer_refusal(
     ]
     x = np.asarray(state)
     layer = str(coordinate_layer or "").strip()
-    if layer not in _SUBJECT_ANCHORED_LAYERS:
+    is_v3_4_layer = layer in _V3_4_LAYERS
+    valid_dimension = 9 if is_v3_4_layer else 3
+    valid_layer = is_v3_4_layer or layer in _SUBJECT_ANCHORED_LAYERS
+    if not valid_layer:
         return _unavailable(
             status="not_testable",
             failure_reason=REASON_SUBJECT_ANCHORED_3D,
             coordinate_layer=layer or "unknown",
             coordinate_names=names,
         )
-    if x.ndim != 2 or x.shape[1] != 3:
+    if x.ndim != 2 or x.shape[1] != valid_dimension:
         return _unavailable(
             status="not_testable",
             failure_reason=REASON_SUBJECT_ANCHORED_3D,
             coordinate_layer=layer,
             coordinate_names=names,
         )
-    if len(names) != 3:
+    if len(names) != valid_dimension:
         return _unavailable(
             status="invalid",
             failure_reason="coordinate_name_dimension_mismatch",
@@ -292,6 +296,7 @@ def _fill_conditional_mean(
     nominal_dt: float,
     epsilon: float,
     store_neighbor_source_idx: bool,
+    tie_break_neighbors_by_index: bool = False,
 ) -> dict[str, np.ndarray]:
     n_time, dimension = x.shape
     b_hat = np.full((n_time, dimension), np.nan, dtype=np.float32)
@@ -318,6 +323,7 @@ def _fill_conditional_mean(
         x[finite_idx],
         increment_state,
         k_use,
+        tie_break_by_index=tie_break_neighbors_by_index,
     )
     ref_times = t[ref_source_idx]
     for row, center in enumerate(finite_idx):
@@ -512,6 +518,7 @@ def estimate_finite_lag_drift(
     weight_mode: str = WEIGHT_INVERSE_DISTANCE,
     lag: int = 1,
     epsilon: float = 1e-12,
+    tie_break_neighbors_by_index: bool = False,
 ) -> dict[str, Any]:
     """Pooled level-1 conditional mean rate: mean increment over nominal ``dt``."""
     names = list(coordinate_names or ["m", "d", "e"])
@@ -574,6 +581,7 @@ def estimate_finite_lag_drift(
         nominal_dt=nominal_dt,
         epsilon=float(epsilon),
         store_neighbor_source_idx=False,
+        tie_break_neighbors_by_index=bool(tie_break_neighbors_by_index),
     )
     n_time = int(x.shape[0])
     if int(np.sum(filled["valid"])) < max(1, int(np.ceil(float(min_valid_fraction) * n_time))):
@@ -619,6 +627,7 @@ def estimate_finite_lag_drift(
             "min_samples": int(min_samples),
             "min_neighborhood_samples": int(min_neighborhood_samples),
             "dimension_aware_minimum_support": int(minimum_support),
+            "tie_break_neighbors_by_index": bool(tie_break_neighbors_by_index),
             "max_gap_sec": max_gap_sec,
             "max_dt_relative_deviation": float(max_dt_relative_deviation),
             "max_neighborhood_radius": max_neighborhood_radius,
@@ -652,6 +661,7 @@ def estimate_crossfit_drift(
     n_blocks: int = 2,
     embargo_steps: int = 4,
     epsilon: float = 1e-12,
+    tie_break_neighbors_by_index: bool = False,
 ) -> dict[str, Any]:
     """Blocked-crossfit variant of the same level-1 conditional mean. Not a level upgrade."""
     names = list(coordinate_names or ["m", "d", "e"])
@@ -756,6 +766,7 @@ def estimate_crossfit_drift(
         nominal_dt=nominal_dt,
         epsilon=float(epsilon),
         store_neighbor_source_idx=True,
+        tie_break_neighbors_by_index=bool(tie_break_neighbors_by_index),
     )
     filled2 = _fill_conditional_mean(
         x,
@@ -771,6 +782,7 @@ def estimate_crossfit_drift(
         nominal_dt=nominal_dt,
         epsilon=float(epsilon),
         store_neighbor_source_idx=True,
+        tie_break_neighbors_by_index=bool(tie_break_neighbors_by_index),
     )
     n_time, dimension = x.shape
     b_hat = np.full((n_time, dimension), np.nan, dtype=np.float32)
@@ -842,6 +854,7 @@ def estimate_crossfit_drift(
             "min_samples": int(min_samples),
             "min_neighborhood_samples": int(min_neighborhood_samples),
             "dimension_aware_minimum_support": int(minimum_support),
+            "tie_break_neighbors_by_index": bool(tie_break_neighbors_by_index),
             "max_gap_sec": max_gap_sec,
             "max_dt_relative_deviation": float(max_dt_relative_deviation),
             "max_neighborhood_radius": max_neighborhood_radius,
@@ -888,6 +901,7 @@ def estimate_lag_diagnostics(
     lags: tuple[int, ...] | list[int] = DEFAULT_ITO_LAGS,
     consistency_rel_tol: float = 0.5,
     epsilon: float = 1e-12,
+    tie_break_neighbors_by_index: bool = False,
 ) -> dict[str, Any]:
     """Multi-lag consistency diagnostics on level-1 fields. Not ``ito_drift_level3``."""
     names = list(coordinate_names or ["m", "d", "e"])
@@ -920,6 +934,7 @@ def estimate_lag_diagnostics(
             weight_mode=weight_mode,
             lag=lag,
             epsilon=epsilon,
+            tie_break_neighbors_by_index=tie_break_neighbors_by_index,
         )
         if fields[lag].get("computation_status") != "computed":
             status = str(fields[lag].get("computation_status") or "insufficient_support")
@@ -1055,6 +1070,7 @@ def estimate_chart_drift_family(
     ito_lags: tuple[int, ...] | list[int] = DEFAULT_ITO_LAGS,
     consistency_rel_tol: float = 0.5,
     epsilon: float = 1e-12,
+    tie_break_neighbors_by_index: bool = False,
 ) -> dict[str, Any]:
     """Orchestrate SL-LEV-MES-003 chart-drift measurements under one family."""
     names = list(coordinate_names or ["m", "d", "e"])
@@ -1091,6 +1107,7 @@ def estimate_chart_drift_family(
         min_valid_fraction=min_valid_fraction,
         weight_mode=weight_mode,
         epsilon=epsilon,
+        tie_break_neighbors_by_index=bool(tie_break_neighbors_by_index),
     )
     realized = None
     if realized_velocity_enabled:

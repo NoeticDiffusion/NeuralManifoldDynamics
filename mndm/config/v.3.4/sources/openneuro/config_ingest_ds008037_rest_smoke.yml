@@ -1,0 +1,24 @@
+# Bounded ds008037 smoke for the v3.4 EEG config.
+# Three eyes-open rest recordings: sub-001, sub-005, sub-007.
+# Pass those IDs with --subject. This file does not itself select subjects.
+#
+# TMS-EEG is excluded: single-pulse events are not removed by the common
+# EEG preprocess, and 392 of those recordings have 63 channels rather than 62.
+# Working memory is excluded: events include eeglab_boundary markers from
+# merged blocks, and this pipeline does not split on those markers.
+# Behavioural TSV files are not EEG inputs.
+imports:
+  - ./config_ingest_ds008037.yml
+
+datasets:
+  - ds008037
+
+exclude-files:
+  - '(?i)task-tmseeg'
+  - '(?i)task-workingmemory'
+
+paths:
+  processed_dir: "K:/processed/ds008037_mnps_v3_4_rest_smoke_20261121"
+
+run:
+  parallel_backend: threading

@@ -1,0 +1,62 @@
+# Bounded one-recording pilot for the opt-in MNPS 3.4 dynamical family.
+imports:
+  - ./sources/openneuro/config_ingest_ds004511_rest_smoke.yml
+
+paths:
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261119_mnps_v3_4_dynamics_pilot/processed"
+
+v3_4_dynamics:
+  enabled: true
+  nominal_dt_sec: 4.0
+  window_step_tolerance_sec: 1.0e-9
+  coordinate_layers:
+    raw:
+      enabled: true
+    anchored:
+      enabled: true
+  diffusion:
+    enabled: true
+    estimator: local_increment_covariance
+    neighborhood: {k: 32}
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    min_valid_fraction: 0.1
+    psd_floor: 1.0e-8
+    tie_break_neighbors_by_index: true
+  drift:
+    enabled: true
+    estimator: local_conditional_increment_mean
+    neighborhood: {k: 32}
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    max_neighborhood_radius: null
+    min_temporal_span_sec: null
+    min_valid_fraction: 0.1
+    weight_mode: uniform
+    tie_break_neighbors_by_index: true
+    realized_velocity_level0:
+      enabled: true
+    conditional_mean_rate_level1:
+      pooled:
+        enabled: true
+      blocked_crossfit:
+        enabled: true
+        n_blocks: 2
+        embargo_steps: 4
+      lag_diagnostics:
+        enabled: false
+  one_step:
+    enabled: true
+    declared_lags: [1]
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    ridge_alpha: 1.0e-4
+    one_step_rel_mse_threshold: 0.9
+    n_blocks: 2
+    embargo_steps: 4

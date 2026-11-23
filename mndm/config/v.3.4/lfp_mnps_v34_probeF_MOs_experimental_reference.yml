@@ -1,0 +1,114 @@
+schema: mndm.experimental_lfp_mnps_v34_reference.v1
+config_id: lfp_mnps_v34_probeF_MOs_experimental_reference
+config_version: 1.0.0
+status: paused_after_support_audit
+config_role: reproducibility_reference_not_standard_ingest_overlay
+modality: LFP
+
+scope:
+  measurement_family: contact_level_spectral_and_envelope_candidates
+  canonical_mnps_v34_9d: false
+  coordinate_replacement: false
+  biological_qualification: not_assessed
+  qualification_note: >-
+    Technical feature computation was demonstrated in one Probe F/MOs session.
+    Finite-lag code is implemented and has focused tests, but no supported
+    real-data LFP dynamics estimates or successful predictive evaluation have
+    been established.
+
+source:
+  dandiset_id: "000458"
+  dandiset_version: "0.240510.2038"
+  session_id: sub-551399_ses-20210128
+  series_path: acquisition/LFPprobeF/ElectricalSeriesprobeF
+  source_file: sub-551399_ses-20210128_behavior+ecephys.nwb
+  probe: ProbeF
+  anatomy_label: MOs
+  sampling_rate_hz: 2500.006725222094
+  source_note: >-
+    This reference is for the completed technical run only. Do not use its
+    band, contact grouping, or settings as a default for other LFP datasets.
+
+feature_measurements:
+  status: computed_once_in_one_session
+  estimator_spec: project/mnps2_audit/lfp_mnps_3.4/estimator_spec/probeF_MOs_3to5Hz_estimator_v1.json
+  contact_group_spec: project/mnps2_audit/lfp_mnps_3.4/contact_groups/probeF_MOs_contact_groups_v1.json
+  output_schema: mndm.experimental_lfp_mnps_3_4_candidates.v1
+  output_file: project/mnps2_audit/lfp_mnps_3.4/outputs/probeF_MOs_3to5Hz_candidates_v1.h5
+  band_hz: [3.0, 5.0]
+  window_sec: 4.0
+  step_sec: 2.0
+  per_contact_estimators:
+    - spectral_centroid_hz
+    - integrated_bandpower_v2
+    - sos_hilbert_envelope_cv
+  envelope_context_sec_each_side: 8.0
+  envelope_context_scope: >-
+    This edge context belongs to this frozen 3-5 Hz estimator and was validated
+    only for its declared band and estimator. It is not a universal LFP rule
+    and must not be shortened or transferred to make another dataset pass.
+  chart_spec: project/mnps2_audit/lfp_mnps_3.4/estimator_spec/probeF_MOs_observed_chart_v1.json
+
+dynamics:
+  implementation_module: neuropixel_ingest/lfp_dynamics_v1.py
+  evaluation_module: neuropixel_ingest/lfp_dynamics_evaluation_v1.py
+  estimator_spec: project/mnps2_audit/lfp_mnps_3.4/estimator_spec/probeF_MOs_finite_lag_dynamics_v1.json
+  evaluation_plan: project/mnps2_audit/lfp_mnps_3.4/estimator_spec/probeF_MOs_blocked_dynamics_evaluation_v1.json
+  status: implemented_tested_real_data_support_failed
+  primary_lag_steps: 1
+  sensitivity_lag_steps: [1, 2]
+  compute_batch:
+    definition: 60_second_continuous_source_block
+    batch_id: floor(source_sample_start / round(60 * sample_rate_hz))
+    transition_must_remain_within_batch: true
+    source_batch_exclusion_distance: 2
+    maximum_selected_transitions_per_source_batch_per_query: 1
+  support_rules:
+    minimum_global_transition_rows_per_group_state_lag: 30
+    target_unique_source_batches_per_query: 32
+    minimum_unique_source_batches_per_query: 28
+    minimum_scorable_heldout_batches_per_group_state_lag: 20
+    threshold_status: frozen_project_heuristics_not_universal_minima
+    minimum_28_rationale: >-
+      28 is 87.5 percent of the target neighborhood size of 32 and arithmetically
+      allows up to four unavailable batches. No statistical or synthetic
+      recovery calibration is documented.
+    minimum_30_rationale: No formal statistical or synthetic recovery calibration is documented.
+    minimum_20_rationale: >-
+      This is an operational blocked-evaluation floor; a held-out batch counts
+      only when at least one transition has paired predictions for all
+      comparators. No formal statistical calibration is documented.
+  observed_probeF_MOs_support_failure:
+    lag1_transition_rows_by_state:
+      awake: 103
+      isoflurane: 75
+      recovery: 65
+    distinct_source_batches_by_state:
+      awake: 5
+      isoflurane: 3
+      recovery: 4
+    supported_local_estimates: 0
+    paired_heldout_predictions: 0
+    thresholds_relaxed: false
+  output_file: project/mnps2_audit/lfp_mnps_3.4/outputs/probeF_MOs_finite_lag_dynamics_v1.h5
+  evaluation_report: project/mnps2_audit/lfp_mnps_3.4/outputs/probeF_MOs_blocked_dynamics_evaluation_v1.json
+
+deferred_candidate:
+  dataset_id: dandi_000232
+  session_id: sub-EF0147_ses-20190204T144339
+  readiness_audit: project/mnps2_audit/lfp_mnps_3.4/readiness/dandi_000232_EF0147_20190204_bounded_readiness_v2.json
+  protocol_decision: defer_current_finite_lag_protocol_only
+  no_feature_extraction_or_adapter: true
+  scope_note: >-
+    The decision does not establish that EF0147 is unsuitable for other LFP
+    measurements or trial-level analyses.
+
+execution:
+  standard_mndm_cli_consumes_this_file: false
+  runner_entrypoint: neuropixel_ingest.lfp_mnps_v34.run_lfp_mnps_v34_candidates
+  runtime_contracts_are_json: true
+  new_run_in_this_configuration: false
+  resume_policy: >-
+    Keep this file as a versioned reference to the completed experiment. Resume
+    dynamics only after a suitable continuous recording and its source
+    measurement contract pass a metadata-only support audit.

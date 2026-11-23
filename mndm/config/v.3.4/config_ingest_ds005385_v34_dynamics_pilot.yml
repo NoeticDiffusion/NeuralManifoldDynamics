@@ -1,0 +1,48 @@
+# Bounded MNPS 3.4 source-run pilot: emit drift and diffusion surfaces
+# alongside the existing 3D/9D Jacobian surfaces for nmd-analysis adapters.
+# Dynamical families here use the legacy 3D subject-anchored layer, not the
+# experimental MNPS 3.4 9D coordinates; the HDF5 provenance must remain explicit.
+imports:
+  - "./config_ingest_ds005385_baseline_eo_ec.yml"
+
+pilot_selection:
+  subject_ids: [sub-001, sub-002, sub-003]
+  tasks: [EyesClosed, EyesOpen]
+  sessions: [ses-1]
+  rationale: "Three-subject smoke of NMD family exports and nmd-analysis HDF5 adapters; no inferential use."
+
+# pilot_selection is documentary in the current CLI, so the allowlist is also
+# enforced through exclude-files and was passed as --subject to both commands.
+exclude-files:
+  - '(?i)^(?!.*sub-(?:001|002|003)(?:[/_.-]|$)).*$'
+  - '(?i)ses-(?!1(?:[/_.-]|$))'
+  - '(?i)acq-(?!pre(?:[_/.-]|$))'
+  - '(?i)task-(?!(?:EyesClosed|EyesOpen)(?:[_/.-]|$))'
+
+paths:
+  processed_dir: "M:/repos/NeuralManifoldDynamics/project/mnps2_audit/outputs/20261112_mnps_v3_4_dynamics_pilot/processed"
+
+dynamical_families:
+  enabled: true
+  coordinate_layer: subject_anchored
+  diffusion:
+    enabled: true
+    estimator: local_increment_covariance
+    neighborhood: {k: 20}
+    min_samples: 30
+    min_neighborhood_samples: 10
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    min_valid_fraction: 0.1
+    psd_floor: 1.0e-8
+    drift:
+      enabled: false
+      mode: alignment_only
+      source: not_supplied
+  drift:
+    enabled: true
+    estimator: local_conditional_increment_mean
+    neighborhood: {k: 20}
+    min_samples: 30
+    min_neighborhood_samples: 10
+    max_gap_sec: null

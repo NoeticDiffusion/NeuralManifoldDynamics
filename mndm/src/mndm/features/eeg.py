@@ -1528,6 +1528,8 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
 
     # Compute PSD in batch (primary method)
     t_psd0 = time.perf_counter()
+    psd_method_id = "mne.time_frequency.psd_array_multitaper"
+    psd_fallback_reason = "none"
     if psd_method == "multitaper" and psd_array_multitaper is not None:
         # psd: [E, 1 + G, F]
         psd, freqs = _run_multitaper_psd_safely(
@@ -1542,6 +1544,13 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         )
     else:
         # Fallback to Welch over all epochs and montages in one call.
+        psd_method_id = "scipy.signal.welch"
+        if psd_method == "multitaper":
+            psd_fallback_reason = "multitaper_unavailable"
+        elif psd_method != "welch":
+            psd_fallback_reason = f"unsupported_configured_method:{psd_method}"
+        else:
+            psd_fallback_reason = "configured_welch"
         nperseg = min(epoch_length_samples, 512)
         noverlap = nperseg // 2
         psd, freqs = _run_welch_psd_batched(
@@ -2039,6 +2048,11 @@ def compute_eeg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
         records.append(features_dict)
 
     df = pd.DataFrame(records)
+    # Keep the actual runtime backend with every feature row. The config and
+    # implementation hash alone do not reveal whether the multitaper fallback
+    # branch was selected in this process.
+    df["eeg_psd_method_id"] = psd_method_id
+    df["eeg_psd_fallback_reason"] = psd_fallback_reason
     t_epoch1 = time.perf_counter()
 
     try:

@@ -590,4 +590,19 @@ def compute_meg_features(signals: Mapping[str, Any], config: Mapping[str, Any]) 
     )
     if not group_df.empty:
         out = pd.concat([out, group_df], axis=1)
+
+    # The experimental MEG 3.4 surface is opt-in and is appended beside the
+    # historical shadow features. It receives the original payload so its
+    # sensor-family policy can require explicit MAG/GRAD metadata rather than
+    # inheriting the legacy name-based fallback above.
+    from ..mnps.v3_4.meg_candidates import (
+        compute_meg_v3_4_features,
+        resolve_meg_v3_4_config,
+    )
+
+    meg_v3_4_cfg = resolve_meg_v3_4_config(config)
+    if meg_v3_4_cfg and bool(meg_v3_4_cfg.get("enabled", False)):
+        experimental = compute_meg_v3_4_features(signals, out, config)
+        if not experimental.empty:
+            out = pd.concat([out, experimental], axis=1)
     return out

@@ -1,14 +1,22 @@
 # NeuralManifoldDynamics
 
-Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation for EEG and fMRI workflows.
+Monorepo for data ingest, feature extraction, MNPS summarization, and downstream artifact generation across EEG, MEG, fMRI, and related workflows.
 
 Version labels in this checkout refer to different things: package metadata and
-the latest release notes are **3.1.0**, and MNPS **3.4** is
-an opt-in experimental EEG measurement definition, not a package release. The
-canonical/default MNPS v2 workflow remains available. See
+the latest release notes are **3.1.0**, and MNPS **3.4** includes an opt-in
+experimental EEG measurement definition and a separate opt-in MEG measurement
+surface; neither is a package release. The canonical/default MNPS v2 workflow
+remains available. See
 [`mndm/MNPS_VERSIONED_GUIDE.md`](mndm/MNPS_VERSIONED_GUIDE.md) for the version
-map, v3.4 measurement contract, frozen references, outputs, evidence, and
-limits. Release history is in
+map, EEG contract, MEG status, frozen references, outputs, evidence, and
+limits. The MEG definition and export are described in
+[`mndm/config/v.3.4/MEG_EXPERIMENTAL_SPEC.md`](mndm/config/v.3.4/MEG_EXPERIMENTAL_SPEC.md).
+The current experimental EEG path also supports a separate 9D Jacobian and
+opt-in drift/diffusion with anchored lag-1 one-step measurements; these do not
+change the flat nine-coordinate definition. See the
+[`MNDM README`](mndm/README.md) and
+[`MNPS 3.4 dynamics export contract`](mndm/config/v.3.4/DYNAMICS_EXPORT.md).
+Release history is in
 [`release_notes/RELEASE_NOTES_v3.1.0.md`](release_notes/RELEASE_NOTES_v3.1.0.md),
 the earlier [`release_notes/RELEASE_NOTES_v3.0.2.md`](release_notes/RELEASE_NOTES_v3.0.2.md),
 and [`CHANGELOG.md`](CHANGELOG.md).
@@ -34,6 +42,7 @@ The repository is organized around a shared pipeline:
 - `mndm`: Core MNPS pipeline. Handles `features`, `summarize`, `all`, `pack`, and structure validation. See `mndm/README.md`.
 - `openneuro_ingest`: OpenNeuro-facing download and ingest utilities. Use this when pulling public datasets before MNDM processing.
 - `nemar_ingest`: NEMAR BIDS download from the versioned anonymous data plane and `manifest.json`. See `nemar_ingest/README.md`.
+- `zenodo_ingest`: Zenodo record download for large files, with streamed transfer, HTTP Range resume, and published checksum checks. See `zenodo_ingest/README.md`.
 - `dandi_ingest`: DANDI-facing listing, manifest, download, and NWB probing utilities for DANDI archive assets.
 - `apollo_ingest`: Ingest helpers for Apollo-style sources used in this repo.
 - `vitaldb_ingest`: Ingest helpers for VitalDB-style sources used in this repo.
@@ -104,6 +113,12 @@ python -m dandi_ingest.cli list --config dandi_ingest/configs/dandi_000718.yaml
 python -m dandi_ingest.cli probe --config dandi_ingest/configs/dandi_000718.yaml
 ```
 
+Example Zenodo listing:
+
+```powershell
+python -m zenodo_ingest.cli list --config zenodo_ingest/config/zenodo_4456079.yaml
+```
+
 Example event-locked profile run for the sleep-spindle track:
 
 ```powershell
@@ -135,6 +150,7 @@ embodied/task-aware runs where:
 - MNDM output schema details: `mndm/Output_variables_guide.md`
 - OpenNeuro ingest details: `openneuro_ingest/`
 - DANDI ingest usage/configs/adapters: `dandi_ingest/README.md`
+- Zenodo large-file download: `zenodo_ingest/README.md`
 
 ## Repository Layout
 
@@ -144,6 +160,7 @@ NeuralManifoldDynamics/
 ├── mndm/
 ├── openneuro_ingest/
 ├── nemar_ingest/
+├── zenodo_ingest/
 ├── dandi_ingest/
 ├── apollo_ingest/
 ├── vitaldb_ingest/

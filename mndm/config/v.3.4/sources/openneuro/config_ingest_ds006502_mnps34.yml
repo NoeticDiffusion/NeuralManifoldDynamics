@@ -1,0 +1,18 @@
+# ds006502 MNPS 3.4 MEG cohort run.
+# Same measurement settings as the three-recording smoke, without the
+# subject, session, task, or run filters. MRI is left out. Output is separate
+# from the smoke root.
+imports:
+  - ./config_ingest_ds006502_mnps34_smoke.yml
+
+paths:
+  processed_dir: "K:/processed/ds006502_mnps_v3_4"
+
+exclude-files:
+  - "\\.nii"
+  - "ses-mri"
+
+measurement_surface:
+  dataset_overlay:
+    filter_specification: "sidecars do not declare PowerLineFrequency or SoftwareFilters. This run applies a 60 Hz notch from the dataset README and a 1-45 Hz MEG bandpass. No CSD and no ICA."
+    channel_selection: "All 380 channels.tsv files label 272 data channels MEGGRADAXIAL in tesla. This MNE build types those channels as mag, not grad, and types the 28 reference channels as ref_meg. The run keeps the mag family and drops references."

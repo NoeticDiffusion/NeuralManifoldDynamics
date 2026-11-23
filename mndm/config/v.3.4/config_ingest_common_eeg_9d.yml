@@ -325,6 +325,13 @@ downstream:
     enabled: false
     timebase: actual_window_timestamps
   nominal_coordinate_rate_hz: 0.25
+# Local Jacobian on the flat nine. On unless a dataset overlay sets enabled: false.
+# Whitening stays off so the metric is the declared coordinate chart. This group
+# is written under /measurements/v3_4/jacobian and does not replace /jacobian
+# or /jacobian_9D. Incomplete windows are excluded rather than filled.
+v3_4_jacobian:
+  enabled: true
+  whiten: false
 validation:
   fill_missing_with_zero: false
   require_estimator_parity_before_activation: true

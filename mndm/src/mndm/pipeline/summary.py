@@ -4826,17 +4826,40 @@ class SubjectSummaryRunner:
         artifact_qc_applied: bool | None,
     ) -> Optional[Dict[str, Any]]:
         """Build the independent experimental MNPS 3.4 coordinate surface."""
+        config = self.ctx.config if isinstance(self.ctx.config, Mapping) else {}
+        if str(config.get("modality", "")).strip().lower() == "meg":
+            from ..mnps.v3_4.meg_candidates import resolve_meg_v3_4_config
+            from ..mnps.v3_4.meg_export import build_meg_measurement_export
+
+            meg_cfg = resolve_meg_v3_4_config(config)
+            if not meg_cfg or not bool(meg_cfg.get("enabled", False)):
+                return None
+            payload = build_meg_measurement_export(sub_frame, config)
+            if payload is None:
+                return None
+            from ..mnps.v3_4.jacobian_adapter import attach_meg_v3_4_jacobians
+
+            payload = attach_meg_v3_4_jacobians(payload, config)
+            from ..mnps.v3_4.dynamics_adapter import attach_meg_v3_4_dynamics
+
+            return attach_meg_v3_4_dynamics(payload, config)
         from ..mnps.v3_4.candidates import resolve_v3_4_config
         from ..mnps.v3_4.external_anchor import build_measurement_export_with_external_anchor
 
-        v3_4_cfg = resolve_v3_4_config(self.ctx.config if isinstance(self.ctx.config, Mapping) else {})
+        v3_4_cfg = resolve_v3_4_config(config)
         if not v3_4_cfg or not bool(v3_4_cfg.get("enabled", False)):
             return None
-        return build_measurement_export_with_external_anchor(
+        from ..mnps.v3_4.jacobian_adapter import attach_v3_4_jacobian
+
+        payload = build_measurement_export_with_external_anchor(
             sub_frame,
-            self.ctx.config if isinstance(self.ctx.config, Mapping) else {},
+            config,
             artifact_qc_applied=artifact_qc_applied,
         )
+        payload = attach_v3_4_jacobian(payload, config)
+        from ..mnps.v3_4.dynamics_adapter import attach_v3_4_dynamics
+
+        return attach_v3_4_dynamics(payload, config)
 
     def _write_v3_4_measurement_sidecar(
         self,
@@ -4855,9 +4878,15 @@ class SubjectSummaryRunner:
             return None
         from core.io.h5_writer import write_measurement_export_sidecar
 
+        is_meg_v3_4 = str(measurement_payload.get("schema", "")).startswith(
+            "mndm.meg_mnps_v3_4."
+        )
+        filename = "mnps_v3_4_meg_measurements.h5" if is_meg_v3_4 else "mnps_v3_4_measurements.h5"
+        measurement_id = "v3_4_meg" if is_meg_v3_4 else "v3_4"
+
         return write_measurement_export_sidecar(
-            target_dir / "mnps_v3_4_measurements.h5",
-            measurement_id="v3_4",
+            target_dir / filename,
+            measurement_id=measurement_id,
             measurement_payload=measurement_payload,
             recording_identity={
                 "dataset_id": self.dataset.ds_id,
@@ -7189,7 +7218,15 @@ class SubjectSummaryRunner:
                 {
                     "schema_version": "mndm.measurements.v1",
                     **({"v3_1": mnps_v3_1_measurements} if isinstance(mnps_v3_1_measurements, Mapping) else {}),
-                    **({"v3_4": mnps_v3_4_measurements} if isinstance(mnps_v3_4_measurements, Mapping) else {}),
+                    **(
+                        {
+                            "v3_4_meg"
+                            if str(mnps_v3_4_measurements.get("schema", "")).startswith("mndm.meg_mnps_v3_4.")
+                            else "v3_4": mnps_v3_4_measurements
+                        }
+                        if isinstance(mnps_v3_4_measurements, Mapping)
+                        else {}
+                    ),
                 }
                 if isinstance(mnps_v3_1_measurements, Mapping) or isinstance(mnps_v3_4_measurements, Mapping)
                 else {}

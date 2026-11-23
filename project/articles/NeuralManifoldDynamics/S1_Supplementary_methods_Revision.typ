@@ -2,9 +2,9 @@
 #set page(numbering: "1")
 
 #show: netn-template.with(
-  title: "Supplementary Methods: MNPS 3.4 EEG",
+  title: "Supplementary Methods: EEG Contract and MEG/LFP Pilots",
   short-title: "Supplementary Methods S1",
-  subtitle: "Estimators, anchors, support, and outputs",
+  subtitle: "Core EEG methods and separate modality-specific engineering branches",
   authors: (
     (name: "Robin Langell", affil: 1),
   ),
@@ -12,13 +12,13 @@
     "Langell Konsult AB, Vallentuna, Sweden",
   ),
   corresponding-author: "Robin Langell, hello@noeticdiffusion.com",
-  keywords: ("supplementary methods", "EEG", "robust reference", "HDF5"),
+  keywords: ("supplementary methods", "EEG", "MEG", "LFP", "robust reference", "HDF5"),
   article-type: "Supplement"
 )
 
 = S1.1 Scope and identity
 
-This supplement specifies the implementation details for the experimental flat nine-coordinate measurement definition described in the main article. The schema identifier is mndm.mnps_v3_4.experimental_flat_9d.v1. The repository package version is 3.1.0; 3.4 names a measurement definition, not a software release. The authoritative implementation is under mndm/src/mndm/mnps/v3_4 and its opt-in configuration is under mndm/config/v.3.4.
+This supplement specifies the experimental flat nine-coordinate EEG definition described in the main article, then documents separate optional Jacobian/dynamics exports and modality-specific MEG and LFP engineering pilots. The EEG schema identifier is mndm.mnps_v3_4.experimental_flat_9d.v1. The repository package version is 3.1.0; 3.4 names a measurement definition, not a software release. The MEG and LFP examples have their own schemas, sensor realizations, units, and support rules. Some component labels or orders may coincide with EEG, but that does not establish measurement comparability or cross-modal equivalence. The authoritative implementation is under mndm/src/mndm/mnps/v3_4 and its opt-in configurations are under mndm/config/v.3.4.
 
 The nine values are emitted at the window level in fixed order. No subject-level universal summary is created by this definition. A downstream analysis can choose a window, a session summary, or a trajectory according to its own protocol.
 
@@ -130,11 +130,107 @@ The table records the core v3.4 datasets and their shapes, types, units, and mas
   caption: [Core v3.4 HDF5 schema and per-window support semantics.],
 )
 
-= S1.8 Cohort summary inventory
+#pagebreak()
+
+= S1.8 Optional Jacobian, dynamics, and modality-specific engineering exports
+
+When the v3.4 EEG summary is built, the 9D Jacobian is enabled by default and
+writes schema `mndm.mnps_v3_4.jacobian.v1` under
+`/measurements/v3_4/jacobian`; `v3_4_jacobian.enabled: false` disables it. It
+selects anchored coordinates only after an anchor is applied, otherwise the
+raw nine. It does not mix layers or fill missing values, does not replace
+`/jacobian` or `/jacobian_9D`, and uses no whitening. In the ds004511
+`S200116` Rest smoke, 118 finite 9×9 fits were written from 126 windows.
+`ridge_underdetermined` is true: the 9D affine fit has 90 coefficients, and a
+finite ridge estimate does not imply unique identification. Median spectral
+abscissa was 0.054 s⁻¹; median numerical abscissa was 25.7 in the unwhitened
+mixed-unit raw metric, not comparable with the historical 3D metric.
+
+The opt-in `v3_4_dynamics.enabled` exporter writes
+`mndm.mnps_v3_4.dynamics.v1` under `/measurements/v3_4/dynamics`. It preserves
+`v3_4_raw` and `v3_4_anchored` separately. Drift and the local conditional
+increment-covariance rate can compute on either layer when supported. The
+export also stores a recording-level increment covariance without division by
+`dt`; neither covariance is asserted to be an Itô diffusion tensor. Both
+summarize increments of overlapping 8-second window features on the 4-second
+grid. Raw neighborhoods use mixed source units, so cross-axis geometry does
+not establish comparability.
+The affine one-step estimator is lag-1 and anchored-only. Its 9D support floor
+is 90 training pairs per block; pair count alone does not establish matrix
+rank.
+
+The bounded pilot config is
+`mndm/config/v.3.4/config_ingest_ds004511_v34_dynamics_pilot.yml`. Its
+neighborhoods use `k=32`, minimum support 28, and source-row index tie-breaking
+for equal distances. Missing coordinates and irregular steps split segments;
+no values are filled. The ds004511 `S200116` Rest summarize test reused the
+126-window feature table from the earlier ds004511 smoke, copied to a separate
+output root with its hash verified against the source. Of 126 windows, 120
+raw 9D windows were complete in one segment. Diffusion had 120 valid windows;
+realized velocity 119;
+pooled drift 120; blocked-crossfit drift 111. No anchor was applied, so the
+anchored layer was `not_testable` and raw one-step was not emitted. Raw
+coordinates, support, times, masks, segments, and drift/diffusion outputs
+matched the prior v3.4 export and adapter-only pilot exactly. This verifies
+one-recording summary integration, not the full cohort, an anchored test, or
+scientific qualification. The HDF5 and manifest are under
+`project/mnps2_audit/outputs/20261119_mnps_v3_4_ds004511_dynamics_integration_test/`.
+
+== S1.8.1 Experimental LFP branch and support audit
+
+The LFP work is an experimental measurement branch, separate from the canonical MNPS 3.4 EEG 9D coordinates. The contact-feature export uses schema `mndm.experimental_lfp_mnps_3_4_candidates.v1`. The technical feature demonstration used DANDI 000458, session `sub-551399_ses-20210128`, acquisition `acquisition/LFPprobeF/ElectricalSeriesprobeF`, Probe F, and the exact NWB location label `MOs`. The source series was continuous, with 17,173,552 samples across 384 contacts at a median sampling rate of 2500.006725 Hz and no timestamp gaps above 1.5 median intervals. The NWB declares units in volts, conversion `1.95e-7`, offset zero, and reference description `tip reference configuration`; the physical reference realization remains unknown. These declarations supported within-recording computation but do not establish cross-recording comparability.
+
+The frozen candidate estimator covered 3-5 Hz and used native samples, 4 s windows, and a 2 s center step. It retained per-contact spectral centroid, integrated bandpower, and envelope-CV before summaries within two metadata-frozen Probe F x MOs depth groups. The groups were not pooled together. The contact-group contract required at least 75 percent of each intended contact set (41/54 and 24/32 contacts). The centroid used a half-bin-expanded spectral mask, including centers in `[3 - df/2, 5 + df/2]`; the realized implementation therefore included nine bins. The envelope-CV applied the frozen SOS bandpass and Hilbert procedure with an 8 s guard on each side, or 20 s nominal source context for a 4 s summary window. That guard was validated only for this original 3-5 Hz estimator. It is not a universal LFP context rule and was not shortened or transferred to make another dataset pass. Adjacent envelope values share substantial input, and their independence is not established.
+
+The observed dynamics chart was frozen before dynamics computation as two separate 3D trajectories, one per depth group, ordered as centroid, `log10(group bandpower / 1 V^2)`, and envelope-CV. Group bandpower is the median of finite contact-level bandpower values. Each component was calibrated per group using the median and `1.4826 x MAD` over complete supported session windows. This calibration is session-local and transductive; zero power remains a valid raw bandpower measurement but cannot enter the log-power chart. No clipping, imputation, or fallback scale is used. Independent group calibration does not support direct comparison of dynamic magnitudes between groups.
+
+The estimator exports descriptive finite-lag conditional mean rate and conditional increment-covariance rate, with lag 1 as primary and lag 2 as a predeclared sensitivity. Realized timestamps determine tau. The covariance output is not divided by two and is not identified as an Ito diffusion. Jacobians, one-step predictions, coordinate replacement, spike integration, and condition-effect claims were not part of this pilot. Transition eligibility required complete chart support, one behavioral-state label throughout the transition, no prohibited stimulation/induction flags, and no crossing of missing windows, timestamp gaps, or 60 s envelope-processing batches. The neighborhood used uniform weights, target size 32 and at least 28 distinct non-neighbor source batches per query, at most one selected transition per source batch, and a minimum of 30 eligible transition rows per group, state, and lag. The blocked evaluation required at least 20 scorable held-out batches per group, state, and lag, with training-only calibration and context-aware separation.
+
+The 28-batch minimum is a frozen project heuristic: it is 87.5 percent of the target neighborhood size of 32 and arithmetically allows four unavailable batches. No statistical or synthetic-recovery calibration is documented. The 30-row and 20-held-out-batch thresholds are also operational project rules without formal calibration; distinct batches are not asserted to be statistically independent observations. These choices remain visible as design limits and were not relaxed after the pilot failed.
+
+In Probe F/MOs, the lag-1 run summary recorded 103 awake, 75 isoflurane, and 65 recovery eligible transition rows, but only 5, 3, and 4 distinct source batches, respectively, versus 28 required per query. It yielded zero supported local estimates and zero paired held-out predictions. This is a support failure, not a negative biological result. The adapter passed seven focused synthetic/contract tests; supported real-data dynamics estimation and predictive usefulness remain unestablished.
+
+A separate metadata-only readiness audit examined DANDI 000232 / EF0147 without reading signal values or extracting features. Its 244 `ElectricalSeries` are trial-aligned excerpts; timestamp adjacency alone does not establish that filtering across their boundaries is valid. The source metadata declared volts and a conversion value, but independent calibration provenance, reference realization, preprocessing filters, and physical contact-position units/mapping remained unresolved. Under the existing protocol's context and boundary rules, the largest task-rule stratum had at most 19 lag-1 transition rows and at most 7 eligible non-neighbor source batches per query, below the 30-row and 28-batch rules; no blocked fold had the required 20 scorable held-out batches. Thus EF0147 is deferred for the current finite-lag LFP dynamics protocol. This does not establish that it is unsuitable for other LFP measurements or trial-level analyses. A proposed 3-8 Hz band was not frozen; candidate feature values were not inspected and the band was not selected to improve support.
+
+The current status is therefore: contact-level feature computation was technically demonstrated in one session; the separate finite-lag adapter is implemented and has focused tests; supported real-data dynamics estimation, predictive evaluation, and biological qualification have not been established. The eight-second envelope context belongs only to the frozen 3-5 Hz estimator. Reopening dynamics requires a suitable continuous recording, a documented measurement contract, and a metadata-only support calculation under a separately frozen, band-specific protocol. The machine-readable reference is `mndm/config/v.3.4/lfp_mnps_v34_probeF_MOs_experimental_reference.yml`; it records the completed experiment and is not consumed by the standard MNDM CLI.
+
+== S1.8.2 Experimental MEG Jacobian and dynamical export smoke
+
+This is a separate engineering check, not an extension of the EEG nine-coordinate definition. The MEG exporter uses schema `mndm.meg_mnps_v3_4.experimental.v1`. It used the cached, modality-specific experimental MEG feature table from OpenNeuro ds003645 `sub-002`, FacePerception run 1, and the ordinary `summarize` pipeline. The output contained 121 windows and kept the 102 magnetometers (MAG) separate from the 204 gradiometers (GRAD). In both sensor families, the output window axis, raw coordinate values, and support masks for all three variants matched the cached feature table to an absolute tolerance of `1e-12`. The measurements remained raw and unscaled; no EEG anchor or recording-local normalization was applied. These MEG values do not share the EEG anchor or coordinate scale.
+
+The table gives the per-family support for the local Jacobian and dynamical exports. Counts are valid windows or retained Jacobian centers out of 121; the same results were observed for MAG and GRAD.
+
+#figure(
+  clean-table(
+    columns: (1.25fr, 0.45fr, 1.2fr, 2.3fr),
+    header: ([*Variant*], [*D*], [*Jacobian*], [*Drift and diffusion*]),
+    inset: 3pt,
+    [`existing_coordinate_set`], [9], [Computed; 119 centers], [Drift computed: realized velocity 120/121, pooled rate 121/121, blocked crossfit 112/121. Diffusion computed: 121/121.],
+    [`removal_only`], [7], [`not_testable`; the Jacobian requires 9D], [Drift `not_testable` under the current finite-lag chart contract; diffusion computed for 121/121.],
+    [`alpha_replacement`], [9], [Computed; 114 centers], [Drift computed: realized velocity 115/121, pooled rate 116/121, blocked crossfit 107/121. Diffusion computed: 116/121.],
+  ),
+  kind: table,
+  caption: [Computability and window support from one ds003645 MEG recording, reported separately for the MAG and GRAD realizations.],
+)
+
+The 9D alpha-replacement variant had five unsupported edge windows (epochs 0–2 and 119–120), consistent with its declared envelope-CV segment guard. The drift estimator currently accepts a 9D v3.4 chart or a 3D subject-anchored chart; the 7D `removal_only` variant therefore has no drift estimate. No coordinates were padded. No MEG anchor was applied, so the anchored dynamics and one-step operator were marked `not_testable` with the missing-anchor reason. These raw-chart estimates use mixed source units and Euclidean neighborhoods; computability does not establish a qualified metric, MAG/GRAD comparability, local identifiability, or repeatability.
+
+An ordinary summarize smoke completed with the initial revision of
+`mndm/config/v.3.4/config_ingest_ds003645_meg_v34_dynamics_e2e_k.yml`. After
+the configuration was refined to use a MEG-specific Jacobian activation key,
+the production MEG exporter, adapters, and HDF5 writer were checked separately
+against the same cached features; this was not a second full summarize run.
+Both output locations are recorded in
+`project/diary/20261119_ds003645_meg_v34_dynamics_smoke.md`. `NUMBA_DISABLE_JIT`
+was unset, so parity against the earlier JIT-disabled pilot has not been
+established. This one-recording smoke does not test between-run reliability or
+support coordinate replacement.
+
+= S1.9 Cohort summary inventory
 
 Feature extraction covered 1,216 recordings and produced 55,183 windows: 27,651 eyes-closed and 27,532 eyes-open. Each condition's anchor was computed and applied for 608 recordings with no anchor identity failures. The reference run is descriptive and transductive.
 
-The broader HDF5 inventory contains other measurement groups alongside v3.4 outputs. Its report separates rows by full path and realization and enumerates mean, population standard deviation, median, MAD, scaled MAD, first and third quartiles, IQR, minimum, maximum, skewness, excess kurtosis, and support counts. The inventory has 2,433 numeric statistics rows and 2,435 measurement inventory rows; two additional inventory entries indicate that a v3.4 Jacobian is unavailable. The report also contains 600,704 support/QC rows. These counts describe the report's inventory, not independent observations or inferential sample sizes.
+The broader HDF5 inventory contains other measurement groups alongside v3.4 outputs. Its report separates rows by full path and realization and enumerates mean, population standard deviation, median, MAD, scaled MAD, first and third quartiles, IQR, minimum, maximum, skewness, excess kurtosis, and support counts. The inventory has 2,433 numeric statistics rows and 2,435 measurement inventory rows; its two unavailable-Jacobian entries describe only the frozen cohort exports included in that report, not the current optional v3.4 Jacobian implementation described in S1.8. The report also contains 600,704 support/QC rows. These counts describe the report's inventory, not independent observations or inferential sample sizes.
 
 A separate v3.4-only audit read 1,216 combined HDF5 recording exports. All eight coordinates other than `alpha_envelope_cv` were valid in every selected window: 27,651 eyes-closed and 27,532 eyes-open windows. `alpha_envelope_cv` was valid in 24,361/27,651 eyes-closed windows and 24,215/27,532 eyes-open windows; the remaining 3,290 and 3,317 windows, respectively, were within the configured segment-edge guard. Every participant had at least one complete-nine-coordinate window. All 1,216 anchor applications reported `computed`; all exports remained `qualified=false`, and `qc_ok_eeg=-1` for all 55,183 windows. The audit does not establish artifact-free EEG.
 
@@ -144,12 +240,12 @@ The core schema paths and shape/type contracts were present in all 1,216 files. 
 
 The separate ds004148 session-repeatability analysis selected 60 participants and all 360 resting EC/EO recordings across sessions 1–3 from BIDS metadata before inspecting features or coordinates @openneuro_ds004148_v101. Each recording used the same frozen ds005385 EC anchor. Session-1 features and QC were reused; sessions 2–3 were re-extracted. The locked eligibility floor was 30 QC-eligible windows and 120 unique seconds per participant, session, condition, and coordinate. QC matched 26,640 windows. This support floor passed for 2,858/3,240 coordinate summaries and for 306/360 complete-nine summaries. Across 54 EC/EO coordinate-level session-comparison rows, ICC(A,1) ranged 0.041–0.954 with 43–52 participants per row. Across 27 EO−EC rows, it ranged 0.249–0.864 with 36–42 participants per row. Alpha-centroid EC/EO level estimates ranged 0.762–0.954; alpha-envelope-CV EO−EC estimates ranged 0.793–0.864. The full table gives each session pair, condition, coordinate, support count, bias, absolute differences, agreement limits, and rank correlation. These estimates are descriptive and specific to the support and compatibility rules; eligibility is not proof of artifact absence.
 
-= S1.9 Reproduction and verification boundary
+= S1.10 Reproduction and verification boundary
 
 Example commands from the repository root are:
 
 #raw("$config = \"mndm/config/v.3.4/config_ingest_ds005385_baseline_eo_ec.yml\"\npython -m mndm.cli features --config $config --dataset ds005385\npython -m mndm.cli summarize --config $config --dataset ds005385\npython mndm/src/mndm/tools/mnps_v3_4_measurement_quality_audit.py --h5-root project/mnps2_audit/outputs/20261111_mnps_v3_4_ds005385_baseline_cohort/processed/ds005385/neuralmanifolddynamics_ds005385_20261112_004711 --out project/mnps2_audit/outputs/20261116_mnps_v3_4_measurement_quality_audit --figure-out project/articles/NeuralManifoldDynamics/figures/mnps_v3_4_dependency_heatmap.svg", block: true, lang: "powershell")
 
-The ds005385 feature extraction and reference fitting were not rerun while writing this manuscript; the v3.4-only audit reads frozen outputs. For ds004148, session-1 HDF5/QC outputs were reused and sessions 2–3 were re-extracted. A single frozen ds005385 EC anchor was applied to every target condition without refitting. The full-cohort analysis checks all 360 HDF5 files, matches QC to all 26,640 windows, and calculates participant-level session comparisons only after the predefined support and realization-compatibility checks. The durable package at `mndm/docs/ds004148_session_repeatability_fullcohort/` contains the exact configuration, scripts, manifests, summary tables, anchor identity, file hashes, and suppression smoke verification. Eligibility remains an operational screen and does not establish artifact-free EEG or biological stability.
+The ds005385 feature extraction and reference fitting were not rerun while writing this manuscript; the v3.4-only audit reads frozen outputs. For ds004148, session-1 HDF5/QC outputs were reused and sessions 2–3 were re-extracted. A single frozen ds005385 EC anchor was applied to every target condition without refitting. The full-cohort analysis checks all 360 HDF5 files, matches QC to all 26,640 windows, and calculates participant-level session comparisons only after the predefined support and realization-compatibility checks. The durable package at `mndm/docs/ds004148_session_repeatability_fullcohort/` contains the exact configuration, scripts, manifests, summary tables, anchor identity, file hashes, and suppression smoke verification. The separate ds004511, ds003645, and DANDI pilot runs were not used to fit the EEG anchors or estimate EEG repeatability; their source-specific configurations and limits are identified in S1.8. Eligibility remains an operational screen and does not establish artifact-free EEG or biological stability.
 
 #bibliography("NeuralManifoldReferences.bib", style: "apa")

@@ -110,6 +110,7 @@ def chunked_nearest_neighbors(
     k: int,
     *,
     chunk_size: int = 256,
+    tie_break_by_index: bool = False,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Return exact kNN indices and squared distances in query chunks.
 
@@ -151,7 +152,10 @@ def chunked_nearest_neighbors(
         np.square(differences, out=differences)
         distance_block = np.sum(differences, axis=2)
         for offset, distances in enumerate(distance_block):
-            indices = np.argpartition(distances, k_int - 1)[:k_int]
+            if tie_break_by_index:
+                indices = np.lexsort((np.arange(distances.size), distances))[:k_int]
+            else:
+                indices = np.argpartition(distances, k_int - 1)[:k_int]
             row = start + offset
             nearest_indices[row] = indices
             nearest_distances[row] = distances[indices]

@@ -641,6 +641,8 @@ def build_measurement_export(
             "reference_set_hash": _column("mnps_v3_4_reference_set_hash"),
             "reference_status": _column("mnps_v3_4_reference_status"),
             "implementation_hashes_by_window_json": _column("mnps_v3_4_implementation_hashes_json", default="{}"),
+            "eeg_psd_method_id": _column("eeg_psd_method_id", default="not_recorded"),
+            "eeg_psd_fallback_reason": _column("eeg_psd_fallback_reason", default="not_recorded"),
             "alpha_centroid_status": _column("mnps_v3_4_alpha_centroid_status"),
             "alpha_envelope_status": _column("mnps_v3_4_alpha_envelope_status"),
             "alpha_centroid_channel_count": pd.to_numeric(

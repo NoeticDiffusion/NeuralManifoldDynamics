@@ -2065,6 +2065,124 @@ def _nwb_series_sfreq(series: Any) -> float:
     raise ValueError("NWB ElectricalSeries has neither a valid rate nor usable timestamps.")
 
 
+def _nwb_series_timebase_summary(
+    series: Any,
+    *,
+    source_sfreq: float,
+    start_sample: int = 0,
+    stop_sample: int | None = None,
+) -> dict[str, Any]:
+    """Summarize the selected NWB sample clock and reject hidden time gaps.
+
+    The experimental overlap-trim path currently emits one continuous RawArray.
+    It therefore accepts only one monotone timestamp segment. A gap is reported
+    with its sample boundary instead of being flattened into that time grid.
+    """
+    n_samples = int(series.data.shape[0])
+    start = max(0, int(start_sample))
+    stop = min(n_samples, int(stop_sample)) if stop_sample is not None else n_samples
+    if stop <= start:
+        raise ValueError("NWB timebase selection contains no samples.")
+    sample_rate = float(source_sfreq)
+    if not np.isfinite(sample_rate) or sample_rate <= 0:
+        raise ValueError("NWB timebase requires a finite positive sample rate.")
+    nominal_dt = 1.0 / sample_rate
+    timestamps = getattr(series, "timestamps", None)
+
+    if timestamps is not None:
+        if len(timestamps) != n_samples:
+            raise ValueError(
+                f"NWB timestamp count {len(timestamps)} does not match data sample count {n_samples}."
+            )
+        first_time = float(timestamps[start])
+        last_time = float(timestamps[stop - 1])
+        if not np.isfinite(first_time) or not np.isfinite(last_time):
+            raise ValueError("NWB selected timebase has a non-finite endpoint timestamp.")
+        previous: float | None = None
+        gap_indices: list[int] = []
+        gap_count = 0
+        invalid_indices: list[int] = []
+        block_size = 1_000_000
+        for block_start in range(start, stop, block_size):
+            block_stop = min(stop, block_start + block_size)
+            block = np.asarray(timestamps[block_start:block_stop], dtype=np.float64)
+            if previous is not None:
+                block = np.concatenate(([previous], block))
+                right_sample_start = block_start
+            else:
+                right_sample_start = block_start + 1
+            differences = np.diff(block)
+            right_sample_indices = np.arange(
+                right_sample_start,
+                right_sample_start + len(differences),
+                dtype=np.int64,
+            )
+            invalid = ~np.isfinite(differences) | (differences <= 0)
+            gap_mask = np.isfinite(differences) & (differences > nominal_dt * 1.5)
+            invalid_positions = np.flatnonzero(invalid)
+            gap_positions = np.flatnonzero(gap_mask)
+            invalid_indices.extend(
+                int(right_sample_indices[i])
+                for i in invalid_positions[: max(0, 10 - len(invalid_indices))]
+            )
+            gap_count += int(gap_positions.size)
+            gap_indices.extend(
+                int(right_sample_indices[i]) for i in gap_positions[: max(0, 10 - len(gap_indices))]
+            )
+            if len(block):
+                previous = float(block[-1])
+        if invalid_indices:
+            raise ValueError(
+                "NWB timestamp sequence is non-finite or non-monotone at sample indices "
+                f"{invalid_indices}."
+            )
+        if gap_count:
+            raise ValueError(
+                "The experimental continuous NWB path found "
+                f"{gap_count} timestamp discontinuity/discontinuities larger than "
+                f"1.5 nominal sample intervals; first right-sample indices: {gap_indices}. "
+                "Preserve and process the segments separately before enabling this path."
+            )
+        clock_source = "explicit_timestamps"
+    else:
+        starting_time = getattr(series, "starting_time", None)
+        rate = getattr(series, "rate", None)
+        if starting_time is None or rate is None:
+            raise ValueError("NWB timebase needs explicit timestamps or starting_time plus rate.")
+        try:
+            origin = float(starting_time[()])
+        except (TypeError, IndexError, KeyError):
+            origin = float(starting_time)
+        rate = float(rate)
+        if not np.isfinite(rate) or rate <= 0:
+            raise ValueError("NWB starting_time/rate clock has an invalid rate.")
+        first_time = origin + start / rate
+        last_time = origin + (stop - 1) / rate
+        clock_source = "starting_time_and_rate"
+
+    return {
+        "clock_source": clock_source,
+        "source_sample_rate_hz": sample_rate,
+        "nominal_sample_interval_sec": nominal_dt,
+        "discontinuity_threshold_sec": 1.5 * nominal_dt,
+        "selected_sample_start": start,
+        "selected_sample_stop_exclusive": stop,
+        "selected_sample_count": stop - start,
+        "selected_time_start_sec": first_time,
+        "selected_time_stop_sec": last_time,
+        "segment_count": 1,
+        "segments": [
+            {
+                "segment_id": "segment-0000",
+                "sample_start": start,
+                "sample_stop_exclusive": stop,
+                "time_start_sec": first_time,
+                "time_stop_sec": last_time,
+            }
+        ],
+    }
+
+
 def _nwb_series_channel_names(series: Any, n_channels: int) -> List[str]:
     names: List[str] = []
     electrodes = getattr(series, "electrodes", None)
@@ -2163,6 +2281,85 @@ def _nwb_chunked_downsample(
         )
         chunks.append(resample_poly(part, up=1, down=down, axis=1).astype(np.float64, copy=False))
     return np.concatenate(chunks, axis=1) if chunks else np.empty((len(channel_indices), 0), dtype=np.float64)
+
+
+def _nwb_chunked_downsample_overlap_trim(
+    series: Any,
+    *,
+    source_sfreq: float,
+    target_sfreq: float,
+    channel_indices: Sequence[int],
+    chunk_sec: float,
+    start_sample: int = 0,
+    stop_sample: int | None = None,
+) -> np.ndarray:
+    """Downsample bounded NWB chunks with context and trim to a continuous grid.
+
+    ``resample_poly`` applies a finite symmetric FIR and pads each call at its
+    edges. Resampling isolated chunks therefore creates artificial seams. This
+    variant adds the default FIR half-support as context on both sides, keeps
+    context starts aligned to the cropped source grid, and retains only each
+    chunk's central output samples. The original independent-chunk behavior is
+    left available through :func:`_nwb_chunked_downsample` for reproducibility.
+    """
+    from scipy.signal import resample_poly
+
+    total_samples = int(series.data.shape[0])
+    source_start = max(0, int(start_sample))
+    stop = min(total_samples, int(stop_sample)) if stop_sample is not None else total_samples
+    stop = max(source_start, stop)
+    ratio = float(source_sfreq) / float(target_sfreq)
+    if not np.isclose(ratio, round(ratio)):
+        raise ValueError("NWB chunked downsampling requires an integer source/target rate ratio.")
+    if not np.isfinite(chunk_sec) or float(chunk_sec) <= 0:
+        raise ValueError("NWB chunked downsampling requires chunk_sec > 0.")
+
+    down = int(round(ratio))
+    if down < 1:
+        raise ValueError("NWB chunked downsampling requires target_sfreq <= source_sfreq.")
+    chunk_samples = max(down, int(round(float(chunk_sec) * source_sfreq / down)) * down)
+    # scipy.signal.resample_poly's default FIR has 10 * max(up, down) taps of
+    # half-support on the upsampled input grid. Here up=1, so this is also the
+    # source-sample support; round up to retain phase alignment at every chunk.
+    context_samples = 10 * down
+    total_source = stop - source_start
+    total_output = (total_source + down - 1) // down
+    chunks: list[np.ndarray] = []
+
+    for first in range(source_start, stop, chunk_samples):
+        chunk_stop = min(stop, first + chunk_samples)
+        desired_context_start = max(source_start, first - context_samples)
+        context_start = source_start + ((desired_context_start - source_start) // down) * down
+        context_stop = min(stop, chunk_stop + context_samples)
+        if context_stop < stop:
+            context_stop = source_start + ((context_stop - source_start + down - 1) // down) * down
+            context_stop = min(stop, context_stop)
+
+        part = _nwb_data_to_channels_by_samples(
+            series,
+            start_sample=context_start,
+            stop_sample=context_stop,
+            channel_indices=channel_indices,
+        )
+        resampled = resample_poly(part, up=1, down=down, axis=1).astype(np.float64, copy=False)
+        output_start = (first - source_start) // down
+        output_stop = min(total_output, (chunk_stop - source_start + down - 1) // down)
+        output_count = output_stop - output_start
+        local_output_start = (first - context_start) // down
+        retained = resampled[:, local_output_start : local_output_start + output_count]
+        if retained.shape[1] != output_count:
+            raise RuntimeError(
+                "NWB overlap-trim resampling produced an unexpected output length "
+                f"({retained.shape[1]} != {output_count})."
+            )
+        chunks.append(retained)
+
+    result = np.concatenate(chunks, axis=1) if chunks else np.empty((len(channel_indices), 0), dtype=np.float64)
+    if result.shape[1] != total_output:
+        raise RuntimeError(
+            f"NWB overlap-trim resampling produced {result.shape[1]} samples; expected {total_output}."
+        )
+    return result
 
 
 def _nwb_unit_to_microvolt_factor(unit: Any, *, scale_to_microvolts: bool) -> float:
@@ -3086,19 +3283,77 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
         max_channels = int(max_channels_value) if max_channels_value is not None else None
         channel_indices, selection_artifact = _resolve_nwb_channel_selection(nwb_cfg)
         streamed_sfreq = nwb_cfg.get("streaming_sfreq")
+        nwb_timebase_summary = None
         if channel_indices is not None and streamed_sfreq is not None:
             streamed_sfreq = float(streamed_sfreq)
-            data = _nwb_chunked_downsample(
+            chunked_resample_strategy = str(
+                nwb_cfg.get("chunked_resample_strategy", "legacy_independent")
+            ).strip().lower()
+            chunked_resampler = {
+                "legacy_independent": _nwb_chunked_downsample,
+                "overlap_trim_v1": _nwb_chunked_downsample_overlap_trim,
+            }.get(chunked_resample_strategy)
+            if chunked_resampler is None:
+                raise ValueError(
+                    "Unsupported NWB chunked_resample_strategy="
+                    f"{chunked_resample_strategy!r}. Expected 'legacy_independent' or 'overlap_trim_v1'."
+                )
+            chunk_start_sample = int(round(nwb_start * original_sfreq))
+            chunk_stop_sample = int(round(nwb_stop * original_sfreq)) if nwb_stop is not None else None
+            if chunked_resample_strategy == "overlap_trim_v1":
+                nwb_timebase_summary = _nwb_series_timebase_summary(
+                    series,
+                    source_sfreq=original_sfreq,
+                    start_sample=chunk_start_sample,
+                    stop_sample=chunk_stop_sample,
+                )
+            data = chunked_resampler(
                 series,
                 source_sfreq=original_sfreq,
                 target_sfreq=streamed_sfreq,
                 channel_indices=channel_indices,
                 chunk_sec=float(nwb_cfg.get("chunk_sec", 60.0) or 60.0),
-                start_sample=int(round(nwb_start * original_sfreq)),
-                stop_sample=int(round(nwb_stop * original_sfreq)) if nwb_stop is not None else None,
+                start_sample=chunk_start_sample,
+                stop_sample=chunk_stop_sample,
             )
-            original_sfreq = streamed_sfreq
+            if nwb_timebase_summary is not None:
+                down = int(round(original_sfreq / streamed_sfreq))
+                chunked_output_sfreq = original_sfreq / down
+                grid_start = float(nwb_timebase_summary["selected_time_start_sec"])
+                grid_stop = (
+                    grid_start + (data.shape[1] - 1) / chunked_output_sfreq
+                    if data.shape[1]
+                    else grid_start
+                )
+                nwb_timebase_summary.update(
+                    {
+                        "requested_streaming_rate_hz": streamed_sfreq,
+                        "chunked_output_sampling_rate_hz": chunked_output_sfreq,
+                        "chunked_resampler": {
+                            "id": "scipy.signal.resample_poly.overlap_trim_v1",
+                            "up": 1,
+                            "down": down,
+                            "chunk_sec": float(nwb_cfg.get("chunk_sec", 60.0) or 60.0),
+                            "context_source_samples_each_side": 10 * down,
+                            "context_alignment": "relative_to_selected_source_start",
+                        },
+                        "resampled_sample_count": int(data.shape[1]),
+                        "resampled_grid_start_sec": grid_start,
+                        "resampled_grid_stop_sec": grid_stop,
+                        "resampled_grid_stop_minus_source_stop_sec": (
+                            grid_stop - float(nwb_timebase_summary["selected_time_stop_sec"])
+                        ),
+                    }
+                )
+                # Decimation by an integer factor retains the source clock at
+                # source_sfreq / factor. Let the ordinary whole-recording
+                # resample below convert that grid to the configured target,
+                # rather than silently relabeling it as the requested rate.
+                original_sfreq = chunked_output_sfreq
+            else:
+                original_sfreq = streamed_sfreq
         else:
+            chunked_resample_strategy = None
             data = _nwb_data_to_channels_by_samples(
                 series,
                 start_sample=int(round(nwb_start * original_sfreq)),
@@ -3140,6 +3395,20 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
     )
     if raw.info["sfreq"] != target_sfreq:
         raw.resample(target_sfreq, verbose=False)
+    if nwb_timebase_summary is not None:
+        grid_start = float(nwb_timebase_summary["selected_time_start_sec"])
+        grid_stop = grid_start + (raw.n_times - 1) / target_sfreq if raw.n_times else grid_start
+        nwb_timebase_summary.update(
+            {
+                "analysis_sampling_rate_hz": float(target_sfreq),
+                "analysis_sample_count": int(raw.n_times),
+                "analysis_grid_start_sec": grid_start,
+                "analysis_grid_stop_sec": grid_stop,
+                "analysis_grid_stop_minus_source_stop_sec": (
+                    grid_stop - float(nwb_timebase_summary["selected_time_stop_sec"])
+                ),
+            }
+        )
     preprocess_timings["resample"] = float(time.perf_counter() - t_pre0)
 
     notch_hz = preprocess_cfg.get("notch_hz", None) if isinstance(preprocess_cfg, Mapping) else None
@@ -3185,6 +3454,12 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
         "dandiset_id": source_cfg.get("dataset_id") if isinstance(source_cfg, Mapping) else None,
         "nwb_session_id": str(nwb_session_id) if nwb_session_id else None,
         "nwb_series_path": series_path,
+        **({"nwb_timebase": nwb_timebase_summary} if nwb_timebase_summary is not None else {}),
+        **(
+            {"nwb_chunked_resample_strategy": chunked_resample_strategy}
+            if chunked_resample_strategy not in {None, "legacy_independent"}
+            else {}
+        ),
         "nwb_channel_type": ch_type,
         "nwb_unit": str(nwb_unit) if nwb_unit is not None else None,
         "nwb_conversion": float(nwb_conversion) if nwb_conversion is not None else None,
@@ -3215,6 +3490,48 @@ def preprocess_nwb(file_path: Path, config: Mapping[str, Any]) -> PreprocessedSi
     }
     logger.info("Preprocessed NWB %s from %s: %d channels", file_path.name, series_path, len(channels["eeg"]))
     return PreprocessedSignals(signals=signals, sfreq=float(raw.info["sfreq"]), channels=channels, meta=meta)
+
+
+def _read_raw_signal(file_path: Path | str, preprocess_cfg: Mapping[str, Any] | None):
+    """Open one source file, with the CTF options this reader needs.
+
+    ds006502 .hc files name coils ``LPA``, ``RPA``, and ``Nasion``. MNE's
+    default matcher misses them. Its default ``system_clock='truncate'``
+    also drops that dataset's rest recordings from the sidecar duration of
+    360.0 s to 329.7 s. ``preprocess.ctf_system_clock: ignore`` keeps the
+    samples that match the sidecar. Other files stay on ``mne.io.read_raw``.
+    """
+    import mne
+
+    path = Path(file_path)
+    if path.name.lower().endswith(".ds"):
+        _register_ctf_hc_landmark_aliases()
+        clock = "truncate"
+        if isinstance(preprocess_cfg, Mapping):
+            configured = preprocess_cfg.get("ctf_system_clock", "truncate")
+            clock = str(configured or "truncate")
+        if clock not in {"truncate", "ignore"}:
+            raise ValueError("preprocess.ctf_system_clock must be truncate or ignore")
+        return mne.io.read_raw_ctf(path, system_clock=clock, preload=False, verbose=False)
+    return mne.io.read_raw(path, preload=False, verbose=False)
+
+
+def _register_ctf_hc_landmark_aliases() -> None:
+    """Teach the installed MNE CTF reader this dataset's .hc coil labels.
+
+    MNE matches only ``left ear``, ``right ear``, and ``nasion``. ds006502
+    writes ``LPA``, ``RPA``, and ``Nasion``, so every measured coil is stored
+    with kind=-1 and ``read_raw_ctf`` raises missing HPI coordinates. Adding
+    the aliases does not change channel data, only whether the file opens.
+    """
+    try:
+        from mne.io.ctf.constants import CTF
+        from mne.io.ctf.hc import _kind_dict
+    except Exception:
+        return
+    _kind_dict.setdefault("LPA", CTF.CTFV_COIL_LPA)
+    _kind_dict.setdefault("RPA", CTF.CTFV_COIL_RPA)
+    _kind_dict.setdefault("Nasion", CTF.CTFV_COIL_NAS)
 
 
 def preprocess_file(
@@ -3298,7 +3615,7 @@ def preprocess_file(
             cleanup_after_load.append(patched)
             file_path_for_mne = patched
 
-    # Load raw with delayed data load to avoid reading entire file
+    # Load raw with delayed data load to avoid reading entire file.
     signal_support_provenance = build_signal_support_provenance(
         Path(file_path), target_sfreq=target_sfreq, source_datatype=source_datatype
     )
@@ -3306,7 +3623,7 @@ def preprocess_file(
     t_load0 = time.perf_counter()
     try:
         try:
-            raw = mne.io.read_raw(file_path_for_mne, preload=False, verbose=False)
+            raw = _read_raw_signal(file_path_for_mne, preprocess_cfg)
         except TypeError as exc:
             # EEGLAB .set can store epoched data. If enabled, flatten epochs to a
             # continuous surrogate stream for feature extraction.

@@ -1,0 +1,83 @@
+# Bounded MAG/GRAD dynamics and Jacobian smoke on the existing ds003645 MEG
+# run-1 feature table. Feature definitions and raw-input selection are inherited
+# from the ordinary MEG 3.4 end-to-end config; only derived exports and the
+# isolated output root are added here.
+imports:
+  - ./config_ingest_ds003645_meg_v34_e2e_k.yml
+
+paths:
+  processed_dir: K:/ExternalReceivedDatasets/openneuro/processed_ds003645_meg_v34_dynamics_smoke_20261119
+
+# Explicit opt-in for MEG. Nine-coordinate variants receive local Jacobians;
+# the 7D removal-only candidate is preserved with status=not_testable.
+v3_4_meg_jacobian:
+  enabled: true
+  derivative_method: sav_gol
+  derivative_window: 7
+  derivative_polyorder: 3
+  knn_k: 20
+  knn_metric: euclidean
+  super_window: 3
+  ridge_alpha: 1.0
+  distance_weighted: true
+  whiten: false
+  require_determined_support: false
+
+# Matched to the ds004511 v3.4 dynamics pilot settings. Drift and diffusion
+# are emitted for each raw MEG coordinate realization. The anchored layer and
+# one-step operator remain explicitly not_testable until a MEG anchor exists.
+v3_4_dynamics:
+  enabled: true
+  nominal_dt_sec: 4.0
+  window_step_tolerance_sec: 1.0e-9
+  coordinate_layers:
+    raw:
+      enabled: true
+    anchored:
+      enabled: true
+  diffusion:
+    enabled: true
+    estimator: local_increment_covariance
+    neighborhood: {k: 32}
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    min_valid_fraction: 0.1
+    psd_floor: 1.0e-8
+    tie_break_neighbors_by_index: true
+  drift:
+    enabled: true
+    estimator: local_conditional_increment_mean
+    neighborhood: {k: 32}
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    max_neighborhood_radius: null
+    min_temporal_span_sec: null
+    min_valid_fraction: 0.1
+    weight_mode: uniform
+    tie_break_neighbors_by_index: true
+    realized_velocity_level0:
+      enabled: true
+    conditional_mean_rate_level1:
+      pooled:
+        enabled: true
+      blocked_crossfit:
+        enabled: true
+        n_blocks: 2
+        embargo_steps: 4
+      lag_diagnostics:
+        enabled: false
+  one_step:
+    enabled: true
+    declared_lags: [1]
+    min_samples: 30
+    min_neighborhood_samples: 28
+    max_gap_sec: null
+    max_dt_relative_deviation: 0.05
+    ridge_alpha: 1.0e-4
+    one_step_rel_mse_threshold: 0.9
+    n_blocks: 2
+    embargo_steps: 4
